@@ -1,0 +1,136 @@
+/*
+ * Бильярдум — токены дизайна (docs/DESIGN.md §2, §3, §5, §6). Цвета в интерфейсе только через эти переменные.
+ *
+ * Темы:
+ *   - по умолчанию светлая;
+ *   - тёмная по prefers-color-scheme: dark;
+ *   - вручную: <html data-theme="dark"> или <html data-theme="light"> (светлая даже при тёмной системе);
+ *   - data-theme работает и на любом элементе: поддерево получает тему целиком (превью, образцы).
+ * Токены зала --hall-* одинаковы в обеих темах: зал всегда тёмный.
+ *
+ * Значения цветов совпадают с DESIGN.md §2 (с правками decisions №36); это проверяет test/tokens.test.mjs.
+ * Менять значения — только вместе с DESIGN.md и с согласия Андрея.
+ */
+
+:root {
+  /* Зал: план зала и ТВ-экраны, всегда тёмный */
+  --hall-bg: #0A0E16;
+  --hall-line: #1A2232;
+  --hall-cloth-off: #1B3F7A;
+  --hall-cloth-on: #2F6FD6;
+  --hall-rail: #3B2A21;
+  --hall-text: #DDE4EF;
+  --hall-text-2: #8C97AB;
+
+  /* Шрифты (§3). Dela Gothic One без знака ₽: он берётся из Geologica следующей в стеке */
+  --font-display: 'Dela Gothic One', 'Geologica', system-ui, sans-serif;
+  --font-text: 'Geologica', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Шкала (§3): 13 / 15 / 17 / 20 / 24 / 32 / 44 / 64 px */
+  --fs-13: 13px;
+  --fs-15: 15px;
+  --fs-17: 17px;
+  --fs-20: 20px;
+  --fs-24: 24px;
+  --fs-32: 32px;
+  --fs-44: 44px;
+  --fs-64: 64px;
+  --fs-body: var(--fs-17);
+  --lh-body: 1.55;
+  --lh-heading: 1.15;
+
+  /* Скругления (§5) */
+  --radius-sm: 6px;      /* план зала, таблицы */
+  --radius-md: 12px;     /* карточки */
+  --radius-pill: 999px;  /* фильтры, бейджи */
+
+  /* Компоновка (§5) */
+  --layout-max: 1200px;
+  --layout-columns: 12;
+  --gutter: 16px;
+
+  /* Движение (§6): одно заметное — лампа над столом, остальное быстрее и тише */
+  --lamp-duration: 0.6s;
+  --lamp-easing: cubic-bezier(0.3, 0, 0.2, 1);
+  --motion-fast: 0.15s;
+}
+
+/* Светлая тема — по умолчанию и принудительно */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --paper: #F3F5F8;
+  --card: #FFFFFF;
+  --card-2: #E8EDF3;
+  --line: #D4DCE6;
+  --line-strong: #7A869A;
+  --ink: #0C1424;
+  --ink-2: #46536A;
+  --ink-3: #616C7F;
+  --cloth: #1F56B8;
+  --cloth-deep: #163F8A;
+  --cloth-tint: #DCE6F7;
+  --lamp: #F5A623;
+  --lamp-tint: #FDF0D8;
+  --ball-red: #C6362A;
+  --free: #1A7A4D;
+  --on-cloth: #FFFFFF;
+  --on-lamp: #0C1424;
+}
+
+/* Тёмная тема по системе, если светлая не выбрана вручную. Блок совпадает с [data-theme="dark"] ниже */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #0B1019;
+    --card: #121A27;
+    --card-2: #182234;
+    --line: #253047;
+    --line-strong: #677387;
+    --ink: #E9EEF6;
+    --ink-2: #A3AEC2;
+    --ink-3: #7E899C;
+    --cloth: #5186E9;
+    --cloth-deep: #7FA6F0;
+    --cloth-tint: #16264A;
+    --lamp: #FFB938;
+    --lamp-tint: #33270F;
+    --ball-red: #F0604F;
+    --free: #3CC283;
+    /* Текст на кнопке тёмный: белый на синем не набирает 4,5:1 (DESIGN §2) */
+    --on-cloth: #0B1019;
+    --on-lamp: #0C1424;
+  }
+}
+
+/* Тёмная тема вручную */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #0B1019;
+  --card: #121A27;
+  --card-2: #182234;
+  --line: #253047;
+  --line-strong: #677387;
+  --ink: #E9EEF6;
+  --ink-2: #A3AEC2;
+  --ink-3: #7E899C;
+  --cloth: #5186E9;
+  --cloth-deep: #7FA6F0;
+  --cloth-tint: #16264A;
+  --lamp: #FFB938;
+  --lamp-tint: #33270F;
+  --ball-red: #F0604F;
+  --free: #3CC283;
+  /* Текст на кнопке тёмный: белый на синем не набирает 4,5:1 (DESIGN §2) */
+  --on-cloth: #0B1019;
+  --on-lamp: #0C1424;
+}
+
+/* Без анимаций по просьбе системы: переходы мгновенные, данные обновляются как обычно */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --lamp-duration: 0s;
+    --motion-fast: 0s;
+  }
+}

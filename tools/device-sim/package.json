@@ -1,0 +1,19 @@
+{
+  "name": "@billiardum/device-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Симулятор контроллера стола Бильярдума по docs/protocol.md (MQTT v1)",
+  "type": "module",
+  "main": "index.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:it": "node scripts/integration.mjs"
+  },
+  "dependencies": {
+    "mqtt": "5.16.1"
+  }
+}

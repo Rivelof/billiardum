@@ -4,8 +4,11 @@
   "rules": {
     "key": "device_key в base64, 32 байта",
     "sig": "base64(HMAC-SHA256(device_key, UTF-8(canonical))), стандартный алфавит с =",
-    "canonical": "объект без sig верхнего уровня; ключи по возрастанию байтов на всех уровнях; без пробелов; только целые от -(2^53-1) до 2^53-1 без экспоненты; строки и ключи — печатный ASCII без \" и \\; вложенный sig запрещён",
-    "order": "bad_format (разбор, канонизация, обязательные поля v=1, id, seq, type, body) → bad_sig → seq"
+    "json": "строгий JSON по RFC 8259; дополнительно bad_format: обратная косая черта где угодно в сообщении (любое экранирование), повторяющиеся ключи, -0, числа с точкой или экспонентой, целые вне ±(2^53-1)",
+    "fields": "обязательны: v = 1; id — UUID в нижнем регистре; seq — целое ≥ 1; type — непустая строка; issued_at — целое ≥ 0; body — объект. Неизвестные поля тела игнорируются",
+    "canonical": "объект без sig верхнего уровня; ключи по возрастанию байтов на всех уровнях; без пробелов; строки и ключи — печатный ASCII без кавычки и обратной косой черты; вложенный sig запрещён",
+    "sig_format": "ровно 44 символа: base64 от 32 байт с одним = в конце; иначе bad_sig",
+    "order": "bad_format → bad_sig → seq (§3.2) → тело команды (bad_body и др.)"
   },
   "vectors": [
     {
@@ -174,6 +177,92 @@
       "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
       "raw": "{\"v\":1,\"id\":",
       "expect": "bad_format"
+    },
+    {
+      "name": "повторяющийся ключ",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000030\",\"seq\":30,\"type\":\"ping\",\"issued_at\":1792598430,\"seq\":31,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "экранирование в строке (\\u0069 раскрывается в допустимую букву)",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000032\",\"seq\":32,\"type\":\"p\\u0069ng\",\"issued_at\":1792598432,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "экранированный слеш \\/ в URL",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000033\",\"seq\":33,\"type\":\"ota.start\",\"issued_at\":1792598433,\"body\":{\"url\":\"https:\\/\\/billiardum.ru\\/fw.bin\",\"version\":\"1.0.4\",\"sha256\":\"00\",\"image_sig\":\"AA==\"},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "минус ноль",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000034\",\"seq\":34,\"type\":\"ping\",\"issued_at\":-0,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "seq = 0",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000035\",\"seq\":0,\"type\":\"ping\",\"issued_at\":1792598435,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "id не UUID",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"cmd-36\",\"seq\":36,\"type\":\"ping\",\"issued_at\":1792598436,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "id в верхнем регистре",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192F3C1-6D1A-7C3E-9B2A-000000000037\",\"seq\":37,\"type\":\"ping\",\"issued_at\":1792598437,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "body — массив",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000038\",\"seq\":38,\"type\":\"ping\",\"issued_at\":1792598438,\"body\":[],\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "issued_at строкой",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000039\",\"seq\":39,\"type\":\"ping\",\"issued_at\":\"1792598439\",\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "нет issued_at",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000040\",\"seq\":40,\"type\":\"ping\",\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "одинарные кавычки",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{'v':1,'id':'0192f3c1-6d1a-7c3e-9b2a-000000000041','seq':41,'type':'ping','issued_at':1792598441,'body':{},'sig':'s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ='}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "ведущий ноль в числе",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000042\",\"seq\":042,\"type\":\"ping\",\"issued_at\":1792598442,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "sig — base64, но не 32 байта",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{},\"issued_at\":1792598443,\"type\":\"ping\",\"seq\":43,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000043\",\"v\":1,\"sig\":\"BwcHBwcHBwcHBwcHBwcHBw==\"}",
+      "expect": "bad_sig",
+      "canonical": "{\"body\":{},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000043\",\"issued_at\":1792598443,\"seq\":43,\"type\":\"ping\",\"v\":1}"
+    },
+    {
+      "name": "sig без завершающего =",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{},\"issued_at\":1792598444,\"type\":\"ping\",\"seq\":44,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000044\",\"v\":1,\"sig\":\"jCI82pxIP0omcKzSYVDr4Ca1wwQJb5gYnK47ra2Cu/4\"}",
+      "expect": "bad_sig",
+      "canonical": "{\"body\":{},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000044\",\"issued_at\":1792598444,\"seq\":44,\"type\":\"ping\",\"v\":1}"
     }
   ]
 }

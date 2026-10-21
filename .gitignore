@@ -1,3 +1,30 @@
+# Зависимости
 node_modules/
+
+# Секреты: только в .env, в репозиторий не попадают
 .env
+.env.*
+!.env.example
+
+# Блокировка npm для параллельной работы агентов
 .npm.lock
+
+# Окружение разработки (deploy/dev): сертификаты, секреты устройств, данные
+deploy/dev/certs/
+deploy/dev/devices.json
+deploy/dev/data/
+deploy/dev/**/*.log
+
+# Логи
+*.log
+logs/
+npm-debug.log*
+
+# Сборка и отчёты
+coverage/
+dist/
+.pio/
+
+# Системные файлы
+.DS_Store
+Thumbs.db

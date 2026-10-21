@@ -1,0 +1,11 @@
+# Окончания строк LF для всех текстовых файлов, в том числе на Windows:
+# конфиги Mosquitto и Caddy и скрипты читаются внутри Linux-контейнеров.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.woff binary
+*.ttf binary
+*.bin binary

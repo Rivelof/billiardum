@@ -10,5 +10,23 @@
     "supabase",
     "server",
     "tools/device-sim"
-  ]
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "down": "node scripts/dev-down.mjs",
+    "test": "node --test \"scripts/*.test.mjs\" && npm run test --workspaces --if-present",
+    "test:db": "npm run test:db -w @billiardum/db",
+    "lint": "eslint .",
+    "ci": "node scripts/ci.mjs",
+    "db:migrate": "npm run migrate -w @billiardum/db",
+    "db:seed": "npm run seed -w @billiardum/db",
+    "db:reset": "npm run reset -w @billiardum/db",
+    "provision:dev": "npm run provision:dev -w @billiardum/server",
+    "sim": "npm run start -w @billiardum/device-sim"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.12.0",
+    "globals": "17.13.0"
+  }
 }

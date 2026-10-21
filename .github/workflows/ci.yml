@@ -1,0 +1,57 @@
+# CI «Бильярдума» (контракт M0 §9). Локально то же самое: `npm run ci`.
+# Только синтетические данные сида (decisions №21): раннеры GitHub вне РФ.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: lint, test, миграции, test:db
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    services:
+      db:
+        image: supabase/postgres:15.8.1.085
+        env:
+          # Одноразовая база внутри раннера, только данные сида: пароль не секрет.
+          POSTGRES_PASSWORD: ci-throwaway-pg
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U supabase_admin -d postgres -h 127.0.0.1"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 90
+
+    env:
+      DATABASE_ADMIN_URL: postgres://supabase_admin:ci-throwaway-pg@localhost:54322/postgres
+      DB_APP_PASSWORD: ci-throwaway-app
+      DATABASE_URL: postgres://app_api:ci-throwaway-app@localhost:54322/postgres
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run db:migrate
+      - run: npm run db:seed
+      - run: npm run test:db

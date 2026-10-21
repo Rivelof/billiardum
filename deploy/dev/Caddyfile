@@ -1,0 +1,17 @@
+# Caddy для разработки «Бильярдума» (deploy/dev, контракт M0 §2).
+# https://localhost:8443 (на хосте) → контейнер caddy:443 → server:3000.
+# Сертификат выпускает внутренний CA Caddy (tls internal); его корень лежит
+# в томе caddy-data: /data/caddy/pki/authorities/local/root.crt.
+
+{
+	skip_install_trust
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
+}
+
+https://localhost {
+	tls internal
+	reverse_proxy server:3000
+}

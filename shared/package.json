@@ -1,0 +1,22 @@
+{
+  "name": "@billiardum/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Бильярдум: токены дизайна, локальные шрифты, склонения и форматы ru-RU",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    "./format": "./format.mjs",
+    "./tokens.css": "./tokens.css",
+    "./fonts.css": "./fonts.css",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "*.css"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}

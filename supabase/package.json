@@ -1,0 +1,20 @@
+{
+  "name": "@billiardum/db",
+  "version": "0.1.0",
+  "private": true,
+  "description": "База «Бильярдума»: миграции схемы bl, RLS, журнал с цепочкой хешей, сид разработки",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "migrate": "node bin/migrate.mjs",
+    "seed": "node bin/seed.mjs",
+    "reset": "node bin/reset.mjs",
+    "test": "node --test \"lib/*.test.mjs\"",
+    "test:db": "node --test --test-concurrency=1 \"tests/*.test.mjs\""
+  },
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}

@@ -1,0 +1,160 @@
+# Окружение разработки «Бильярдума» (контракт M0 §2).
+# Запускать через `npm run dev` (scripts/dev.mjs): он создаёт .env и сертификаты,
+# применяет миграции, сид и провижининг до старта server и device-sim.
+# Остановка: `npm run down`, со стиранием данных: `npm run down -- --volumes`.
+#
+# Контейнеры с Node не ставят пакеты: репозиторий монтируется только для чтения
+# вместе с node_modules хоста (pg и mqtt — чистый JS).
+
+name: billiardum
+
+x-node-service: &node-service
+  image: node:22-alpine
+  working_dir: /repo
+  init: true
+  volumes:
+    - ../..:/repo:ro
+
+services:
+  db:
+    image: supabase/postgres:15.8.1.085
+    ports:
+      # Только с этой машины: Postgres наружу не открывается.
+      - "127.0.0.1:54322:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-config:/etc/postgresql-custom
+    healthcheck:
+      # TCP-слушатель появляется только у рабочего сервера, не у временного на время init.
+      test: ["CMD", "pg_isready", "-U", "supabase_admin", "-d", "postgres", "-h", "127.0.0.1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+      start_interval: 2s
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "8883:8883"
+    environment:
+      MQTT_ADMIN_USER: ${MQTT_ADMIN_USER}
+      MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD}
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./certs:/certs:ro
+      - mosquitto-data:/mosquitto/data
+    # Первый старт: создаёт файл Dynamic Security с администратором MQTT_ADMIN_USER.
+    # Каждый старт: копирует сертификаты с нужными правами и сверяет пароль
+    # администратора с .env (файл правится, пока брокер ещё не запущен).
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -z "$$MQTT_ADMIN_USER" ] || [ $${#MQTT_ADMIN_PASSWORD} -lt 12 ]; then
+          echo "MQTT_ADMIN_USER и MQTT_ADMIN_PASSWORD (от 12 символов) должны быть в .env" >&2
+          exit 1
+        fi
+        mkdir -p /mosquitto/certs
+        cp /certs/ca.crt /certs/mqtt.crt /certs/mqtt.key /mosquitto/certs/
+        chown -R mosquitto:mosquitto /mosquitto/certs /mosquitto/data
+        chmod 600 /mosquitto/certs/mqtt.key
+        DYNSEC=/mosquitto/data/dynamic-security.json
+        if [ -s "$$DYNSEC" ]; then
+          mosquitto_ctrl -f "$$DYNSEC" dynsec setClientPassword "$$MQTT_ADMIN_USER" "$$MQTT_ADMIN_PASSWORD" >/dev/null
+        else
+          mosquitto_ctrl dynsec init "$$DYNSEC" "$$MQTT_ADMIN_USER" "$$MQTT_ADMIN_PASSWORD" >/dev/null
+          echo "Dynamic Security: создан администратор $$MQTT_ADMIN_USER"
+        fi
+        chown mosquitto:mosquitto "$$DYNSEC"
+        chmod 600 "$$DYNSEC"
+        exec mosquitto -c /mosquitto/config/mosquitto.conf
+    healthcheck:
+      # Проверяет сразу TLS, вход администратора и плагин Dynamic Security.
+      test:
+        - CMD-SHELL
+        - >-
+          mosquitto_ctrl -h localhost -p 8883 --cafile /mosquitto/certs/ca.crt
+          -u "$$MQTT_ADMIN_USER" -P "$$MQTT_ADMIN_PASSWORD"
+          dynsec getDefaultACLAccess >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+      start_interval: 2s
+
+  server:
+    <<: *node-service
+    command: ["node", "server/index.mjs"]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://app_api:${DB_APP_PASSWORD}@db:5432/postgres
+      MQTT_URL: mqtts://mosquitto:8883
+      MQTT_CA_FILE: /repo/deploy/dev/certs/ca.crt
+      MQTT_ADMIN_USER: ${MQTT_ADMIN_USER}
+      MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD}
+      MQTT_SERVER_USER: ${MQTT_SERVER_USER}
+      MQTT_SERVER_PASSWORD: ${MQTT_SERVER_PASSWORD}
+      SECRETS_ENC_KEY: ${SECRETS_ENC_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      # 200 только когда доступны и база, и брокер (контракт M0 §6).
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+
+  device-sim:
+    <<: *node-service
+    command: ["node", "tools/device-sim/index.mjs"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MQTT_URL: mqtts://mosquitto:8883
+      MQTT_CA_FILE: /repo/deploy/dev/certs/ca.crt
+      SIM_DEVICES_FILE: /repo/deploy/dev/devices.json
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+volumes:
+  db-data:
+  db-config:
+  mosquitto-data:
+  caddy-data:
+  caddy-config:

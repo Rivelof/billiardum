@@ -1,0 +1,1100 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Бильярдум: образец стиля</title>
+<meta name="description" content="Токены, шрифты, кнопки, статусы, таймер игры и план зала из пакета @billiardum/shared.">
+<link rel="stylesheet" href="./fonts.css">
+<link rel="stylesheet" href="./tokens.css">
+<script>
+  // Тема до первой отрисовки, чтобы не мигала. Выбор живёт только в этом браузере.
+  try {
+    const saved = localStorage.getItem('bl-theme');
+    if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved;
+  } catch { /* хранилище недоступно — тема по системе */ }
+</script>
+<style>
+  @property --lit {
+    syntax: '<number>';
+    inherits: true;
+    initial-value: 0;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-text);
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
+    font-weight: 400;
+    overflow-wrap: break-word;
+  }
+
+  h1, h2, h3, p, ul, ol, dl, dd, figure, fieldset { margin: 0; }
+  ul, ol { padding: 0; }
+  button, input { font: inherit; color: inherit; }
+
+  :focus-visible {
+    outline: 2px solid var(--cloth);
+    outline-offset: 2px;
+  }
+
+  .visually-hidden {
+    position: absolute !important;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0; border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .wrap {
+    max-width: calc(var(--layout-max) + 2 * var(--gutter));
+    margin-inline: auto;
+    padding-inline: max(var(--gutter), env(safe-area-inset-left)) max(var(--gutter), env(safe-area-inset-right));
+  }
+
+  .display {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: var(--lh-heading);
+    letter-spacing: 0;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  span.mono { white-space: nowrap; }
+
+  .muted { color: var(--ink-2); }
+
+  a { color: var(--cloth); text-underline-offset: 0.18em; }
+  a:hover { color: var(--cloth-deep); }
+
+  /* ---------- шапка ---------- */
+
+  .top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px 24px;
+    padding-block: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .brand__name { font-size: var(--fs-20); }
+  .brand__pkg { font-size: var(--fs-13); color: var(--ink-2); }
+
+  .theme-switch {
+    display: inline-flex;
+    padding: 3px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    background: var(--card);
+  }
+  .theme-switch input {
+    position: absolute;
+    opacity: 0;
+    width: 1px; height: 1px;
+  }
+  .theme-switch label {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 4px 14px;
+    border-radius: var(--radius-pill);
+    font-size: var(--fs-15);
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: background-color var(--motion-fast), color var(--motion-fast);
+  }
+  .theme-switch input:checked + label {
+    background: var(--cloth-tint);
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .theme-switch input:focus-visible + label {
+    outline: 2px solid var(--cloth);
+    outline-offset: 1px;
+  }
+
+  /* ---------- первый экран: свет над столом ---------- */
+
+  .intro {
+    padding-block: 32px 24px;
+    max-width: 44rem;
+  }
+  .intro h1 { font-size: var(--fs-44); }
+  .intro p { margin-top: 16px; color: var(--ink-2); max-width: 38rem; }
+
+  .stage {
+    display: grid;
+    gap: 24px;
+    padding-bottom: 56px;
+  }
+
+  /* Зал всегда тёмный: только токены --hall-* и --lamp */
+  .hall {
+    --hall-w: 16860;
+    --hall-h: 12980;
+    background: var(--hall-bg);
+    color: var(--hall-text);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--hall-line);
+    padding: 14px 8px 12px;
+  }
+
+  .hall__head, .hall__foot { padding-inline: 8px; }
+
+  .hall__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px 20px;
+    padding-bottom: 12px;
+  }
+  .hall__free { font-size: var(--fs-24); }
+
+  .legend {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    font-size: var(--fs-13);
+    color: var(--hall-text-2);
+  }
+  .legend li { display: inline-flex; align-items: center; gap: 8px; }
+  .legend b { color: var(--hall-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .legend__mark {
+    width: 10px; height: 16px;
+    border-radius: 2px;
+    background: var(--hall-cloth-off);
+    flex: none;
+  }
+  .legend__mark--play {
+    background: linear-gradient(var(--lamp), var(--lamp)) center / 2px 62% no-repeat, var(--hall-cloth-on);
+    box-shadow: 0 0 10px 1px color-mix(in oklab, var(--lamp) 55%, transparent);
+  }
+  .legend__mark--reserved { box-shadow: 0 0 0 1.5px var(--lamp); }
+
+  .hall__floor { padding-bottom: 52px; }
+
+  .plan {
+    position: relative;
+    aspect-ratio: 16860 / 12980;
+    /* Пол разлинован по 1 м: план в реальном масштабе */
+    background-image:
+      linear-gradient(to right, color-mix(in oklab, var(--hall-line) 70%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklab, var(--hall-line) 70%, transparent) 1px, transparent 1px);
+    background-size: calc(100% * 1000 / 16860) calc(100% * 1000 / 12980);
+    background-position: calc(100% * 560 / 16860) calc(100% * 280 / 12980);
+  }
+
+  .tbl {
+    --lit: 0;
+    position: absolute;
+    left: calc((var(--x) - var(--w) / 2) / var(--hall-w) * 100%);
+    top: calc(var(--y) / var(--hall-h) * 100%);
+    width: calc(var(--w) / var(--hall-w) * 100%);
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    transition: --lit var(--lamp-duration) var(--lamp-easing);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tbl[data-state="play"] { --lit: 1; }
+  .tbl:focus-visible { outline: none; }
+  .tbl:focus-visible .tbl__art {
+    outline: 2px solid var(--hall-text);
+    outline-offset: 5px;
+  }
+
+  .tbl__glow {
+    position: absolute;
+    z-index: 0;
+    inset: -42% -75%;
+    border-radius: 50%;
+    background: radial-gradient(closest-side,
+      color-mix(in oklab, var(--lamp) 34%, transparent),
+      color-mix(in oklab, var(--lamp) 12%, transparent) 62%,
+      transparent);
+    opacity: var(--lit);
+    pointer-events: none;
+  }
+
+  .tbl__art {
+    position: relative;
+    z-index: 1;
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 3px;
+    overflow: visible;
+  }
+  .tbl[data-state="reserved"] .tbl__art {
+    outline: 2px solid var(--lamp);
+    outline-offset: 3px;
+  }
+  .tbl[data-state="reserved"]:focus-visible .tbl__art {
+    outline-color: var(--hall-text);
+    outline-offset: 5px;
+    box-shadow: 0 0 0 3px var(--lamp);
+  }
+
+  .tbl__cap {
+    position: absolute;
+    z-index: 2;
+    top: calc(100% + 8px);
+    left: 50%;
+    width: calc(3860 / var(--w) * 100%);
+    transform: translateX(-50%);
+    text-align: center;
+    font-size: var(--fs-13);
+    line-height: 1.25;
+    color: var(--hall-text-2);
+  }
+  .tbl__num {
+    display: block;
+    white-space: nowrap;
+    color: var(--hall-text);
+    font-weight: 600;
+  }
+  .tbl[data-state="play"] .tbl__status,
+  .tbl[data-state="reserved"] .tbl__status { color: var(--lamp); }
+
+  .hall__foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    font-size: var(--fs-13);
+    color: var(--hall-text-2);
+  }
+  .scale {
+    flex: 1 1 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .scale__bar {
+    width: calc(100% * 2000 / 16860);
+    min-width: 24px;
+    height: 6px;
+    border: 1px solid var(--hall-text-2);
+    border-top: 0;
+  }
+
+  .stage__note { font-size: var(--fs-15); color: var(--ink-2); }
+
+  .aside { display: grid; gap: 24px; align-content: start; }
+  .aside h2 { font-size: var(--fs-20); font-family: var(--font-text); font-weight: 600; line-height: 1.3; }
+  .aside p { font-size: var(--fs-15); color: var(--ink-2); margin-top: 6px; }
+
+  .read-list { list-style: none; display: grid; gap: 10px; margin-top: 10px; font-size: var(--fs-15); }
+  .read-list li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start; }
+  .read-list .legend__mark { margin-top: 3px; }
+
+  .hallrow-sample {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: var(--hall-bg);
+    border-radius: var(--radius-sm);
+    color: var(--hall-text);
+    font-size: var(--fs-15);
+    width: fit-content;
+    max-width: 100%;
+  }
+  .hallrow { display: flex; align-items: flex-end; gap: 4px; }
+  .hallrow span {
+    --lit: 0;
+    width: 9px;
+    height: 19px;
+    border-radius: 2px;
+    background: color-mix(in oklab, var(--lamp) calc(var(--lit) * 100%), var(--hall-cloth-off));
+    box-shadow: 0 0 calc(var(--lit) * 10px) color-mix(in oklab, var(--lamp) calc(var(--lit) * 65%), transparent);
+    transition: --lit var(--lamp-duration) var(--lamp-easing);
+  }
+  .hallrow span[data-type="pool"] { height: 14px; }
+  .hallrow span[data-state="play"] { --lit: 1; }
+  .hallrow span[data-state="reserved"] { box-shadow: inset 0 0 0 1.5px var(--lamp); }
+
+  /* ---------- разделы ---------- */
+
+  .section {
+    padding-block: 48px;
+    border-top: 1px solid var(--line);
+  }
+  .section > h2 { font-size: var(--fs-32); }
+  .section__lead { margin-top: 12px; color: var(--ink-2); max-width: 40rem; }
+  .section__body { margin-top: 28px; }
+
+  /* Палитра: каждая панель держит свою тему через data-theme */
+  .themes { display: grid; gap: 16px; }
+  .theme-panel {
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 20px 16px;
+  }
+  .theme-panel h3 { font-size: var(--fs-20); font-weight: 600; line-height: 1.3; }
+  .swatches { list-style: none; display: grid; gap: 2px; margin-top: 14px; }
+  .swatch {
+    display: grid;
+    grid-template-columns: 36px 1fr;
+    gap: 2px 12px;
+    align-items: center;
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+  }
+  .swatch:first-child { border-top: 0; }
+  .swatch__chip {
+    grid-row: span 2;
+    width: 36px; height: 36px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+  }
+  .swatch__name { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: var(--fs-15); }
+  .swatch__name .mono { color: var(--ink); }
+  .swatch__hex { color: var(--ink-2); }
+  .swatch__role { font-size: var(--fs-13); color: var(--ink-2); line-height: 1.4; }
+  .swatch__aa { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
+  .aa {
+    display: inline-flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 1px 8px;
+    border-radius: var(--radius-pill);
+    background: var(--card-2);
+    font-size: var(--fs-13);
+    color: var(--ink);
+  }
+  .aa .mono { font-size: var(--fs-13); }
+  .aa[data-pass="false"] { background: var(--card); box-shadow: inset 0 0 0 1.5px var(--ball-red); font-weight: 600; }
+
+  .hall-swatches {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+    padding: 16px;
+    background: var(--hall-bg);
+    border-radius: var(--radius-sm);
+    color: var(--hall-text);
+    font-size: var(--fs-13);
+  }
+  .hall-swatches li { display: flex; align-items: center; gap: 10px; }
+  .hall-swatches .swatch__chip { width: 28px; height: 28px; border-color: var(--hall-line); grid-row: auto; flex: none; }
+  .hall-swatches .mono { display: block; }
+  .hall-swatches .swatch__hex { color: var(--hall-text-2); }
+
+  /* Шрифты */
+  .faces { display: grid; gap: 0; }
+  .face {
+    display: grid;
+    gap: 6px 32px;
+    padding-block: 20px;
+    border-top: 1px solid var(--line);
+  }
+  .face:first-child { border-top: 0; padding-top: 0; }
+  .face__meta { font-size: var(--fs-15); color: var(--ink-2); }
+  .face__meta b { display: block; color: var(--ink); font-weight: 600; font-size: var(--fs-17); }
+  .face__sample-dela { font-family: var(--font-display); font-size: var(--fs-44); line-height: var(--lh-heading); }
+  .price { font-family: var(--font-display); font-size: var(--fs-64); line-height: 1; margin-top: 8px; }
+  .price .rub { font-family: var(--font-text); font-weight: 700; }
+  .weights { list-style: none; display: grid; gap: 2px; font-size: var(--fs-20); line-height: 1.4; }
+  .weights span { display: inline-block; width: 3.2em; font-family: var(--font-mono); font-size: var(--fs-13); color: var(--ink-2); }
+  .monos { display: grid; gap: 6px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .monos .big { font-size: var(--fs-32); font-weight: 700; line-height: 1.2; }
+  .monos .row { font-size: var(--fs-17); font-weight: 500; }
+
+  .scale-list { list-style: none; display: grid; margin-top: 32px; }
+  .scale-list li {
+    display: grid;
+    grid-template-columns: 3.25rem 1fr;
+    align-items: baseline;
+    gap: 12px;
+    padding-block: 10px;
+    border-top: 1px solid var(--line);
+    min-width: 0;
+  }
+  .scale-list .px { font-family: var(--font-mono); font-size: var(--fs-13); color: var(--ink-2); }
+  .scale-list .s { min-width: 0; line-height: 1.2; }
+
+  /* Кнопки */
+  .buttons { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 52px;
+    padding: 12px 22px;
+    border: 0;
+    border-radius: var(--radius-md);
+    font-size: var(--fs-17);
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
+    cursor: pointer;
+    transition: background-color var(--motion-fast), box-shadow var(--motion-fast);
+  }
+  .btn svg { flex: none; width: 22px; height: 22px; }
+  .btn--primary { background: var(--cloth); color: var(--on-cloth); }
+  .btn--primary:hover, .btn--primary:active { background: var(--cloth-deep); }
+  .btn--secondary { background: var(--cloth-tint); color: var(--ink); }
+  .btn--secondary:hover { box-shadow: inset 0 0 0 1.5px var(--cloth); }
+  .btn--quiet { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--line); }
+  .btn--quiet:hover { background: var(--card-2); }
+  .btn:focus-visible { outline: 2px solid var(--cloth); outline-offset: 3px; }
+
+  .fields { display: grid; gap: 16px; margin-top: 28px; max-width: 44rem; }
+  .field { display: grid; gap: 6px; align-content: start; }
+  .field--on-card2 { background: var(--card-2); border-radius: var(--radius-md); padding: 14px; }
+  .field__label { font-size: var(--fs-15); font-weight: 600; }
+  .field__input {
+    min-height: 48px;
+    padding: 10px 14px;
+    border: 1.5px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    color: var(--ink);
+    font-size: var(--fs-17);
+    width: 100%;
+  }
+  .field__input.mono { font-family: var(--font-mono); font-weight: 500; letter-spacing: 0.08em; }
+  .field__input:hover { border-color: var(--ink-3); }
+  .field__input:focus-visible { outline: 2px solid var(--cloth); outline-offset: 1px; border-color: var(--cloth); }
+  .field__hint { font-size: var(--fs-13); color: var(--ink-3); }
+
+  .badges { list-style: none; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 4px 14px 4px 10px;
+    border-radius: var(--radius-pill);
+    background: var(--card);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font-size: var(--fs-15);
+    font-weight: 500;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .badge__dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .badge--play { background: var(--lamp-tint); box-shadow: inset 0 0 0 1px var(--lamp); }
+  .badge--play .badge__dot { background: var(--lamp); box-shadow: 0 0 0 3px color-mix(in oklab, var(--lamp) 30%, transparent); }
+  .badge--free .badge__dot { background: var(--free); }
+  .badge--reserved .badge__dot { box-shadow: inset 0 0 0 2px var(--lamp); }
+  .badge--alert .badge__dot { background: var(--ball-red); }
+  .badge--live { box-shadow: inset 0 0 0 1.5px var(--ball-red); font-weight: 600; }
+  .badge--live .badge__dot { background: var(--ball-red); }
+
+  /* Таймер игры */
+  .timers { display: grid; gap: 16px; }
+  .timer {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 20px;
+    display: grid;
+    gap: 4px;
+    align-content: start;
+  }
+  .timer__label { font-size: var(--fs-15); font-weight: 600; }
+  .timer__value {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: var(--fs-44);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .timer__note { font-size: var(--fs-15); color: var(--ink-2); }
+  .timer--warn { background: var(--lamp); border-color: var(--lamp); color: var(--on-lamp); }
+  .timer--warn .timer__note { color: var(--on-lamp); }
+  .timer--grace { border: 2px solid var(--ball-red); }
+  .timer--grace .timer__value, .timer--grace .timer__label { color: var(--ball-red); }
+
+  /* Форматы */
+  .formats {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+  .formats > div {
+    display: grid;
+    gap: 2px 24px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--line);
+  }
+  .formats > div:first-child { border-top: 0; }
+  .formats code { font-family: var(--font-mono); font-size: var(--fs-13); color: var(--ink-2); overflow-wrap: anywhere; }
+  .formats dd { font-size: var(--fs-17); font-variant-numeric: tabular-nums; }
+
+  .foot { padding-block: 32px 48px; border-top: 1px solid var(--line); font-size: var(--fs-13); color: var(--ink-2); }
+  .foot p + p { margin-top: 6px; }
+
+  @media (min-width: 640px) {
+    .timers { grid-template-columns: repeat(3, 1fr); }
+    .fields { grid-template-columns: 1fr 1fr; }
+    .scale-list li { grid-template-columns: 4rem 1fr; }
+    .formats > div { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); align-items: baseline; }
+  }
+
+  @media (min-width: 768px) {
+    :root { --gutter: 32px; }
+    .intro { padding-block: 56px 32px; }
+    .intro h1 { font-size: var(--fs-64); }
+    .hall { padding: 20px 16px 16px; }
+    .hall__floor { padding-bottom: 56px; }
+    .themes { grid-template-columns: 1fr 1fr; }
+    .theme-panel { padding: 24px; }
+    .face { grid-template-columns: 14rem 1fr; }
+    .timer__value { font-size: var(--fs-64); }
+    .section { padding-block: 64px; }
+    .section > h2 { font-size: var(--fs-44); }
+  }
+
+  @media (min-width: 1024px) {
+    .stage { grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 32px; }
+    .stage__plan { grid-column: span 8; }
+    .aside { grid-column: span 4; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tbl, .hallrow span { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <radialGradient id="lamp-spot">
+      <stop offset="0" style="stop-color: color-mix(in oklab, var(--lamp) 40%, var(--hall-text)); stop-opacity: 0.34"/>
+      <stop offset="0.6" style="stop-color: color-mix(in oklab, var(--lamp) 40%, var(--hall-text)); stop-opacity: 0.12"/>
+      <stop offset="1" style="stop-color: color-mix(in oklab, var(--lamp) 40%, var(--hall-text)); stop-opacity: 0"/>
+    </radialGradient>
+
+    <!-- Русская пирамида 12 футов: поле 3550 × 1775 мм, борт 170 мм. Единица viewBox — 1 мм -->
+    <symbol id="t-pyramid" viewBox="0 0 2115 3890">
+      <rect width="2115" height="3890" rx="120" style="fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 24%), var(--hall-rail))"/>
+      <rect x="170" y="170" width="1775" height="3550" style="fill: color-mix(in oklab, var(--hall-cloth-on) calc(var(--lit) * 100%), var(--hall-cloth-off))"/>
+      <ellipse cx="1057.5" cy="1945" rx="980" ry="1850" fill="url(#lamp-spot)" style="opacity: var(--lit)"/>
+      <rect x="195" y="195" width="1725" height="3500" style="fill: none; stroke: var(--hall-bg); stroke-opacity: 0.35; stroke-width: 50"/>
+      <g style="fill: var(--hall-bg)">
+        <circle cx="185" cy="185" r="70"/><circle cx="1930" cy="185" r="70"/>
+        <circle cx="160" cy="1945" r="62"/><circle cx="1955" cy="1945" r="62"/>
+        <circle cx="185" cy="3705" r="70"/><circle cx="1930" cy="3705" r="70"/>
+      </g>
+      <g style="fill: var(--hall-text-2); opacity: 0.6">
+        <circle cx="85" cy="614" r="20"/><circle cx="85" cy="1058" r="20"/><circle cx="85" cy="1501" r="20"/>
+        <circle cx="85" cy="2389" r="20"/><circle cx="85" cy="2832" r="20"/><circle cx="85" cy="3276" r="20"/>
+        <circle cx="2030" cy="614" r="20"/><circle cx="2030" cy="1058" r="20"/><circle cx="2030" cy="1501" r="20"/>
+        <circle cx="2030" cy="2389" r="20"/><circle cx="2030" cy="2832" r="20"/><circle cx="2030" cy="3276" r="20"/>
+        <circle cx="614" cy="85" r="20"/><circle cx="1058" cy="85" r="20"/><circle cx="1501" cy="85" r="20"/>
+        <circle cx="614" cy="3805" r="20"/><circle cx="1058" cy="3805" r="20"/><circle cx="1501" cy="3805" r="20"/>
+      </g>
+      <rect x="932" y="815" width="250" height="2260" rx="125" style="fill: var(--hall-line); stroke: var(--hall-bg); stroke-width: 24"/>
+      <g style="fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 100%), var(--hall-bg))">
+        <circle cx="1057.5" cy="1095" r="82"/><circle cx="1057.5" cy="1945" r="82"/><circle cx="1057.5" cy="2795" r="82"/>
+      </g>
+    </symbol>
+
+    <!-- Пул 9 футов: поле 2540 × 1270 мм, борт 150 мм -->
+    <symbol id="t-pool" viewBox="0 0 1570 2840">
+      <rect width="1570" height="2840" rx="110" style="fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 24%), var(--hall-rail))"/>
+      <rect x="150" y="150" width="1270" height="2540" style="fill: color-mix(in oklab, var(--hall-cloth-on) calc(var(--lit) * 100%), var(--hall-cloth-off))"/>
+      <ellipse cx="785" cy="1420" rx="720" ry="1320" fill="url(#lamp-spot)" style="opacity: var(--lit)"/>
+      <rect x="175" y="175" width="1220" height="2490" style="fill: none; stroke: var(--hall-bg); stroke-opacity: 0.35; stroke-width: 50"/>
+      <g style="fill: var(--hall-bg)">
+        <circle cx="170" cy="170" r="85"/><circle cx="1400" cy="170" r="85"/>
+        <circle cx="140" cy="1420" r="75"/><circle cx="1430" cy="1420" r="75"/>
+        <circle cx="170" cy="2670" r="85"/><circle cx="1400" cy="2670" r="85"/>
+      </g>
+      <g style="fill: var(--hall-text-2); opacity: 0.6">
+        <circle cx="75" cy="467" r="18"/><circle cx="75" cy="785" r="18"/><circle cx="75" cy="1102" r="18"/>
+        <circle cx="75" cy="1738" r="18"/><circle cx="75" cy="2055" r="18"/><circle cx="75" cy="2373" r="18"/>
+        <circle cx="1495" cy="467" r="18"/><circle cx="1495" cy="785" r="18"/><circle cx="1495" cy="1102" r="18"/>
+        <circle cx="1495" cy="1738" r="18"/><circle cx="1495" cy="2055" r="18"/><circle cx="1495" cy="2373" r="18"/>
+        <circle cx="467" cy="75" r="18"/><circle cx="785" cy="75" r="18"/><circle cx="1102" cy="75" r="18"/>
+        <circle cx="467" cy="2765" r="18"/><circle cx="785" cy="2765" r="18"/><circle cx="1102" cy="2765" r="18"/>
+      </g>
+      <rect x="670" y="640" width="230" height="1560" rx="115" style="fill: var(--hall-line); stroke: var(--hall-bg); stroke-width: 24"/>
+      <g style="fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 100%), var(--hall-bg))">
+        <circle cx="785" cy="860" r="76"/><circle cx="785" cy="1420" r="76"/><circle cx="785" cy="1980" r="76"/>
+      </g>
+    </symbol>
+
+    <!-- Значки: линейные, толщина 1,75 -->
+    <symbol id="i-lamp" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M5 14c0-3.9 3.1-7 7-7s7 3.1 7 7z"/><path d="M12 17.5V20M7.6 16.8l-1.3 2.1M16.4 16.8l1.3 2.1"/></g></symbol>
+    <symbol id="i-plus-hour" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-8-8"/><path d="M12 8v4l2.5 2.5"/><path d="M19 2.5v5M16.5 5h5"/></g></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><rect x="9" y="9" width="6" height="6" rx="1"/></g></symbol>
+  </defs>
+</svg>
+
+<header class="wrap">
+  <div class="top">
+    <div class="brand">
+      <span class="display brand__name">Бильярдум</span>
+      <span class="brand__pkg">Образец стиля, пакет <span class="mono">@billiardum/shared</span></span>
+    </div>
+    <fieldset class="theme-switch" id="theme-switch">
+      <legend class="visually-hidden">Тема оформления</legend>
+      <input type="radio" name="theme" id="theme-auto" value="auto" checked><label for="theme-auto">Как в системе</label>
+      <input type="radio" name="theme" id="theme-light" value="light"><label for="theme-light">Светлая</label>
+      <input type="radio" name="theme" id="theme-dark" value="dark"><label for="theme-dark">Тёмная</label>
+    </fieldset>
+  </div>
+</header>
+
+<main>
+  <div class="wrap">
+    <section class="intro" aria-labelledby="intro-title">
+      <h1 class="display" id="intro-title">Свет над столом</h1>
+      <p>Горит свет — идёт игра. Свободный стол тёмный, бронь обведена янтарной рамкой. Так стол выглядит везде: на сайте, в приложении гостя, в программе клуба и на ТВ-экранах.</p>
+    </section>
+
+    <div class="stage">
+      <div class="stage__plan">
+        <div class="hall">
+          <div class="hall__head">
+            <p class="display hall__free" id="hall-free">Свободно 3 стола</p>
+            <ul class="legend" aria-label="Состояние столов">
+              <li><span class="legend__mark legend__mark--play" aria-hidden="true"></span>Идёт игра <b data-count="play">4</b></li>
+              <li><span class="legend__mark" aria-hidden="true"></span>Свободно <b data-count="free">3</b></li>
+              <li><span class="legend__mark legend__mark--reserved" aria-hidden="true"></span>Бронь <b data-count="reserved">1</b></li>
+            </ul>
+          </div>
+
+          <div class="hall__floor">
+            <div class="plan" role="group" aria-label="План зала, 8 столов" id="plan">
+              <button class="tbl" type="button" data-n="1" data-type="pyramid" data-state="play" style="--x: 2557.5; --y: 1000; --w: 2115" aria-label="Стол 1, идёт игра" aria-describedby="d-pyramid">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 2115 3890" aria-hidden="true" focusable="false"><use href="#t-pyramid"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 1</span><span class="tbl__status">Идёт игра</span></span>
+              </button>
+              <button class="tbl" type="button" data-n="2" data-type="pyramid" data-state="free" style="--x: 6472.5; --y: 1000; --w: 2115" aria-label="Стол 2, свободен" aria-describedby="d-pyramid">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 2115 3890" aria-hidden="true" focusable="false"><use href="#t-pyramid"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 2</span><span class="tbl__status">Свободен</span></span>
+              </button>
+              <button class="tbl" type="button" data-n="3" data-type="pyramid" data-state="free" style="--x: 10387.5; --y: 1000; --w: 2115" aria-label="Стол 3, свободен" aria-describedby="d-pyramid">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 2115 3890" aria-hidden="true" focusable="false"><use href="#t-pyramid"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 3</span><span class="tbl__status">Свободен</span></span>
+              </button>
+              <button class="tbl" type="button" data-n="4" data-type="pyramid" data-state="play" style="--x: 14302.5; --y: 1000; --w: 2115" aria-label="Стол 4, идёт игра" aria-describedby="d-pyramid">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 2115 3890" aria-hidden="true" focusable="false"><use href="#t-pyramid"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 4</span><span class="tbl__status">Идёт игра</span></span>
+              </button>
+              <button class="tbl" type="button" data-n="5" data-type="pyramid" data-state="play" style="--x: 2557.5; --y: 8290; --w: 2115" aria-label="Стол 5, идёт игра" aria-describedby="d-pyramid">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 2115 3890" aria-hidden="true" focusable="false"><use href="#t-pyramid"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 5</span><span class="tbl__status">Идёт игра</span></span>
+              </button>
+              <button class="tbl" type="button" data-n="6" data-type="pool" data-state="reserved" data-reserved="Бронь на 22:00" style="--x: 6472.5; --y: 9340; --w: 1570" aria-label="Стол 6, бронь на 22:00" aria-describedby="d-pool">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 1570 2840" aria-hidden="true" focusable="false"><use href="#t-pool"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 6</span><span class="tbl__status">Бронь на 22:00</span></span>
+              </button>
+              <button class="tbl" type="button" data-n="7" data-type="pool" data-state="play" style="--x: 10387.5; --y: 9340; --w: 1570" aria-label="Стол 7, идёт игра" aria-describedby="d-pool">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 1570 2840" aria-hidden="true" focusable="false"><use href="#t-pool"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 7</span><span class="tbl__status">Идёт игра</span></span>
+              </button>
+              <button class="tbl" type="button" data-n="8" data-type="pool" data-state="free" style="--x: 14302.5; --y: 9340; --w: 1570" aria-label="Стол 8, свободен" aria-describedby="d-pool">
+                <span class="tbl__glow" aria-hidden="true"></span>
+                <svg class="tbl__art" viewBox="0 0 1570 2840" aria-hidden="true" focusable="false"><use href="#t-pool"/></svg>
+                <span class="tbl__cap" aria-hidden="true"><span class="tbl__num">Стол 8</span><span class="tbl__status">Свободен</span></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="hall__foot">
+            <div class="scale" aria-hidden="true"><span class="scale__bar"></span><span>2 м</span></div>
+          </div>
+          <span id="d-pyramid" hidden>Русская пирамида, 12 футов</span>
+          <span id="d-pool" hidden>Пул, 9 футов</span>
+          <p class="visually-hidden" aria-live="polite" id="hall-live"></p>
+        </div>
+        <p class="stage__note" style="margin-top: 12px">Нажмите на стол: свет включится или погаснет. Состояния столов здесь для примера.</p>
+      </div>
+
+      <aside class="aside" aria-label="Как читать план зала">
+        <div>
+          <h2>Как читать план</h2>
+          <ul class="read-list">
+            <li><span class="legend__mark legend__mark--play" aria-hidden="true"></span><span>Лампа горит, сукно светлее, на полу тёплое пятно — идёт игра.</span></li>
+            <li><span class="legend__mark" aria-hidden="true"></span><span>Тёмный стол — свободен.</span></li>
+            <li><span class="legend__mark legend__mark--reserved" aria-hidden="true"></span><span>Янтарная рамка — бронь.</span></li>
+          </ul>
+          <p>Масштаб настоящий: поле пирамиды 3550 × 1775 мм, пула 2540 × 1270 мм, поэтому пул короче. Под каждым столом подпись словами, экранный диктор читает «Стол 4, идёт игра».</p>
+        </div>
+        <div>
+          <h2>Строка зала</h2>
+          <p>Заменяет фото клуба в каталоге: прямоугольник на каждый стол, горящие заняты.</p>
+          <div class="hallrow-sample">
+            <div class="hallrow" id="hallrow" role="img" aria-label="Занято 4 стола из 8">
+              <span data-n="1" data-state="play"></span><span data-n="2" data-state="free"></span><span data-n="3" data-state="free"></span><span data-n="4" data-state="play"></span><span data-n="5" data-state="play"></span><span data-n="6" data-type="pool" data-state="reserved"></span><span data-n="7" data-type="pool" data-state="play"></span><span data-n="8" data-type="pool" data-state="free"></span>
+            </div>
+            <span id="hallrow-free">Свободно 3</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <section class="section wrap" aria-labelledby="color-title">
+    <h2 class="display" id="color-title">Цвет</h2>
+    <p class="section__lead">Синее сукно — основной цвет. Янтарь лампы — «занято, идёт игра, выбрано». Красный шар — только тревоги и «в эфире». Рядом с текстовыми цветами — наименьший контраст на фонах <span class="mono">--paper</span>, <span class="mono">--card</span>, <span class="mono">--card-2</span>.</p>
+
+    <div class="section__body themes">
+      <div class="theme-panel" data-theme="light">
+        <h3>Светлая тема</h3>
+        <ul class="swatches" data-swatches></ul>
+      </div>
+      <div class="theme-panel" data-theme="dark">
+        <h3>Тёмная тема</h3>
+        <ul class="swatches" data-swatches></ul>
+      </div>
+    </div>
+
+    <ul class="hall-swatches" aria-label="Зал, одинаков в обеих темах">
+      <li><span class="swatch__chip" style="background: var(--hall-bg)"></span><span><span class="mono">--hall-bg</span><span class="mono swatch__hex">#0A0E16</span></span></li>
+      <li><span class="swatch__chip" style="background: var(--hall-line)"></span><span><span class="mono">--hall-line</span><span class="mono swatch__hex">#1A2232</span></span></li>
+      <li><span class="swatch__chip" style="background: var(--hall-cloth-off)"></span><span><span class="mono">--hall-cloth-off</span><span class="mono swatch__hex">#1B3F7A</span></span></li>
+      <li><span class="swatch__chip" style="background: var(--hall-cloth-on)"></span><span><span class="mono">--hall-cloth-on</span><span class="mono swatch__hex">#2F6FD6</span></span></li>
+      <li><span class="swatch__chip" style="background: var(--hall-rail)"></span><span><span class="mono">--hall-rail</span><span class="mono swatch__hex">#3B2A21</span></span></li>
+      <li><span class="swatch__chip" style="background: var(--hall-text)"></span><span><span class="mono">--hall-text</span><span class="mono swatch__hex">#DDE4EF</span></span></li>
+      <li><span class="swatch__chip" style="background: var(--hall-text-2)"></span><span><span class="mono">--hall-text-2</span><span class="mono swatch__hex">#8C97AB</span></span></li>
+    </ul>
+  </section>
+
+  <section class="section wrap" aria-labelledby="type-title">
+    <h2 class="display" id="type-title">Шрифты</h2>
+    <p class="section__lead">Три семейства с кириллицей, файлы лежат рядом, без внешних серверов.</p>
+
+    <div class="section__body faces">
+      <div class="face">
+        <p class="face__meta"><b>Dela Gothic One</b>Заголовки и крупные числа: цена, рейтинг, счёт. Коротко.</p>
+        <div>
+          <p class="face__sample-dela">Турнир по пирамиде</p>
+          <p class="price">1&nbsp;490&nbsp;<span class="rub">₽</span></p>
+        </div>
+      </div>
+      <div class="face">
+        <p class="face__meta"><b>Geologica 300–700</b>Текст и интерфейс.</p>
+        <ul class="weights">
+          <li style="font-weight: 300"><span>300</span>Партия до 8 шаров</li>
+          <li style="font-weight: 400"><span>400</span>Партия до 8 шаров</li>
+          <li style="font-weight: 500"><span>500</span>Партия до 8 шаров</li>
+          <li style="font-weight: 600"><span>600</span>Партия до 8 шаров</li>
+          <li style="font-weight: 700"><span>700</span>Партия до 8 шаров</li>
+        </ul>
+      </div>
+      <div class="face">
+        <p class="face__meta"><b>JetBrains Mono 500 и 700</b>Таймеры игры, коды брони, номера чеков.</p>
+        <div class="monos">
+          <p class="big">1:05:00</p>
+          <p class="row">Чек №&nbsp;000142, итог 1&nbsp;490,00&nbsp;₽</p>
+        </div>
+      </div>
+    </div>
+
+    <ul class="scale-list" aria-label="Шкала размеров">
+      <li><span class="px">64</span><span class="s display" style="font-size: var(--fs-64)">800&nbsp;₽</span></li>
+      <li><span class="px">44</span><span class="s display" style="font-size: var(--fs-44)">Стол 4</span></li>
+      <li><span class="px">32</span><span class="s display" style="font-size: var(--fs-32)">Турниры</span></li>
+      <li><span class="px">24</span><span class="s" style="font-size: var(--fs-24); font-weight: 600">Свободно 3 стола</span></li>
+      <li><span class="px">20</span><span class="s" style="font-size: var(--fs-20); font-weight: 600">Пирамида 12 футов</span></li>
+      <li><span class="px">17</span><span class="s" style="font-size: var(--fs-17); line-height: var(--lh-body)">Основной текст. Кий и мел у стойки, партия до 8 шаров.</span></li>
+      <li><span class="px">15</span><span class="s" style="font-size: var(--fs-15); line-height: 1.45">Стол занят до 21:40. Выберите другой или встаньте в очередь.</span></li>
+      <li><span class="px">13</span><span class="s muted" style="font-size: var(--fs-13); line-height: 1.4">Подпись: цена за час по тарифу клуба</span></li>
+    </ul>
+  </section>
+
+  <section class="section wrap" aria-labelledby="ui-title">
+    <h2 class="display" id="ui-title">Кнопки, поле, статусы</h2>
+    <p class="section__lead">Кнопка говорит, что произойдёт. У поля видимая подпись и граница <span class="mono">--line-strong</span>. Статус всегда со словом, цвет только помогает.</p>
+
+    <div class="section__body">
+      <div class="buttons">
+        <button class="btn btn--primary" type="button"><svg aria-hidden="true"><use href="#i-lamp"/></svg>Оплатить и включить свет</button>
+        <button class="btn btn--secondary" type="button"><svg aria-hidden="true"><use href="#i-plus-hour"/></svg>Продлить на час</button>
+        <button class="btn btn--quiet" type="button"><svg aria-hidden="true"><use href="#i-stop"/></svg>Закончить игру</button>
+      </div>
+
+      <div class="fields">
+        <div class="field">
+          <label class="field__label" for="sg-phone">Телефон для чека</label>
+          <input class="field__input" id="sg-phone" type="tel" inputmode="tel" autocomplete="tel" aria-describedby="sg-phone-hint">
+          <p class="field__hint" id="sg-phone-hint">Пришлём чек по 54-ФЗ в СМС</p>
+        </div>
+        <div class="field field--on-card2">
+          <label class="field__label" for="sg-code">Код брони</label>
+          <input class="field__input mono" id="sg-code" type="text" autocomplete="off" spellcheck="false" value="7K4P">
+          <p class="field__hint">Поле на вторичной поверхности <span class="mono">--card-2</span></p>
+        </div>
+      </div>
+
+      <ul class="badges" aria-label="Статусы">
+        <li class="badge badge--play"><span class="badge__dot" aria-hidden="true"></span>Идёт игра</li>
+        <li class="badge badge--free"><span class="badge__dot" aria-hidden="true"></span>Свободно 3</li>
+        <li class="badge badge--reserved"><span class="badge__dot" aria-hidden="true"></span>Бронь на 22:00</li>
+        <li class="badge badge--alert"><span class="badge__dot" aria-hidden="true"></span>Нет связи со столом</li>
+        <li class="badge badge--live"><span class="badge__dot" aria-hidden="true"></span>В эфире</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="timer-title">
+    <h2 class="display" id="timer-title">Таймер игры</h2>
+    <p class="section__lead">Остаток времени крупно моноширинным. За 5 минут до конца таймер янтарный, после конца оплаченного времени идут 2 минуты льготы — красный.</p>
+
+    <div class="section__body timers">
+      <div class="timer" role="timer" aria-label="Осталось 1 час 5 минут">
+        <p class="timer__label">Осталось</p>
+        <p class="timer__value" data-duration="3900000">1:05:00</p>
+        <p class="timer__note">Игра до 22:35</p>
+      </div>
+      <div class="timer timer--warn" role="timer" aria-label="Осталось меньше 5 минут: 4 минуты 59 секунд">
+        <p class="timer__label">Меньше 5 минут</p>
+        <p class="timer__value" data-duration="299000">4:59</p>
+        <p class="timer__note">Продлите, чтобы игра не прервалась</p>
+      </div>
+      <div class="timer timer--grace" role="timer" aria-label="Время вышло, льгота: 1 минута 42 секунды">
+        <p class="timer__label">Время вышло, льгота</p>
+        <p class="timer__value" data-duration="102000">1:42</p>
+        <p class="timer__note">Продлите до конца льготы, иначе свет погаснет</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="fmt-title">
+    <h2 class="display" id="fmt-title">Форматы</h2>
+    <p class="section__lead">Функции из <span class="mono">@billiardum/shared/format</span>. Время и дата — по часовому поясу клуба.</p>
+
+    <div class="section__body">
+      <dl class="formats" id="formats">
+        <div><dt><code>plural(n, ['стол', 'стола', 'столов'])</code></dt><dd data-fmt="plural">1 стол, 3 стола, 11 столов, 21 стол</dd></div>
+        <div><dt><code>formatMoney(149000)</code></dt><dd data-fmt="money">1&nbsp;490&nbsp;₽</dd></div>
+        <div><dt><code>formatMoney(149050)</code></dt><dd data-fmt="money-kop">1&nbsp;490,50&nbsp;₽</dd></div>
+        <div><dt><code>formatTime('2026-10-21T16:30Z', 'Asia/Yekaterinburg')</code></dt><dd data-fmt="time">21:30</dd></div>
+        <div><dt><code>formatDate('2026-10-20T19:30Z', 'Asia/Yekaterinburg')</code></dt><dd data-fmt="date">21 октября</dd></div>
+        <div><dt><code>formatDuration(3900000)</code></dt><dd data-fmt="dur-long">1:05:00</dd></div>
+        <div><dt><code>formatDuration(300000)</code></dt><dd data-fmt="dur-short">5:00</dd></div>
+      </dl>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <div class="foot">
+    <p>Шрифты Dela Gothic One, Geologica и JetBrains Mono распространяются по лицензии SIL Open Font License 1.1, тексты лицензий в <span class="mono">shared/fonts/</span>.</p>
+    <p>Цвета, шрифты и правила — <span class="mono">docs/DESIGN.md</span>.</p>
+  </div>
+</footer>
+
+<script>
+  // Один обычный скрипт: страница работает и при открытии файла с диска.
+  // format.mjs подгружается через import(); с диска браузер его блокирует — тогда счётчики без склонения.
+  (function () {
+    const root = document.documentElement;
+
+    // ---------- тема ----------
+    const current = root.dataset.theme || 'auto';
+    const radio = document.getElementById('theme-' + current);
+    if (radio) radio.checked = true;
+    document.getElementById('theme-switch').addEventListener('change', function (e) {
+      const value = e.target.value;
+      if (value === 'auto') delete root.dataset.theme; else root.dataset.theme = value;
+      try {
+        if (value === 'auto') localStorage.removeItem('bl-theme'); else localStorage.setItem('bl-theme', value);
+      } catch { /* хранилище недоступно — выбор живёт до перезагрузки */ }
+    });
+
+    let fmt = null; // модуль @billiardum/shared/format, когда загрузится
+    const TABLES = ['стол', 'стола', 'столов'];
+    const TZ = 'Asia/Yekaterinburg';
+    const tablesWord = function (n) { return fmt ? ' ' + fmt.plural(n, TABLES) : ''; };
+
+    // ---------- план зала ----------
+    const plan = document.getElementById('plan');
+    const live = document.getElementById('hall-live');
+    const tables = Array.prototype.slice.call(plan.querySelectorAll('.tbl'));
+    const STATUS = { play: 'Идёт игра', free: 'Свободен' };
+
+    function statusText(btn) {
+      return btn.dataset.state === 'reserved' ? btn.dataset.reserved : STATUS[btn.dataset.state];
+    }
+    function freeText(n) {
+      if (n === 0) return 'Все столы заняты';
+      return fmt ? 'Свободно ' + n + tablesWord(n) : 'Свободно: ' + n;
+    }
+
+    function render() {
+      const count = { play: 0, free: 0, reserved: 0 };
+      tables.forEach(function (btn) {
+        count[btn.dataset.state] += 1;
+        const text = statusText(btn);
+        btn.querySelector('.tbl__status').textContent = text;
+        btn.setAttribute('aria-label', 'Стол ' + btn.dataset.n + ', ' + text.toLowerCase());
+        const cell = document.querySelector('#hallrow [data-n="' + btn.dataset.n + '"]');
+        if (cell) cell.dataset.state = btn.dataset.state;
+      });
+      Object.keys(count).forEach(function (k) {
+        document.querySelector('[data-count="' + k + '"]').textContent = count[k];
+      });
+      document.getElementById('hall-free').textContent = freeText(count.free);
+      document.getElementById('hallrow-free').textContent = 'Свободно ' + count.free;
+      document.getElementById('hallrow').setAttribute('aria-label',
+        fmt ? 'Занято ' + count.play + tablesWord(count.play) + ' из ' + tables.length : 'Занято: ' + count.play + ' из ' + tables.length);
+      plan.setAttribute('aria-label', 'План зала, ' + tables.length + (fmt ? tablesWord(tables.length) : ' столов'));
+      return count;
+    }
+
+    plan.addEventListener('click', function (e) {
+      const btn = e.target.closest('.tbl');
+      if (!btn) return;
+      btn.dataset.state = btn.dataset.state === 'play' ? 'free' : 'play';
+      if (btn.dataset.state === 'free') delete btn.dataset.reserved;
+      const count = render();
+      live.textContent = 'Стол ' + btn.dataset.n + ': ' + statusText(btn).toLowerCase() + '. ' + freeText(count.free) + '.';
+    });
+
+    // ---------- палитра с живым контрастом ----------
+    const PALETTE = [
+      ['--paper', 'фон страницы'],
+      ['--card', 'поверхности'],
+      ['--card-2', 'вторичные поверхности, поля'],
+      ['--line', 'границы'],
+      ['--line-strong', 'граница поля ввода', 'border'],
+      ['--ink', 'основной текст', 'text'],
+      ['--ink-2', 'вторичный текст', 'text'],
+      ['--ink-3', 'подписи', 'text'],
+      ['--cloth', 'основной цвет, кнопки, ссылки', 'text', '--on-cloth'],
+      ['--cloth-deep', 'наведение, нажатие', null, '--on-cloth'],
+      ['--cloth-tint', 'фон выбранного'],
+      ['--lamp', 'занято, выбрано, свет', null, '--on-lamp'],
+      ['--lamp-tint', 'фон подсветки'],
+      ['--ball-red', 'тревоги, «в эфире», ошибки', 'text'],
+      ['--free', '«свободно» в текстах и бейджах', 'text'],
+      ['--on-cloth', 'текст на кнопке цвета --cloth'],
+      ['--on-lamp', 'текст на янтарной заливке --lamp']
+    ];
+    const SURFACES = ['--paper', '--card', '--card-2'];
+
+    const probe = document.createElement('span');
+    function rgbOf(el, token) {
+      probe.style.color = 'var(' + token + ')';
+      el.appendChild(probe);
+      const m = getComputedStyle(probe).color.match(/[\d.]+/g).map(Number);
+      probe.remove();
+      return m.slice(0, 3);
+    }
+    function lum(rgb) {
+      const f = function (v) { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+    }
+    function ratio(a, b) {
+      const x = lum(a), y = lum(b);
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    }
+    const num = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    function hex(rgb) {
+      return '#' + rgb.map(function (v) { return v.toString(16).padStart(2, '0'); }).join('').toUpperCase();
+    }
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text) node.textContent = text;
+      return node;
+    }
+    function aaChip(value, label, min) {
+      const pass = value >= (min || 4.5);
+      const chip = el('span', 'aa');
+      chip.dataset.pass = String(pass);
+      chip.append(label + ' ', el('span', 'mono', num.format(value) + ':1'), pass ? 'AA' : 'ниже AA');
+      return chip;
+    }
+
+    document.querySelectorAll('[data-swatches]').forEach(function (list) {
+      const panel = list.closest('[data-theme]');
+      PALETTE.forEach(function (row) {
+        const token = row[0], role = row[1], kind = row[2], on = row[3];
+        const rgb = rgbOf(panel, token);
+        const li = el('li', 'swatch');
+        const chip = el('span', 'swatch__chip');
+        chip.style.background = 'var(' + token + ')';
+        const name = el('span', 'swatch__name');
+        name.append(el('span', 'mono', token), el('span', 'mono swatch__hex', hex(rgb)));
+        const roleEl = el('span', 'swatch__role', role);
+        const chips = el('span', 'swatch__aa');
+        if (kind === 'text') {
+          const min = Math.min.apply(null, SURFACES.map(function (bg) { return ratio(rgb, rgbOf(panel, bg)); }));
+          chips.append(aaChip(min, 'текст'));
+        }
+        if (kind === 'border') {
+          const minB = Math.min.apply(null, SURFACES.map(function (bg) { return ratio(rgb, rgbOf(panel, bg)); }));
+          chips.append(aaChip(minB, 'граница, нужно 3:1:', 3));
+        }
+        if (on) chips.append(aaChip(ratio(rgbOf(panel, on), rgb), 'под ' + on));
+        if (chips.childNodes.length) roleEl.append(chips);
+        li.append(chip, name, roleEl);
+        list.append(li);
+      });
+    });
+
+    // Начальное состояние зала уже записано в разметке; render() пересчитывает его после клика или загрузки модуля.
+
+    // ---------- форматы: значения считает сам модуль ----------
+    import('./format.mjs').then(function (m) {
+      fmt = m;
+      render();
+      const values = {
+        plural: [1, 3, 11, 21].map(function (n) { return n + ' ' + m.plural(n, TABLES); }).join(', '),
+        money: m.formatMoney(149000),
+        'money-kop': m.formatMoney(149050),
+        time: m.formatTime('2026-10-21T16:30:00Z', TZ),
+        date: m.formatDate('2026-10-20T19:30:00Z', TZ),
+        'dur-long': m.formatDuration(3900000),
+        'dur-short': m.formatDuration(300000)
+      };
+      Object.keys(values).forEach(function (k) {
+        document.querySelector('[data-fmt="' + k + '"]').textContent = values[k];
+      });
+      document.querySelectorAll('[data-duration]').forEach(function (node) {
+        node.textContent = m.formatDuration(Number(node.dataset.duration));
+      });
+    }).catch(function () { /* открыто с диска: format.mjs недоступен, на странице остаются готовые значения */ });
+  })();
+</script>
+</body>
+</html>
