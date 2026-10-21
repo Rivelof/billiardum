@@ -5,7 +5,7 @@
 // 2. Создаёт .env из .env.example со случайными секретами (значения не печатаются).
 // 3. Ставит зависимости на хосте, если их нет (в контейнерах npm не запускается).
 // 4. Создаёт dev-сертификаты брокера (scripts/dev-certs.mjs).
-// 5. Поднимает db и mosquitto и ждёт готовности.
+// 5. Поднимает db и mosquitto и ждёт готовности; роли базы — в supautils.reserved_roles.
 // 6. Останавливает старые server и device-sim; db:migrate, db:seed, provision:dev — с хоста.
 // 7. Заново поднимает server, device-sim (после провижининга), caddy и показывает их логи.
 
@@ -28,6 +28,7 @@ import {
   packageScript,
   projectVolumes,
   readEnvFile,
+  RESERVED_ROLES_SCRIPT,
   ROOT,
   run,
   runChecked,
@@ -176,6 +177,9 @@ async function main() {
     log('сертификаты обновились — перезапускаю mosquitto');
     await compose(['up', '-d', '--wait', '--wait-timeout', WAIT_TIMEOUT_S, '--force-recreate', '--no-deps', 'mosquitto']);
   }
+
+  log('закрываю роли базы от привилегированной роли Supabase (supautils.reserved_roles)');
+  await runChecked('docker', composeArgs(ENV_FILE, 'exec', '-T', '-u', 'postgres', 'db', 'sh', '-s'), { stdinFile: RESERVED_ROLES_SCRIPT }, 'reserved-roles.sh');
 
   // provision:dev меняет пароли и ключи устройств, миграции — схему. Старые server
   // и device-sim останавливаем до этих шагов и запускаем заново только после них,

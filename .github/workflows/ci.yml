@@ -58,6 +58,9 @@ jobs:
         run: docker pull eclipse-mosquitto:2.1.2-alpine
       - run: npm run test:it -w tools/device-sim
 
+      # Наши роли — в supautils.reserved_roles (pentester L1), до миграций.
+      - name: Роли базы в supautils.reserved_roles
+        run: docker exec -i -u postgres ${{ job.services.db.id }} sh -s < deploy/postgres/reserved-roles.sh
       - run: npm run db:migrate
       - run: npm run db:seed
       - run: npm run test:db

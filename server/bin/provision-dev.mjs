@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // npm run provision:dev — только разработка (контракт M0 §1, §4).
 //
-// 1. Через bl-admin в Dynamic Security: роль и клиент bl-server (bl/v1/#) с паролем из .env.
+// 1. Через bl-admin в Dynamic Security: роль и клиент bl-server (bl/v1/#) с паролем из .env
+//    и закреплённым client id bl-server.
 // 2. Для каждого устройства в базе: новый device_key (32 байта) и пароль MQTT, роль
 //    с точными топиками протокола §2, клиент (логин и client id = device_id).
 // 3. device_key — в bl.devices.device_key_enc (AES-256-GCM, SECRETS_ENC_KEY).
@@ -15,7 +16,7 @@ import path from 'node:path';
 import mqtt from 'mqtt';
 import pg from 'pg';
 import { REPO_ROOT, repoPath } from '../lib/config.mjs';
-import { createDynsec, deviceRoleAcls, deviceRoleName, serverRoleAcls } from '../lib/dynsec.mjs';
+import { createDynsec, deviceRoleAcls, deviceRoleName, ensureServerClient, SERVER_CLIENT_ID } from '../lib/dynsec.mjs';
 import { createLogger } from '../lib/log.mjs';
 import { deviceKeyContext, encryptSecret, loadEncKey } from '../lib/secrets.mjs';
 
@@ -100,14 +101,8 @@ async function main() {
   try {
     const dynsec = await createDynsec(client);
 
-    await dynsec.ensureRole('bl-server', serverRoleAcls(), 'Сервер Бильярдума: bl/v1/#');
-    const serverClient = await dynsec.ensureClient({
-      username: serverUser,
-      password: serverPassword,
-      rolename: 'bl-server',
-      textname: 'Сервер Бильярдума',
-    });
-    log.info('provision_server', { username: serverUser, client: serverClient });
+    const serverClient = await ensureServerClient(dynsec, { username: serverUser, password: serverPassword });
+    log.info('provision_server', { username: serverUser, clientid: SERVER_CLIENT_ID, client: serverClient });
 
     const devices = rows.map((r) => ({
       id: r.id,

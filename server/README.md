@@ -10,7 +10,7 @@
 | `npm test -w @billiardum/server` | юнит-тесты без базы и брокера: все векторы `docs/protocol-vectors.json`, шифрование, `/health`, мост (подделки клиента, базы и таймеров), Dynamic Security |
 | `npm run provision:dev` | только разработка, ниже |
 
-Переменные (контракт §3): `DATABASE_URL` (роль `app_api`), `MQTT_URL`, `MQTT_CA_FILE` (относительный путь — от корня репозитория), `MQTT_SERVER_USER`, `MQTT_SERVER_PASSWORD`, `SECRETS_ENC_KEY`, `PORT` (3000), `LOG_LEVEL` (`info`); необязательная `MQTT_CLIENT_ID` (`bl-server`). Сервер `.env` не читает: окружение даёт Compose или systemd.
+Переменные (контракт §3): `DATABASE_URL` (роль `app_api`), `MQTT_URL`, `MQTT_CA_FILE` (относительный путь — от корня репозитория), `MQTT_SERVER_USER`, `MQTT_SERVER_PASSWORD`, `SECRETS_ENC_KEY`, `PORT` (3000), `LOG_LEVEL` (`info`). Client id сервера — всегда `bl-server`: он закреплён в Dynamic Security. Сервер `.env` не читает: окружение даёт Compose или systemd.
 
 ## HTTP
 
@@ -45,6 +45,6 @@
 
 ## `npm run provision:dev`
 
-Только разработка (отказ при `NODE_ENV=production`). Через `MQTT_ADMIN_USER` в Dynamic Security: роль `bl-server` (`bl/v1/#`: подписка, приём, публикация) и клиент `MQTT_SERVER_USER` с паролем из `.env`. Для каждого устройства в базе: роль `bl-device-<device_id>` с точными топиками протокола §2 (подписка и приём только своего `cmd`; публикация своих `ack`, `state`, `event`, `status`), клиент с логином и обязательным client id = `device_id`, новый пароль MQTT и новый `device_key`. Ключ пишется в `bl.devices.device_key_enc` (через `DATABASE_ADMIN_URL`), всё вместе — в `deploy/dev/devices.json` (или `SIM_DEVICES_FILE`) с правами 0600; `mqtt_url` и `ca_file` в файле — значения `MQTT_URL` и `MQTT_CA_FILE`.
+Только разработка (отказ при `NODE_ENV=production`). Через `MQTT_ADMIN_USER` в Dynamic Security: роль `bl-server` (`bl/v1/#`: подписка, приём, публикация) и клиент `MQTT_SERVER_USER` с паролем из `.env` и закреплённым client id `bl-server` (второе подключение с другим client id брокер отвергает). Для каждого устройства в базе: роль `bl-device-<device_id>` с точными топиками протокола §2 (подписка и приём только своего `cmd`; публикация своих `ack`, `state`, `event`, `status`), клиент с логином и обязательным client id = `device_id`, новый пароль MQTT и новый `device_key`. Ключ пишется в `bl.devices.device_key_enc` (через `DATABASE_ADMIN_URL`), всё вместе — в `deploy/dev/devices.json` (или `SIM_DEVICES_FILE`) с правами 0600; `mqtt_url` и `ca_file` в файле — значения `MQTT_URL` и `MQTT_CA_FILE`.
 
 Повторный запуск выдаёт новые ключи и пароли и согласованно обновляет брокер, базу и файл. Порядок в `scripts/dev.mjs`: остановить `server` и `device-sim` → `db:migrate` → `db:seed` → `provision:dev` → поднять `server`, затем `device-sim` заново (`--force-recreate`). Запущенный при провижининге симулятор брокер отключает (новый пароль), а его старый ключ дал бы `bad_sig`.

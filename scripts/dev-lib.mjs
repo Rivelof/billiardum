@@ -2,7 +2,7 @@
 // Только встроенные модули Node: скрипты работают до `npm install`.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
@@ -14,6 +14,8 @@ export const ENV_FILE = join(ROOT, '.env');
 export const ENV_EXAMPLE = join(ROOT, '.env.example');
 export const DEVICES_FILE = join(ROOT, 'deploy', 'dev', 'devices.json');
 export const POSTGRES_IMAGE = 'supabase/postgres:15.8.1.085';
+/** Наши роли в supautils.reserved_roles; выполняется внутри контейнера базы. */
+export const RESERVED_ROLES_SCRIPT = join(ROOT, 'deploy', 'postgres', 'reserved-roles.sh');
 
 /** Ошибка, понятная человеку: печатается без стека. */
 export class UserError extends Error {}
@@ -47,12 +49,20 @@ export function runMain(tag, main) {
   );
 }
 
-/** Запуск с выводом в терминал. Возвращает код выхода. */
-export function run(cmd, args, { env, cwd = ROOT, shell = false } = {}) {
+/** Запуск с выводом в терминал; stdinFile — файл на вход процессу. Возвращает код выхода. */
+export function run(cmd, args, { env, cwd = ROOT, shell = false, stdinFile } = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(cmd, args, { cwd, env: env ?? process.env, stdio: 'inherit', shell });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => resolvePromise(code ?? (signal ? 1 : 0)));
+    const input = stdinFile ? openSync(stdinFile, 'r') : 'inherit';
+    const done = () => typeof input === 'number' && closeSync(input);
+    const child = spawn(cmd, args, { cwd, env: env ?? process.env, stdio: [input, 'inherit', 'inherit'], shell });
+    child.once('error', (err) => {
+      done();
+      reject(err);
+    });
+    child.once('exit', (code, signal) => {
+      done();
+      resolvePromise(code ?? (signal ? 1 : 0));
+    });
   });
 }
 

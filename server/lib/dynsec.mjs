@@ -5,6 +5,9 @@ import { randomUUID } from 'node:crypto';
 import { deviceTopic } from './protocol.mjs';
 
 export const CONTROL_TOPIC = '$CONTROL/dynamic-security/v1';
+/** Client id сервера закреплён в Dynamic Security: под логином bl-server с другим client id брокер не пускает. */
+export const SERVER_CLIENT_ID = 'bl-server';
+export const SERVER_ROLE = 'bl-server';
 export const RESPONSE_TOPIC = `${CONTROL_TOPIC}/response`;
 
 export class DynsecError extends Error {
@@ -131,4 +134,16 @@ export async function createDynsec(client, { timeoutMs = 10_000 } = {}) {
   }
 
   return { run, ensureRole, ensureClient };
+}
+
+/** Роль и клиент сервера: bl/v1/#, пароль из .env, client id закреплён (SERVER_CLIENT_ID). */
+export async function ensureServerClient(dynsec, { username, password }) {
+  await dynsec.ensureRole(SERVER_ROLE, serverRoleAcls(), 'Сервер Бильярдума: bl/v1/#');
+  return dynsec.ensureClient({
+    username,
+    password,
+    clientid: SERVER_CLIENT_ID,
+    rolename: SERVER_ROLE,
+    textname: 'Сервер Бильярдума',
+  });
 }

@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
 import { buildCommand, deviceTopic, MAX_EVENT_BYTES, MAX_STATE_BYTES, parseDeviceTopic, PROTOCOL_VERSION } from './lib/protocol.mjs';
+import { SERVER_CLIENT_ID } from './lib/dynsec.mjs';
 import { decryptSecret, deviceKeyContext } from './lib/secrets.mjs';
 
 export const OFFLINE_AFTER_MS = 150_000;
@@ -530,7 +531,7 @@ export function createBridge({
 }
 
 /** Подключение сервера к брокеру: TLS с CA из файла, логин bl-server, clean session (§2). */
-export function connectMqtt({ url, caFile, username, password, clientId = 'bl-server' }) {
+export function connectMqtt({ url, caFile, username, password, clientId = SERVER_CLIENT_ID }) {
   return mqtt.connect(url, {
     clientId,
     username,

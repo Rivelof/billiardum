@@ -2,6 +2,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SERVER_CLIENT_ID } from './dynsec.mjs';
 import { loadEncKey } from './secrets.mjs';
 
 export const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -37,7 +38,8 @@ export function loadServerConfig(env = process.env) {
       caFile: repoPath(env.MQTT_CA_FILE),
       username: env.MQTT_SERVER_USER,
       password: env.MQTT_SERVER_PASSWORD,
-      clientId: env.MQTT_CLIENT_ID || 'bl-server',
+      // Закреплён в Dynamic Security (provision:dev), другой client id брокер отвергнет.
+      clientId: SERVER_CLIENT_ID,
     },
     encKey: loadEncKey(env.SECRETS_ENC_KEY),
   };
