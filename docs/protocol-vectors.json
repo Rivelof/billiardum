@@ -1,0 +1,179 @@
+{
+  "protocol": "bl/v1",
+  "description": "Тестовые векторы подписи команд (docs/protocol.md, раздел 3.1). Прошивка, симулятор и сервер обязаны проходить все: разобрать raw, вернуть expect; для ok и bad_sig получить ту же canonical.",
+  "rules": {
+    "key": "device_key в base64, 32 байта",
+    "sig": "base64(HMAC-SHA256(device_key, UTF-8(canonical))), стандартный алфавит с =",
+    "canonical": "объект без sig верхнего уровня; ключи по возрастанию байтов на всех уровнях; без пробелов; только целые от -(2^53-1) до 2^53-1 без экспоненты; строки и ключи — печатный ASCII без \" и \\; вложенный sig запрещён",
+    "order": "bad_format (разбор, канонизация, обязательные поля v=1, id, seq, type, body) → bad_sig → seq"
+  },
+  "vectors": [
+    {
+      "name": "ping, пустое тело",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{},\"issued_at\":1792598401,\"type\":\"ping\",\"seq\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000001\",\"v\":1,\"sig\":\"0adhowuxXzPI0x++bwIXwuXKNS8BI/e071sUq3tkh+o=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000001\",\"issued_at\":1792598401,\"seq\":1,\"type\":\"ping\",\"v\":1}",
+      "sig": "0adhowuxXzPI0x++bwIXwuXKNS8BI/e071sUq3tkh+o="
+    },
+    {
+      "name": "session.start, ключи в обратном порядке и пробелы",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\n \"body\": {\n  \"buzzer\": true,\n  \"grace_ms\": 120000,\n  \"warn_ms\": [\n   300000,\n   60000\n  ],\n  \"remaining_ms\": 7200000,\n  \"session_id\": \"0192f3c0-0000-7000-8000-000000000001\"\n },\n \"issued_at\": 1792598402,\n \"type\": \"session.start\",\n \"seq\": 2,\n \"id\": \"0192f3c1-6d1a-7c3e-9b2a-000000000002\",\n \"v\": 1,\n \"sig\": \"jLKjLswQLEy1ZUOpiWFyvS/mZneXj8DMXcUOF3JTZ/8=\"\n}",
+      "expect": "ok",
+      "canonical": "{\"body\":{\"buzzer\":true,\"grace_ms\":120000,\"remaining_ms\":7200000,\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\",\"warn_ms\":[300000,60000]},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000002\",\"issued_at\":1792598402,\"seq\":2,\"type\":\"session.start\",\"v\":1}",
+      "sig": "jLKjLswQLEy1ZUOpiWFyvS/mZneXj8DMXcUOF3JTZ/8="
+    },
+    {
+      "name": "session.extend, buzzer false",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"buzzer\":false,\"remaining_ms\":10800000,\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\"},\"issued_at\":1792598403,\"type\":\"session.extend\",\"seq\":3,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000003\",\"v\":1,\"sig\":\"aOuVo1aXWomM2bWRitHktNVSGCGTcOw5YnR37qu30Vw=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{\"buzzer\":false,\"remaining_ms\":10800000,\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\"},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000003\",\"issued_at\":1792598403,\"seq\":3,\"type\":\"session.extend\",\"v\":1}",
+      "sig": "aOuVo1aXWomM2bWRitHktNVSGCGTcOw5YnR37qu30Vw="
+    },
+    {
+      "name": "session.stop с reason_code",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"reason_code\":\"guest_finished\",\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\"},\"issued_at\":1792598404,\"type\":\"session.stop\",\"seq\":4,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000004\",\"v\":1,\"sig\":\"95tWJC91lx/M3DLDfbbgcMuSZO3nv9ZQ5k0BJi09rjg=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{\"reason_code\":\"guest_finished\",\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\"},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000004\",\"issued_at\":1792598404,\"seq\":4,\"type\":\"session.stop\",\"v\":1}",
+      "sig": "95tWJC91lx/M3DLDfbbgcMuSZO3nv9ZQ5k0BJi09rjg="
+    },
+    {
+      "name": "service.start",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"reason_code\":\"cleaning\",\"duration_ms\":900000},\"issued_at\":1792598405,\"type\":\"service.start\",\"seq\":5,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000005\",\"v\":1,\"sig\":\"JyqrUSB282euKdyS2MG6oX3ph5RJnCjLMmnhsI7L3TE=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{\"duration_ms\":900000,\"reason_code\":\"cleaning\"},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000005\",\"issued_at\":1792598405,\"seq\":5,\"type\":\"service.start\",\"v\":1}",
+      "sig": "JyqrUSB282euKdyS2MG6oX3ph5RJnCjLMmnhsI7L3TE="
+    },
+    {
+      "name": "null в теле канонизируется как null",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"extra\":null,\"duration_ms\":30000},\"issued_at\":1792598406,\"type\":\"identify\",\"seq\":6,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000006\",\"v\":1,\"sig\":\"HC2ZRHR4cZqZshEx/2320m6K3W6pem2g8fKIY3RrokY=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{\"duration_ms\":30000,\"extra\":null},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000006\",\"issued_at\":1792598406,\"seq\":6,\"type\":\"identify\",\"v\":1}",
+      "sig": "HC2ZRHR4cZqZshEx/2320m6K3W6pem2g8fKIY3RrokY="
+    },
+    {
+      "name": "ota.start с image_sig и URL",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"image_sig\":\"MEUCIQDexample+/=\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"version\":\"1.0.4\",\"url\":\"https://billiardum.ru/fw/1.0.4.bin\"},\"issued_at\":1792598407,\"type\":\"ota.start\",\"seq\":7,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000007\",\"v\":1,\"sig\":\"1ry1Cvm+0lKGeoqMLyYabVcmgXvdzOR2gHcHSMRqdGk=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{\"image_sig\":\"MEUCIQDexample+/=\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"url\":\"https://billiardum.ru/fw/1.0.4.bin\",\"version\":\"1.0.4\"},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000007\",\"issued_at\":1792598407,\"seq\":7,\"type\":\"ota.start\",\"v\":1}",
+      "sig": "1ry1Cvm+0lKGeoqMLyYabVcmgXvdzOR2gHcHSMRqdGk="
+    },
+    {
+      "name": "большое seq на границе 2^53-1",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{},\"issued_at\":1792598408,\"type\":\"ping\",\"seq\":9007199254740991,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000008\",\"v\":1,\"sig\":\"S4ymsF+WFGXmkfZ+taaMFVVKxhbsjp39holRIo9Bgz4=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000008\",\"issued_at\":1792598408,\"seq\":9007199254740991,\"type\":\"ping\",\"v\":1}",
+      "sig": "S4ymsF+WFGXmkfZ+taaMFVVKxhbsjp39holRIo9Bgz4="
+    },
+    {
+      "name": "config.set с нулём и вложенным объектом-порядком",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"grace_blink_s\":15,\"grace_dim\":30,\"current_confirm_ms\":10000,\"current_on_ma\":50,\"led_brightness\":0},\"issued_at\":1792598409,\"type\":\"config.set\",\"seq\":9,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000009\",\"v\":1,\"sig\":\"xhMAuQ09/Q3c/cdtpEc+9nprot7251HYCIAhfSnyYnc=\"}",
+      "expect": "ok",
+      "canonical": "{\"body\":{\"current_confirm_ms\":10000,\"current_on_ma\":50,\"grace_blink_s\":15,\"grace_dim\":30,\"led_brightness\":0},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000009\",\"issued_at\":1792598409,\"seq\":9,\"type\":\"config.set\",\"v\":1}",
+      "sig": "xhMAuQ09/Q3c/cdtpEc+9nprot7251HYCIAhfSnyYnc="
+    },
+    {
+      "name": "подменён remaining_ms при старой подписи",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"buzzer\":true,\"grace_ms\":120000,\"warn_ms\":[300000,60000],\"remaining_ms\":72000000,\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\"},\"issued_at\":1792598402,\"type\":\"session.start\",\"seq\":2,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000002\",\"v\":1,\"sig\":\"jLKjLswQLEy1ZUOpiWFyvS/mZneXj8DMXcUOF3JTZ/8=\"}",
+      "expect": "bad_sig",
+      "canonical": "{\"body\":{\"buzzer\":true,\"grace_ms\":120000,\"remaining_ms\":72000000,\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\",\"warn_ms\":[300000,60000]},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000002\",\"issued_at\":1792598402,\"seq\":2,\"type\":\"session.start\",\"v\":1}"
+    },
+    {
+      "name": "подпись чужим ключом",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{\"buzzer\":true,\"grace_ms\":120000,\"warn_ms\":[300000,60000],\"remaining_ms\":7200000,\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\"},\"issued_at\":1792598402,\"type\":\"session.start\",\"seq\":2,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000002\",\"v\":1,\"sig\":\"+X/BPFjs1Qe2+Rj74AhCB3Ko/5OVRYxvxojcH4+OVK4=\"}",
+      "expect": "bad_sig",
+      "canonical": "{\"body\":{\"buzzer\":true,\"grace_ms\":120000,\"remaining_ms\":7200000,\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\",\"warn_ms\":[300000,60000]},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000002\",\"issued_at\":1792598402,\"seq\":2,\"type\":\"session.start\",\"v\":1}"
+    },
+    {
+      "name": "нет поля sig",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{},\"issued_at\":1792598410,\"type\":\"ping\",\"seq\":10,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000010\",\"v\":1}",
+      "expect": "bad_sig",
+      "canonical": "{\"body\":{},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000010\",\"issued_at\":1792598410,\"seq\":10,\"type\":\"ping\",\"v\":1}"
+    },
+    {
+      "name": "sig не base64",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{},\"issued_at\":1792598411,\"type\":\"ping\",\"seq\":11,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000011\",\"v\":1,\"sig\":\"!!not-base64!!\"}",
+      "expect": "bad_sig",
+      "canonical": "{\"body\":{},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000011\",\"issued_at\":1792598411,\"seq\":11,\"type\":\"ping\",\"v\":1}"
+    },
+    {
+      "name": "подписана не каноническая строка (лишний пробел)",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"body\":{},\"issued_at\":1792598412,\"type\":\"ping\",\"seq\":12,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000012\",\"v\":1,\"sig\":\"yDRhlYbp+DeHD3v2xfjo+0JioJjp8mYbcgqBh5/zv0o=\"}",
+      "expect": "bad_sig",
+      "canonical": "{\"body\":{},\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000012\",\"issued_at\":1792598412,\"seq\":12,\"type\":\"ping\",\"v\":1}"
+    },
+    {
+      "name": "дробное число",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000013\",\"seq\":13,\"type\":\"session.extend\",\"issued_at\":1792598413,\"body\":{\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\",\"remaining_ms\":1.5,\"buzzer\":true},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "число вне ±(2^53-1)",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000014\",\"seq\":9007199254740993,\"type\":\"ping\",\"issued_at\":1792598414,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "целое, записанное с точкой (1.0)",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000021\",\"seq\":21,\"type\":\"session.extend\",\"issued_at\":1792598421,\"body\":{\"session_id\":\"0192f3c0-0000-7000-8000-000000000001\",\"remaining_ms\":3600000.0,\"buzzer\":true},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "экспонента в числе",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000015\",\"seq\":15,\"type\":\"service.start\",\"issued_at\":1792598415,\"body\":{\"duration_ms\":9e5,\"reason_code\":\"cleaning\"},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "кириллица в строке",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000016\",\"seq\":16,\"type\":\"service.start\",\"issued_at\":1792598416,\"body\":{\"duration_ms\":900000,\"reason_code\":\"уборка\"},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "кавычка в строке",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000017\",\"seq\":17,\"type\":\"service.start\",\"issued_at\":1792598417,\"body\":{\"duration_ms\":900000,\"reason_code\":\"a\\\"b\"},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "вложенное поле sig",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000018\",\"seq\":18,\"type\":\"ota.start\",\"issued_at\":1792598418,\"body\":{\"url\":\"https://billiardum.ru/fw/1.0.4.bin\",\"version\":\"1.0.4\",\"sha256\":\"00\",\"sig\":\"abc\"},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "v не 1",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":2,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000019\",\"seq\":19,\"type\":\"ping\",\"issued_at\":1792598419,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "нет seq",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":\"0192f3c1-6d1a-7c3e-9b2a-000000000020\",\"type\":\"ping\",\"issued_at\":1792598420,\"body\":{},\"sig\":\"s/tGx/LjzJe1mqDZ7rD7yBhcmEW3pB3jKtbcg/zlYyQ=\"}",
+      "expect": "bad_format"
+    },
+    {
+      "name": "не JSON",
+      "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "raw": "{\"v\":1,\"id\":",
+      "expect": "bad_format"
+    }
+  ]
+}
