@@ -1,0 +1,14 @@
+{
+  "name": "billiardum",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "shared",
+    "supabase",
+    "server",
+    "tools/device-sim"
+  ]
+}
