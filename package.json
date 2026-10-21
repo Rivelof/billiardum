@@ -9,7 +9,10 @@
     "shared",
     "supabase",
     "server",
-    "tools/device-sim"
+    "tools/device-sim",
+    "tools/yookassa-emu",
+    "web/guest",
+    "web/admin"
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",

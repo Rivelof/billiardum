@@ -42,6 +42,7 @@
 | `server/` | backend | вход, мост MQTT (`mqtt.mjs`), планировщик, `notify/` |
 | `supabase/` | backend | миграции, политики RLS, сид |
 | `tools/kkt-bridge/` | backend | служба на ПК ресепшена для ККТ |
+| `tools/yookassa-emu/` | backend | эмулятор ЮKassa для разработки и тестов |
 | `scripts/` | backend (`db-*`, `provision-*`), devops (`dev*`, `ci*`) | служебные скрипты |
 | `deploy/` | devops | Docker Compose для разработки (`deploy/dev/`), systemd, конфиги Mosquitto и Caddy, бэкапы |
 | `.github/` | devops | CI |
