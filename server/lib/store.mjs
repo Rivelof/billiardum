@@ -66,27 +66,44 @@ export function createStore(pool) {
     },
 
     /**
-     * Команда устройству (protocol §6): в одной транзакции выделяет seq
-     * (UPDATE … RETURNING), собирает и подписывает команду (build) и пишет журнал.
-     * Ошибка build (например, ключ не расшифровался) откатывает и seq, и журнал.
-     * minSeq — last_seq из state устройства: seq сервера не отстаёт от NVS
-     * (например, после восстановления базы из бэкапа).
-     * @returns {Promise<{ status: 'ok', seq: number, payload: string } | { status: 'unknown_device' | 'no_key' }>}
+     * Команда устройству (protocol §6): в одной транзакции выделяет seq, собирает и
+     * подписывает команду (build) и пишет журнал. Ошибка build (например, ключ не
+     * расшифровался) откатывает и seq, и журнал.
+     * Сверка: seq = greatest(devices.last_seq, state.last_seq) + 1. Подъём по state
+     * (база восстановлена из бэкапа) — запись device.seq_sync. Разрыв больше seqGapLimit —
+     * без подъёма (seqGap для тревоги).
+     * @returns {Promise<{ status: 'ok', seq: number, payload: string, seqSync: object|null, seqGap: object|null }
+     *   | { status: 'unknown_device' | 'no_key', seqGap: null }>}
      */
-    async allocateCommand({ clubId, deviceId, cmdId, type, minSeq = null, build }) {
+    async allocateCommand({ clubId, deviceId, cmdId, type, stateLastSeq = null, seqGapLimit = 1_000_000, build }) {
       try {
         return await withContext(pool, { clubId, actorType: 'system' }, async (client) => {
-          const upd = await client.query(
-            `update bl.devices
-                set last_seq = greatest(last_seq, $2::bigint) + 1
-              where id = $1
-          returning last_seq, device_key_enc`,
-            [deviceId, minSeq],
-          );
-          if (upd.rowCount === 0) throw new CommandSkipped('unknown_device');
-          const seq = Number(upd.rows[0].last_seq);
-          const keyEnc = upd.rows[0].device_key_enc;
+          const cur = await client.query('select last_seq, device_key_enc from bl.devices where id = $1 for update', [deviceId]);
+          if (cur.rowCount === 0) throw new CommandSkipped('unknown_device');
+          const dbSeq = Number(cur.rows[0].last_seq);
+          const keyEnc = cur.rows[0].device_key_enc;
           if (!keyEnc) throw new CommandSkipped('no_key');
+          let base = dbSeq;
+          let seqSync = null;
+          let seqGap = null;
+          if (Number.isSafeInteger(stateLastSeq) && stateLastSeq > dbSeq) {
+            if (stateLastSeq - dbSeq > seqGapLimit) {
+              seqGap = { db_seq: dbSeq, state_seq: stateLastSeq };
+            } else {
+              base = stateLastSeq;
+              seqSync = { from: dbSeq, to: stateLastSeq };
+            }
+          }
+          const seq = base + 1;
+          await client.query('update bl.devices set last_seq = $2 where id = $1', [deviceId, seq]);
+          if (seqSync) {
+            await client.query(
+              `insert into bl.audit_log (club_id, actor_type, actor_id, action, object_type, object_id, data)
+               values ($1, 'system', null, 'device.seq_sync', 'device', $2,
+                       jsonb_build_object('from', $3::bigint, 'to', $4::bigint))`,
+              [clubId, deviceId, seqSync.from, seqSync.to],
+            );
+          }
           const payload = build({ seq, keyEnc });
           await client.query(
             `insert into bl.audit_log (club_id, actor_type, actor_id, action, object_type, object_id, data)
@@ -94,10 +111,10 @@ export function createStore(pool) {
                      jsonb_build_object('cmd_id', $3::text, 'seq', $4::bigint, 'type', $5::text))`,
             [clubId, deviceId, cmdId, seq, type],
           );
-          return { status: 'ok', seq, payload };
+          return { status: 'ok', seq, payload, seqSync, seqGap };
         });
       } catch (err) {
-        if (err instanceof CommandSkipped) return { status: err.reason };
+        if (err instanceof CommandSkipped) return { status: err.reason, seqGap: null };
         throw err;
       }
     },

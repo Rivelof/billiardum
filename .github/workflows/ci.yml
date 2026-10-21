@@ -52,6 +52,12 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+
+      # Интеграционный тест симулятора поднимает свой брокер в Docker.
+      - name: Образ брокера для test:it
+        run: docker pull eclipse-mosquitto:2.1.2-alpine
+      - run: npm run test:it -w tools/device-sim
+
       - run: npm run db:migrate
       - run: npm run db:seed
       - run: npm run test:db

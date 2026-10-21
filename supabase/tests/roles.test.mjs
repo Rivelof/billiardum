@@ -4,9 +4,19 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import pg from 'pg';
-import { ALL_TABLES, asRole, CLUB_A, createTestDatabase, tryQuery } from './helpers.mjs';
+import { adminUrl, ALL_TABLES, asRole, CLUB_A, createTestDatabase, tryQuery } from './helpers.mjs';
 
 const OURS = ['bl_owner', 'bl_audit_owner', 'bl_definer', 'app_api'];
+// Служебные роли Supabase без входа и без CREATEROLE (decisions №39).
+const NOLOGIN_ROLES = [
+  'postgres',
+  'authenticator',
+  'pgbouncer',
+  'supabase_auth_admin',
+  'supabase_storage_admin',
+  'supabase_read_only_user',
+  'supabase_replication_admin',
+];
 // Роли Supabase с BYPASSRLS и роли, в которые может переключиться authenticator.
 const SUPABASE_KEY_ROLES = ['postgres', 'service_role', 'supabase_read_only_user', 'anon', 'authenticated', 'authenticator'];
 
@@ -94,6 +104,43 @@ describe('роли Supabase и схема bl', () => {
        where coalesce(r.rolname, 'PUBLIC') not in ('bl_owner', 'bl_audit_owner', 'bl_definer', 'app_api')
          and not coalesce(r.rolsuper, false)`);
     assert.deepEqual(rows, []);
+  });
+});
+
+describe('служебные роли Supabase без входа (decisions №39)', () => {
+  it('NOLOGIN, без CREATEROLE и без пароля', async () => {
+    for (const name of NOLOGIN_ROLES) {
+      const r = roles.find((x) => x.rolname === name);
+      assert.ok(r, `нет роли ${name}`);
+      assert.deepEqual({ name, login: r.rolcanlogin, createrole: r.rolcreaterole }, { name, login: false, createrole: false });
+    }
+    const { rows } = await db.pool.query('select rolname from pg_authid where rolname = any($1) and rolpassword is not null', [NOLOGIN_ROLES]);
+    assert.deepEqual(rows, []);
+  });
+
+  it('входить могут только суперпользователи и app_api', async () => {
+    const login = roles.filter((r) => r.rolcanlogin && !r.rolsuper).map((r) => r.rolname);
+    assert.deepEqual(login, ['app_api']);
+  });
+
+  it('вход под каждой из них с POSTGRES_PASSWORD отвергается', async () => {
+    const url = new URL(adminUrl());
+    const password = process.env.POSTGRES_PASSWORD || decodeURIComponent(url.password);
+    for (const user of NOLOGIN_ROLES) {
+      const c = new pg.Client({ host: url.hostname, port: Number(url.port || 5432), database: db.name, user, password });
+      c.on('error', () => {});
+      const err = await c.connect().then(
+        () => null,
+        (e) => e,
+      );
+      if (!err) await c.end();
+      assert.ok(err, `вход под ${user} прошёл`);
+      assert.ok(['28000', '28P01'].includes(err.code), `${user}: ${err.code} ${err.message}`);
+    }
+    // Тот же пароль у суперпользователя работает: отказ дал NOLOGIN, а не неверный пароль в тесте.
+    const su = new pg.Client({ host: url.hostname, port: Number(url.port || 5432), database: db.name, user: decodeURIComponent(url.username), password });
+    await su.connect();
+    await su.end();
   });
 });
 

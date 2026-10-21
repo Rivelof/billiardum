@@ -55,9 +55,14 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl_definer` | нет | владелец узких функций `SECURITY DEFINER`; видит только `devices(id, club_id)` |
 | `app_api` | да | рабочая роль сервера: без `BYPASSRLS`, `CREATEROLE`, `CREATEDB`, ничем не владеет; `statement_timeout` 15 с |
 
-Миграция `0001` отзывает `pg_read_all_data` и `pg_write_all_data` у всех ролей, кроме суперпользователей: в образе их получают `postgres` и `supabase_read_only_user`, у которых есть `BYPASSRLS`, — иначе они читали бы `bl` целиком в обход RLS. Это изменение ролей кластера.
+Изменения ролей Supabase (роли кластерные):
 
-Ограничение образа: у `postgres` (пароль = `POSTGRES_PASSWORD`), `supabase_auth_admin`, `supabase_storage_admin` есть `CREATEROLE`, у `postgres` ещё и `BYPASSRLS`. В Postgres 15 такая роль может выдать себе любую нашу роль или `pg_read_all_data` и снять ограничения с `app_api`. Журнал это переживает (триггеры и защита DDL, проверено тестом), изоляцию клубов — нет. Пароль `postgres` равнозначен паролю суперпользователя.
+- `0001` отзывает `pg_read_all_data` и `pg_write_all_data` у всех ролей, кроме суперпользователей: в образе их получают `postgres` и `supabase_read_only_user`, у которых есть `BYPASSRLS`, — иначе они читали бы `bl` целиком в обход RLS.
+- `0004` (decisions №39): `postgres`, `authenticator`, `pgbouncer`, `supabase_auth_admin`, `supabase_storage_admin`, `supabase_read_only_user`, `supabase_replication_admin` — `NOLOGIN`, без `CREATEROLE` и без пароля. Входят только суперпользователь (миграции) и `app_api`. Изменение переживает перезапуск контейнера.
+
+Почему так: в образе у `postgres` был пароль `POSTGRES_PASSWORD`, `CREATEROLE` и `BYPASSRLS` — она выдавала себе любую нашу роль и `pg_read_all_data`. Без `CREATEROLE` выдать себе роль она уже не может, но supautils (`supautils.privileged_role = postgres`) выполняет за неё `ALTER ROLE` незарезервированных ролей, например `ALTER ROLE app_api BYPASSRLS`. Поэтому защита держится на том, что в `postgres` нельзя войти и в неё никто не входит (проверяется тестом). Надёжнее добавить `app_api` и `bl_*` в `supautils.reserved_roles` в конфигурации образа (`/etc/postgresql-custom`, том `db-config`) — это за devops.
+
+Встроенный healthcheck образа — `pg_isready -U postgres`: он по-прежнему проходит (`pg_isready` не входит в базу), но пишет в лог Postgres `FATAL: role "postgres" is not permitted to log in`. В Compose и CI он переопределён на `supabase_admin`.
 
 ## Узкие функции `SECURITY DEFINER`
 
@@ -127,8 +132,8 @@ alter event trigger bl_audit_guard_drop enable always;
 
 Каждый файл создаёт свою временную базу `bl_test_*` из `template1`, применяет миграции и сид и удаляет её в конце: журнал нельзя очистить, поэтому тесты не пишут в рабочую базу. Пароль `app_api` тесты не меняют — действуют через `SET ROLE app_api` (те же права и RLS); если задан `DATABASE_URL`, дополнительно проверяется вход `app_api` по паролю. Файлы идут по одному (`--test-concurrency=1`), 50 параллельных соединений — нужен `max_connections` ≥ 70.
 
-- `audit_immutable` — `UPDATE`, `DELETE`, `TRUNCATE` падают у суперпользователя (и в режиме `replica`), у владельца журнала и у каждой роли кластера (`SET ROLE`), включая `bl_owner`, `app_api`, `anon`, `authenticated`, `service_role`, `authenticator`, `postgres`, `supabase_read_only_user`; DDL над журналом запрещена; `postgres` с `CREATEROLE` выдаёт себе владельца журнала, но изменить его не может.
+- `audit_immutable` — `UPDATE`, `DELETE`, `TRUNCATE` падают у суперпользователя (и в режиме `replica`), у владельца журнала и у каждой роли кластера (`SET ROLE`), включая `bl_owner`, `app_api`, `anon`, `authenticated`, `service_role`, `authenticator`, `postgres`, `supabase_read_only_user`; DDL над журналом запрещена; `postgres` не может выдать себе наши роли и `pg_read_all_data`, у неё нет входа и членов.
 - `audit_chain` — триггер перезаписывает присланные поля; хеш воспроизводится по формуле; 50 параллельных вставок дают `seq` 1…50 без пропусков и `ok`; цепочки клубов и платформы независимы; подмена данных, удаление записи и перезапись записи вместе с её хешем в обход всех защит находятся `audit_verify`.
 - `isolation` — с контекстом клуба A не видно строк клуба B ни в одной таблице, вставка и перенос строки в клуб B падают на RLS; без контекста — ноль строк; функции `SECURITY DEFINER` — только перечисленные.
-- `roles` — у ролей Supabase нет прав на `bl`, роли с `BYPASSRLS` и роли `authenticator` получают `permission denied` на каждую таблицу; членов у `pg_read_all_data` нет; права на объекты только у наших ролей; атрибуты ролей.
+- `roles` — у ролей Supabase нет прав на `bl`, роли с `BYPASSRLS` и роли `authenticator` получают `permission denied` на каждую таблицу; членов у `pg_read_all_data` нет; права на объекты только у наших ролей; атрибуты ролей; служебные роли Supabase без входа и без `CREATEROLE`, вход под каждой с `POSTGRES_PASSWORD` (или паролем из `DATABASE_ADMIN_URL`) отвергается, входить могут только суперпользователи и `app_api`.
 - `main_db` — только чтение и откатываемые попытки на рабочей базе из `DATABASE_ADMIN_URL` (если она уже мигрирована): все миграции применены, журнал неизменяем, роли Supabase не читают `bl`, цепочки целы.

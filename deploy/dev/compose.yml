@@ -5,11 +5,14 @@
 #
 # Контейнеры с Node не ставят пакеты: репозиторий монтируется только для чтения
 # вместе с node_modules хоста (pg и mqtt — чистый JS).
+#
+# Образы закреплены по версиям (decisions №40). В базу входят только
+# supabase_admin (DATABASE_ADMIN_URL) и app_api (DATABASE_URL), decisions №39.
 
 name: billiardum
 
 x-node-service: &node-service
-  image: node:22-alpine
+  image: node:22.23.4-alpine
   working_dir: /repo
   init: true
   volumes:
@@ -28,6 +31,7 @@ services:
       - db-config:/etc/postgresql-custom
     healthcheck:
       # TCP-слушатель появляется только у рабочего сервера, не у временного на время init.
+      # pg_isready не входит в базу (только ping), роль указана для порядка.
       test: ["CMD", "pg_isready", "-U", "supabase_admin", "-d", "postgres", "-h", "127.0.0.1"]
       interval: 30s
       timeout: 5s
@@ -36,7 +40,7 @@ services:
       start_interval: 2s
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.1.2-alpine
     ports:
       - "8883:8883"
     environment:
@@ -134,7 +138,7 @@ services:
         condition: service_healthy
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.7-alpine
     ports:
       - "8443:443"
     volumes:

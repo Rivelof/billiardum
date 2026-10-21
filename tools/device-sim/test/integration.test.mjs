@@ -25,6 +25,7 @@ if (!URL_) {
     let observer;
     let sim;
     let simExited;
+    const bootIds = new Map();
 
     const on = (d, leaf) => messages.filter((m) => m.topic === topic(d, leaf));
     async function waitFor(fn, what, ms = 8000) {
@@ -94,7 +95,10 @@ if (!URL_) {
         assert.equal(state.last_seq, 0);
         const ev = JSON.parse((await waitFor(() => on(d, 'event')[0], `boot ${d.table_number}`)).payload);
         assert.deepEqual([ev.v, ev.boot, ev.n, ev.type], [1, 1, 1, 'boot']);
+        assert.match(ev.boot_id, /^[0-9a-f]{8}$/);
         assert.deepEqual(Object.keys(ev.data).sort(), ['caps', 'fw', 'reset_reason']);
+        assert.equal(ev.data.reset_reason, 'poweron');
+        bootIds.set(d.device_id, ev.boot_id);
       }
       const sub = await connectObserver();
       const retained = [];
@@ -141,7 +145,7 @@ if (!URL_) {
       const { ack } = await command(dev1, cmd);
       assert.deepEqual([ack.cmd_id, ack.ok, ack.error], [cmd.id, false, 'replayed_seq']);
       const ev = await waitFor(() => on(dev1, 'event').map((m) => JSON.parse(m.payload)).find((e) => e.type === 'replayed_seq'), 'событие replayed_seq');
-      assert.deepEqual([ev.boot, ev.n, ev.data], [1, 2, { cmd_id: cmd.id, seq: 1 }]);
+      assert.deepEqual([ev.boot, ev.boot_id, ev.n, ev.data], [1, bootIds.get(dev1.device_id), 2, { cmd_id: cmd.id, seq: 1 }]);
     });
 
     test('подпись чужим ключом: bad_sig и событие, seq не сдвигается', async () => {

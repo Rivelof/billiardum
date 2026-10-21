@@ -81,7 +81,7 @@ export class SimDevice {
       caps: this.#cfg.caps,
       output: (msg) => this.#onOutput(msg),
     });
-    this.#machine.start({ resetReason: 'power_on' });
+    this.#machine.start({ resetReason: 'poweron' });
 
     const url = this.#cfg.mqttUrl;
     const tls = url.startsWith('mqtts:');
@@ -106,6 +106,7 @@ export class SimDevice {
     });
     this.#client.on('close', () => {
       this.#ready = false;
+      this.#machine.setOnline(false);
       if (this.#wasConnected && !this.#stopping) this.#log.warn('mqtt_disconnected');
       this.#wasConnected = false;
     });
@@ -144,6 +145,7 @@ export class SimDevice {
         return;
       }
       this.#ready = true;
+      this.#machine.setOnline(true);
       this.#publish(this.#topics.status, 'online', true);
       this.#machine.publishState();
       this.#flushEvents();
@@ -174,7 +176,7 @@ export class SimDevice {
         if (this.#client) this.#publish(this.#topics.ack, msg.payload, false);
         break;
       case 'event':
-        this.#log.debug('sim_event', { type: msg.entry.type, boot: msg.entry.boot, n: msg.entry.n });
+        this.#log.debug('sim_event', { type: msg.entry.type, boot_id: msg.entry.boot_id, n: msg.entry.n });
         this.#flushEvents();
         break;
       case 'command': {
@@ -193,13 +195,13 @@ export class SimDevice {
   // Досылка событий из кольцевого буфера; из буфера событие уходит после PUBACK.
   #flushEvents() {
     if (!this.#ready) return;
-    for (const entry of this.#machine.pendingEvents()) {
-      const key = `${entry.boot}:${entry.n}`;
+    for (const entry of this.#machine.outbox()) {
+      const key = `${entry.boot_id}:${entry.n}`;
       if (this.#inflight.has(key)) continue;
       this.#inflight.add(key);
       this.#publish(this.#topics.event, entry.payload, false, (err) => {
         this.#inflight.delete(key);
-        if (!err) this.#machine.eventDelivered(entry.boot, entry.n);
+        if (!err) this.#machine.eventDelivered(entry.boot_id, entry.n);
       });
     }
   }

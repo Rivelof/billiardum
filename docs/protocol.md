@@ -141,6 +141,14 @@
 
 Тихие часы пищалки решает сервер флагом `buzzer` (decisions №32).
 
+Диапазоны полей тела (вне диапазона — `bad_body`):
+- `session_id` — UUID в нижнем регистре; `remaining_ms` — 1…86 400 000; `warn_ms` и `grace_ms` — как в строке `session.start`;
+- `duration_ms` (`service.start`, `identify`) и `until_ms` (`state.*`) — 1…86 400 000;
+- `config.set`: все поля необязательны; `led_brightness` 0…255, `current_on_ma` 1…100 000, `current_confirm_ms` 1…600 000, `grace_dim` 0…100, `grace_blink_s` 1…3600;
+- `ota.start`: `url` только `https://`, `sha256` — 64 шестнадцатеричных символа в нижнем регистре;
+- `reason_code` — 1…32 символа `[a-z0-9_]`;
+- вложенность JSON — не глубже 8.
+
 **Почему `remaining_ms`, а не время окончания.** Часы контроллера могут расходиться с сервером. Контроллер считает остаток от момента получения команды по своему монотонному таймеру. Сервер хранит `paid_until` в UTC и при каждом `session.resume` и `session.extend` пересчитывает остаток.
 
 ---

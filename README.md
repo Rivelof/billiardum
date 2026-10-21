@@ -38,10 +38,10 @@ npm run dev
 | Сервис | Образ | Адрес на хосте | Что это |
 |---|---|---|---|
 | `db` | `supabase/postgres:15.8.1.085` | `localhost:54322` (только с этой машины) | Postgres с RLS |
-| `mosquitto` | `eclipse-mosquitto:2` | `mqtts://localhost:8883` | MQTT только по TLS, Dynamic Security, анонимный вход запрещён; 1883 закрыт |
-| `server` | `node:22-alpine` | `http://localhost:3000` (только с этой машины) | `server/index.mjs`, проверка: `/health` |
-| `device-sim` | `node:22-alpine` | — | симулятор 8 контроллеров |
-| `caddy` | `caddy:2-alpine` | `https://localhost:8443` | TLS (внутренний CA Caddy) → `server:3000` |
+| `mosquitto` | `eclipse-mosquitto:2.1.2-alpine` | `mqtts://localhost:8883` | MQTT только по TLS, Dynamic Security, анонимный вход запрещён; 1883 закрыт |
+| `server` | `node:22.23.4-alpine` | `http://localhost:3000` (только с этой машины) | `server/index.mjs`, проверка: `/health` |
+| `device-sim` | `node:22.23.4-alpine` | — | симулятор 8 контроллеров |
+| `caddy` | `caddy:2.11.7-alpine` | `https://localhost:8443` | TLS (внутренний CA Caddy) → `server:3000` |
 
 Контейнеры с Node ничего не скачивают: репозиторий вместе с `node_modules` хоста монтируется в `/repo` только для чтения.
 

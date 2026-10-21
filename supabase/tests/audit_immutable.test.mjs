@@ -184,21 +184,38 @@ describe('DDL над журналом', () => {
     });
   });
 
-  it('роль с CREATEROLE (postgres) может выдать себе bl_audit_owner, но журнал не меняет', async (t) => {
+  it('postgres больше не выдаёт себе доступ (decisions №39): вход закрыт, переключиться в неё некому', async (t) => {
+    const attrs = await db.pool.query(`
+      select r.rolcanlogin, r.rolcreaterole,
+             (select count(*)::int from pg_auth_members m where m.roleid = r.oid) as members
+        from pg_roles r where r.rolname = 'postgres'`);
+    assert.deepEqual(attrs.rows[0], { rolcanlogin: false, rolcreaterole: false, members: 0 });
+    // Даже от её имени (SET ROLE суперпользователем): без CREATEROLE свои роли не выдать.
     await asRole(db.pool, 'postgres', {}, async (c) => {
-      const grantErr = await tryQuery(c, 'grant bl_audit_owner to postgres');
-      if (grantErr) {
-        t.diagnostic(`postgres не может выдать себе bl_audit_owner: ${grantErr.message}`);
-      } else {
-        t.diagnostic('postgres (CREATEROLE) выдал себе bl_audit_owner — откатывается вместе с транзакцией');
+      for (const sql of [
+        'grant bl_audit_owner to postgres',
+        'grant bl_owner to postgres',
+        'grant app_api to postgres',
+        'grant pg_read_all_data to postgres',
+        ATTEMPTS.UPDATE,
+        ATTEMPTS.DELETE,
+        ATTEMPTS.TRUNCATE,
+        DDL['DISABLE TRIGGER USER'],
+        DDL['DROP TABLE'],
+      ]) {
+        assert.ok(await tryQuery(c, sql), `postgres смог: ${sql}`);
       }
-      await c.query('set local role bl_audit_owner').catch(() => {});
-      for (const sql of [ATTEMPTS.UPDATE, ATTEMPTS.DELETE, ATTEMPTS.TRUNCATE, DDL['DISABLE TRIGGER USER'], DDL['DROP TABLE']]) {
-        assert.ok(await tryQuery(c, sql), `прошло: ${sql}`);
-      }
+      // supautils выполняет ALTER ROLE за свою «привилегированную роль» postgres и без
+      // CREATEROLE — поэтому защита держится на NOLOGIN и отсутствии членов (выше).
+      const alter = await tryQuery(c, 'alter role app_api bypassrls');
+      t.diagnostic(`ALTER ROLE app_api от имени postgres: ${alter ? 'запрещён' : 'разрешён supautils (privileged_role)'}`);
     });
-    const { rows } = await db.pool.query("select count(*)::int as n from pg_auth_members where roleid = 'bl_audit_owner'::regrole");
-    assert.equal(rows[0].n, 0, 'членство откатилось');
+    const { rows } = await db.pool.query(
+      "select count(*)::int as n from pg_auth_members where roleid in ('bl_audit_owner'::regrole, 'pg_read_all_data'::regrole) and member = 'postgres'::regrole",
+    );
+    assert.equal(rows[0].n, 0);
+    const app = await db.pool.query("select rolbypassrls from pg_roles where rolname = 'app_api'");
+    assert.equal(app.rows[0].rolbypassrls, false, 'изменения откатились');
   });
 
   it('не мешает DDL вне журнала: изменение других таблиц и временные таблицы других ролей', async () => {

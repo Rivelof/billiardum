@@ -1,14 +1,19 @@
-// Протокол контроллера v1 (docs/protocol.md §3): канонический JSON, подпись HMAC-SHA256,
-// проверка команды. Тест — все векторы docs/protocol-vectors.json.
+// Протокол контроллера v1 (docs/protocol.md §2, §3): строгий JSON, канонический JSON,
+// подпись HMAC-SHA256, проверка команды. Тест — все векторы docs/protocol-vectors.json.
 
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 export const PROTOCOL_VERSION = 1;
 export const TOPIC_PREFIX = 'bl/v1';
 export const MAX_SAFE = Number.MAX_SAFE_INTEGER; // 2^53 − 1
+/** Предельные размеры сообщений, байт (§2). */
+export const MAX_CMD_BYTES = 2048;
+export const MAX_STATE_BYTES = 4096;
+export const MAX_EVENT_BYTES = 4096;
 const INTEGER_SOURCE = /^(0|-?[1-9][0-9]*)$/; // без +, ведущих нулей, точки, экспоненты и -0
 const PRINTABLE_ASCII = /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/; // 0x20–0x7E без " и \
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const SIG = /^[A-Za-z0-9+/]{43}=$/; // ровно 44 символа: base64 от 32 байт
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export class ProtocolError extends Error {
@@ -85,21 +90,56 @@ export function canonicalize(value, where = '$') {
 }
 
 /**
- * Разбор JSON с проверкой чисел по исходному тексту (reviver, context.source).
+ * Повторяющиеся ключи. Вызывается после JSON.parse и проверки на обратную косую черту:
+ * текст — корректный JSON, а каждая строка — от кавычки до следующей кавычки.
+ */
+function assertNoDuplicateKeys(raw) {
+  const stack = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (ch === '"') {
+      const end = raw.indexOf('"', i + 1);
+      let j = end + 1;
+      while (j < raw.length && (raw[j] === ' ' || raw[j] === '\t' || raw[j] === '\n' || raw[j] === '\r')) j += 1;
+      if (raw[j] === ':') {
+        const keys = stack.at(-1);
+        const key = raw.slice(i + 1, end);
+        if (keys.has(key)) throw badFormat(`повторяющийся ключ ${key}`);
+        keys.add(key);
+      }
+      i = end;
+    } else if (ch === '{') {
+      stack.push(new Set());
+    } else if (ch === '[') {
+      stack.push(null);
+    } else if (ch === '}' || ch === ']') {
+      stack.pop();
+    }
+  }
+}
+
+/**
+ * Строгий разбор (§3.1): JSON по RFC 8259 без обратной косой черты где угодно,
+ * без повторяющихся ключей, числа проверяются по исходному тексту (reviver, context.source):
+ * только целые в ±(2^53−1), без точки, экспоненты, ведущих нулей и -0.
  * Бросает ProtocolError('bad_format').
  */
 export function parseStrict(text) {
   const raw = Buffer.isBuffer(text) ? text.toString('utf8') : text;
   if (typeof raw !== 'string') throw badFormat('сообщение не строка');
+  if (raw.includes('\\')) throw badFormat('экранирование запрещено');
+  let value;
   try {
-    return JSON.parse(raw, function reviver(key, value, context) {
-      if (typeof value === 'number') checkNumber(value, context?.source, key || '$');
-      return value;
+    value = JSON.parse(raw, function reviver(key, v, context) {
+      if (typeof v === 'number') checkNumber(v, context?.source, key || '$');
+      return v;
     });
   } catch (err) {
     if (err instanceof ProtocolError) throw err;
     throw badFormat('JSON не разбирается');
   }
+  assertNoDuplicateKeys(raw);
+  return value;
 }
 
 function assertNoNestedSig(value, depth) {
@@ -126,13 +166,22 @@ export function signCanonical(canonical, key) {
   return createHmac('sha256', deviceKey(key)).update(canonical, 'utf8').digest('base64');
 }
 
+/** Обязательные поля и форматы (§3): иначе bad_format. */
 function checkRequired(cmd) {
   if (cmd === null || typeof cmd !== 'object' || Array.isArray(cmd)) throw badFormat('команда не объект');
   if (cmd.v !== PROTOCOL_VERSION) throw badFormat('v не 1');
-  if (typeof cmd.id !== 'string' || cmd.id.length === 0) throw badFormat('нет id');
-  if (typeof cmd.seq !== 'number' || cmd.seq < 0) throw badFormat('нет seq');
-  if (typeof cmd.type !== 'string' || cmd.type.length === 0) throw badFormat('нет type');
-  if (cmd.body === null || typeof cmd.body !== 'object' || Array.isArray(cmd.body)) throw badFormat('нет body');
+  if (!isUuid(cmd.id)) throw badFormat('id — UUID в нижнем регистре');
+  if (!Number.isSafeInteger(cmd.seq) || cmd.seq < 1) throw badFormat('seq — целое ≥ 1');
+  if (typeof cmd.type !== 'string' || cmd.type.length === 0) throw badFormat('type — непустая строка');
+  if (!Number.isSafeInteger(cmd.issued_at) || cmd.issued_at < 0) throw badFormat('issued_at — целое ≥ 0');
+  if (cmd.body === null || typeof cmd.body !== 'object' || Array.isArray(cmd.body)) throw badFormat('body — объект');
+}
+
+/** sig: ровно 44 символа канонического base64 от 32 байт. null — иначе (bad_sig). */
+function decodeSig(sig) {
+  if (typeof sig !== 'string' || !SIG.test(sig)) return null;
+  const buf = Buffer.from(sig, 'base64');
+  return buf.length === 32 && buf.toString('base64') === sig ? buf : null;
 }
 
 /**
@@ -144,6 +193,8 @@ export function verifyCommand(raw, key) {
   let cmd;
   let canonical;
   try {
+    const bytes = Buffer.isBuffer(raw) ? raw.length : Buffer.byteLength(String(raw), 'utf8');
+    if (bytes > MAX_CMD_BYTES) throw badFormat(`команда длиннее ${MAX_CMD_BYTES} байт`);
     cmd = parseStrict(raw);
     checkRequired(cmd);
     canonical = canonicalCommand(cmd);
@@ -152,8 +203,8 @@ export function verifyCommand(raw, key) {
     throw err;
   }
   const expected = createHmac('sha256', deviceKey(key)).update(canonical, 'utf8').digest();
-  const got = decodeBase64Strict(cmd.sig);
-  if (!got || got.length !== expected.length || !timingSafeEqual(got, expected)) {
+  const got = decodeSig(cmd.sig);
+  if (!got || !timingSafeEqual(got, expected)) {
     return { result: 'bad_sig', cmd, canonical };
   }
   return { result: 'ok', cmd, canonical };
@@ -166,10 +217,10 @@ export function verifyCommand(raw, key) {
 export function buildCommand({ id = randomUUID(), seq, type, body = {}, issuedAt = Math.floor(Date.now() / 1000) }, key) {
   const cmd = { v: PROTOCOL_VERSION, id, seq, type, issued_at: issuedAt, body };
   checkRequired(cmd);
-  if (!Number.isSafeInteger(seq) || seq < 1) throw badFormat('seq должен быть целым от 1');
   const canonical = canonicalCommand(cmd);
   const sig = signCanonical(canonical, key);
   const payload = `${canonical.slice(0, -1)},"sig":"${sig}"}`;
+  if (Buffer.byteLength(payload, 'utf8') > MAX_CMD_BYTES) throw badFormat(`команда длиннее ${MAX_CMD_BYTES} байт`);
   return { cmd: { ...cmd, sig }, canonical, payload };
 }
 

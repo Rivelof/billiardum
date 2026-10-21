@@ -1,6 +1,7 @@
 // `npm run ci`: то же, что .github/workflows/ci.yml, локально (контракт M0 §9).
-// lint → test → чистый Postgres (supabase/postgres) в отдельном контейнере
-// на свободном порту → db:migrate → db:seed → test:db → контейнер удаляется.
+// lint → test → test:it симулятора (свой брокер в Docker) → чистый Postgres
+// (supabase/postgres) в отдельном контейнере на свободном порту → db:migrate →
+// db:seed → test:db → контейнер удаляется.
 // Только синтетические данные сида (decisions №21). .env не читается.
 //
 //   npm run ci             — всё
@@ -78,6 +79,8 @@ async function main() {
     await runNpm(['run', 'lint']);
     log('test');
     await runNpm(['test']);
+    log('test:it симулятора');
+    await runNpm(['run', 'test:it', '-w', 'tools/device-sim']);
   }
 
   try {

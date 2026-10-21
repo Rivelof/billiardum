@@ -1,13 +1,17 @@
-// Проверка входящей команды — docs/protocol.md §3.1, шаги 1–2.
-// Шаг 3 (seq и id) — lib/replay.mjs, шаг 4 (тип и тело) — lib/machine.mjs.
+// Проверка входящей команды — docs/protocol.md §3 и §3.1, шаги 1–2.
+// Шаг 3 (seq и id) — lib/replay.mjs, шаг 4 (тип и тело) — lib/body.mjs и lib/machine.mjs.
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { LIMITS, canonicalize, parseStrict } from './canonical.mjs';
 
 export const PROTOCOL_VERSION = 1;
-export const REQUIRED_FIELDS = Object.freeze(['v', 'id', 'seq', 'type', 'body']);
+export const REQUIRED_FIELDS = Object.freeze(['v', 'id', 'seq', 'type', 'issued_at', 'body']);
 
-const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+// UUID в нижнем регистре (§3, таблица полей).
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// Ровно 44 символа: base64 от 32 байт, один `=` в конце. Последний значащий символ
+// несёт 2 лишних бита — они нулевые, иначе запись неканоническая.
+const SIG = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
@@ -19,14 +23,8 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isSeq(value) {
-  return Number.isSafeInteger(value) && value >= 1;
-}
-
 /**
- * Строгое base64 (стандартный алфавит, с `=`). Неканоническая запись
- * (ненулевые хвостовые биты) не принимается: иначе прошивка, сравнивающая строки,
- * и симулятор, сравнивающий байты, разошлись бы.
+ * Строгое base64 (стандартный алфавит, с `=`, канонические хвостовые биты) — для device_key в конфиге.
  * @returns {Buffer | null}
  */
 export function decodeBase64Strict(value) {
@@ -36,8 +34,16 @@ export function decodeBase64Strict(value) {
   return bytes;
 }
 
+/** `sig` по §3: ровно 44 символа base64 от 32 байт, иначе null. */
+export function decodeSig(value) {
+  if (typeof value !== 'string' || !SIG.test(value)) return null;
+  return Buffer.from(value, 'base64');
+}
+
+const badFormat = (reason) => ({ status: 'bad_format', reason, echo: { cmdId: null, seq: null, type: null } });
+
 /**
- * Разбирает и проверяет команду.
+ * Разбирает и проверяет команду: шаг 1 (`bad_format`) и шаг 2 (`bad_sig`).
  * @param {Buffer | Uint8Array | string} payload байты из MQTT
  * @param {Buffer} key device_key, 32 байта
  * @returns {{
@@ -47,51 +53,44 @@ export function decodeBase64Strict(value) {
  *   canonical?: string,
  *   echo: { cmdId: string | null, seq: number | null, type: string | null }
  * }}
- * `echo` — что можно вернуть в `ack`: только значения правильного вида, иначе null.
+ * `echo` — что вернуть в `ack`. После `bad_format` там всегда null (§4).
  */
 export function verifyCommand(payload, key) {
-  const echo = { cmdId: null, seq: null, type: null };
   const bytes = typeof payload === 'string' ? Buffer.from(payload, 'utf8') : payload;
-  if (bytes.length > LIMITS.maxBytes) return { status: 'bad_format', reason: 'too_large', echo };
+  if (bytes.length > LIMITS.maxBytes) return badFormat('too_large');
 
   let text;
   try {
     text = utf8.decode(bytes);
   } catch {
-    return { status: 'bad_format', reason: 'not_utf8', echo };
+    return badFormat('not_utf8');
   }
 
   const parsed = parseStrict(text);
-  if (!parsed.ok) return { status: 'bad_format', reason: parsed.reason, echo };
+  if (!parsed.ok) return badFormat(parsed.reason);
   const msg = parsed.value;
-  if (!isPlainObject(msg)) return { status: 'bad_format', reason: 'not_object', echo };
-
-  if (isUuid(msg.id)) echo.cmdId = msg.id;
-  if (isSeq(msg.seq)) echo.seq = msg.seq;
-  if (typeof msg.type === 'string' && msg.type !== '') echo.type = msg.type;
+  if (!isPlainObject(msg)) return badFormat('not_object');
 
   for (const field of REQUIRED_FIELDS) {
-    if (!Object.hasOwn(msg, field)) return { status: 'bad_format', reason: `missing_${field}`, echo };
+    if (!Object.hasOwn(msg, field)) return badFormat(`missing_${field}`);
   }
-  if (msg.v !== PROTOCOL_VERSION) return { status: 'bad_format', reason: 'bad_v', echo };
-  if (echo.cmdId === null) return { status: 'bad_format', reason: 'bad_id', echo };
-  if (echo.seq === null) return { status: 'bad_format', reason: 'bad_seq', echo };
-  if (echo.type === null) return { status: 'bad_format', reason: 'bad_type', echo };
-  if (!isPlainObject(msg.body)) return { status: 'bad_format', reason: 'bad_body', echo };
-  if (Object.hasOwn(msg, 'issued_at') && !Number.isSafeInteger(msg.issued_at)) {
-    return { status: 'bad_format', reason: 'bad_issued_at', echo };
-  }
+  if (msg.v !== PROTOCOL_VERSION) return badFormat('bad_v');
+  if (!isUuid(msg.id)) return badFormat('bad_id');
+  if (!Number.isSafeInteger(msg.seq) || msg.seq < 1) return badFormat('bad_seq');
+  if (typeof msg.type !== 'string' || msg.type === '') return badFormat('bad_type');
+  if (!Number.isSafeInteger(msg.issued_at) || msg.issued_at < 0) return badFormat('bad_issued_at');
+  if (!isPlainObject(msg.body)) return badFormat('bad_body_not_object');
 
+  const echo = { cmdId: msg.id, seq: msg.seq, type: msg.type };
   const canonical = canonicalize(msg, { omitTopLevel: 'sig' });
 
   // HMAC считается всегда, даже без sig: время ответа не зависит от того, что пришло.
   const expected = createHmac('sha256', key).update(canonical, 'utf8').digest();
   if (!Object.hasOwn(msg, 'sig')) return { status: 'bad_sig', reason: 'missing_sig', canonical, echo };
-  const given = decodeBase64Strict(msg.sig);
-  if (given === null) return { status: 'bad_sig', reason: 'sig_not_base64', canonical, echo };
-  // Длина HMAC публична; само сравнение байтов — за постоянное время.
-  const match = given.length === expected.length && timingSafeEqual(given, expected);
-  if (!match) return { status: 'bad_sig', reason: 'sig_mismatch', canonical, echo };
+  const given = decodeSig(msg.sig);
+  if (given === null) return { status: 'bad_sig', reason: 'sig_format', canonical, echo };
+  // Обе стороны — 32 байта; само сравнение — за постоянное время.
+  if (!timingSafeEqual(given, expected)) return { status: 'bad_sig', reason: 'sig_mismatch', canonical, echo };
 
   return { status: 'ok', cmd: msg, canonical, echo };
 }

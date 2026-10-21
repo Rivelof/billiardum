@@ -6,8 +6,8 @@
 // 3. Ставит зависимости на хосте, если их нет (в контейнерах npm не запускается).
 // 4. Создаёт dev-сертификаты брокера (scripts/dev-certs.mjs).
 // 5. Поднимает db и mosquitto и ждёт готовности.
-// 6. db:migrate, db:seed, provision:dev — с хоста.
-// 7. Поднимает server, device-sim, caddy и показывает логи server и device-sim.
+// 6. Останавливает старые server и device-sim; db:migrate, db:seed, provision:dev — с хоста.
+// 7. Заново поднимает server, device-sim (после провижининга), caddy и показывает их логи.
 
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -177,12 +177,19 @@ async function main() {
     await compose(['up', '-d', '--wait', '--wait-timeout', WAIT_TIMEOUT_S, '--force-recreate', '--no-deps', 'mosquitto']);
   }
 
+  // provision:dev меняет пароли и ключи устройств, миграции — схему. Старые server
+  // и device-sim останавливаем до этих шагов и запускаем заново только после них,
+  // чтобы оба прочитали актуальные ключи (из базы и deploy/dev/devices.json).
+  await compose(['stop', 'device-sim', 'server'], 'остановка server и device-sim');
+
   const env = envWithFile(ENV_FILE);
   for (const step of HOST_STEPS) {
     log(`npm run ${step.script}`);
     await runNpm(['run', step.script], { env });
   }
 
+  // Пересоздаём контейнеры, даже если их конфигурация не менялась: новый процесс
+  // читает свежие ключи. device-sim стартует после healthy server (depends_on).
   log('поднимаю server, device-sim, caddy');
   await compose(
     ['up', '-d', '--wait', '--wait-timeout', WAIT_TIMEOUT_S, '--force-recreate', '--no-deps', 'server', 'device-sim', 'caddy'],

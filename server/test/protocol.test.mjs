@@ -17,10 +17,10 @@ const vectorsFile = new URL('../../docs/protocol-vectors.json', import.meta.url)
 const { vectors } = JSON.parse(readFileSync(vectorsFile, 'utf8'));
 
 describe('docs/protocol-vectors.json', () => {
-  it('файл содержит векторы всех трёх исходов', () => {
+  it('файл содержит векторы всех трёх исходов (v1 — 38 векторов)', () => {
     const kinds = new Set(vectors.map((v) => v.expect));
     assert.deepEqual([...kinds].sort(), ['bad_format', 'bad_sig', 'ok']);
-    assert.ok(vectors.length >= 20);
+    assert.ok(vectors.length >= 38);
   });
 
   for (const v of vectors) {
@@ -66,6 +66,50 @@ describe('канонический JSON', () => {
     assert.throws(() => canonicalCommand({ v: 1, body: { sig: 'x' } }), (err) => err.code === 'bad_format');
     assert.throws(() => canonicalCommand({ v: 1, body: { list: [{ sig: 1 }] } }), (err) => err.code === 'bad_format');
     assert.equal(canonicalCommand({ v: 1, sig: 'x', body: {} }), '{"body":{},"v":1}');
+  });
+});
+
+describe('строгий JSON и форматы полей v1 (§3, §3.1)', () => {
+  const key = Buffer.alloc(32, 9);
+  const good = () => buildCommand({ id: '0192f3c1-6d1a-7c3e-9b2a-1f0e5d4c3b2a', seq: 5, type: 'ping', issuedAt: 10 }, key);
+
+  it('повторяющийся ключ на любом уровне и с пробелами перед двоеточием — bad_format', () => {
+    for (const raw of ['{"a":1,"b":{"x":1,"x":2}}', '{"a" :1, "a":2}', '{"l":[{"k":1},{"k":2,"k":3}]}']) {
+      assert.throws(() => parseStrict(raw), (err) => err.code === 'bad_format', raw);
+    }
+    assert.deepEqual(parseStrict('{"l":[{"k":1},{"k":2}],"k":{"k":0}}'), { l: [{ k: 1 }, { k: 2 }], k: { k: 0 } });
+  });
+
+  it('обратная косая черта где угодно — bad_format, в том числе в ключе', () => {
+    for (const raw of ['{"a":"\\u0041"}', '{"a\\/b":1}', '{"a":"x\\\\y"}']) {
+      assert.throws(() => parseStrict(raw), (err) => err.code === 'bad_format', raw);
+    }
+  });
+
+  it('команда длиннее 2048 байт — bad_format при проверке и при сборке', () => {
+    const { payload } = good();
+    const padded = `${payload.slice(0, -1)}${' '.repeat(2049 - payload.length)}}`;
+    assert.equal(Buffer.byteLength(padded), 2049);
+    assert.equal(verifyCommand(padded, key).result, 'bad_format');
+    assert.equal(verifyCommand(padded.replace(/ +}$/, '}'), key).result, 'ok');
+    assert.throws(() => buildCommand({ seq: 1, type: 'ota.start', body: { url: 'x'.repeat(2100) } }, key), (err) => err.code === 'bad_format');
+  });
+
+  it('sig: неканонический хвост base64, лишний символ, не строка — bad_sig', () => {
+    const { cmd } = good();
+    const last = cmd.sig[42];
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const twin = alphabet[alphabet.indexOf(last) ^ 1]; // те же 32 байта, другие «лишние» биты
+    for (const sig of [`${cmd.sig.slice(0, 42)}${twin}=`, `${cmd.sig}=`, `${cmd.sig.slice(0, -1)}`, 42, null]) {
+      assert.equal(verifyCommand(JSON.stringify({ ...cmd, sig }), key).result, 'bad_sig', String(sig));
+    }
+  });
+
+  it('сервер не собирает команду с неверным id, issued_at или body', () => {
+    assert.throws(() => buildCommand({ id: '0192F3C1-6D1A-7C3E-9B2A-1F0E5D4C3B2A', seq: 1, type: 'ping' }, key));
+    assert.throws(() => buildCommand({ seq: 1, type: 'ping', issuedAt: -1 }, key));
+    assert.throws(() => buildCommand({ seq: 1, type: 'ping', body: [] }, key));
+    assert.throws(() => buildCommand({ seq: 1, type: '' }, key));
   });
 });
 

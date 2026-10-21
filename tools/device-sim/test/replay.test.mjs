@@ -1,7 +1,7 @@
 // Таблица повторов §3.2 — чистая функция и через автомат с NVS.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideReplay } from '../lib/replay.mjs';
+import { ackPayload, decideReplay } from '../lib/replay.mjs';
 import { TableMachine, STATE_PERIOD_MS } from '../lib/machine.mjs';
 import { FakeClock } from '../lib/clock.mjs';
 import { MemoryNvs, NVS_KEYS } from '../lib/nvs.mjs';
@@ -11,7 +11,7 @@ const A = '0192f3c1-6d1a-7c3e-9b2a-0000000000a1';
 const B = '0192f3c1-6d1a-7c3e-9b2a-0000000000b2';
 
 test('§3.2 как таблица', () => {
-  const saved = { seq: 5, id: A, ack: '{"v":1}' };
+  const saved = { seq: 5, id: A, ok: true, error: null, state_seq: 3 };
   assert.equal(decideReplay(null, 1, A), 'execute');
   assert.equal(decideReplay(saved, 6, B), 'execute');
   assert.equal(decideReplay(saved, 500, A), 'execute');
@@ -19,18 +19,32 @@ test('§3.2 как таблица', () => {
   assert.equal(decideReplay(saved, 5, B), 'replayed');
   assert.equal(decideReplay(saved, 4, A), 'replayed');
   assert.equal(decideReplay(saved, 1, B), 'replayed');
-  assert.equal(decideReplay({ seq: 5, id: A, ack: null }, 5, A), 'replayed');
+  assert.equal(decideReplay({ seq: 5, id: null }, 5, A), 'replayed');
+});
+
+test('ack из блока NVS собирается байт в байт так же, как при ответе', () => {
+  assert.equal(
+    ackPayload({ id: A, seq: 5, ok: false, error: 'unknown_type', state_seq: 3 }),
+    `{"v":1,"cmd_id":"${A}","seq":5,"ok":false,"error":"unknown_type","state_seq":3}`,
+  );
+  assert.equal(ackPayload({ id: A, seq: 6, ok: true, error: null, state_seq: 4 }), `{"v":1,"cmd_id":"${A}","seq":6,"ok":true,"error":null,"state_seq":4}`);
 });
 
 function rig() {
   const clock = new FakeClock(1000);
   const nvs = new MemoryNvs();
-  const out = { acks: [], states: [], events: [], commands: [] };
+  const realSet = nvs.set.bind(nvs);
+  nvs.set = (k, v) => {
+    if (k === NVS_KEYS.replay) out.order.push('nvs:replay');
+    realSet(k, v);
+  };
+  const out = { acks: [], states: [], events: [], commands: [], order: [] };
   const machine = new TableMachine({
     deviceKey: Buffer.from(TEST_KEY_B64, 'base64'),
     clock,
     nvs,
     output: (m) => {
+      out.order.push(m.kind);
       if (m.kind === 'ack') out.acks.push(m.payload);
       if (m.kind === 'state') out.states.push(m.state);
       if (m.kind === 'event') out.events.push(JSON.parse(m.entry.payload));
@@ -46,13 +60,14 @@ function rig() {
   return { clock, nvs, out, machine, send };
 }
 
-test('seq больше сохранённого: исполнить, сохранить seq, id и ack одной записью', () => {
-  const { nvs, send, machine } = rig();
+test('seq больше сохранённого: исполнить → блок {seq, id, ok, error, state_seq} в NVS → ack', () => {
+  const { nvs, send, machine, out } = rig();
+  const from = out.order.length;
   const ack = send(makeCommand({ seq: 1, id: A, type: 'identify', body: { duration_ms: 10_000 } }));
   assert.deepEqual([ack.cmd_id, ack.seq, ack.ok, ack.error], [A, 1, true, null]);
-  const saved = nvs.get(NVS_KEYS.replay);
-  assert.deepEqual([saved.seq, saved.id], [1, A]);
-  assert.deepEqual(JSON.parse(saved.ack), ack);
+  assert.deepEqual(nvs.get(NVS_KEYS.replay), { seq: 1, id: A, ok: true, error: null, state_seq: ack.state_seq });
+  // Исполнение (state) → запись блока в NVS → ack.
+  assert.deepEqual(out.order.slice(from), ['state', 'nvs:replay', 'ack', 'command']);
   assert.equal(machine.snapshot().last_seq, 1);
   machine.stop();
 });
@@ -104,9 +119,9 @@ test('seq меньше сохранённого: replayed_seq и событие'
   send(makeCommand({ seq: 10, id: A }));
   const ack = send(makeCommand({ seq: 9, id: B }));
   assert.equal(ack.error, 'replayed_seq');
-  // Старый id с меньшим seq — тоже отказ.
+  // Старый id с меньшим seq — тоже отказ (событие — не чаще раза в 10 с, ack — всегда).
   assert.equal(send(makeCommand({ seq: 2, id: A })).error, 'replayed_seq');
-  assert.deepEqual(out.events.filter((e) => e.type === 'replayed_seq').map((e) => e.data.seq), [9, 2]);
+  assert.deepEqual(out.events.filter((e) => e.type === 'replayed_seq').map((e) => e.data.seq), [9]);
   machine.stop();
 });
 

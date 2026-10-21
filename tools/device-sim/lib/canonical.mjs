@@ -4,15 +4,16 @@
 
 const MAX_SAFE = (1n << 53n) - 1n;
 
-// Целое без знака «+», ведущих нулей, точки и экспоненты.
-const INTEGER_SOURCE = /^-?(?:0|[1-9][0-9]*)$/;
+// Целое без знака «+», ведущих нулей, точки, экспоненты; `-0` запрещён.
+const INTEGER_SOURCE = /^(?:0|-?[1-9][0-9]*)$/;
 
 // Печатный ASCII 0x20–0x7E без «"» (0x22) и «\» (0x5C).
 const PRINTABLE = /^[\x20\x21\x23-\x5B\x5D-\x7E]*$/;
 
-// Пределы симулятора (в протоколе не заданы, предложены в ревью M0).
-// Буфер MQTT на ESP32 конечен, а у ArduinoJson есть предел вложенности.
-export const LIMITS = Object.freeze({ maxBytes: 4096, maxDepth: 8 });
+const BACKSLASH = 0x5c;
+
+// Предел вложенности симулятора (в протоколе не задан; у ArduinoJson по умолчанию 10).
+export const LIMITS = Object.freeze({ maxBytes: 2048, maxDepth: 8 });
 
 if (!supportsSourceText()) {
   throw new Error('JSON.parse без context.source: нужен Node 22 и новее');
@@ -36,14 +37,18 @@ export class FormatError extends Error {
 }
 
 /**
- * Разбирает текст как JSON по правилам §3.1.
- * Числа проверяются по исходному тексту (третий аргумент reviver, context.source):
- * `1.0`, `9e5`, числа вне ±(2^53−1) — ошибка, даже если значение целое.
- * Строки и ключи — печатный ASCII без `"` и `\`; поле `sig` разрешено только на верхнем уровне.
+ * Разбирает текст как строгий JSON по правилам §3.1:
+ * - синтаксис RFC 8259 (JSON.parse);
+ * - обратная косая черта где угодно — ошибка (любое экранирование, даже `i` или `\/`);
+ * - повторяющиеся ключи — ошибка;
+ * - числа проверяются по исходному тексту (третий аргумент reviver, context.source):
+ *   `1.0`, `9e5`, `-0`, вне ±(2^53−1) — ошибка, даже если значение целое;
+ * - строки и ключи — печатный ASCII без `"` и `\`; поле `sig` разрешено только на верхнем уровне.
  * @param {string} text
  * @returns {{ ok: true, value: unknown } | { ok: false, reason: string }}
  */
 export function parseStrict(text) {
+  if (text.includes(String.fromCharCode(BACKSLASH))) return { ok: false, reason: 'backslash' };
   let numberError = null;
   let value;
   try {
@@ -57,6 +62,7 @@ export function parseStrict(text) {
     return { ok: false, reason: 'json_syntax' };
   }
   if (numberError) return { ok: false, reason: numberError };
+  if (hasDuplicateKey(text)) return { ok: false, reason: 'duplicate_key' };
   try {
     checkTree(value, 0);
   } catch (err) {
@@ -71,6 +77,40 @@ function checkNumberSource(source) {
   const n = BigInt(source);
   if (n > MAX_SAFE || n < -MAX_SAFE) return 'number_out_of_range';
   return null;
+}
+
+/**
+ * Повторяющиеся ключи: JSON.parse оставляет последний, поэтому ищем по тексту.
+ * Вызывается после успешного JSON.parse и без обратной косой черты в тексте,
+ * поэтому строка всегда кончается на следующей кавычке, а синтаксис уже верен.
+ * Так же просто это делается в прошивке до ArduinoJson.
+ */
+export function hasDuplicateKey(text) {
+  const stack = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === '"') {
+      const end = text.indexOf('"', i + 1);
+      const top = stack.at(-1);
+      if (top && top.keys && top.expectKey) {
+        const key = text.slice(i + 1, end);
+        if (top.keys.has(key)) return true;
+        top.keys.add(key);
+        top.expectKey = false;
+      }
+      i = end;
+    } else if (c === '{') {
+      stack.push({ keys: new Set(), expectKey: true });
+    } else if (c === '[') {
+      stack.push({ keys: null, expectKey: false });
+    } else if (c === '}' || c === ']') {
+      stack.pop();
+    } else if (c === ',') {
+      const top = stack.at(-1);
+      if (top && top.keys) top.expectKey = true;
+    }
+  }
+  return false;
 }
 
 function checkTree(node, depth) {
@@ -107,8 +147,8 @@ function emit(node, omit) {
   if (node === true) return 'true';
   if (node === false) return 'false';
   if (typeof node === 'number') {
-    if (!Number.isSafeInteger(node)) throw new FormatError('number_not_integer');
-    return Object.is(node, -0) ? '0' : String(node);
+    if (!Number.isSafeInteger(node) || Object.is(node, -0)) throw new FormatError('number_not_integer');
+    return String(node);
   }
   if (typeof node === 'string') {
     if (!PRINTABLE.test(node)) throw new FormatError('string_charset');

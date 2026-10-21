@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Интеграционный тест симулятора с настоящим брокером (контракт M0 §10).
-// Поднимает свой контейнер bl-sim-mqtt (eclipse-mosquitto:2, порт 18883) с временным
+// Поднимает свой контейнер bl-sim-mqtt (eclipse-mosquitto:2.1.2-alpine, decisions №40; порт 18883) с временным
 // конфигом: вход по паролю, ACL как у Dynamic Security (устройство — только свои топики),
 // TLS с одноразовым CA, если на хосте есть openssl (иначе mqtt:// и предупреждение).
 // Запускает test/integration.test.mjs и удаляет контейнер.
@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const NAME = 'bl-sim-mqtt';
-const IMAGE = 'eclipse-mosquitto:2';
+const IMAGE = 'eclipse-mosquitto:2.1.2-alpine';
 const PORT = 18883;
 const OBSERVER = 'bl-sim-it';
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
