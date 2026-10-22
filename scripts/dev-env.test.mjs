@@ -143,9 +143,12 @@ test('сборка фронтенда: без секретов .env и NODE_ENV,
 });
 
 test('параметры npm run dev', () => {
-  assert.deepEqual(parseDevArgs([]), { watchWeb: false });
-  assert.deepEqual(parseDevArgs(['--watch-web']), { watchWeb: true });
-  assert.throws(() => parseDevArgs(['--watch']), /--watch-web/);
+  assert.deepEqual(parseDevArgs([]), { watchWeb: false, restart: false, check: false });
+  assert.deepEqual(parseDevArgs(['--watch-web']), { watchWeb: true, restart: false, check: false });
+  assert.deepEqual(parseDevArgs(['--restart', '--watch-web']), { watchWeb: true, restart: true, check: false });
+  assert.deepEqual(parseDevArgs(['--check']), { watchWeb: false, restart: false, check: true });
+  assert.throws(() => parseDevArgs(['--watch']), /--watch-web.*--restart.*--check/);
+  assert.throws(() => parseDevArgs(['--check', '--restart']), /--check/);
 });
 
 test('без .env, но с томами прошлого запуска — понятная ошибка', () => {

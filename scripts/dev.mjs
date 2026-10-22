@@ -7,14 +7,24 @@
 // 3. Ставит зависимости на хосте, если их нет (в контейнерах npm не запускается).
 // 4. Создаёт dev-сертификаты брокера (scripts/dev-certs.mjs).
 // 5. Поднимает db и mosquitto и ждёт готовности; роли базы — в supautils.reserved_roles.
-// 6. Останавливает старые server, device-sim и kkt-bridge; db:migrate, db:seed,
-//    provision:dev и регистрация моста ККТ тестового клуба (если скрипт уже есть) — с хоста.
-// 7. Собирает web/guest и web/admin на хосте (vite build): у Vite нативный esbuild
+// 6. Решает, какие сервисы перезапустить (scripts/dev-code.mjs): процесс Node держит код,
+//    загруженный при старте, поэтому перезапускаются те, чей код (файлы сервиса, .env,
+//    ключи) изменился с их старта; остановленные и отсутствующие запускаются, остальные
+//    работают дальше. Mosquitto и db этот шаг не трогает никогда.
+// 7. Останавливает отставшие; с хоста — db:migrate (всегда, до старта server), db:seed,
+//    provision:dev и регистрация моста ККТ (только когда стартует server, нет ключей или
+//    --restart: они выдают новые ключи, и тогда перезапускаются device-sim и kkt-bridge).
+// 8. Собирает web/guest и web/admin на хосте (vite build): у Vite нативный esbuild
 //    под платформу хоста, в Linux-контейнере на macOS и Windows он не запустится.
-// 8. Заново поднимает server, device-sim (после провижининга), необязательные сервисы,
-//    чьи пакеты уже есть (yookassa-emu, kkt-emu, kkt-bridge), caddy и показывает логи.
+// 9. `docker compose up` для server, device-sim, необязательных сервисов, чьи пакеты уже
+//    есть (yookassa-emu, kkt-emu, kkt-bridge), и caddy; записывает отпечатки кода
+//    запущенных контейнеров (deploy/dev/code-state.json) и показывает логи.
 //
 //   npm run dev                  — всё по шагам выше
+//   npm run dev -- --restart     — перезапустить все сервисы Node и выдать новые ключи,
+//                                  даже если код не менялся (db, mosquitto, caddy — нет)
+//   npm run dev -- --check       — ничего не меняет: какие сервисы отстали от кода
+//                                  (код выхода 1 — npm run dev их перезапустит)
 //   npm run dev -- --watch-web   — ещё и `vite build --watch` обоих приложений на хосте
 //                                  рядом с логами (Ctrl+C останавливает и сборку)
 
@@ -25,6 +35,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
 import { ensureDevCerts } from './dev-certs.mjs';
+import { fingerprints, inspectContainers, nextState, planServices, readState, writeState } from './dev-code.mjs';
 import {
   capture,
   checkDocker,
@@ -35,6 +46,7 @@ import {
   envWithFile,
   fail,
   isMain,
+  DEVICES_FILE,
   KKT_TOKEN_FILE,
   makeLogger,
   missingDependencies,
@@ -259,17 +271,79 @@ function checkPackages() {
 
 /** Разбор параметров `npm run dev -- …`. */
 export function parseDevArgs(args) {
-  const opts = { watchWeb: false };
+  const opts = { watchWeb: false, restart: false, check: false };
   for (const a of args) {
     if (a === '--watch-web') opts.watchWeb = true;
-    else fail(`неизвестный параметр ${a}. Есть только --watch-web (пересборка фронтенда на лету).`);
+    else if (a === '--restart') opts.restart = true;
+    else if (a === '--check') opts.check = true;
+    else {
+      fail(
+        `неизвестный параметр ${a}. Есть --watch-web (пересборка фронтенда на лету), --restart (перезапустить ` +
+          'сервисы Node) и --check (только показать, что отстало от кода).',
+      );
+    }
   }
+  if (opts.check && (opts.restart || opts.watchWeb)) fail('--check только показывает план, без --restart и --watch-web.');
   return opts;
 }
 
 // Профили необязательных сервисов (OPTIONAL_SERVICES) включаются, только когда их файлы уже есть.
 let profileArgs = [];
 const dc = (...args) => composeArgs(ENV_FILE, ...profileArgs, ...args);
+
+/**
+ * Необязательные сервисы, которые запустятся после регистрации моста: все файлы есть,
+ * токена моста может ещё не быть, если его выдаст регистрация (canRegister).
+ */
+function candidateOptionalServices(canRegister) {
+  return OPTIONAL_SERVICES.filter((svc) =>
+    missingFiles(svc).every((p) => canRegister && join(ROOT, p) === KKT_TOKEN_FILE),
+  ).map((svc) => svc.service);
+}
+
+/** Строки в лог: что перезапускается и почему. Возвращает, нужно ли что-то (пере)запускать. */
+function logPlan(plan, dry = false) {
+  const groups = { start: [], restart: [], keep: [] };
+  for (const [s, a] of Object.entries(plan.actions)) groups[a.action].push(a.reason ? `${s} (${a.reason})` : s);
+  const will = dry ? 'npm run dev перезапустит' : 'перезапускаю';
+  if (groups.restart.length > 0) log(`${will}: ${groups.restart.join(', ')}`);
+  if (groups.start.length > 0) log(`${dry ? 'npm run dev запустит' : 'запускаю'}: ${groups.start.join(', ')}`);
+  if (groups.keep.length > 0) log(`на текущем коде${dry ? '' : ', не перезапускаю'}: ${groups.keep.join(', ')}`);
+  if (plan.provision) log(`provision:dev${plan.registerKkt ? ' и регистрация моста ККТ' : ''}: ${dry ? 'понадобятся' : 'да'} (новые ключи)`);
+  else if (plan.registerKkt) log(`регистрация моста ККТ: ${dry ? 'понадобится' : 'да'} (нет токена)`);
+  else log(`provision:dev ${dry ? 'не понадобится' : 'пропускаю'}: server не перезапускается, ключи устройств прежние`);
+  return groups.restart.length + groups.start.length > 0 || plan.provision || plan.registerKkt;
+}
+
+/** План перезапуска по текущему коду и контейнерам (scripts/dev-code.mjs). */
+function makePlan(opts, kktCmd) {
+  const candidates = ['server', 'device-sim', ...candidateOptionalServices(kktCmd !== null), 'caddy'];
+  const containers = inspectContainers();
+  const codes = fingerprints(candidates);
+  const plan = planServices({
+    services: candidates,
+    containers,
+    state: readState(),
+    codes,
+    force: opts.restart,
+    devicesFile: existsSync(DEVICES_FILE),
+    kktToken: existsSync(KKT_TOKEN_FILE),
+    kktRegister: kktCmd !== null,
+  });
+  return { plan, containers, codes };
+}
+
+/**
+ * `npm run dev -- --check`: ничего не меняет, только показывает, какие сервисы отстали от
+ * кода. Код выхода 1 — npm run dev что-то перезапустит или запустит.
+ */
+function checkOnly() {
+  checkDocker();
+  const { plan } = makePlan({ restart: false }, kktRegisterCommand());
+  const pending = logPlan(plan, true);
+  log(pending ? 'окружение отстало от кода: npm run dev' : 'все сервисы работают на текущем коде');
+  return pending ? 1 : 0;
+}
 
 /** Необязательные сервисы, которые можно запускать; про остальные — строка в лог. */
 function pickOptionalServices() {
@@ -380,6 +454,7 @@ async function main() {
   const [major] = process.versions.node.split('.').map(Number);
   if (major < 22) fail(`нужен Node 22 или новее, сейчас ${process.versions.node}.`);
   const opts = parseDevArgs(process.argv.slice(2));
+  if (opts.check) return checkOnly();
 
   checkDocker();
   ensureEnvFile();
@@ -403,24 +478,36 @@ async function main() {
   log('закрываю роли базы от привилегированной роли Supabase (supautils.reserved_roles)');
   await runChecked('docker', dc('exec', '-T', '-u', 'postgres', 'db', 'sh', '-s'), { stdinFile: RESERVED_ROLES_SCRIPT }, 'reserved-roles.sh');
 
-  // provision:dev меняет пароли и ключи устройств, регистрация моста — токен моста ККТ,
-  // миграции — схему. Старые server, device-sim и kkt-bridge останавливаем до этих шагов
-  // и запускаем заново только после них, чтобы все прочитали актуальные ключи (из базы,
-  // deploy/dev/devices.json и deploy/dev/kkt-bridge.token). Все профили: иначе Compose
-  // не остановил бы мост, если его пакет пропал.
-  await runChecked(
-    'docker',
-    composeArgs(ENV_FILE, ...ALL_PROFILE_ARGS, 'stop', 'kkt-bridge', 'device-sim', 'server'),
-    {},
-    'остановка server, device-sim и kkt-bridge',
-  );
+  // Что перезапускать (scripts/dev-code.mjs): только сервисы, чей код изменился с их старта,
+  // остановленные и отсутствующие — запустить. Mosquitto и db этот шаг не трогает.
+  const since = new Date(Date.now() - 5000).toISOString(); // логи этого запуска (с запасом на часы Docker)
+  const kktCmd = kktRegisterCommand();
+  const { plan, containers: before, codes: planCodes } = makePlan(opts, kktCmd);
+  logPlan(plan);
 
+  // Отставшие останавливаем до миграций, provision:dev и регистрации моста: новый процесс
+  // читает актуальную схему и ключи (из базы, deploy/dev/devices.json и
+  // deploy/dev/kkt-bridge.token). Все профили: иначе Compose не остановил бы мост, если его
+  // пакет пропал. Мост с новым токеном — с новым контейнером (журнал — от прежнего моста).
+  const toStop = Object.entries(plan.actions)
+    .filter(([s, a]) => a.action === 'restart' && !plan.recreate.includes(s))
+    .map(([s]) => s);
+  if (toStop.length > 0) {
+    await runChecked('docker', composeArgs(ENV_FILE, ...ALL_PROFILE_ARGS, 'stop', ...toStop), {}, `остановка ${toStop.join(', ')}`);
+  }
+  if (plan.recreate.length > 0) {
+    await runChecked('docker', composeArgs(ENV_FILE, ...ALL_PROFILE_ARGS, 'rm', '-f', '-s', ...plan.recreate), {}, `удаление ${plan.recreate.join(', ')}`);
+  }
+
+  // Миграции — всегда и до старта server: сервер не обгоняет схему.
   const env = envWithFile(ENV_FILE);
   for (const step of HOST_STEPS) {
+    if (step.script === 'provision:dev' && !plan.provision) continue;
     log(`npm run ${step.script}`);
     await runNpm(['run', step.script], { env });
   }
-  await registerKktBridge(env);
+  // Без скрипта регистрации registerKktBridge только пишет об этом в лог.
+  if (plan.registerKkt || !kktCmd) await registerKktBridge(env);
 
   // Необязательные сервисы — после регистрации моста: ему нужен её токен.
   const optional = pickOptionalServices();
@@ -430,15 +517,20 @@ async function main() {
   // Фронтенд — до caddy: он раздаёт готовые web/*/dist.
   const webWarnings = await buildWeb();
 
-  // Пересоздаём контейнеры, даже если их конфигурация не менялась: новый процесс
-  // читает свежие ключи. device-sim и kkt-bridge стартуют после healthy server, мост —
-  // ещё и после healthy kkt-emu (depends_on).
+  // `up` запускает остановленные и отсутствующие, пересоздаёт те, у кого изменилась
+  // конфигурация Compose (compose.yml, .env), работающие на текущем коде не трогает.
+  // device-sim и kkt-bridge стартуют после healthy server, мост — ещё и после healthy
+  // kkt-emu (depends_on).
   const services = ['server', 'device-sim', ...optional, 'caddy'];
+  const upCodes = fingerprints(services);
   log(`поднимаю ${services.join(', ')}`);
-  await compose(
-    ['up', '-d', '--wait', '--wait-timeout', WAIT_TIMEOUT_S, '--force-recreate', '--no-deps', ...services],
-    `запуск ${services.join(', ')}`,
-  ).catch((e) => showLogsOnFailure(services, e));
+  await compose(['up', '-d', '--wait', '--wait-timeout', WAIT_TIMEOUT_S, '--no-deps', ...services], `запуск ${services.join(', ')}`).catch((e) =>
+    showLogsOnFailure(services, e),
+  );
+  const after = inspectContainers();
+  writeState(nextState({ services, before, after, planCodes, upCodes }));
+  const restarted = services.filter((s) => !(before[s] && after[s] && before[s].id === after[s].id && before[s].startedAt === after[s].startedAt));
+  const fresh = restarted.length > 0 ? `запущены заново: ${restarted.join(', ')}` : 'ничего не перезапускалось: код сервисов не менялся';
 
   const files = readEnvFile(ENV_FILE);
   const pub = `https://${files.PUBLIC_HOST || 'localhost:8443'}`;
@@ -462,8 +554,9 @@ async function main() {
     mqtts://localhost:8883         брокер, CA: deploy/dev/certs/ca.crt
     localhost:54322                Postgres (пароли в .env)${kkt}
   ${devLogin}${anyMinutes}
+  ${fresh} (перезапустить все сервисы Node: npm run dev -- --restart)
 ${warn}
-  Ниже логи ${logServices.join(', ')}${opts.watchWeb ? ' и пересборки фронтенда' : ''}.
+  Ниже логи ${logServices.join(', ')} с начала этого запуска${opts.watchWeb ? ' и пересборки фронтенда' : ''}.
   Ctrl+C — выйти из логов${opts.watchWeb ? ' и остановить пересборку' : ''}, окружение продолжит работать.
   Остановить: npm run down   Стереть данные: npm run down -- --volumes
 `);
@@ -475,7 +568,7 @@ ${warn}
   process.on('SIGINT', () => {
     stopping = true;
   });
-  await run('docker', dc('logs', '-f', '--tail', 'all', ...logServices));
+  await run('docker', dc('logs', '-f', '--since', since, ...logServices));
   stopping = true;
   for (const w of watchers) if (w.exitCode === null) w.kill();
   log('логи закрыты. Состояние: docker compose -p billiardum ps   Остановить: npm run down');

@@ -5,7 +5,9 @@
 # Остановка: `npm run down`, со стиранием данных: `npm run down -- --volumes`.
 #
 # Контейнеры с Node не ставят пакеты: репозиторий монтируется только для чтения
-# вместе с node_modules хоста (pg и mqtt — чистый JS). Фронтенд (Vite, нативный
+# вместе с node_modules хоста (pg и mqtt — чистый JS). Процесс держит код, загруженный
+# при старте: повторный npm run dev перезапускает сервисы Node, чей код изменился
+# (scripts/dev-code.mjs), db и mosquitto — никогда. Фронтенд (Vite, нативный
 # esbuild под платформу хоста) в контейнерах не собирается: web/*/dist собирает
 # npm run dev на хосте, caddy только читает их.
 #
@@ -254,7 +256,8 @@ services:
   # npm run ci -- --config (scripts/ci-caddy-ws.mjs), вручную — kkt-bridge.host.json (README).
   # Токен — deploy/dev/kkt-bridge.token (права 0600, вне git), его пишет регистрация моста
   # в npm run dev. Журнал моста — /var/lib/kkt-bridge в контейнере: живёт, пока жив
-  # контейнер, как и память эмулятора (оба пересоздаёт npm run dev).
+  # контейнер (при новом токене npm run dev создаёт его заново); память эмулятора — пока
+  # жив процесс.
   # Профиль: стартует, только когда есть tools/kkt-bridge/index.mjs и токен.
   kkt-bridge:
     <<: *node-service
