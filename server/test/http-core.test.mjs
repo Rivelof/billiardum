@@ -13,6 +13,7 @@ import { createSseHub, formatEvent } from '../http/sse.mjs';
 import { httpRequest } from '../lib/http-client.mjs';
 import { createTelegramBot } from '../lib/telegram-bot.mjs';
 import { createHttpHandler } from '../http/server.mjs';
+import { HttpError, safeErrorData } from '../http/errors.mjs';
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const CLUB = 'c1000000-0000-4000-8000-000000000001';
@@ -61,6 +62,29 @@ describe('роутер', () => {
     { method: 'GET', path: '/api/items/{id}', auth: 'none', handler: async (_c, req) => ({ status: 200, json: { which: req.params.id } }) },
     { method: 'GET', path: '/api/boom', auth: 'none', handler: async () => { throw new Error('секрет +79991234567 в сообщении'); } },
     { method: 'GET', path: '/api/needs', auth: 'guest', requires: ['phone', 'consent'], handler: async () => ({ status: 200, json: {} }) },
+    {
+      method: 'GET',
+      path: '/api/conflict',
+      auth: 'none',
+      handler: async () => {
+        // Ошибка модуля в виде LightError/MoneyError: status, code и data.
+        const err = new Error('booking_start_required: детали только в лог');
+        Object.assign(err, {
+          status: 409,
+          code: 'booking_start_required',
+          data: { booking_id: 'b1000000-0000-4000-8000-000000000001', busy_until: '2026-10-22T18:30:00.000Z', phone: '+79991234567', note: 'текст', resource_id: 'не uuid' },
+        });
+        throw err;
+      },
+    },
+    {
+      method: 'GET',
+      path: '/api/conflict500',
+      auth: 'none',
+      handler: async () => {
+        throw new HttpError(503, 'not_configured', { data: { booking_id: 'b1000000-0000-4000-8000-000000000001' } });
+      },
+    },
   ];
 
   before(async () => {
@@ -140,6 +164,20 @@ describe('роутер', () => {
     assert.deepEqual(await (await fetch(`${srv.base}/api/needs`, { headers: h })).json(), { error: 'phone_required' });
     principal.hasPhone = true;
     principal.consents = ['v1'];
+  });
+
+  it('ошибка с данными: наружу только поля белого списка нужного вида (без ПДн); у 5xx — без данных', async () => {
+    const r = await fetch(`${srv.base}/api/conflict`);
+    assert.equal(r.status, 409);
+    assert.deepEqual(await r.json(), { error: 'booking_start_required', booking_id: 'b1000000-0000-4000-8000-000000000001', busy_until: '2026-10-22T18:30:00.000Z' });
+    assert.deepEqual(await (await fetch(`${srv.base}/api/conflict500`)).json(), { error: 'not_configured' });
+    assert.deepEqual(safeErrorData({ limit_until: new Date('2026-10-22T20:00:00Z'), retry_after_sec: 30, extend_limit_until: null, error: 'x' }), {
+      limit_until: '2026-10-22T20:00:00.000Z',
+      retry_after_sec: 30,
+      extend_limit_until: null,
+    });
+    assert.equal(safeErrorData({ phone: '+79991234567' }), null);
+    assert.equal(safeErrorData('booking_id'), null);
   });
 
   it('маршрут объявлен дважды — ошибка при сборке', () => {

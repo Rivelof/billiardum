@@ -442,7 +442,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
       } else if (err?.message && err.message !== e.code) {
         app.log.debug('http_reject', { route: route?.path ?? null, code: e.code, detail: err.message });
       }
-      if (!res.headersSent) send(res, e.status, { error: e.code }, e.headers ?? {}, []);
+      if (!res.headersSent) send(res, e.status, { error: e.code, ...(e.data ?? {}) }, e.headers ?? {}, []);
       else res.destroy();
       return true;
     } finally {

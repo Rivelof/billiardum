@@ -159,6 +159,24 @@ describe('пользователь платформы', () => {
     });
   });
 
+  it('пояс клуба (0707): UTC и IANA Область/Место — да; MSK, posix/…, right/… — нет', async () => {
+    const ok = await db.pool.query(
+      "select tz, bl.is_valid_timezone(tz) as ok from unnest(array['Europe/Moscow','Asia/Yekaterinburg','America/Argentina/Buenos_Aires','UTC','MSK','posix/Europe/Moscow','right/UTC','Europe/Nowhere','EST5EDT']) tz",
+    );
+    assert.deepEqual(Object.fromEntries(ok.rows.map((r) => [r.tz, r.ok])), {
+      'Europe/Moscow': true,
+      'Asia/Yekaterinburg': true,
+      'America/Argentina/Buenos_Aires': true,
+      UTC: true,
+      MSK: false,
+      'posix/Europe/Moscow': false,
+      'right/UTC': false,
+      'Europe/Nowhere': false,
+      EST5EDT: false,
+    });
+    await assert.rejects(db.pool.query("update bl.clubs set timezone = 'MSK' where id = $1", [CLUB_A]), (err) => err.code === '23514');
+  });
+
   it('согласия: свои видны и пишутся, чужие — нет', async () => {
     await asRole(db.pool, 'app_api', { userId: GUEST, actorType: 'user' }, async (c) => {
       assert.equal(await count(c, 'consents'), 1);

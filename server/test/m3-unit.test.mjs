@@ -63,3 +63,11 @@ describe('цепочка и сводка', () => {
     assert.doesNotMatch(summaryText({ ...base, manual_actions: { count: 1, automatic: { count: 0, by_action: {} } } }), /автоматических/);
   });
 });
+
+describe('пояс клуба: только известные Intl (server/lib/timezone.mjs)', () => {
+  it('IANA из Intl.supportedValuesOf и UTC — да; сокращения, posix/…, мусор — нет', async () => {
+    const { isValidTimeZone } = await import('../lib/timezone.mjs');
+    for (const tz of ['Europe/Moscow', 'Asia/Yekaterinburg', 'Asia/Vladivostok', 'UTC']) assert.equal(isValidTimeZone(tz), true, tz);
+    for (const tz of ['MSK', 'posix/Europe/Moscow', 'right/UTC', 'Europe/Nowhere', '', null, 'x'.repeat(100)]) assert.equal(isValidTimeZone(tz), false, String(tz));
+  });
+});
