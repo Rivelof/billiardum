@@ -190,6 +190,7 @@ class Machine {
   void leaveCurrent(int64_t now);
   void toFree();
   void beginSession(int64_t now, const SavedSession& p, int64_t offlineResumes);
+  void continueSession(int64_t now, const SavedSession& p);
   int phaseAt(int64_t now) const;
   void applyPhase(int64_t now, bool byCommand);
   void fireSignal(int64_t now, int phase);

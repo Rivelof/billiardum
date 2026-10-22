@@ -401,10 +401,15 @@ export class TableMachine {
         const wasOn = this.#relayOn();
         this.#abortOta();
         this.#resolveBootWait();
-        this.#leaveCurrent(now);
-        this.#beginSession(now, {
+        const p = {
           id: body.session_id, remaining: body.remaining_ms, warn: body.warn_ms, grace: body.grace_ms, buzzer: body.buzzer,
-        }, 0);
+        };
+        if (this.#session?.id === p.id) {
+          this.#continueSession(now, p);
+        } else {
+          this.#leaveCurrent(now);
+          this.#beginSession(now, p, 0);
+        }
         if (!wasOn && this.#relayOn()) this.#output({ kind: 'relay', on: true, cmd_id: cmd.id, type: cmd.type });
         return OK;
       }
@@ -506,6 +511,24 @@ export class TableMachine {
       id: p.id, endAt: now + p.remaining, warn: [...p.warn], grace: p.grace, buzzer: p.buzzer,
       signaled: 0, graceEndAt: null, offlineResumes,
     };
+    this.#applyPhase(now, true);
+    this.#saveSession(now);
+  }
+
+  /**
+   * session.start / session.resume той же сессии (возврат онлайн, перезапуск сервера, сверка):
+   * остаток и параметры заменяются, а фаза и прозвучавшие сигналы сохраняются — сигнал только при
+   * переходе в другую фазу, как у session.extend (§5: команда в пределах той же фазы сигнала не даёт).
+   */
+  #continueSession(now, p) {
+    const s = this.#session;
+    s.endAt = now + p.remaining;
+    s.warn = [...p.warn];
+    s.grace = p.grace;
+    s.buzzer = p.buzzer;
+    s.graceEndAt = null;
+    s.offlineResumes = 0; // §5 правило 4: сервер ответил — offline_resumes = 0
+    this.#graceBlinkAt = null;
     this.#applyPhase(now, true);
     this.#saveSession(now);
   }

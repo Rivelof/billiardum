@@ -460,7 +460,6 @@ Machine::Exec Machine::execute(CmdType type, const std::string& cmdId, const Jso
       bool wasOn = relayOn();
       abortOta();
       resolveBootWait();
-      leaveCurrent(now);
       SavedSession p;
       p.id = body.sessionId;
       p.remaining = body.remainingMs;
@@ -468,7 +467,12 @@ Machine::Exec Machine::execute(CmdType type, const std::string& cmdId, const Jso
       p.warn[1] = body.warn[1];
       p.grace = body.graceMs;
       p.buzzer = body.buzzer;
-      beginSession(now, p, 0);
+      if (hasSession_ && session_.id == p.id) {
+        continueSession(now, p);
+      } else {
+        leaveCurrent(now);
+        beginSession(now, p, 0);
+      }
       if (!wasOn && relayOn()) out_->relayOn(cmdId, cmdTypeName(type));
       return ok;
     }
@@ -576,6 +580,22 @@ void Machine::beginSession(int64_t now, const SavedSession& p, int64_t offlineRe
   session_.signaled = 0;
   session_.graceEndAt = kNoDeadline;
   session_.offlineResumes = offlineResumes;
+  applyPhase(now, true);
+  saveSession(now);
+}
+
+// session.start / session.resume той же сессии (возврат онлайн, перезапуск сервера, сверка):
+// остаток и параметры заменяются, а фаза и прозвучавшие сигналы сохраняются — сигнал только при
+// переходе в другую фазу, как у session.extend (§5: команда в пределах той же фазы сигнала не даёт).
+void Machine::continueSession(int64_t now, const SavedSession& p) {
+  session_.endAt = now + p.remaining;
+  session_.warn[0] = p.warn[0];
+  session_.warn[1] = p.warn[1];
+  session_.grace = p.grace;
+  session_.buzzer = p.buzzer;
+  session_.graceEndAt = kNoDeadline;
+  session_.offlineResumes = 0;  // §5 правило 4: сервер ответил — offline_resumes = 0
+  graceBlinkAt_ = kNoDeadline;
   applyPhase(now, true);
   saveSession(now);
 }

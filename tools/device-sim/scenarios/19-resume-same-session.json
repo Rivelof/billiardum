@@ -1,0 +1,33 @@
+{
+  "name": "session.resume и session.start той же сессии не повторяют сигналы",
+  "description": "Сервер шлёт resume при возврате онлайн, после своего перезапуска и по сверке. Та же session_id сохраняет фазу и прозвучавшие сигналы: в пределах фазы сигнала нет, при переходе в другую фазу — один раз (§5). Двойное мигание, начатое по времени, не обрывается. Новая сессия — сигналы с нуля.",
+  "steps": [
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000019", "remaining_ms": 400000, "buzzer": true } },
+    { "advance_ms": 100000 },
+    { "expect": { "mode": "ending", "led": "yellow_blink", "remaining_ms": 300000, "signals": { "warn": 1, "beep": 2, "blink2": 0 } } },
+    { "cmd": "session.resume", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000019", "remaining_ms": 290000, "buzzer": true } },
+    { "expect": { "mode": "ending", "led": "yellow_blink", "relay": true, "remaining_ms": 290000, "signals": { "warn": 1, "beep": 2, "blink2": 0 },
+      "nvs_session": { "remaining_ms": 290000, "offline_resumes": 0 } } },
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000019", "remaining_ms": 280000, "buzzer": true } },
+    { "expect": { "mode": "ending", "remaining_ms": 280000, "signals": { "warn": 1, "beep": 2, "blink2": 0 } } },
+    { "advance_ms": 220300 },
+    { "expect": { "mode": "ending", "remaining_ms": 59700, "lamp": true, "signals": { "warn": 1, "blink2": 1 } } },
+    { "advance_ms": 300 },
+    { "expect": { "lamp": false } },
+    { "cmd": "session.resume", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000019", "remaining_ms": 59000, "buzzer": true } },
+    { "expect": { "mode": "ending", "lamp": false, "remaining_ms": 59000, "signals": { "warn": 1, "beep": 2, "blink2": 1 } } },
+    { "advance_ms": 300 },
+    { "expect": { "lamp": true, "signals": { "blink2": 1 } } },
+    { "cmd": "session.resume", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000019", "remaining_ms": 50000, "buzzer": true } },
+    { "expect": { "lamp": true, "signals": { "warn": 1, "beep": 2, "blink2": 1 } } },
+    { "cmd": "session.resume", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000019", "remaining_ms": 200000, "buzzer": true } },
+    { "expect": { "mode": "ending", "remaining_ms": 200000, "signals": { "warn": 2, "beep": 4, "blink2": 1 } } },
+    { "cmd": "session.resume", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000019", "remaining_ms": 1000000, "buzzer": true } },
+    { "expect": { "mode": "active", "led": "off", "remaining_ms": 1000000, "signals": { "warn": 2 } } },
+    { "advance_ms": 700000 },
+    { "expect": { "mode": "ending", "remaining_ms": 300000, "signals": { "warn": 3, "beep": 6 } } },
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000020", "remaining_ms": 200000, "buzzer": true } },
+    { "expect": { "mode": "ending", "session_id": "0192f3c0-0000-7000-8000-000000000020", "remaining_ms": 200000, "signals": { "warn": 4, "beep": 8, "blink2": 1 } } },
+    { "events": ["boot"] }
+  ]
+}

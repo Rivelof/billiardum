@@ -183,6 +183,7 @@ curl -s -X POST -H 'content-type: application/json' -d '{"up":false}' 127.0.0.1:
 | `16-lamp-fault` | неисправная лампа, `current_confirm_ms` |
 | `17-misc` | `identify`, `config.set` переживает перезагрузку, `ota.start` и его прерывание |
 | `18-caps-relay-only` | готовое реле без индикатора, пищалки и датчика (путь B) |
+| `19-resume-same-session` | `session.resume` и `session.start` той же сессии: фаза и сигналы сохраняются, мигание не обрывается; новая сессия — сигналы с нуля |
 
 ## Где протокол оставляет выбор
 
@@ -190,6 +191,7 @@ curl -s -X POST -H 'content-type: application/json' -d '{"up":false}' 127.0.0.1:
 
 **Команды и состояния**
 - `session.start` и `session.resume` принимаются из любого состояния, сервер главный: идущая сессия, сервис, `pending`/`reserved` и обновление прошивки заменяются новой сессией.
+- `session.start` и `session.resume` с `session_id` идущей сессии её не заменяют: остаток, `warn_ms`, `grace_ms`, `buzzer` обновляются, фаза и прозвучавшие сигналы сохраняются, начатое мигание не обрывается. Сигнал — только если остаток попал в другую фазу, как у `session.extend`. Сервер шлёт `resume` при каждом возврате онлайн и по сверке, поэтому в `ending` стол не пищит после каждого сбоя связи.
 - `session.extend` и `session.stop` без идущей сессии с тем же `session_id` — `wrong_session`. В окне ожидания после загрузки `session.stop` с `session_id` сессии из NVS стирает её и отвечает `ok`.
 - Во время сессии (`active`, `ending`, `grace`) `service.start`, `state.pending` и `state.reserved` — `wrong_session`. `state.pending` и `state.reserved` в `service` — тоже `wrong_session`.
 - `state.free` принимается из любого состояния и гасит свет: сервер главный.

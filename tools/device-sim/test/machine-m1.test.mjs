@@ -125,3 +125,71 @@ test('state.free в окне ожидания стирает сессию из N
   assert.equal(b.snapshot().mode, 'free');
   b.stop();
 });
+
+// Дефект ревью: сервер шлёт session.resume при каждом возврате онлайн, после своего перезапуска
+// и по сверке — в ending стол пищал после каждого сбоя. Та же сессия сигналы не повторяет (§5).
+test('session.resume той же сессии в ending: ни писка, ни мигания, ни relay; новая сессия — сигналы с нуля', () => {
+  const { clock, out, send, machine } = rig();
+  send('session.start', { session_id: S, remaining_ms: 400_000, buzzer: true });
+  clock.advance(100_000);
+  const signals = () => out.all.filter((m) => m.kind === 'signal').map((m) => `${m.name}:${m.beeps}`);
+  assert.deepEqual(signals(), ['warn:2']);
+  for (let i = 0; i < 5; i += 1) {
+    machine.setOnline(false);
+    clock.advance(10_000);
+    machine.setOnline(true);
+    const ack = send('session.resume', { session_id: S, remaining_ms: machine.snapshot().remaining_ms, buzzer: true });
+    assert.equal(ack.ok, true);
+  }
+  assert.deepEqual(signals(), ['warn:2'], 'пять возвратов онлайн — без сигналов');
+  assert.equal(out.all.filter((m) => m.kind === 'relay').length, 1);
+  assert.equal(machine.snapshot().mode, 'ending');
+  assert.equal(machine.snapshot().led, 'yellow_blink');
+  // Порог warn_ms[1] по времени — один раз, повтор resume в этой фазе — тишина.
+  clock.advance(machine.snapshot().remaining_ms - 60_000);
+  assert.deepEqual(signals(), ['warn:2', 'blink2:0']);
+  send('session.resume', { session_id: S, remaining_ms: 55_000, buzzer: true });
+  clock.advance(1000);
+  assert.deepEqual(signals(), ['warn:2', 'blink2:0']);
+  assert.equal(machine.lamp, true);
+  // Другая сессия — сигналы с нуля.
+  send('session.start', { session_id: '0192f3c0-0000-7000-8000-0000000000c2', remaining_ms: 50_000, buzzer: true });
+  assert.deepEqual(signals(), ['warn:2', 'blink2:0', 'blink2:0']);
+  machine.stop();
+});
+
+test('session.resume той же сессии из льготы: выход из льготы, сигнал новой фазы один раз', () => {
+  const { clock, out, send, machine } = rig();
+  send('session.start', { session_id: S, remaining_ms: 30_000, grace_ms: 120_000, buzzer: true });
+  clock.advance(40_000);
+  assert.equal(machine.snapshot().mode, 'grace');
+  const signals = () => out.all.filter((m) => m.kind === 'signal' && m.name !== 'grace_blink').map((m) => m.name);
+  assert.deepEqual(signals(), ['blink2', 'grace']);
+  send('session.resume', { session_id: S, remaining_ms: 200_000, buzzer: true });
+  assert.equal(machine.snapshot().mode, 'ending');
+  assert.equal(machine.lamp, true, 'мигание льготы снято');
+  send('session.resume', { session_id: S, remaining_ms: 190_000, buzzer: true });
+  assert.deepEqual(signals(), ['blink2', 'grace', 'warn']);
+  // Мигание льготы больше не идёт.
+  const before = out.all.filter((m) => m.name === 'grace_blink').length;
+  clock.advance(60_000);
+  assert.equal(out.all.filter((m) => m.name === 'grace_blink').length, before);
+  machine.stop();
+});
+
+test('session.resume той же сессии после продолжения без сервера: offline_resumes = 0, остаток сервера', () => {
+  const nvs = new MemoryNvs();
+  const a = rig({ nvs });
+  a.send('session.start', { session_id: S, remaining_ms: 600_000, buzzer: true });
+  a.clock.advance(60_000);
+  a.machine.stop();
+  const b = rig({ nvs });
+  b.clock.advance(BOOT_WAIT_MS);
+  assert.equal(b.machine.snapshot().mode, 'active');
+  assert.equal(nvs.get(NVS_KEYS.session).offline_resumes, 1);
+  b.machine.handleCommand(Buffer.from(signed(makeCommand({ seq: 2, type: 'session.resume', body: { session_id: S, remaining_ms: 500_000, buzzer: true } }))));
+  assert.equal(b.out.acks.at(-1).ok, true);
+  assert.equal(b.machine.snapshot().remaining_ms, 500_000);
+  assert.deepEqual([nvs.get(NVS_KEYS.session).remaining_ms, nvs.get(NVS_KEYS.session).offline_resumes], [500_000, 0]);
+  b.machine.stop();
+});
