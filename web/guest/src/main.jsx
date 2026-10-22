@@ -5,6 +5,7 @@ import '@billiardum/shared/tokens.css';
 import '@billiardum/shared/ui.css';
 import '@billiardum/shared/hall.css';
 import './styles/app.css';
+import './styles/redesign.css';
 import { App } from './app.jsx';
 import { configureApi } from './lib/api.js';
 import { loadMe, tryMiniAppLogin } from './lib/auth.js';

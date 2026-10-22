@@ -104,8 +104,9 @@ export function App() {
     if (!membership || !screen) return <Redirect to={BASE} />;
     if (!screen.allow(membership.role)) return <Redirect to={homeFor(membership)} />;
     setClub(membership.club_id); // X-Club-Id для маршрутов без {club} (§14)
-    // Отчёт смены (/shift/{id}) — только управляющему и владельцу; у других экранов вложенных путей нет
-    if (params.id && !(params.screen === 'shift' && can.reports(membership.role))) return <Redirect to={homeFor(membership)} />;
+    // Вложенные пути: отчёт смены (/shift/{id}) — управляющему и владельцу; терминалы (/staff/terminals) — владельцу
+    const nested = (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals');
+    if (params.id && !nested) return <Redirect to={homeFor(membership)} />;
     const ctx = {
       club: membership,
       role: membership.role,

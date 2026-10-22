@@ -7,6 +7,7 @@ import '@billiardum/shared/hall.css';
 import './styles/admin.css';
 import './styles/m2.css';
 import './styles/m3.css';
+import './styles/redesign.css';
 import { App } from './app.jsx';
 import { configureApi } from './lib/api.js';
 import { loadMe } from './lib/auth.js';

@@ -114,3 +114,15 @@ test('бронь на плане зала (M3): свободный стол с �
   assert.equal(offered.word, 'Из очереди до 21:00');
   assert.match(offered.spoken, /предложен гостю из очереди/);
 });
+
+test('иллюстрации пустых состояний: линейные SVG без style и внешних ссылок, на currentColor', async () => {
+  const { illustration, ILLUSTRATIONS } = await import('../illustrations.mjs');
+  assert.ok(ILLUSTRATIONS.length >= 5);
+  for (const name of ILLUSTRATIONS) {
+    const svg = illustration(name);
+    assert.match(svg, /^<svg class="ill" viewBox="0 0 120 96" aria-hidden="true"/);
+    assert.doesNotMatch(svg, /style=|https?:|<script|#[0-9a-f]{3,6}/i, name);
+    assert.match(svg, /currentColor/);
+  }
+  assert.equal(illustration('nope'), illustration('rack'), 'неизвестное имя — пустой стол');
+});

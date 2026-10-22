@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'preact/hooks';
+import { Ill } from '../components/Ill.jsx';
 import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
 import { availableChannels, channelsOrder, moveChannel, primaryChannel } from '@billiardum/shared/booking';
 import { Header } from '../components/Header.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { Dialog } from '../components/Dialog.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
+import { BotCode } from '../components/BotCode.jsx';
 import { SignedInAs } from '../components/SignedInAs.jsx';
 import { SignIn } from './SignIn.jsx';
 import { api } from '../lib/api.js';
-import { auth } from '../lib/auth.js';
+import { auth, loadMe } from '../lib/auth.js';
 import { useStore } from '../lib/store.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE, MOCK } from '../lib/env.js';
@@ -18,6 +20,7 @@ import { subscribePush } from '../lib/push.js';
 import { safeRedirectUrl } from '../lib/urls.js';
 import { getFlow, lastClub, setFlow } from '../lib/flow.js';
 import '../styles/m3.css';
+import '../styles/m3-redesign.css';
 
 const DAYS = ['день', 'дня', 'дней'];
 const CHANNEL = {
@@ -113,8 +116,15 @@ export function ProfileScreen({ search }) {
               {balance === null ? <p class="muted loading">Загружаем…</p> : null}
               {balance?.minutes > 0 ? (
                 <div class="balance">
-                  <span class="balance__hours display">{minutesWords(balance.minutes)}</span>
-                  <span class="balance__sub">{club?.name ?? 'В клубе'}</span>
+                  {/* Жетон клуба: часы на балансе как карта гостя — орех, латунная кайма */}
+                  <div class="token" data-theme="dark">
+                    <span class="token__brand">
+                      <span class="token__mark display">Бильярдум</span>
+                      <span>{club?.name ?? 'Клуб'}</span>
+                    </span>
+                    <span class="token__hours display">{minutesWords(balance.minutes)}</span>
+                    <span class="token__label">на балансе клуба</span>
+                  </div>
                   {balance.lots?.length ? (
                     <ul class="lots" aria-label="Пакеты на балансе">
                       {balance.lots.map((l) => (
@@ -128,7 +138,7 @@ export function ProfileScreen({ search }) {
                   <span class="hint">Сначала списываются часы, которые сгорят раньше. Оплатите ими игру у стола — при оплате выберите часы пакета.</span>
                 </div>
               ) : balance ? (
-                <p class="empty">Пакетов пока нет. Пакет — это часы игры дешевле, чем по тарифу: ими можно оплатить игру у стола.</p>
+                <p class="empty"><Ill name="rack" />Пакетов пока нет. Пакет — это часы игры дешевле, чем по тарифу: ими можно оплатить игру у стола.</p>
               ) : null}
             </section>
 
@@ -256,6 +266,8 @@ export function NotifyScreen() {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
+  // Подключение бота: код с экрана (ревью входа п. 2) — показываем его и кнопку в бота, а не уводим сразу
+  const [botPending, setBotPending] = useState(null);
   const iosHint = pushAvailability() === 'ios-install' || (isIos() && !isStandalone());
 
   useEffect(() => {
@@ -263,6 +275,19 @@ export function NotifyScreen() {
     setPrimary(primaryChannel(user));
     setOrder(channelsOrder(user.channels_order, primaryChannel(user), availableChannels(user)));
   }, [user?.notify_channel, (user?.channels_order ?? []).join(), available.join()]);
+
+  // Вернулись из мессенджера — перечитать каналы профиля
+  useEffect(() => {
+    if (!botPending) return undefined;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loadMe().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [botPending?.code]);
+  useEffect(() => {
+    if (botPending && linked[botPending.channel]) setBotPending(null);
+  }, [botPending?.channel, linked[botPending?.channel ?? 'max']]);
 
   const choose = (c) => {
     setPrimary(c);
@@ -304,7 +329,8 @@ export function NotifyScreen() {
       } else {
         const res = await api.botLink(c);
         const url = safeRedirectUrl(res?.deep_link);
-        if (url) window.location.assign(url);
+        if (url && res?.code) setBotPending({ channel: c, code: res.code, url });
+        else if (url) window.location.assign(url);
       }
     } catch (err) {
       setError(err);
@@ -366,6 +392,22 @@ export function NotifyScreen() {
                 })}
               </ol>
             </fieldset>
+
+            {botPending ? (
+              <section class="botlink" aria-labelledby="botlink-title">
+                <h2 class="step__label" id="botlink-title">
+                  Подключение {CHANNEL[botPending.channel]?.name ?? botPending.channel}
+                </h2>
+                <BotCode code={botPending.code} />
+                <a class="btn btn--primary btn--block btn--lg" href={botPending.url} target="_blank" rel="noopener noreferrer">
+                  Открыть {CHANNEL[botPending.channel]?.name ?? botPending.channel}
+                  <Icon name="external" />
+                </a>
+                <button type="button" class="btn btn--link" onClick={() => setBotPending(null)}>
+                  Отмена
+                </button>
+              </section>
+            ) : null}
 
             {iosHint ? (
               <section class="note note--lamp" aria-labelledby="ios-title">

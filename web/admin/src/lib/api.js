@@ -178,6 +178,12 @@ export const api = {
   /** Отозвать доступ в один шаг: членство, PIN и все токены сотрудника. */
   revokeStaff: (club, userId) => client.request('DELETE', `/clubs/${e(club)}/staff/${e(userId)}`),
   revokeInvite: (club, inviteId) => client.request('DELETE', `/clubs/${e(club)}/staff/invites/${e(inviteId)}`),
+  /** Терминалы ресепшена (владелец): [{ id, name, created_by: { user_id, name }, created_at, expires_at, last_used_at, revoked_at, locked_at }]. */
+  terminals: (club) => client.get(`/clubs/${e(club)}/terminals`),
+  /** Отзыв терминала: PIN-входы на нём гаснут сразу. */
+  revokeTerminal: (club, id) => client.request('DELETE', `/clubs/${e(club)}/terminals/${e(id)}`),
+  /** Снять блокировку после 10 неверных PIN за час. */
+  unlockTerminal: (club, id) => client.post(`/clubs/${e(club)}/terminals/${e(id)}/unlock`),
 
   /** Пакеты часов: [{ id, title, hours, minutes, price_kopecks, valid_days, active }]. */
   packages: (club) => client.get(`/clubs/${e(club)}/packages`),

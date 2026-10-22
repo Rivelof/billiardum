@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { Ill } from '../components/Ill.jsx';
 import { plural } from '@billiardum/shared/format';
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
@@ -220,6 +221,7 @@ export function Journal({ ctx }) {
           </>
         ) : (
           <div class="empty-queue">
+            <Ill name="cue" />
             <Icon name="journal" size={32} />
             <p class="empty-queue__title">За этот период записей нет</p>
             <p class="hint">Выберите другой период или снимите фильтры. Записи появляются при каждой игре, оплате и действии персонала.</p>

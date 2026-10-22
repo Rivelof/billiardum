@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { formatDuration, formatMoney, formatTime } from '@billiardum/shared/format';
+import { Countdown } from './Countdown.jsx';
+import { formatMoney, formatTime } from '@billiardum/shared/format';
 import { waitlistView } from '@billiardum/shared/booking';
 import { Icon } from './Icon.jsx';
 import { ErrorNote } from './ErrorNote.jsx';
@@ -171,9 +172,7 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
         <h2 class="offer__title display" id="offer-title">
           Стол ваш на 5 минут
         </h2>
-        <p class="offer__timer mono" role="timer" aria-label={`Осталось ${Math.ceil(v.left / 60000)} мин`}>
-          {formatDuration(v.left)}
-        </p>
+        <Countdown left={v.left} total={5 * 60000} label={`Осталось ${Math.ceil(v.left / 60000)} мин`} />
         <p class="hint">Не займёте за это время — предложим следующему в очереди.</p>
         <ErrorNote error={error} />
         <div class="actionbar">

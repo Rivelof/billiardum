@@ -64,10 +64,15 @@ export async function checkBotLink(nonce) {
   return res.status;
 }
 
-/** Быстрая смена сотрудника по PIN на зарегистрированном терминале. */
+/**
+ * Быстрая смена сотрудника по PIN на зарегистрированном терминале.
+ * pinChangeRequired — у владельца или управляющего PIN короче 6 цифр (ревью входа п. 5): предложить сменить.
+ * @returns {Promise<{ pinChangeRequired: boolean }>}
+ */
 export async function pinSwitch(userId, pin) {
-  await api.pin(userId, pin); // сервер ставит cookie сотрудника, прежний на терминале выходит
-  return loadMe();
+  const res = await api.pin(userId, pin); // сервер ставит cookie сотрудника, прежний на терминале выходит
+  await loadMe();
+  return { pinChangeRequired: res?.pin_change_required === true };
 }
 
 export async function logout() {

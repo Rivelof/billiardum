@@ -169,7 +169,7 @@ export function createBackend(storage, now = () => Date.now()) {
       state.user = { ...STAFF[role] };
       return ok({ token: 'mock-staff', user: state.user });
     }],
-    ['POST', /^\/api\/auth\/bot-link$/, (_m, b) => ok({ nonce: 'n1', deep_link: b.channel === 'telegram' ? 'https://t.me/billiardum_bot?start=n1' : 'https://max.ru/billiardum_bot?start=n1', expires_at: new Date(now() + 5 * MIN).toISOString() })],
+    ['POST', /^\/api\/auth\/bot-link$/, (_m, b) => ok({ nonce: 'n1', deep_link: b.channel === 'telegram' ? 'https://t.me/billiardum_bot?start=n1' : 'https://max.ru/billiardum_bot?start=n1', code: '482913', expires_at: new Date(now() + 10 * MIN).toISOString() })],
     ['GET', /^\/api\/auth\/bot-link\/(.+)$/, () => {
       state.user = { ...STAFF.reception };
       return ok({ status: 'done' });
@@ -181,7 +181,8 @@ export function createBackend(storage, now = () => Date.now()) {
     ['POST', /^\/api\/staff\/terminal$/, (_m, b) => (me() && ['owner', 'manager'].includes(me().role) && b.club_id === CLUB_ID ? ok({ terminal_token: `term-${uuid()}` }) : err(403, 'forbidden'))],
     // Как у core (§14): GET /api/staff/terminal → [{ user_id, name, role, phone_masked, pin_set }]
     ['GET', /^\/api\/staff\/terminal$/, () => ok([STAFF.reception, STAFF.reception2, STAFF.bar, STAFF.manager, STAFF.owner].map((u) => ({ user_id: u.id, name: u.name, role: u.role, phone_masked: u.phone_masked, pin_set: true })))],
-    ['PUT', /^\/api\/staff\/pin$/, (_m, b) => (/^\d{4,6}$/.test(b.pin ?? '') ? ok({ ok: true }) : err(400, 'bad_request'))],
+    // Владелец и управляющий — PIN ровно 6 цифр (ревью входа п. 5)
+    ['PUT', /^\/api\/staff\/pin$/, (_m, b) => (/^\d{4,6}$/.test(b.pin ?? '') && !(b.pin.length < 6 && ['owner', 'manager'].includes(me()?.role)) ? ok({ ok: true }) : err(400, 'bad_request'))],
     ['PATCH', /^\/api\/me$/, (_m, b) => {
       if (!me()) return err(401, 'unauthorized');
       if (typeof b.name === 'string') state.user.name = b.name.slice(0, 60);
@@ -199,7 +200,8 @@ export function createBackend(storage, now = () => Date.now()) {
       if (!u) return err(404, 'not_found');
       state.user = { ...u };
       audit('auth.pin_switch', {});
-      return ok({ token: 'mock-pin' });
+      // PIN короче 6 цифр у владельца или управляющего — попросить сменить
+      return ok({ token: 'mock-pin', user_id: u.id, role: u.role, ...(['owner', 'manager'].includes(u.role) ? { pin_change_required: true } : {}) });
     }],
     // next_booking у стола (№120) — ближайшая живая бронь, как в ответе зала сервера
     ['GET', /^\/api\/clubs\/([^/]+)\/hall$/, () => (me() ? ok(m3.withNextBooking(state.hall)) : err(401, 'unauthorized'))],

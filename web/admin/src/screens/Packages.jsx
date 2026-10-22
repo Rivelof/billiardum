@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { Ill } from '../components/Ill.jsx';
 import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
@@ -7,7 +8,7 @@ import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api, newIdempotencyKey } from '../lib/api.js';
 import { normalizePhone } from '../lib/auth.js';
 import { parseRubles } from '../lib/cash.js';
-import { lotRefundCall, lotView, packagePerHour } from '../lib/packages.js';
+import { lotRefundCall, lotView, packagePerHour, refundDoneText } from '../lib/packages.js';
 import { minutesShort } from '../lib/words.js';
 
 const HOURS = ['час', 'часа', 'часов'];
@@ -60,6 +61,7 @@ export function Packages({ ctx }) {
         {list === null && !error ? <p class="muted loading">Загружаем пакеты…</p> : null}
         {list?.length === 0 ? (
           <p class="empty-queue">
+            <Ill name="rack" />
             <span class="empty-queue__title">Пакетов в продаже нет</span>
             Создайте первый: например, «10 часов за 5 500 ₽ на 60 дней» — дешевле, чем по тарифу, для постоянных гостей.
           </p>
@@ -311,10 +313,10 @@ function RefundSection({ clubId, timeZone }) {
       </form>
       <ErrorNote error={error} />
       {done ? (
-        <p class="note note--free" role="status">
-          <Icon name="check" />
-          <span class="note__title">Пакет «{done.title}» возвращён: {formatMoney(done.amount)}</span>
-          <span class="note__body">{done.via === 'pos' ? 'Деньги — тем же способом, что при продаже на кассе; чек возврата пробьётся сам.' : 'Деньги вернутся гостю через ЮKassa на карту или счёт СБП, чек возврата придёт ему сам.'}</span>
+        <p class={`note ${done.queued ? 'note--lamp' : 'note--free'}`} role="status">
+          <Icon name={done.queued ? 'clock' : 'check'} />
+          <span class="note__title">{done.title}</span>
+          <span class="note__body">{done.body}</span>
         </p>
       ) : null}
       {lots?.length === 0 ? <p class="muted">У гостя с этим номером нет пакетов в клубе.</p> : null}
@@ -355,9 +357,9 @@ function RefundSection({ clubId, timeZone }) {
       <RefundDialog
         lot={refunding}
         onClose={() => setRefunding(null)}
-        onDone={(lot, amount) => {
+        onDone={(lot, amount, status) => {
           setRefunding(null);
-          setDone({ title: lot.title ?? 'Пакет часов', amount, via: lotView(lot).via });
+          setDone(refundDoneText({ title: lot.title ?? 'Пакет часов', amount, via: lotView(lot).via, status }));
           search();
         }}
       />
@@ -392,7 +394,7 @@ function RefundDialog({ lot, onClose, onDone }) {
           try {
             const call = lotRefundCall(lot, reason.trim());
             const res = call.kind === 'sale' ? await api.refundSale(call.id, call.body, key.current) : await api.refundLot(call.id, call.body.reason, key.current);
-            onDone(lot, res?.amount_kopecks ?? lot.price_kopecks);
+            onDone(lot, res?.amount_kopecks ?? lot.price_kopecks, res?.status ?? null);
           } catch (err) {
             setError(err);
           } finally {

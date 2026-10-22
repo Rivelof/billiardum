@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
+import { BotCode } from '../components/BotCode.jsx';
 import { DEV_LOGIN } from '../lib/env.js';
 import { startBotLink, pendingBotLink, checkBotLink, cancelBotLink, devLogin, normalizePhone } from '../lib/auth.js';
 
@@ -10,8 +11,9 @@ const CHANNELS = {
 };
 
 /**
- * Вход в один шаг через бота мессенджера (decisions №49): ссылка открывает бота, гость нажимает
- * «Поделиться контактом», приложение узнаёт об этом опросом. Кодов вводить не нужно.
+ * Вход через бота мессенджера (decisions №49, ревью входа п. 2): ссылка открывает бота, гость
+ * отправляет ему код с этого экрана (6 цифр; три неверных — ссылка сгорает) и при первом входе
+ * нажимает «Поделиться контактом». Приложение узнаёт об этом опросом.
  * В разработке — вход по телефону (POST /api/auth/dev).
  */
 export function SignIn({ onDone, title = 'Войдите, чтобы оплатить' }) {
@@ -80,9 +82,11 @@ export function SignIn({ onDone, title = 'Войдите, чтобы оплат�
         <h2 class="step__title" id="signin-title">
           Подтвердите номер в {ch.name}
         </h2>
+        <BotCode code={link.code} />
         <ol class="howto">
           <li>Откройте бота «Бильярдум» в {ch.name} по кнопке ниже.</li>
-          <li>Нажмите «Поделиться контактом».</li>
+          <li>{link.code ? 'Отправьте боту код с этого экрана.' : 'Следуйте подсказкам бота.'}</li>
+          <li>Если бот попросит, нажмите «Поделиться контактом».</li>
           <li>Вернитесь сюда — продолжим сами.</li>
         </ol>
         <a class="btn btn--primary btn--block btn--lg" href={link.deep_link} target="_blank" rel="noopener noreferrer">
@@ -114,13 +118,13 @@ export function SignIn({ onDone, title = 'Войдите, чтобы оплат�
         {title}
       </h2>
       <p class="hint">
-        Номер телефона нужен для чека и напоминаний о конце игры. Подтвердите его в мессенджере — коды вводить не нужно.
+        Номер телефона нужен для чека и напоминаний о конце игры. Подтвердите его в мессенджере: бот попросит код с этого экрана.
       </p>
       {expired ? (
         <div class="note" role="status">
           <Icon name="clock" />
-          <p class="note__title">Ссылка для входа устарела.</p>
-          <p class="note__body">Нажмите кнопку ещё раз — пришлём новую.</p>
+          <p class="note__title">Вход не подтверждён.</p>
+          <p class="note__body">Ссылка устарела или код трижды ввели неверно. Нажмите кнопку ещё раз — покажем новый код.</p>
         </div>
       ) : null}
       <div class="stack">

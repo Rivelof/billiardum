@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { formatDate, formatDuration, formatMoney, formatTime, plural } from '@billiardum/shared/format';
+import { Countdown } from '../components/Countdown.jsx';
+import { Ill } from '../components/Ill.jsx';
+import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { planLayout, tableSvg, typeLabel } from '@billiardum/shared/hall';
 import {
   BOOKING_WORD,
@@ -34,6 +36,7 @@ import { safeRedirectUrl } from '../lib/urls.js';
 import { clubTimeZone, getFlow, lastClub, setFlow } from '../lib/flow.js';
 import { useMeStream } from '../lib/live.js';
 import '../styles/m3.css';
+import '../styles/m3-redesign.css';
 
 const MIN = 60_000;
 const TABLES = ['стол', 'стола', 'столов'];
@@ -80,7 +83,7 @@ export function BookClubs() {
         <p class="lead">Выберите клуб, день и время — стол на плане зала будет ждать вас.</p>
         <ErrorNote error={error} />
         {clubs === null && !error ? <p class="muted loading">Загружаем клубы…</p> : null}
-        {clubs?.length === 0 ? <p class="empty">Клубов с бронью пока нет.</p> : null}
+        {clubs?.length === 0 ? <p class="empty"><Ill name="rack" />Клубов с бронью пока нет.</p> : null}
         {clubs?.length ? (
           <ul class="clublist">
             {clubs.map((c) => (
@@ -618,7 +621,7 @@ export function MyBookings() {
         {status === 'anon' ? <SignIn title="Войдите, чтобы увидеть брони" /> : null}
         <ErrorNote error={error} />
         {status === 'user' && list === null && !error ? <p class="muted loading">Загружаем брони…</p> : null}
-        {list && !open.length ? <p class="empty">Ближайших броней нет. Забронируйте стол — он будет ждать вас в выбранное время.</p> : null}
+        {list && !open.length ? <p class="empty"><Ill name="lamp" />Ближайших броней нет. Забронируйте стол — он будет ждать вас в выбранное время.</p> : null}
         {open.length ? <BookingList list={open} title="Ближайшие" /> : null}
         <a class="btn btn--primary btn--block btn--lg" href={`${BASE}book`} onClick={linkHandler}>
           <Icon name="calendar" />
@@ -640,15 +643,21 @@ function BookingList({ list, title, quiet = false }) {
           return (
             <li key={b.id}>
               <a class="blist__item" href={`${BASE}bookings/${encodeURIComponent(b.id)}`} onClick={linkHandler}>
+                {/* Корешок билета: число крупно, месяц и день недели */}
+                <span class="blist__stub" aria-hidden="true">
+                  <span class="blist__day display">{formatDate(b.starts_at, tz).split(' ')[0]}</span>
+                  <span class="blist__month">{formatDate(b.starts_at, tz).split(' ').slice(1).join(' ')}</span>
+                  <span class="blist__wd">{weekdayIn(b.starts_at, tz)}</span>
+                </span>
                 <span class="blist__when">
-                  <span class="blist__date">{formatDate(b.starts_at, tz)}</span>
+                  <span class="visually-hidden">{formatDate(b.starts_at, tz)}, </span>
                   <span class="blist__time mono">
                     {formatTime(b.starts_at, tz)}–{formatTime(b.ends_at, tz)}
                   </span>
-                </span>
-                <span class="blist__what">
-                  {tableName(b.resource?.number)}
-                  {b.club?.name ? ` · ${b.club.name}` : ''}
+                  <span class="blist__what">
+                    {tableName(b.resource?.number)}
+                    {b.club?.name ? ` · ${b.club.name}` : ''}
+                  </span>
                 </span>
                 <span class={`badge badge--${badgeTone(b.status)}`}>
                   <span class="badge__dot" aria-hidden="true" />
@@ -662,6 +671,15 @@ function BookingList({ list, title, quiet = false }) {
     </section>
   );
 }
+
+/** День недели брони в поясе клуба: «пт». */
+const weekdayIn = (iso, tz) => {
+  try {
+    return new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: tz }).format(new Date(iso));
+  } catch {
+    return '';
+  }
+};
 
 const badgeTone = (s) => (s === 'confirmed' || s === 'reserved' ? 'reserved' : s === 'pending_payment' ? 'pending' : s === 'started' ? 'play' : s === 'expired' ? 'alert' : 'free');
 
@@ -972,7 +990,7 @@ export function WaitlistOffer({ id }) {
         {status === 'anon' ? <SignIn title="Войдите, чтобы занять стол" /> : null}
         <ErrorNote error={error} />
         {entry === undefined && status === 'user' && !error ? <p class="muted loading">Проверяем стол…</p> : null}
-        {entry === null ? <p class="empty">Этой записи в очереди уже нет: стол заняли или вы вышли из очереди.</p> : null}
+        {entry === null ? <p class="empty"><Ill name="pocket" />Этой записи в очереди уже нет: стол заняли или вы вышли из очереди.</p> : null}
         {entry ? (
           <section class={`offer${v.state === 'offered' ? '' : ' offer--quiet'}`} aria-labelledby="wo-title">
             <p class="offer__kicker">
@@ -984,9 +1002,7 @@ export function WaitlistOffer({ id }) {
             </h1>
             {v.state === 'offered' ? (
               <>
-                <p class="offer__timer mono" role="timer" aria-label={`Осталось ${Math.ceil(v.left / 60000)} мин`}>
-                  {formatDuration(v.left)}
-                </p>
+                <Countdown left={v.left} total={5 * 60000} label={`Осталось ${Math.ceil(v.left / 60000)} мин`} />
                 <p class="hint">Не займёте за это время — предложим следующему в очереди.</p>
                 <div class="actionbar">
                   <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={take}>

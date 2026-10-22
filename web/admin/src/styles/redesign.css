@@ -1,0 +1,288 @@
+/*
+ * Программа клуба — редакция №127 («темнее и теплее», DESIGN §2, §4, §6). Поверх admin.css, m2.css, m3.css:
+ * боковое меню из ореха с латунным активным пунктом, касса с крупными плитками и чеком-лентой, заявки с
+ * кольцом «сгорит через», лента броней на сукне с часами-метками борта, бар — тикеты заказов, смена и отчёт —
+ * ключевые суммы крупно. Только токены.
+ */
+
+/* ---------- меню: орех, активный пункт — латунь ---------- */
+.nav {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--brass) 6%, var(--card)), var(--card));
+}
+.nav__item { transition: color var(--motion-fast), background-color var(--motion-fast); }
+.nav__item[aria-current='page'] {
+  color: var(--ink);
+  background: color-mix(in oklab, var(--brass) 16%, var(--card));
+  box-shadow: inset 0 -3px 0 var(--brass);
+}
+.nav__item[aria-current='page'] .icon { color: var(--brass); }
+@media (min-width: 640px) {
+  .nav { box-shadow: 1px 0 0 var(--line); }
+  .nav__item[aria-current='page'] { box-shadow: inset 3px 0 0 var(--brass); }
+}
+
+/* ---------- пустые состояния: иллюстрация из бильярдной ---------- */
+.empty-queue {
+  justify-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 28px 20px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--card) 70%, var(--paper));
+}
+.empty-queue .hint { max-width: 46ch; }
+.cart__empty .ill { width: 96px; }
+
+/* ---------- касса: крупные плитки с ценой ---------- */
+.tiles { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 12px; }
+.tile {
+  min-height: 124px;
+  padding: 16px 16px 14px;
+  background: linear-gradient(170deg, var(--card-2), var(--card) 70%);
+  box-shadow: inset 0 0 0 1px var(--line), inset 0 1px 0 color-mix(in oklab, var(--ink) 6%, transparent);
+  transition: box-shadow var(--motion-fast), background-color var(--motion-fast), transform var(--motion-fast) var(--cue-easing);
+}
+.tile:not([disabled]):hover { box-shadow: inset 0 0 0 1.5px var(--brass); }
+.tile:not([disabled]):active { transform: scale(0.985); }
+.tile__price { font-family: var(--font-display); font-weight: 400; font-size: var(--fs-24); line-height: 1; font-variant-numeric: tabular-nums; }
+.tile__state--low { color: var(--ball-red); }
+.tile--in { background: linear-gradient(170deg, var(--lamp-tint), var(--card) 90%); }
+.tile--off { background: var(--card); opacity: 0.8; }
+.tile--table .tile__table { font-size: var(--fs-32); }
+
+/* Чек — бумажная лента: светлая «слоновая кость» в обеих темах, зубчатые края, латунная линия итога */
+.pos__cart {
+  position: relative;
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.55);
+  margin-block: 8px;
+}
+.pos__cart::before,
+.pos__cart::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: radial-gradient(circle at 6px 0, transparent 5px, var(--card) 5.5px) 0 0 / 12px 8px repeat-x;
+}
+.pos__cart::before { top: -7px; transform: scaleY(-1); }
+.pos__cart::after { bottom: -7px; }
+.pos__cart .section-title { font-family: var(--font-display); font-weight: 400; }
+.cart__foot { border-top: 0; background-image: linear-gradient(90deg, var(--line) 50%, transparent 0); background-size: 10px 1px; background-repeat: repeat-x; }
+.cart__total { font-family: var(--font-display); font-variant-numeric: tabular-nums; }
+.cart__foot dl > div:last-child,
+.cart__totals > div:last-child { border-top: 3px double var(--brass); }
+
+/* ---------- ресепшн: заявка с кольцом «сгорит через» ---------- */
+.req {
+  background: linear-gradient(170deg, var(--card-2), var(--card) 60%);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.req--new { background: linear-gradient(170deg, var(--lamp-tint), var(--card) 75%); box-shadow: inset 0 0 0 2px var(--lamp); }
+.req__left { display: inline-flex; align-items: center; gap: 6px; }
+.burn { width: 20px; height: 20px; flex: none; }
+.burn__track { fill: none; stroke: var(--line); stroke-width: 3; }
+.burn__arc { fill: none; stroke: var(--brass); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray 1s linear; }
+.req__soon .burn__arc { stroke: var(--ball-red); }
+
+/* ---------- брони: лента — сукно, шкала часов — борт с прицельными метками ---------- */
+.tl { background: var(--card); }
+.tl__hours {
+  background: linear-gradient(180deg, var(--hall-rail-hi), var(--hall-rail));
+  border-bottom: 2px solid var(--hall-brass);
+}
+.tl__hour {
+  position: relative;
+  color: var(--hall-text);
+  border-left-color: color-mix(in oklab, var(--hall-bg) 50%, transparent);
+}
+.tl__hour::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  bottom: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--hall-text);
+  opacity: 0.7;
+}
+.tl__corner { background: var(--hall-rail); border-bottom: 2px solid var(--hall-brass); }
+.tl__lane {
+  background-color: color-mix(in oklab, var(--cloth-tint) 75%, var(--card));
+  background-image: linear-gradient(to right, color-mix(in oklab, var(--cloth) 22%, transparent) 1px, transparent 1px);
+}
+.tl__bk { box-shadow: inset 0 0 0 2px var(--lamp), 0 4px 10px -6px rgb(0 0 0 / 0.5); }
+
+/* ---------- бар: заказы — тикеты с перфорацией ---------- */
+.ticket {
+  position: relative;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--card-2), var(--card) 40%);
+}
+.ticket::after {
+  content: '';
+  position: absolute;
+  top: 54px;
+  left: 14px;
+  right: 14px;
+  height: 0;
+  border-top: 2px dotted var(--line-strong);
+  opacity: 0.6;
+}
+.ticket__head { min-height: 40px; }
+.ticket__no { font-size: var(--fs-20); color: var(--brass); }
+.ticket__items { border-block: 0; padding-top: 14px; }
+.lane__title { font-family: var(--font-display); font-weight: 400; }
+
+/* ---------- смена и отчёт: ключевые суммы крупно ---------- */
+.shift__facts dd,
+.shift__compare dd { font-family: var(--font-display); font-weight: 400; font-variant-numeric: tabular-nums; }
+.shift__facts dd { font-size: var(--fs-24); }
+.shift__compare > div { background: linear-gradient(170deg, var(--card-2), var(--card)); box-shadow: inset 0 0 0 1px var(--line); }
+.rcard { background: linear-gradient(170deg, color-mix(in oklab, var(--card-2) 60%, var(--card)), var(--card) 50%); }
+.rcard__title .icon { color: var(--brass); }
+.rcard--cash .receipt__row--total .receipt__sum,
+.rcard--cash .receipt__row--total dt { font-family: var(--font-display); font-weight: 400; font-size: var(--fs-32); line-height: 1.1; }
+.rcard--cash .receipt__row--total { border-top: 3px double var(--brass); }
+.verdict { font-size: var(--fs-20); }
+.shift__facts .receipt__row { align-items: center; }
+
+/* Смена: факты кассы — плитками с крупной суммой, «Должно быть» подсвечено лампой */
+.shift__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  max-width: none;
+}
+.shift__facts .receipt__row {
+  grid-template-columns: 1fr;
+  gap: 6px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: linear-gradient(170deg, var(--card-2), var(--card));
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.shift__facts dt { font-size: var(--fs-15); color: var(--ink-2); font-weight: 600; }
+.shift__facts .receipt__sum { text-align: left; font-family: var(--font-display); font-weight: 400; font-size: var(--fs-32); line-height: 1; }
+.shift__facts .receipt__row--total { background: linear-gradient(170deg, var(--lamp-tint), var(--card)); box-shadow: inset 0 0 0 1.5px var(--lamp); font-size: inherit; }
+.shift__open { max-width: 880px; }
+
+/* Персонал: монограмма в латунном кольце, владелец — янтарём */
+.people .person:not(.person--invite) { grid-template-columns: auto minmax(0, 1fr) auto; }
+.person__avatar {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--card-2), var(--card));
+  box-shadow: inset 0 0 0 1.5px var(--brass);
+  color: var(--ink);
+  font-size: var(--fs-15);
+  line-height: 1;
+}
+.person--owner .person__avatar { background: var(--lamp-tint); box-shadow: inset 0 0 0 2px var(--lamp); }
+@media (max-width: 639px) {
+  .people .person:not(.person--invite) { grid-template-columns: auto minmax(0, 1fr); }
+  .people .person:not(.person--invite) .person__tools { grid-column: 1 / -1; }
+}
+
+/* «Сейчас»: выручка — карточка-касса: итог крупно над латунной двойной линией */
+.money {
+  display: grid;
+  gap: 6px;
+  padding: 18px 18px 8px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(170deg, var(--card-2), var(--card) 60%);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.money__total { padding-bottom: 10px; border-bottom: 3px double var(--brass); font-variant-numeric: tabular-nums; }
+.money__list .receipt__row:first-child { border-top: 0; }
+
+/* Сверка: «система ↔ касса» парой крупных чисел, вердикт — цветом и словом, кромка по состоянию */
+.recon { box-shadow: inset 3px 0 0 var(--line-strong), inset 0 0 0 1px var(--line); }
+.recon--ok { box-shadow: inset 3px 0 0 var(--free), inset 0 0 0 1px var(--line); }
+.recon--bad { box-shadow: inset 3px 0 0 var(--ball-red), inset 0 0 0 1px var(--line); }
+.recon__pair dd { font-family: var(--font-display); font-weight: 400; font-size: var(--fs-24); }
+.recon--ok .recon__word { color: var(--free); }
+.recon--bad .recon__word { color: var(--ball-red); }
+
+/* Персонал → Сотрудники | Терминалы: вкладки-ссылки, активная — латунью, как пункт меню */
+.subnav {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  width: fit-content;
+  max-width: 100%;
+}
+.subnav__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+  color: var(--ink-2);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.subnav__item .icon { width: 20px; height: 20px; }
+.subnav__item:hover { color: var(--ink); background: var(--card-2); }
+.subnav__item[aria-current='page'] { color: var(--ink); background: var(--card-2); box-shadow: inset 0 -3px 0 var(--brass), inset 0 0 0 1px var(--line); }
+.subnav__item:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
+/* Терминалы: строка списка — значок, название, состояние; заблокированный — красной кромкой */
+.terms {
+  display: grid;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.terms > li + li { border-top: 1px solid var(--line); }
+.term {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 14px;
+}
+.term__icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1.5px var(--brass);
+  color: var(--ink);
+}
+.term__main { display: grid; gap: 2px; min-width: 0; }
+.term__name { font-weight: 600; }
+.term__sub { font-size: var(--fs-15); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.term__badge { justify-self: end; }
+.term__locked { grid-column: 2 / -1; font-size: var(--fs-15); color: var(--ink); }
+.term__tools { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+.term--locked { box-shadow: inset 4px 0 0 var(--ball-red); background: color-mix(in oklab, var(--ball-red) 7%, var(--card)); }
+.term--locked .term__icon { box-shadow: inset 0 0 0 1.5px var(--ball-red); color: var(--ball-red); }
+.term--revoked, .term--expired { color: var(--ink-2); }
+.term--revoked .term__icon, .term--expired .term__icon { box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-3); }
+.badge--off { color: var(--ink-2); }
+@media (max-width: 639px) {
+  .subnav { width: 100%; }
+  .subnav__item { flex: 1 1 0; justify-content: center; padding: 0 10px; min-width: 0; }
+  .term { grid-template-columns: auto minmax(0, 1fr); }
+  .term__badge { grid-column: 2; justify-self: start; }
+  .term__locked, .term__tools { grid-column: 1 / -1; }
+}

@@ -71,6 +71,14 @@ export function m3State(scenario, t, hall) {
       { user_id: 'u-bar-0005', name: 'Дима С.', phone: '+79000000005', role: 'bar', active: true, pin_set: true },
     ],
     invites: [{ id: uuid(), phone: '+79120004417', role: 'reception', created_at: t - 26 * 60 * MIN, expires_at: t + 6 * 24 * 60 * MIN - 26 * 60 * MIN }],
+    // Терминалы ресепшена (ревью входа): один работает, один заблокирован после неверных PIN, один отозван
+    terminals: empty
+      ? []
+      : [
+          { id: uuid(), name: 'Ресепшн', by: 'u-owner-0001', created: t - 40 * 24 * 60 * MIN, expires: t + 50 * 24 * 60 * MIN, used: t - 4 * MIN, revoked: null, locked: null },
+          { id: uuid(), name: 'Планшет у бара', by: 'u-manager-0002', created: t - 12 * 24 * 60 * MIN, expires: t + 78 * 24 * 60 * MIN, used: t - 35 * MIN, revoked: null, locked: t - 30 * MIN },
+          { id: uuid(), name: 'Старый ноутбук', by: 'u-owner-0001', created: t - 120 * 24 * 60 * MIN, expires: t - 30 * 24 * 60 * MIN, used: t - 64 * 24 * 60 * MIN, revoked: t - 60 * 24 * 60 * MIN, locked: null },
+        ],
   };
 }
 
@@ -302,6 +310,37 @@ export function m3Routes(ctx) {
       Object.assign(s, { active: false, pin_set: false });
       ctx.audit('staff.revoke', {});
       return ok({ ok: true, tokens_revoked: 2 });
+    })],
+
+    // ---------- терминалы (владелец, ревью входа) ----------
+    ['GET', /^\/api\/clubs\/([^/]+)\/terminals$/, ownerOnly(() => {
+      const who = (id) => S().staff.find((x) => x.user_id === id);
+      return ok(
+        (S().terminals ?? []).map((x) => ({
+          id: x.id,
+          name: x.name,
+          created_by: { user_id: x.by, name: who(x.by)?.name ?? null },
+          created_at: iso(x.created),
+          expires_at: iso(x.expires),
+          last_used_at: x.used ? iso(x.used) : null,
+          revoked_at: x.revoked ? iso(x.revoked) : null,
+          locked_at: x.locked ? iso(x.locked) : null,
+        })),
+      );
+    })],
+    ['DELETE', /^\/api\/clubs\/([^/]+)\/terminals\/([^/]+)$/, ownerOnly((m) => {
+      const x = (S().terminals ?? []).find((y) => y.id === m[2]);
+      if (!x) return err(404, 'not_found');
+      x.revoked = x.revoked ?? now();
+      ctx.audit('auth.terminal_revoke', {});
+      return ok({ ok: true });
+    })],
+    ['POST', /^\/api\/clubs\/([^/]+)\/terminals\/([^/]+)\/unlock$/, ownerOnly((m) => {
+      const x = (S().terminals ?? []).find((y) => y.id === m[2] && !y.revoked);
+      if (!x) return err(404, 'not_found');
+      x.locked = null;
+      ctx.audit('auth.terminal_unlock', {});
+      return ok({ ok: true });
     })],
 
     // ---------- пакеты часов (управляющий, №112) ----------

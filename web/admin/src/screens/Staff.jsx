@@ -7,6 +7,9 @@ import { Dialog } from '../components/Dialog.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { ROLE_LABEL } from '../lib/words.js';
+import { BASE } from '../lib/env.js';
+import { linkHandler } from '../lib/router.js';
+import { Terminals } from './Terminals.jsx';
 
 /** Роли, которые владелец выдаёт сам (server/staff INVITE_ROLES): владельца приглашать нельзя. */
 export const INVITE_ROLES = ['manager', 'reception', 'bar', 'installer'];
@@ -22,6 +25,39 @@ const ROLE_HINT = {
  * отзыв доступа в один шаг с подтверждением — членство, PIN и все входы сотрудника гаснут сразу.
  */
 export function Staff({ ctx }) {
+  const { club, role, user, timeZone } = ctx;
+  const clubId = club.club_id;
+  if (ctx.id === 'terminals') {
+    return (
+      <Shell club={club} role={role} user={user} timeZone={timeZone} active="staff" title="Персонал">
+        <div class="page staff-page">
+          <StaffTabs clubId={clubId} current="terminals" />
+          <Terminals clubId={clubId} timeZone={timeZone} />
+        </div>
+      </Shell>
+    );
+  }
+  return <People ctx={ctx} />;
+}
+
+/** Разделы персонала: сотрудники и терминалы ресепшена. */
+function StaffTabs({ clubId, current }) {
+  const base = `${BASE}c/${encodeURIComponent(clubId)}/staff`;
+  return (
+    <nav class="subnav" aria-label="Персонал">
+      <a class="subnav__item" href={base} onClick={linkHandler} aria-current={current === 'people' ? 'page' : undefined}>
+        <Icon name="users" />
+        Сотрудники
+      </a>
+      <a class="subnav__item" href={`${base}/terminals`} onClick={linkHandler} aria-current={current === 'terminals' ? 'page' : undefined}>
+        <Icon name="key" />
+        Терминалы
+      </a>
+    </nav>
+  );
+}
+
+function People({ ctx }) {
   const { club, role, user, timeZone } = ctx;
   const clubId = club.club_id;
   const [data, setData] = useState(null);
@@ -49,6 +85,7 @@ export function Staff({ ctx }) {
   return (
     <Shell club={club} role={role} user={user} timeZone={timeZone} active="staff" title="Персонал">
       <div class="page staff-page">
+        <StaffTabs clubId={clubId} current="people" />
         <div class="bookings__head">
           <p class="hint">Сотрудник входит со своего телефона. Приглашение действует 7 дней и привязывается при первом входе с этим номером.</p>
           <button type="button" class="btn btn--primary" onClick={() => setInviting(true)}>
@@ -78,7 +115,10 @@ export function Staff({ ctx }) {
               {staff.map((s) => {
                 const self = s.user_id === user?.id;
                 return (
-                  <li class="person" key={s.user_id}>
+                  <li class={`person person--${s.role}`} key={s.user_id}>
+                    <span class="person__avatar display" aria-hidden="true">
+                      {initials(s.name)}
+                    </span>
                     <span class="person__main">
                       <span class="person__name">
                         {s.name ?? 'Без имени'}
@@ -330,4 +370,10 @@ function RevokeDialog({ person, clubId, onClose, onDone }) {
       </div>
     </Dialog>
   );
+}
+
+/** Монограмма сотрудника: первые буквы имени и фамилии («Анна К.» → «АК»). */
+function initials(name) {
+  const parts = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  return (parts[0]?.[0] ?? '·') + (parts[1]?.[0] ?? '');
 }

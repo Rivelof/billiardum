@@ -70,10 +70,13 @@ export async function devLogin(phone) {
   return user;
 }
 
-/** Начать вход через бота: ссылка открывает MAX или Telegram, бот просит «Поделиться контактом». */
+/**
+ * Начать вход через бота: ссылка открывает MAX или Telegram, бот просит код с экрана (6 цифр,
+ * три неверных — ссылка сгорает), затем «Поделиться контактом».
+ */
 export async function startBotLink(channel) {
   const link = await api.botLink(channel);
-  session.set(NONCE_KEY, { nonce: link.nonce, channel, expires_at: link.expires_at, deep_link: link.deep_link });
+  session.set(NONCE_KEY, { nonce: link.nonce, channel, expires_at: link.expires_at, deep_link: link.deep_link, code: link.code ?? null });
   return link;
 }
 

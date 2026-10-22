@@ -131,7 +131,8 @@ export const api = {
 
   currentSessions: () => client.get('/sessions/current'),
   session: (id) => client.get(`/sessions/${encodeURIComponent(id)}`),
-  join: (id) => client.post(`/sessions/${encodeURIComponent(id)}/join`),
+  /** «Я играю за этим столом»: код стола из QR подтверждает, что гость у стола (без него — 400 bad_request). */
+  join: (id, code) => client.post(`/sessions/${encodeURIComponent(id)}/join`, { code }),
   stop: (id) => client.post(`/sessions/${encodeURIComponent(id)}/stop`),
   resolve: (id, choice) => client.post(`/sessions/${encodeURIComponent(id)}/resolve`, { choice }),
   receipt: (id) => client.get(`/sessions/${encodeURIComponent(id)}/receipt`),

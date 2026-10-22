@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { Ill } from '../components/Ill.jsx';
 import { formatDate, formatMoney, formatTime } from '@billiardum/shared/format';
 import { addDays, durationsFor, localDate, normalizePhone } from '@billiardum/shared/booking';
 import { Shell } from '../components/Shell.jsx';
@@ -193,6 +194,7 @@ export function Bookings({ ctx }) {
               </ul>
             ) : (
               <p class="empty-queue">
+                <Ill name="lamp" />
                 <span class="empty-queue__title">Броней на этот день нет</span>
                 Гости бронируют в приложении, звонки записывайте кнопкой «Бронь по телефону».
               </p>

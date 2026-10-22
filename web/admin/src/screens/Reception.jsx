@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { Ill } from '../components/Ill.jsx';
 import { formatMoney, plural } from '@billiardum/shared/format';
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
@@ -205,7 +206,8 @@ export function Reception({ ctx }) {
                       {r.kind === 'extend' ? <span class="req__kind">Продление</span> : null}
                       <span>{agoWords(now - Date.parse(r.created_at))}</span>
                       {r.guest_masked_phone ? <span class="mono">{r.guest_masked_phone}</span> : null}
-                      <span class={left < 3 * 60000 ? 'req__soon' : ''}>
+                      <span class={`req__left${left < 3 * 60000 ? ' req__soon' : ''}`}>
+                        <BurnRing left={left} />
                         сгорит через {leftMin} {plural(leftMin, ['минуту', 'минуты', 'минут'])}
                       </span>
                     </p>
@@ -223,7 +225,7 @@ export function Reception({ ctx }) {
             </ul>
           ) : (
             <div class="empty-queue">
-              <Icon name="reception" size={32} />
+              <Ill name="pocket" />
               <p class="empty-queue__title">Заявок нет</p>
               <p class="hint">Когда гость выберет «Оплачу на ресепшене», заявка появится здесь со звуком. Онлайн-оплаты проходят без вас.</p>
             </div>
@@ -259,5 +261,17 @@ export function Reception({ ctx }) {
       />
       <TableDialog item={(hall ?? []).find((x) => x.resource.id === table?.resource?.id) ?? table} role={role} timeZone={timeZone} onClose={() => setTable(null)} onChanged={loadHall} />
     </Shell>
+  );
+}
+
+/** Сколько живёт заявка (15 минут): кольцо тает, последние 3 минуты — красное. Декоративно, рядом — слова. */
+function BurnRing({ left, total = 15 * 60000 }) {
+  const v = Math.min(1, Math.max(0, left / total));
+  const C = 2 * Math.PI * 9;
+  return (
+    <svg class="burn" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle class="burn__track" cx="12" cy="12" r="9" />
+      <circle class="burn__arc" cx="12" cy="12" r="9" stroke-dasharray={`${(C * v).toFixed(2)} ${C.toFixed(2)}`} transform="rotate(-90 12 12)" />
+    </svg>
   );
 }

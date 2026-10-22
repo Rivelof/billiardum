@@ -13,15 +13,34 @@
 export class ApiError extends Error {
   /**
    * @param {string} code код из словаря контракта или `network`, `server_error`, `unknown`
-   * @param {{ status?: number, cause?: unknown }} [options]
+   * @param {{ status?: number, cause?: unknown, data?: Record<string, unknown> | null, retryAfterSec?: number | null }} [options]
    */
-  constructor(code, { status = 0, cause } = {}) {
+  constructor(code, { status = 0, cause, data = null, retryAfterSec = null } = {}) {
     super(code, cause === undefined ? undefined : { cause });
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
+    // Безопасные поля рядом с кодом (сервер отдаёт по белому списку): { booking_id, busy_until, … }
+    this.data = data;
+    // 429: через сколько секунд повторить (заголовок Retry-After); нет заголовка — null
+    this.retryAfterSec = retryAfterSec;
   }
 }
+
+/** Поля ошибки, которые клиент берёт из тела рядом с { error } (идентификаторы, время, счётчики). */
+export const ERROR_FIELDS = Object.freeze([
+  'booking_id',
+  'session_id',
+  'resource_id',
+  'offer_id',
+  'payment_id',
+  'busy_until',
+  'limit_until',
+  'extend_limit_until',
+  'available_from',
+  'retry_after_sec',
+  'minutes_left',
+]);
 
 const CODE_RE = /^[a-z][a-z0-9_]{1,63}$/;
 
@@ -39,6 +58,16 @@ const BY_STATUS = {
  * @returns {Promise<string>}
  */
 export async function readErrorCode(res) {
+  return (await readError(res)).code;
+}
+
+/**
+ * Код и безопасные поля ошибки: `{"error":"booking_start_required","booking_id":"…"}` →
+ * { code: 'booking_start_required', data: { booking_id: '…' } }. Поля только из ERROR_FIELDS,
+ * значения — строка, число, логическое или null.
+ * @returns {Promise<{ code: string, data: Record<string, string | number | boolean | null> | null }>}
+ */
+export async function readError(res) {
   let body;
   try {
     const text = typeof res.text === 'function' ? await res.text() : '';
@@ -46,11 +75,19 @@ export async function readErrorCode(res) {
   } catch {
     body = null;
   }
-  const code = body && typeof body === 'object' ? body.error : undefined;
-  if (typeof code === 'string' && CODE_RE.test(code)) return code;
-  if (BY_STATUS[res.status]) return BY_STATUS[res.status];
-  if (res.status >= 500) return 'server_error';
-  return 'unknown';
+  const obj = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
+  let data = null;
+  if (obj && res.status < 500) {
+    for (const k of ERROR_FIELDS) {
+      const v = obj[k];
+      if (v === null || typeof v === 'boolean' || typeof v === 'number' || (typeof v === 'string' && v.length <= 64)) (data ??= {})[k] = v;
+    }
+  }
+  const code = obj?.error;
+  if (typeof code === 'string' && CODE_RE.test(code)) return { code, data };
+  if (BY_STATUS[res.status]) return { code: BY_STATUS[res.status], data };
+  if (res.status >= 500) return { code: 'server_error', data: null };
+  return { code: 'unknown', data };
 }
 
 /** UUID для заголовка Idempotency-Key (денежные операции, §3). */
@@ -113,7 +150,9 @@ export function createClient(options = {}) {
     }
 
     if (!res.ok) {
-      const err = new ApiError(await readErrorCode(res), { status: res.status });
+      const { code, data } = await readError(res);
+      const ra = Number.parseInt(res.headers?.get?.('retry-after') ?? '', 10);
+      const err = new ApiError(code, { status: res.status, data, retryAfterSec: Number.isSafeInteger(ra) && ra >= 0 ? ra : null });
       if (err.code === 'unauthorized') options.onUnauthorized?.(err);
       throw err;
     }

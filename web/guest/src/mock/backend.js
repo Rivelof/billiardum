@@ -269,8 +269,8 @@ export function createBackend(storage) {
         ...pricesAround(now()),
         options: [60, 120, 180, 'unlimited'],
         my_session_id: isMine ? table.session_id : null,
-        // Предложено backend: id чужой сессии, чтобы «Я играю за этим столом» знал, к чему присоединиться
-        session_id: status === 'busy' ? table.session_id ?? 'b7e1d2c3-0000-4000-8000-0000000000aa' : null,
+        // id чужой сессии для «Я играю за этим столом» — только вошедшим (f1052c2)
+        session_id: status === 'busy' && state.user ? table.session_id ?? 'b7e1d2c3-0000-4000-8000-0000000000aa' : null,
       });
     }],
     // Как у core (§14): consent {version, accepted}
@@ -284,7 +284,7 @@ export function createBackend(storage) {
       const nonce = uuid().replace(/-/g, '').slice(0, 16);
       state.links[nonce] = { created: now(), channel: body.channel };
       const deep = body.channel === 'telegram' ? `https://t.me/billiardum_bot?start=${nonce}` : `https://max.ru/billiardum_bot?start=${nonce}`;
-      return ok({ nonce, deep_link: deep, expires_at: new Date(now() + 5 * MIN).toISOString() });
+      return ok({ nonce, deep_link: deep, code: '482913', expires_at: new Date(now() + 10 * MIN).toISOString() });
     }],
     ['GET', /^\/api\/auth\/bot-link\/([^/]+)$/, (m) => {
       const link = state.links[m[1]];
@@ -412,9 +412,11 @@ export function createBackend(storage) {
       const s = state.sessions[m[1]];
       return s ? ok(sessionView(s)) : err(404, 'not_found');
     }],
-    ['POST', /^\/api\/sessions\/([^/]+)\/join$/, (m) => {
+    ['POST', /^\/api\/sessions\/([^/]+)\/join$/, (m, body) => {
       const u = needUser();
       if (u) return u;
+      // Код стола из QR обязателен (b97e2c4): без него 400, чужой стол — 404
+      if (typeof body?.code !== 'string' || !body.code) return err(400, 'bad_request');
       let s = state.sessions[m[1]];
       if (!s) {
         // чужая сессия стола 7 из сида заглушки

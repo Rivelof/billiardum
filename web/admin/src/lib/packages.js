@@ -1,4 +1,4 @@
-import { plural } from '@billiardum/shared/format';
+import { formatMoney, plural } from '@billiardum/shared/format';
 
 const HOURS = ['час', 'часа', 'часов'];
 
@@ -56,4 +56,21 @@ export function lotView(lot) {
 /** Тело запроса возврата партии: для кассы — только этот пакет из продажи. */
 export function lotRefundCall(lot, reason) {
   return lot.source === 'pos' ? { kind: 'sale', id: lot.sale_id, body: { reason, packages: [lot.idx] } } : { kind: 'lot', id: lot.id, body: { reason } };
+}
+
+/**
+ * Что сказать после возврата (ревью денег п. 7): наличные без открытой смены ждут её — ответ
+ * { status: 'queued' }; ресепшн выдаст деньги и пробьёт чек возврата при открытии смены.
+ * @returns {{ title: string, body: string, queued: boolean }}
+ */
+export function refundDoneText({ title, amount, via, status }) {
+  const sum = formatMoney(amount);
+  if (status === 'queued') {
+    return { title: `Пакет «${title}»: вернём ${sum} наличными при открытии смены`, body: 'Смена сейчас закрыта. Ресепшн выдаст деньги гостю и пробьёт чек возврата, как только откроет смену; владелец получил уведомление.', queued: true };
+  }
+  return {
+    title: `Пакет «${title}» возвращён: ${sum}`,
+    body: via === 'pos' ? 'Деньги — тем же способом, что при продаже на кассе; чек возврата пробьётся сам.' : 'Деньги вернутся гостю через ЮKassa на карту или счёт СБП, чек возврата придёт ему сам.',
+    queued: false,
+  };
 }

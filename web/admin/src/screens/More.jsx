@@ -8,6 +8,7 @@ import { useStore } from '../lib/store.js';
 import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { ROLE_LABEL } from '../lib/words.js';
+import { pinMinLength, pinValid } from '../lib/terminals.js';
 
 /** «Ещё»: QR-наклейки (PDF), терминал ресепшена, выход. */
 export function More({ ctx }) {
@@ -36,7 +37,7 @@ export function More({ ctx }) {
         </section>
         <Sections role={role} clubId={club.club_id} />
         {can.manage(role) ? <Stickers clubId={club.club_id} /> : null}
-        {can.setPin(role) && principal === 'session' ? <SetPin clubId={club.club_id} /> : null}
+        {can.setPin(role) && principal === 'session' ? <SetPin clubId={club.club_id} role={role} /> : null}
         {can.terminal(role) ? <Terminal clubId={club.club_id} /> : null}
       </div>
     </Shell>
@@ -156,14 +157,17 @@ function NameForm({ user }) {
 }
 
 /** Сотрудник задаёт себе PIN для быстрой смены на терминале (PUT /api/staff/pin, §14). */
-function SetPin({ clubId }) {
+function SetPin({ clubId, role }) {
+  // Владелец и управляющий — ровно 6 цифр (ревью входа п. 5), остальные — 4–6
+  const min = pinMinLength(role);
+  const rule = min === 6 ? '6 цифр' : '4–6 цифр';
   const [pin, setPin] = useState('');
   const [repeat, setRepeat] = useState('');
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false);
-  const valid = /^\d{4,6}$/.test(pin);
+  const valid = pinValid(pin, role);
   const same = pin === repeat;
 
   const submit = async (e) => {
@@ -198,7 +202,7 @@ function SetPin({ clubId }) {
       <form class="form pinset" onSubmit={submit} noValidate>
         <div class="field">
           <label class="field__label" for="pin-new">
-            Новый PIN, 4–6 цифр
+            Новый PIN, {rule}
           </label>
           <input
             id="pin-new"
@@ -214,7 +218,7 @@ function SetPin({ clubId }) {
           />
           {touched && !valid ? (
             <p class="field__error" id="pin-new-err">
-              PIN — от 4 до 6 цифр.
+              {min === 6 ? 'PIN владельца и управляющего — ровно 6 цифр: им подтверждают скидки выше лимита на кассе.' : 'PIN — от 4 до 6 цифр.'}
             </p>
           ) : null}
         </div>

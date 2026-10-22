@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'preact/hooks';
+import { optionPrice } from '../lib/prices.js';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
 import { tableKind, typeLabel } from '@billiardum/shared/hall';
 import { Stage, StatusBadge } from '../components/Stage.jsx';
@@ -110,6 +111,11 @@ export function TableScreen({ code, search }) {
       goStep('consent');
       return true;
     }
+    // Стол ждёт брони этого же гостя: игра начинается по брони (предоплата уже внесена), не обычной оплатой
+    if (c === 'booking_start_required' && err.data?.booking_id) {
+      navigate(`${BASE}bookings/${encodeURIComponent(err.data.booking_id)}`);
+      return true;
+    }
     if (c && c.startsWith('table_')) load();
     if (c === 'quote_used') {
       setQuote(null);
@@ -133,8 +139,14 @@ export function TableScreen({ code, search }) {
     inFlight.current = true;
     try {
       if (intent === 'join') {
-        await api.join(table.session_id);
-        navigate(`${BASE}s/${encodeURIComponent(table.session_id)}`, { replace: true });
+        // Анониму GET /api/t/{code} не отдаёт session_id — после входа перечитываем стол
+        const sid = table.session_id ?? (await load())?.session_id;
+        if (!sid) {
+          setError({ code: 'session_not_active' });
+          return;
+        }
+        await api.join(sid, code);
+        navigate(`${BASE}s/${encodeURIComponent(sid)}`, { replace: true });
         return;
       }
       // Часы пакета на балансе в клубе (M3, №112) — котировка сразу с use_balance; гость может отказаться
@@ -316,8 +328,12 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
             return (
               <label class="choice__item" key={String(o)}>
                 <input type="radio" name="option" value={String(o)} checked={option === o} disabled={blocked} onChange={() => setOption(o)} />
-                <span class="choice__box">
-                  <span class="choice__title">{optionLabel(o)}</span>
+                {/* «Фишка»: время крупно, ориентировочная цена, до скольких */}
+                <span class="choice__box chip">
+                  <span class="choice__title chip__time display">{optionLabel(o)}</span>
+                  {m !== null && optionPrice(table, m, now) !== null && !blocked ? (
+                    <span class="chip__price mono">≈ {formatMoney(optionPrice(table, m, now))}</span>
+                  ) : null}
                   <span class="choice__sub">{sub}</span>
                 </span>
               </label>
@@ -411,7 +427,8 @@ function NotFree({ table, error, busy, onReload, onJoin, signedIn, onSignIn, onT
         <p class="notice__text">{text}</p>
       </section>
 
-      {s === 'busy' && table.session_id ? (
+      {/* Анониму сервер не отдаёт session_id (только вошедшим) — кнопку показываем, сессию узнаем после входа */}
+      {s === 'busy' && (table.session_id || !signedIn) ? (
         <section class="join" aria-labelledby="join-title">
           <h2 class="step__label" id="join-title">
             Играете за этим столом?

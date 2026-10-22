@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError, createClient, readErrorCode, newIdempotencyKey, openStream } from '../api.mjs';
+import { ApiError, createClient, readError, readErrorCode, newIdempotencyKey, openStream } from '../api.mjs';
 
 const json = (status, body) => new Response(body === undefined ? '' : JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -25,6 +25,25 @@ test('readErrorCode: код из тела {"error"}, иначе по стату�
   assert.equal(await readErrorCode(json(418)), 'unknown');
   // посторонний текст в поле error не становится кодом
   assert.equal(await readErrorCode(json(400, { error: '<script>alert(1)</script>' })), 'bad_request');
+});
+
+test('readError: безопасные поля рядом с кодом (booking_id), прочее отбрасывается', async () => {
+  const id = '11111111-2222-4333-8444-555555555555';
+  assert.deepEqual(await readError(json(409, { error: 'booking_start_required', booking_id: id, phone: '+79990000000', x: { y: 1 } })), {
+    code: 'booking_start_required',
+    data: { booking_id: id },
+  });
+  assert.deepEqual(await readError(json(409, { error: 'table_busy' })), { code: 'table_busy', data: null });
+  assert.deepEqual(await readError(json(500, { error: 'internal', booking_id: id })), { code: 'internal', data: null });
+  const f = fakeFetch(() => json(409, { error: 'booking_start_required', booking_id: id }));
+  const err = await createClient({ fetch: f }).post('/quotes/q/pay', {}).catch((e) => e);
+  assert.ok(err instanceof ApiError);
+  assert.equal(err.data.booking_id, id);
+  assert.equal(err.retryAfterSec, null);
+  const g = fakeFetch(() => new Response(JSON.stringify({ error: 'rate_limited' }), { status: 429, headers: { 'retry-after': '840' } }));
+  const limited = await createClient({ fetch: g }).post('/staff/pin', {}).catch((e) => e);
+  assert.equal(limited.code, 'rate_limited');
+  assert.equal(limited.retryAfterSec, 840);
 });
 
 test('GET: префикс /api, Accept, cookie same-origin, без Content-Type и тела', async () => {

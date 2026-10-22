@@ -1,0 +1,22 @@
+/*
+ * Приложение гостя — редакция №127 (DESIGN §2, §4, §6): «фишки» выбора времени с ценой, отсчёт с кольцом,
+ * брони — билеты с корешком, баланс часов — жетон клуба, пустые состояния с иллюстрацией. Только токены.
+ */
+
+/* «Фишки» времени: крупная цифра шрифтом-дисплеем, цена моноширинным, кромка — латунь */
+.choice--grid { gap: 12px; }
+.chip { min-height: 104px; gap: 4px; padding: 14px 16px; align-content: start; background: linear-gradient(170deg, var(--card-2), var(--card) 70%); }
+.chip__time { font-size: var(--fs-24); font-weight: 400; line-height: 1.05; }
+.chip__price { font-size: var(--fs-17); font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.choice__item input:checked + .chip { background: linear-gradient(170deg, var(--lamp-tint), var(--card) 95%); }
+.choice__item input:checked + .chip .chip__price { color: var(--ink); }
+
+/* Отсчёт с кольцом (предложение из очереди) */
+.countdown { display: flex; align-items: center; gap: 14px; margin: 0; }
+.countdown__ring { width: 60px; height: 60px; flex: none; }
+.countdown__track { fill: none; stroke: color-mix(in oklab, var(--lamp) 25%, transparent); stroke-width: 5; }
+.countdown__arc { fill: none; stroke: var(--lamp); stroke-width: 5; stroke-linecap: round; transition: stroke-dasharray 1s linear; }
+.countdown__value { font-size: var(--fs-44); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* Пустые состояния: иллюстрация из бильярдной, текст по центру */
+.empty { justify-items: center; text-align: center; gap: 12px; padding: 20px 8px; color: var(--ink-2); }

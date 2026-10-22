@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
+import { BotCode } from '../components/BotCode.jsx';
 import { DEV_LOGIN, BASE } from '../lib/env.js';
 import { getTerminal } from '../lib/api.js';
 import { startBotLink, pendingBotLink, checkBotLink, cancelBotLink, devLogin, normalizePhone } from '../lib/auth.js';
@@ -13,6 +14,7 @@ export function SignIn() {
   const [link, setLink] = useState(() => pendingBotLink());
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
+  const [expired, setExpired] = useState(false);
   const terminal = getTerminal();
 
   useEffect(() => {
@@ -25,6 +27,7 @@ export function SignIn() {
         if (stopped || status === 'done') return;
         if (status === 'expired') {
           setLink(null);
+          setExpired(true);
           return;
         }
       } catch (err) {
@@ -42,6 +45,7 @@ export function SignIn() {
   const start = async (channel) => {
     setBusy(channel);
     setError(null);
+    setExpired(false);
     try {
       setLink(await startBotLink(channel));
     } catch (err) {
@@ -58,7 +62,10 @@ export function SignIn() {
         <h1 class="signin__title">Вход для персонала клуба</h1>
         {link ? (
           <div class="form">
-            <p class="lead">Откройте бота в {NAME[link.channel]}, нажмите «Поделиться контактом» и вернитесь сюда.</p>
+            <BotCode code={link.code} />
+            <p class="lead">
+              Откройте бота в {NAME[link.channel]}, отправьте ему этот код, при первом входе нажмите «Поделиться контактом» и вернитесь сюда.
+            </p>
             <a class="btn btn--primary btn--block btn--lg" href={link.deep_link} target="_blank" rel="noopener noreferrer">
               Открыть {NAME[link.channel]}
               <Icon name="external" />
@@ -79,7 +86,14 @@ export function SignIn() {
           </div>
         ) : (
           <div class="form">
-            <p class="hint">Войдите по номеру телефона, который владелец клуба добавил в персонал. Подтверждение — в мессенджере, без кодов.</p>
+            <p class="hint">Войдите по номеру телефона, который владелец клуба добавил в персонал. Подтверждение — в мессенджере: бот попросит код с этого экрана.</p>
+            {expired ? (
+              <div class="note" role="status">
+                <Icon name="clock" />
+                <p class="note__title">Вход не подтверждён.</p>
+                <p class="note__body">Ссылка устарела или код трижды ввели неверно. Начните заново — покажем новый код.</p>
+              </div>
+            ) : null}
             <button type="button" class="btn btn--primary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => start('max')}>
               {busy === 'max' ? 'Открываем MAX…' : 'Войти через MAX'}
             </button>

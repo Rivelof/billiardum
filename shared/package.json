@@ -12,6 +12,7 @@
     "./api": "./api.mjs",
     "./errors": "./errors.mjs",
     "./hall": "./hall.mjs",
+    "./illustrations": "./illustrations.mjs",
     "./icons": "./icons.mjs",
     "./reasons": "./reasons.mjs",
     "./bar": "./bar.mjs",

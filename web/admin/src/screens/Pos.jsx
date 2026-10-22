@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { Ill } from '../components/Ill.jsx';
 import { formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { addFixed, addProduct, available, cartNeedsBar, defaultModifiers, emptyCart, lineTotal, modifiersText, normalizeMenu, refreshCart, removeLine, setQty, unavailableWord } from '@billiardum/shared/bar';
 import { Shell } from '../components/Shell.jsx';
@@ -350,7 +351,8 @@ export function Pos({ ctx }) {
           )}
         </section>
 
-        <aside class="pos__cart" aria-labelledby="cart-title">
+        {/* Чек — бумажная лента: всегда светлая «слоновая кость», как распечатка ККТ (№127) */}
+        <aside class="pos__cart" aria-labelledby="cart-title" data-theme="light">
           <div class="cart__head">
             <h2 class="section-title" id="cart-title">
               Чек
@@ -425,7 +427,7 @@ export function Pos({ ctx }) {
             </ul>
           ) : (
             <div class="cart__empty">
-              <Icon name="receipt" size={30} />
+              <Ill name="receipt" />
               <p>Чек пуст. Нажмите на товар слева{tablesCount ? ' или на заявку во вкладке «Столы»' : ''}.</p>
             </div>
           )}

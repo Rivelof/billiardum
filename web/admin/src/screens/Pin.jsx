@@ -3,11 +3,19 @@ import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api, getTerminal } from '../lib/api.js';
 import { pinSwitch } from '../lib/auth.js';
+import { pinErrorKind } from '../lib/terminals.js';
 import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { ROLE_LABEL } from '../lib/words.js';
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'clear', '0', 'back'];
+
+const PIN_ERROR_TEXT = {
+  pin_wrong: 'PIN не подошёл. После 5 ошибок подряд PIN блокируется на 15 минут.',
+  pin_locked: 'PIN заблокирован на 15 минут после 5 ошибок. Войдите через мессенджер или подождите.',
+  terminal_locked: 'Терминал заблокирован: на нём много раз ввели неверный PIN. Войдите через мессенджер; владелец разблокирует терминал в разделе «Персонал → Терминалы».',
+};
+
 
 /** Имя сотрудника (§14), пока его нет — маска телефона; роль — второй строкой. */
 function staffLabel(u) {
@@ -25,6 +33,8 @@ export function Pin() {
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Вошёл владелец или управляющий с коротким PIN — сначала просим сменить его на 6 цифр
+  const [changePin, setChangePin] = useState(false);
 
   useEffect(() => {
     if (!terminal) return;
@@ -40,12 +50,15 @@ export function Pin() {
     setBusy(true);
     setError(null);
     try {
-      await pinSwitch(who.user_id, value);
+      const { pinChangeRequired } = await pinSwitch(who.user_id, value);
+      if (pinChangeRequired) {
+        setChangePin(true);
+        return;
+      }
       navigate(BASE, { replace: true });
     } catch (err) {
       setPin('');
-      // Неверный PIN — 401; после 5 ошибок подряд PIN заблокирован на 15 минут — 429
-      setError(err?.code === 'forbidden' || err?.code === 'unauthorized' ? 'pin_wrong' : err?.code === 'rate_limited' ? 'pin_locked' : err);
+      setError(pinErrorKind(err));
     } finally {
       setBusy(false);
     }
@@ -57,6 +70,28 @@ export function Pin() {
     if (k === 'clear') return setPin('');
     setPin((p) => (p.length < 6 ? p + k : p));
   };
+
+  if (changePin) {
+    return (
+      <div class="signin" data-theme="dark">
+        <div class="signin__card">
+          <p class="signin__brand display">Бильярдум</p>
+          <h1 class="signin__title">Смените PIN на 6 цифр</h1>
+          <div class="note note--lamp">
+            <Icon name="key" />
+            <p class="note__title">Ваш PIN короче 6 цифр</p>
+            <p class="note__body">
+              У владельца и управляющего PIN — ровно 6 цифр: им подтверждают скидки выше лимита на кассе. Войдите со своего телефона через мессенджер и задайте новый PIN в
+              разделе «Ещё».
+            </p>
+          </div>
+          <button type="button" class="btn btn--primary btn--block btn--lg" onClick={() => navigate(BASE, { replace: true })}>
+            Понятно, продолжить
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!terminal) {
     return (
@@ -124,11 +159,9 @@ export function Pin() {
                 <span key={i} class={`pin__dot${i < pin.length ? ' pin__dot--on' : ''}`} />
               ))}
             </div>
-            {error === 'pin_wrong' || error === 'pin_locked' ? (
+            {PIN_ERROR_TEXT[error] ? (
               <p class="field__error" role="alert">
-                {error === 'pin_wrong'
-                  ? 'PIN не подошёл. После 5 ошибок подряд PIN блокируется на 15 минут.'
-                  : 'PIN заблокирован на 15 минут после 5 ошибок. Войдите через мессенджер или подождите.'}
+                {PIN_ERROR_TEXT[error]}
               </p>
             ) : (
               <ErrorNote error={error} />
