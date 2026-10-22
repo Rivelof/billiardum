@@ -328,6 +328,58 @@ describe('возвраты', () => {
   });
 });
 
+describe('чек зачёта предоплаты (POST /v3/receipts)', () => {
+  async function prepaid(value = '1000.00') {
+    const body = payment(value, { receipt: { ...receipt(value), items: [{ ...receipt(value).items[0], description: 'Предоплата брони, стол 4', payment_mode: 'full_prepayment' }] } });
+    const p = (await api('POST', '/v3/payments', { body, key: key() })).json;
+    await api('POST', `/__emu/payments/${p.id}/succeed?wait=1`, { shop: null });
+    return p;
+  }
+  const settle = (p, value, extra = {}) => ({
+    type: 'payment',
+    payment_id: p.id,
+    send: true,
+    customer: { phone: '79990000001' },
+    items: [{ description: 'Игра, стол 4, 2 ч', quantity: 1, amount: { value, currency: 'RUB' }, vat_code: 1, payment_mode: 'full_payment', payment_subject: 'service' }],
+    settlements: [{ type: 'prepayment', amount: { value, currency: 'RUB' } }],
+    tax_system_code: 2,
+    ...extra,
+  });
+
+  it('зачёт по платежу предоплаты: чек succeeded с фискальными данными; повтор ключа — тот же чек', async () => {
+    const p = await prepaid();
+    const k = key();
+    const r = await api('POST', '/v3/receipts', { body: settle(p, '1000.00'), key: k });
+    assert.equal(r.status, 200);
+    assert.match(r.json.id, /^rt_/);
+    assert.equal(r.json.type, 'payment');
+    assert.equal(r.json.payment_id, p.id);
+    assert.equal(r.json.status, 'succeeded');
+    assert.ok(r.json.fiscal_document_number);
+    assert.deepEqual(r.json.settlements, [{ type: 'prepayment', amount: { value: '1000.00', currency: 'RUB' } }]);
+    assert.equal((await api('POST', '/v3/receipts', { body: settle(p, '1000.00'), key: k })).json.id, r.json.id);
+    assert.deepEqual((await api('GET', `/v3/receipts/${r.json.id}`)).json, r.json);
+    assert.equal((await api('GET', `/v3/receipts/${r.json.id}`, { shop: SHOP_B })).status, 404);
+  });
+
+  it('проверки: сумма позиций = сумме расчётов, зачёт не больше предоплаты, позиции full_payment, send, payment_id', async () => {
+    const p = await prepaid('600.00');
+    const bad = async (body) => (await api('POST', '/v3/receipts', { body, key: key() })).json.parameter;
+    assert.equal(await bad({ ...settle(p, '600.00'), settlements: [{ type: 'prepayment', amount: { value: '500.00', currency: 'RUB' } }] }), 'receipt.items');
+    assert.equal(await bad(settle(p, '700.00')), 'settlements');
+    assert.equal(await bad({ ...settle(p, '600.00'), items: [{ ...settle(p, '600.00').items[0], payment_mode: 'full_prepayment' }] }), 'items[0].payment_mode');
+    assert.equal(await bad({ ...settle(p, '600.00'), send: false }), 'send');
+    assert.equal(await bad({ ...settle(p, '600.00'), settlements: [{ type: 'barter', amount: { value: '600.00', currency: 'RUB' } }] }), 'settlements[0].type');
+    assert.equal(await bad({ ...settle(p, '600.00'), payment_id: 'nope' }), undefined);
+    const pending = (await api('POST', '/v3/payments', { body: payment('600.00'), key: key() })).json;
+    assert.equal(await bad(settle(pending, '600.00')), 'payment_id');
+    // Частями: 400 + 200 — можно, ещё 1 ₽ — нет.
+    assert.equal((await api('POST', '/v3/receipts', { body: settle(p, '400.00'), key: key() })).status, 200);
+    assert.equal((await api('POST', '/v3/receipts', { body: settle(p, '200.00'), key: key() })).status, 200);
+    assert.equal(await bad(settle(p, '1.00')), 'settlements');
+  });
+});
+
 describe('управление /__emu', () => {
   it('повтор вебхука N раз, подмена полей и сырое тело', async () => {
     const p = (await api('POST', '/v3/payments', { body: payment(), key: key() })).json;

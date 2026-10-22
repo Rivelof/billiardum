@@ -19,7 +19,7 @@ export const RECEPTION_A = 'a1000000-0000-4000-8000-000000000004';
 export const RESOURCE_1 = 'e1000000-0000-4000-8000-000000000001';
 export const ORIGIN = 'https://bl.test';
 /** Маршруты core: тесты не зависят от маршрутов light и money. */
-export const CORE_ROUTE_FILES = ['auth.mjs', 'owner.mjs', 'stream.mjs'];
+export const CORE_ROUTE_FILES = ['auth.mjs', 'owner.mjs', 'stream.mjs', 'staff.mjs'];
 
 /** Пул под app_api к временной базе. */
 export function appPool(url, { max = 10 } = {}) {

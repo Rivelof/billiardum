@@ -37,6 +37,8 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 | `POST /v3/payments/{id}/cancel` | только `waiting_for_capture` → `canceled` (`merchant`, `canceled_by_merchant`) |
 | `POST /v3/refunds` | `payment_id` (`succeeded`), `amount` ≤ остатка, **`receipt` обязателен**; сразу `succeeded` |
 | `GET /v3/refunds/{id}` | возврат своего магазина |
+| `POST /v3/receipts` | отдельный чек (M3, зачёт предоплаты): `type` `payment` (по `succeeded`-платежу) или `refund`, `send: true`, `customer`, `items`, `settlements` (`cashless`, `prepayment`, `postpayment`, `consideration`); сумма позиций = сумме расчётов; при `prepayment` позиции `full_payment`/`partial_payment` и зачёт не больше остатка платежа (можно частями). Ответ: `rt_…`, `status: succeeded`, фискальные поля |
+| `GET /v3/receipts/{id}` | чек своего магазина |
 
 Чек: `customer.phone` (цифры E.164 без `+`) или `customer.email`; 1–100 позиций с `description` ≤ 128, `quantity`, `amount`, `vat_code` 1–12, `payment_mode`, `payment_subject`; `tax_system_code` 1–6 по желанию. **Сумма позиций (цена × количество) должна равняться сумме платежа или возврата — иначе `400`, `parameter: receipt.items`.**
 
@@ -58,12 +60,13 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 | `POST /__emu/config` | `{webhook_delay_ms, webhook_retries, webhook_retry_delay_ms, webhook_url, fail_next: {count, status}, down}`: задержка вебхуков, сбой следующих N запросов API (по умолчанию 500), API недоступен (503) |
 | `POST /__emu/shops` | `{shop_id, secret, webhook_url?}` — ещё магазин (второй клуб) |
 | `GET /__emu/payments`, `GET /__emu/payments/{id}` | платежи с чеками (`receipt`, `receipts`: платёж, списание, возвраты) |
+| `GET /__emu/receipts` | отдельные чеки (зачёты) |
 | `GET /__emu/webhooks` | доставки вебхуков и попытки со статусами |
 | `GET /__emu/requests` | журнал запросов API (метод, путь, `Idempotence-Key`, статус) |
 | `POST /__emu/reset` | очистить всё, кроме магазинов |
 
 ## Тесты
 
-`npm test -w @billiardum/yookassa-emu` — 24 теста: авторизация, ключ идемпотентности, отказ без чека и при несовпадении суммы позиций, форма объекта, QR для СБП, страница подтверждения, вебхуки с повтором до 200, двухстадийный платёж, возвраты, управление.
+`npm test -w @billiardum/yookassa-emu` — 26 тестов: авторизация, ключ идемпотентности, отказ без чека и при несовпадении суммы позиций, форма объекта, QR для СБП, страница подтверждения, вебхуки с повтором до 200, двухстадийный платёж, возвраты, управление.
 
 Поля, в которых эмулятор опирается на память, а не на проверенную документацию (сверить с настоящим магазином, когда откроется `api.yookassa.ru`): ответ на повтор `Idempotence-Key` с другим телом; `capture` по умолчанию; требование чека при `capture` с меньшей суммой и при возврате; `quantity` числом или строкой; диапазон `vat_code` (1–12, включая ставки 5 %, 7 % и 22 % с 2026 года); поддержка СБП в двухстадийной оплате; `expires_at` заморозки.

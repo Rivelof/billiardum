@@ -72,8 +72,20 @@ export const PAYMENT_OBJECT = Object.freeze({
   another: 'another',
 });
 
-/** Способ оплаты платежа → тип оплаты АТОЛ: наличные или безналичные (терминал банка). */
-export const PAYMENT_TYPE = Object.freeze({ cash: 'cash', card_terminal: 'electronically', card: 'electronically', sbp: 'electronically' });
+/**
+ * Способ оплаты платежа → тип оплаты АТОЛ: наличные, безналичные (терминал банка) или
+ * зачёт предоплаты (prepaid: чек зачёта брони, пакета часов, депозита — M3, decisions №52, №112).
+ */
+export const PAYMENT_TYPE = Object.freeze({
+  cash: 'cash',
+  card_terminal: 'electronically',
+  card: 'electronically',
+  sbp: 'electronically',
+  prepayment: 'prepaid',
+});
+
+/** Признаки расчёта «предоплата» и «аванс»: такую позицию нельзя оплатить зачётом предоплаты. */
+const PREPAYMENT_MODES = new Set(['fullPrepayment', 'prepayment', 'advance']);
 
 export const MAX_OPERATOR = 64;
 export const DEFAULT_OPERATOR = 'Кассир';
@@ -160,6 +172,9 @@ export function atolItems(items) {
  */
 export function receiptTask({ kind, items, amountKopecks, taxSystemCode, payments, operatorName: op }) {
   const { items: positions, totalKopecks } = atolItems(items);
+  // Зачёт предоплаты покрывает только позиции «полный расчёт» (и частичный расчёт, кредит):
+  // аванс авансом не оплачивается.
+  const settleable = positions.reduce((a, pos) => (PREPAYMENT_MODES.has(pos.paymentMethod) ? a : a + Math.round(pos.amount * 100)), 0);
   if (totalKopecks !== Number(amountKopecks)) throw new ReceiptDataError(`сумма позиций ${totalKopecks} ≠ сумма чека ${amountKopecks}`);
   if (!Array.isArray(payments) || payments.length === 0) throw new ReceiptDataError('оплаты');
   const byType = new Map();
@@ -171,6 +186,8 @@ export function receiptTask({ kind, items, amountKopecks, taxSystemCode, payment
   }
   const paid = [...byType.values()].reduce((a, b) => a + b, 0);
   if (paid !== totalKopecks) throw new ReceiptDataError(`оплаты ${paid} ≠ сумма чека ${totalKopecks}`);
+  const prepaid = byType.get('prepaid') ?? 0;
+  if (prepaid > settleable) throw new ReceiptDataError(`зачёт предоплаты ${prepaid} больше позиций «полный расчёт» ${settleable}`);
   const task = {
     type: kind === 'refund' ? 'sellReturn' : 'sell',
     electronically: false,

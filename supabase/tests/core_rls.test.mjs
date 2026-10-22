@@ -21,6 +21,8 @@ const CORE_TABLES = [
   'push_subscriptions',
   'notifications',
   'alarms',
+  'staff_invites',
+  'club_summaries',
 ];
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const P256 = `B${'A'.repeat(86)}`;
@@ -271,7 +273,7 @@ describe('вход: токены, терминалы, nonce', () => {
     await asRole(db.pool, 'app_api', { userId: GUEST2, actorType: 'user' }, async (c) => {
       assert.deepEqual((await c.query('select * from bl.user_brief($1)', [GUEST])).rows, []);
       const route = (await c.query('select * from bl.notify_route($1)', [GUEST])).rows[0];
-      assert.deepEqual(Object.keys(route).sort(), ['max_user_id', 'notify_channel', 'telegram_user_id', 'user_id']);
+      assert.deepEqual(Object.keys(route).sort(), ['channels_order', 'max_user_id', 'notify_channel', 'telegram_user_id', 'user_id']);
     });
   });
 });
@@ -327,6 +329,45 @@ describe('outbox, идемпотентность, push, уведомления, 
       assert.equal(await count(c, 'alarms'), 1);
       assert.ok(await tryQuery(c, "insert into bl.alarms (club_id, type, level) values ($1, 'x', 'info')", [CLUB_A]), 'дубль открытой тревоги');
       assert.match((await tryQuery(c, "insert into bl.alarms (club_id, type, level) values ($1, 'y', 'info')", [CLUB_B]))?.message ?? '', /row-level security/);
+    });
+  });
+
+  it('приглашения персонала и сводки — по клубу; bl.summary_clubs отдаёт пояса всех клубов', async () => {
+    await db.pool.query(
+      `insert into bl.staff_invites (club_id, phone, role, invited_by, expires_at) values ($1, '+79990000101', 'bar', $2, now() + interval '7 days'), ($3, '+79990000102', 'bar', $4, now() + interval '7 days')`,
+      [CLUB_A, OWNER_A, CLUB_B, OWNER_B],
+    );
+    await db.pool.query(`insert into bl.club_summaries (club_id, kind, day, data, sent_at) values ($1, 'morning', '2026-10-21', '{}', now()), ($2, 'morning', '2026-10-21', '{}', now())`, [CLUB_A, CLUB_B]);
+    await asRole(db.pool, 'app_api', { clubId: CLUB_A, actorType: 'user' }, async (c) => {
+      assert.deepEqual((await c.query('select phone from bl.staff_invites')).rows, [{ phone: '+79990000101' }]);
+      assert.equal(await count(c, 'club_summaries'), 1);
+      assert.match((await tryQuery(c, "insert into bl.staff_invites (club_id, phone, role, invited_by, expires_at) values ($1, '+79990000103', 'bar', $2, now() + interval '1 day')", [CLUB_B, OWNER_A]))?.message ?? '', /row-level security/);
+    });
+    await asRole(db.pool, 'app_api', { actorType: 'system' }, async (c) => {
+      const clubs = (await c.query('select club_id, timezone, day_start_local, summary_time_local from bl.summary_clubs() order by club_id')).rows;
+      assert.deepEqual(clubs.map((r) => [r.club_id, r.timezone, r.day_start_local, r.summary_time_local]), [
+        [CLUB_A, 'Asia/Yekaterinburg', '06:00', '10:00'],
+        [CLUB_B, 'Asia/Vladivostok', '06:00', '10:00'],
+      ]);
+      assert.equal(await count(c, 'staff_invites'), 0, 'платформа приглашений не видит');
+    });
+  });
+
+  it('bl.staff_accept_invites — только номер пользователя из контекста; bl.staff_revoke — только участник клуба из контекста, не владелец', async () => {
+    const invitee = (await db.pool.query("insert into bl.users (phone) values ('+79990000101') returning id")).rows[0].id;
+    await asRole(db.pool, 'app_api', { actorType: 'user' }, async (c) => {
+      assert.deepEqual((await c.query('select * from bl.staff_accept_invites()')).rows, [], 'без пользователя — ничего');
+    });
+    await asRole(db.pool, 'app_api', { userId: invitee, actorType: 'user' }, async (c) => {
+      const rows = (await c.query('select club_id, role from bl.staff_accept_invites()')).rows;
+      assert.deepEqual(rows, [{ club_id: CLUB_A, role: 'bar' }]);
+    });
+    await asRole(db.pool, 'app_api', { clubId: CLUB_B, actorType: 'user' }, async (c) => {
+      assert.equal((await c.query('select bl.staff_revoke($1) as n', [MANAGER_A])).rows[0].n, null, 'сотрудник другого клуба');
+      assert.equal((await tryQuery(c, 'select bl.staff_revoke($1)', [OWNER_B]))?.code, '42501', 'владельца — нельзя');
+    });
+    await asRole(db.pool, 'app_api', { actorType: 'system' }, async (c) => {
+      assert.equal((await tryQuery(c, 'select bl.staff_revoke($1)', [MANAGER_A]))?.code, '42501', 'без клуба в контексте');
     });
   });
 

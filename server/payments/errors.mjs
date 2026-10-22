@@ -1,7 +1,8 @@
 // Ошибки денежного модуля: код из общего словаря контракта M1 §3 и HTTP-статус.
 // Наружу уходит только {"error": code}; подробности — в лог.
 // no_tariff — дополнение к словарю (на это время у клуба нет тарифа), см. README;
-// shift_closed — нет открытой смены (M2, decisions №83, №93).
+// shift_closed — нет открытой смены (M2, decisions №83, №93); booking_conflict — продление
+// упирается в бронь (M3, №106).
 
 export const STATUS_BY_CODE = Object.freeze({
   bad_request: 400,
@@ -26,6 +27,10 @@ export const STATUS_BY_CODE = Object.freeze({
   reason_required: 400,
   no_tariff: 409,
   shift_closed: 409,
+  booking_conflict: 409,
+  already_paid: 409,
+  package_used: 409,
+  already_refunded: 409,
 });
 
 export class MoneyError extends Error {
@@ -46,7 +51,7 @@ export const fail = (code, detail, status) => {
   throw new MoneyError(code, detail, status);
 };
 
-const LIGHT_CODES = new Set(['table_busy', 'table_pending', 'table_offline', 'table_service', 'session_not_active', 'not_found', 'forbidden', 'not_payer', 'limit_exceeded']);
+const LIGHT_CODES = new Set(['bad_request', 'shift_closed', 'table_busy', 'table_pending', 'table_offline', 'table_service', 'session_not_active', 'not_found', 'forbidden', 'not_payer', 'limit_exceeded']);
 
 /**
  * Ошибка соседнего модуля (light: LightError с кодом словаря) → MoneyError того же кода.

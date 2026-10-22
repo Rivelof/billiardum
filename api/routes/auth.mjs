@@ -161,8 +161,8 @@ const NAME_RE = /^[^\p{Cc}]{1,100}$/u;
 
 /** PATCH /api/me {name?, notify_channel?} — своё имя (для персонала) и основной канал уведомлений. */
 async function updateMe(ctx, req) {
-  const { name, notify_channel: channel } = req.body;
-  if (name === undefined && channel === undefined) throw new HttpError(400, 'bad_request');
+  const { name, notify_channel: channel, channels_order: order } = req.body;
+  if (name === undefined && channel === undefined && order === undefined) throw new HttpError(400, 'bad_request');
   const sets = [];
   const params = [ctx.user.id];
   if (name !== undefined) {
@@ -175,6 +175,14 @@ async function updateMe(ctx, req) {
     if (channel !== null && !['max', 'telegram', 'webpush'].includes(channel)) throw new HttpError(400, 'bad_request');
     params.push(channel);
     sets.push(`notify_channel = $${params.length}`);
+  }
+  if (order !== undefined) {
+    // Порядок каналов (M3 §4): 1–3 разных из max, telegram, webpush; null — по умолчанию.
+    const ok = order === null || (Array.isArray(order) && order.length >= 1 && order.length <= 3 && new Set(order).size === order.length
+      && order.every((c) => ['max', 'telegram', 'webpush'].includes(c)));
+    if (!ok) throw new HttpError(400, 'bad_request');
+    params.push(order);
+    sets.push(`channels_order = $${params.length}::text[]`);
   }
   params.push(ctx.clock.now());
   sets.push(`updated_at = $${params.length}`);

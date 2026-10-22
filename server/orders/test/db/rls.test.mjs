@@ -165,7 +165,7 @@ describe('RLS новых таблиц', { skip: SKIP }, () => {
     });
   });
 
-  it('узкие функции: pos_object_club находит клуб заказа и продажи, pos_due — только id', async () => {
+  it('узкие функции: pos_object_club находит клуб заказа и продажи, pos_due — только id, pos_guest (0481) — только id', async () => {
     await asRole(db.pool, 'app_api', { clubId: null }, async (c) => {
       assert.equal((await c.query("select bl.pos_object_club('order', $1) as c", [ID.order])).rows[0].c, CLUB_B);
       assert.equal((await c.query("select bl.pos_object_club('sale', $1) as c", [ID.sale])).rows[0].c, CLUB_B);
@@ -178,7 +178,7 @@ describe('RLS новых таблиц', { skip: SKIP }, () => {
       `select p.proname, pg_get_userbyid(p.proowner) as owner, p.proconfig from pg_proc p
         where p.pronamespace = 'bl'::regnamespace and p.prosecdef and p.proname like 'pos\\_%' order by 1`,
     );
-    assert.deepEqual(rows.map((r) => [r.proname, r.owner]), [['pos_due', 'bl_definer'], ['pos_object_club', 'bl_definer']]);
+    assert.deepEqual(rows.map((r) => [r.proname, r.owner]), [['pos_due', 'bl_definer'], ['pos_guest', 'bl_definer'], ['pos_object_club', 'bl_definer']]);
     for (const r of rows) assert.ok(r.proconfig.some((s) => s.startsWith('search_path=pg_catalog')));
     await asRole(db.pool, 'bl_definer', {}, async (c) => {
       assert.equal((await tryQuery(c, 'select subtotal_kopecks from bl.orders'))?.code, '42501');

@@ -13,7 +13,7 @@ export function nick(ordinal) {
  * @param {object} s строка сессии (queries.loadSession)
  * @param {{ now: Date, userId?: string|null, participants?: object[] }} opts
  */
-export function sessionView(s, { now, userId = null, participants = [] }) {
+export function sessionView(s, { now, userId = null, participants = [], bookingLimit = null }) {
   const open = OPEN_STATUSES.includes(s.status);
   const paidUntil = new Date(s.paid_until);
   let remaining = 0;
@@ -31,12 +31,22 @@ export function sessionView(s, { now, userId = null, participants = [] }) {
     unlimited: Boolean(s.unlimited),
     is_payer: userId !== null && s.payer_user_id === userId,
     participants: participants.map((p) => ({ nick: nick(p.ordinal) })),
-    // Для «Без лимита» — до какого момента оплачено замороженной суммой; дальше нужна новая.
-    extend_limit_until: s.unlimited && open ? iso(s.paid_until) : null,
+    // До какого момента можно продлить: «Без лимита» — покрыто заморозкой, блоком СБП или
+    // депозитом (№69); бронь следующего гостя — её начало минус 5 минут (№106). Меньший из двух.
+    extend_limit_until: open ? iso(extendLimit(s, bookingLimit)) : null,
+    booking_id: s.booking_id ?? null,
+    deposit_kopecks: s.deposit_kopecks ?? null,
     ended_at: iso(s.ended_at),
     close_reason: s.close_reason ?? null,
     interrupted_at: iso(s.interrupted_at),
   };
+}
+
+function extendLimit(s, bookingLimit) {
+  const own = s.unlimited ? new Date(s.paid_until) : null;
+  const booking = bookingLimit ? new Date(bookingLimit) : null;
+  if (own && booking) return own < booking ? own : booking;
+  return own ?? booking;
 }
 
 /** Короткое представление сессии в зале и в SSE hall. */

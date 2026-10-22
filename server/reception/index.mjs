@@ -276,3 +276,44 @@ export async function guestRequestStatus(db, deps, info) {
     reason_code: status === 'declined' ? r.decline_reason_code : null,
   };
 }
+
+/**
+ * POST /api/reception/deposits — депозит наличными для «Без лимита» (M3, №112):
+ * { resource_id, amount_kopecks, received_kopecks?, user_id? }. Только в открытую смену.
+ * В одной транзакции: light начинает сессию (startFromDeposit, paid_until — сколько покрывает
+ * депозит), затем деньги (takeDeposit: платёж, чек ККТ предоплаты, журнал).
+ */
+export async function createDeposit(db, deps, info) {
+  const b = info.body ?? {};
+  if (!isUuid(b.resource_id)) throw new MoneyError('bad_request', 'resource_id');
+  if (!Number.isSafeInteger(b.amount_kopecks) || b.amount_kopecks <= 0) throw new MoneyError('bad_request', 'amount_kopecks');
+  if (b.user_id !== undefined && b.user_id !== null && !isUuid(b.user_id)) throw new MoneyError('bad_request', 'user_id');
+  const key = requireIdempotencyKey(info);
+  const { rows } = await db.query('select bl.resource_club($1) as club_id', [b.resource_id]);
+  if (!rows[0].club_id) throw new MoneyError('not_found', 'стол');
+  const clubId = await enterClub(db, rows[0].club_id);
+  await requireStaff(db, info, clubId, STAFF_ROLES);
+  const prev = (await db.query('select * from bl.payments where club_id = $1 and request_key = $2 and deposit', [clubId, key])).rows[0];
+  if (prev) {
+    if (prev.resource_id !== b.resource_id || Number(prev.amount_kopecks) !== b.amount_kopecks) throw new MoneyError('idempotency_conflict');
+    return { session_id: prev.session_id, payment_id: prev.id, change_kopecks: Number(prev.change_kopecks ?? 0) };
+  }
+  if (!(await deps.shifts.currentShift(db, clubId))) throw new MoneyError('shift_closed');
+  if (typeof deps.sessions.startFromDeposit !== 'function') throw new Error('light: нет startFromDeposit');
+  let started;
+  try {
+    started = await deps.sessions.startFromDeposit(db, { resourceId: b.resource_id, userId: b.user_id ?? null, staffId: info.userId, depositKopecks: b.amount_kopecks });
+  } catch (err) {
+    throw fromNeighbor(err);
+  }
+  const { takeDeposit } = await import('../payments/deposits.mjs');
+  const r = await takeDeposit(db, deps, {
+    clubId,
+    sessionId: started.session_id,
+    amountKopecks: b.amount_kopecks,
+    staffId: info.userId,
+    receivedKopecks: b.received_kopecks ?? null,
+    requestKey: key,
+  });
+  return { status: 201, json: { ...r, paid_until: started.paid_until, minutes: started.minutes } };
+}

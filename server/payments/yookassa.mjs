@@ -86,6 +86,9 @@ export function createYooKassaClient({ apiUrl, shopId, secretKey, timeoutMs = 10
     cancelPayment: async (id, idempotenceKey) => request('POST', `/payments/${checkId(id)}/cancel`, { body: {}, idempotenceKey }),
     createRefund: async (body, idempotenceKey) => request('POST', '/refunds', { body, idempotenceKey }),
     getRefund: async (id) => request('GET', `/refunds/${checkId(id)}`),
+    // Отдельный чек (зачёт предоплаты, №108): POST /v3/receipts, GET /v3/receipts/{id}.
+    createReceipt: async (body, idempotenceKey) => request('POST', '/receipts', { body, idempotenceKey }),
+    getReceipt: async (id) => request('GET', `/receipts/${checkId(id)}`),
   };
 }
 

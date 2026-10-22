@@ -16,8 +16,9 @@ import { confirmedPayload, insertReceipt, sessionIdOf, stableUuid } from './reco
 import { clientFor, loadPaymentSettings } from './settings.mjs';
 import { amountKopecks, formatValue, YooKassaError } from './yookassa.mjs';
 import { createReceptionRequest, receptionResponse } from '../reception/index.mjs';
+import { applyDebit, creditPackage, issueBalanceReceipts, planDebit, restoreBalance } from '../packages/balance.mjs';
 
-export const METHODS = Object.freeze(['sbp', 'card', 'reception']);
+export const METHODS = Object.freeze(['sbp', 'card', 'reception', 'balance']);
 
 export function returnUrl(config, paymentId) {
   return config.returnUrlTemplate.replaceAll('{payment_id}', paymentId);
@@ -99,6 +100,18 @@ export async function payQuote(db, deps, info, config) {
   const settings = await loadPaymentSettings(db, clubId);
   const number = await resourceNumber(db, quote.resource_id);
   const plan = payPlan(quote, method, settings);
+  const balanceMinutes = quote.balance_minutes ?? 0;
+
+  // Часть или всё время — балансом пакетов (№112).
+  if (method === 'balance') {
+    if (balanceMinutes === 0 || Number(quote.amount_kopecks) !== 0) throw new MoneyError('bad_request', 'балансом не покрыто всё время');
+    return { status: 200, json: await payByBalance(db, deps, { quote, userId, key, now }) };
+  }
+  if (balanceMinutes > 0 && method === 'reception') throw new MoneyError('bad_request', 'остаток при оплате балансом — СБП или картой');
+  // Доплата при старте по брони (№116) — СБП или картой; на ресепшене бронь начинает «гость пришёл».
+  if (quote.kind === 'booking_start' && method === 'reception') throw new MoneyError('bad_request', 'доплата по брони — СБП или картой');
+  if (balanceMinutes > 0 && Number(quote.amount_kopecks) === 0) throw new MoneyError('bad_request', 'всё время покрыто балансом: method balance');
+  const debit = balanceMinutes > 0 ? await planDebit(db, { clubId, userId, minutes: balanceMinutes, now }) : null;
 
   if (method === 'reception') {
     if (!settings.reception) throw new MoneyError('bad_request', 'ресепшн не принимает оплату');
@@ -111,7 +124,8 @@ export async function payQuote(db, deps, info, config) {
   if (method === 'card' && !settings.card) throw new MoneyError('bad_request', 'карта недоступна');
 
   const paymentId = stableUuid(`bl.payment/${quoteId}/${method}`);
-  const receipt = yookassaReceipt({ phone, resourceNumber: number, minutes: plan.unlimited && plan.capture === false ? null : plan.minutes, amountKopecks: plan.amount, settings });
+  const paidMinutes = plan.minutes === null ? null : plan.minutes - balanceMinutes;
+  const receipt = yookassaReceipt({ phone, resourceNumber: number, minutes: plan.unlimited && plan.capture === false ? null : paidMinutes, amountKopecks: plan.amount, settings });
   const { payment } = await createYooKassaPayment(db, deps, config, {
     settings,
     clubId,
@@ -124,19 +138,42 @@ export async function payQuote(db, deps, info, config) {
     capture: plan.capture,
     receipt,
     confirmation: { type: 'redirect', returnUrl: returnUrl(config, paymentId) },
-    description: `Стол ${number}, ${plan.unlimited && !plan.capture ? 'без лимита' : formatDuration(plan.minutes)}`,
-    metadata: { quote_id: quoteId },
+    description: `${quote.kind === 'booking_start' ? 'Бронь, стол' : 'Стол'} ${number}, ${plan.unlimited && !plan.capture ? 'без лимита' : formatDuration(plan.minutes)}`,
+    metadata: { quote_id: quoteId, ...(quote.booking_id ? { booking_id: quote.booking_id } : {}) },
+    bookingId: quote.booking_id ?? null,
     quoteId,
     sessionId: quote.session_id,
     resourceId: quote.resource_id,
     userId,
     minutes: plan.minutes,
     unlimited: plan.unlimited,
+    balanceMinutes,
     phone,
     now,
   });
+  // Минуты баланса списываются сразу (резерв): отмена платежа вернёт их, подтверждение даст чек зачёта.
+  if (debit) await applyDebit(db, debit, { paymentId: payment.id, userId, now });
   await db.query('update bl.quotes set used_at = $2 where id = $1', [quoteId, now]);
   return { status: 200, json: paymentResponse(payment) };
+}
+
+/** Всё время котировки — балансом: платёж balance (стоимость — доля цены пакетов), сразу подтверждён. */
+async function payByBalance(db, deps, { quote, userId, key, now }) {
+  const plan = await planDebit(db, { clubId: quote.club_id, userId, minutes: quote.balance_minutes, now });
+  const paymentId = stableUuid(`bl.payment/${quote.id}/balance`);
+  const { rows } = await db.query(
+    `insert into bl.payments (id, club_id, resource_id, user_id, quote_id, session_id, kind, provider, method, idempotence_key,
+                              request_key, status, amount_kopecks, capture, minutes, unlimited, balance_minutes, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, 'balance', 'balance', $8, $9, 'pending', $10, true, $11, false, $12, $13, $13)
+     returning *`,
+    [paymentId, quote.club_id, quote.resource_id, userId, quote.id, quote.session_id, quote.kind, `q-${quote.id}-balance`, key,
+      plan.valueKopecks, quote.minutes, quote.balance_minutes, now],
+  );
+  await applyDebit(db, plan, { paymentId, userId, now });
+  await db.query('update bl.quotes set used_at = $2 where id = $1', [quote.id, now]);
+  const r = await confirmPayment(db, deps, rows[0], { status: 'succeeded', now, actorType: 'user', actorId: userId });
+  deps.log?.info?.('payment_balance', { payment_id: paymentId, club_id: quote.club_id, minutes: quote.balance_minutes });
+  return { payment_id: r.payment.id, status: r.payment.status };
 }
 
 /**
@@ -182,12 +219,14 @@ export async function createYooKassaPayment(db, deps, config, spec) {
   const ins = await db.query(
     `insert into bl.payments (id, club_id, resource_id, user_id, quote_id, session_id, kind, provider, method,
                               provider_payment_id, idempotence_key, request_key, status, amount_kopecks, capture,
-                              minutes, unlimited, confirmation_url, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, 'yookassa', $8, $9, $10, $11, 'pending', $12, $13, $14, $15, $16, $17, $17)
+                              minutes, unlimited, confirmation_url, booking_id, package_id, balance_minutes, settlement_status,
+                              created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, 'yookassa', $8, $9, $10, $11, 'pending', $12, $13, $14, $15, $16, $18, $19, $20, $21, $17, $17)
      returning *`,
     [paymentId, clubId, spec.resourceId ?? null, spec.userId ?? null, spec.quoteId ?? null, spec.sessionId ?? null, kind, method,
       remote.id, idempotenceKey, spec.requestKey ?? null, amount, capture, spec.minutes ?? null, Boolean(spec.unlimited),
-      typeof stored === 'string' && stored.length <= 2000 ? stored : null, now],
+      typeof stored === 'string' && stored.length <= 2000 ? stored : null, now,
+      spec.bookingId ?? null, spec.packageId ?? null, spec.balanceMinutes ?? 0, kind === 'booking' ? 'open' : null],
   );
   // Чек продажи (у заморозки — на сумму заморозки; при списании меньшей суммы capture.mjs
   // заменяет его чеком на фактическую сумму, телефон берёт из этой строки).
@@ -239,6 +278,9 @@ export async function confirmPayment(db, deps, payment, { status, now, actorType
     actorType,
     actorId,
   });
+  // M3: покупка пакета — минуты на баланс гостя; игра частично балансом — чеки зачёта (в той же транзакции).
+  if (p.kind === 'package') await creditPackage(db, deps, { payment: p, now });
+  if (p.balance_minutes > 0) await issueBalanceReceipts(db, deps, { paymentId: p.id, now });
   await deps.outbox.enqueue(db, 'payment.confirmed', confirmedPayload(p));
   deps.log?.info?.('payment_confirmed', { payment_id: p.id, club_id: p.club_id, method: p.method, status: p.status });
   return { payment: p, confirmed: true };
@@ -354,6 +396,7 @@ export async function cancelLocal(db, deps, payment, { reason, now }) {
     actorType: 'system',
   });
   await deps.outbox.enqueue(db, 'payment.canceled', canceledPayload(p, payment.status));
+  if (p.balance_minutes > 0) await restoreBalance(db, { paymentId: p.id, now });
   if (payment.status === 'pending' && p.kind === 'start') {
     try {
       await deps.sessions.releasePending(db, { resourceId: p.resource_id, userId: p.user_id });

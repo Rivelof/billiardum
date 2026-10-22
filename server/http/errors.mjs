@@ -32,6 +32,14 @@ export const ERROR_CODES = new Set([
   'duplicate',
   'receipt_not_failed',
   'receipt_not_unknown',
+  // M3: бронь, лист ожидания, касса (коды модулей booking, money, kkt).
+  'booking_conflict',
+  'booking_expired',
+  'booking_not_active',
+  'too_early',
+  'table_free',
+  'offer_expired',
+  'fd_conflict',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',

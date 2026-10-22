@@ -1,12 +1,17 @@
 // Касса ресепшена (контракт M2 §4, §5; decisions №81–83; backend-pos).
 //   POST  /api/pos/sales                — ресепшн и выше, Idempotency-Key (клуб — X-Club-Id или единственный):
-//                                         {items?: [{product_id, qty, modifier_ids?}], tabs?: [session_id], requests?: [request_id],
+//                                         {items?: [{product_id, qty, modifier_ids?} | {kind: 'package', package_id, user_id | phone}],
+//                                          tabs?: [session_id], requests?: [request_id],
 //                                          discount?: {percent | amount_kopecks, reason?}, method: cash|card_terminal|sbp,
 //                                          received_kopecks? (cash), customer_phone? (sbp), to_bar?, comment?}
+//                                         пакет часов (M3): гость обязателен — 400 guest_required, только существующий —
+//                                         409 guest_not_found (№117); до 5 пакетов; скидка
+//                                         на пакет не действует; после оплаты минуты на балансе гостя (packages в ответе)
 //                                         → продажа; без открытой смены — 409 shift_closed; sbp — status pending и
 //                                           confirmation {type: qr, confirmation_data}
 //   GET   /api/pos/sales/{id}           — ресепшн и выше: продажа (СБП ждёт — сверка с ЮKassa)
 //   POST  /api/pos/sales/{id}/refund    — управляющий и выше, Idempotency-Key: {reason, items?: [{order_item_id, qty}]}
+//                                         packages?: [idx] — возврат нетронутого пакета часов (№118): 409 package_used, already_refunded
 //   GET   /api/clubs/{club}/pos/sales   — ресепшн и выше: продажи (?from&to&limit)
 //   POST  /api/pos/sales/{id}/cancel    — ресепшн и выше: снять QR неоплаченной СБП-продажи (№98) {reason?}
 //   GET   /api/clubs/{club}/staff/approvers — ресепшн и выше: кто подтверждает скидку PIN [{user_id, name, role}]

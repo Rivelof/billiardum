@@ -101,6 +101,51 @@ describe('эмулятор АТОЛ: задания', () => {
     assert.equal(emu.control.state().receipts, 0);
   });
 
+  it('зачёт предоплаты (prepaid): входит в сумму оплат чека, не в наличные; сдача только с наличных', async () => {
+    // Чек зачёта: игра 1100 ₽ — 800 ₽ зачётом депозита и 300 ₽ наличными (дали 500 ₽, сдача 200 ₽).
+    await call('POST', '/api/v2/requests', { uuid: 'pp-1', request: [sell({ payments: [{ type: 'prepaid', sum: 800 }, { type: 'cash', sum: 500 }] })] });
+    const [r] = await result('pp-1');
+    assert.equal(r.status, 'ready');
+    assert.equal(r.result.fiscalParams.total, 1100);
+    const doc = emu.control.documents().find((d) => d.uuid === 'pp-1');
+    assert.equal(doc.total_kopecks, 110000);
+    assert.equal(doc.prepaid_kopecks, 80000);
+    assert.equal(doc.cash_kopecks, 30000);
+    assert.deepEqual(doc.payments, [{ type: 'prepaid', sum_kopecks: 80000 }, { type: 'cash', sum_kopecks: 50000 }]);
+    // Только зачёт — денег в ящик не прибавилось.
+    await call('POST', '/api/v2/requests', { uuid: 'pp-2', request: [sell({ payments: [{ type: 'prepaid', sum: 1100 }] })] });
+    assert.equal((await result('pp-2'))[0].status, 'ready');
+    // Возврат остатка наличными — минус из ящика.
+    const ret = sell({
+      type: 'sellReturn',
+      items: [{ type: 'position', name: 'Депозит', price: 200, quantity: 1, amount: 200, tax: { type: 'none' }, paymentMethod: 'fullPrepayment', paymentObject: 'service' }],
+      payments: [{ type: 'cash', sum: 200 }],
+      total: 200,
+    });
+    await call('POST', '/api/v2/requests', { uuid: 'pp-3', request: [ret] });
+    assert.equal((await result('pp-3'))[0].status, 'ready');
+    const st = emu.control.state().shift;
+    assert.equal(st.totals.sell.prepaid, 190000);
+    assert.equal(st.totals.sell.cash, 50000);
+    assert.equal(st.totals.sellReturn.cash, 20000);
+    assert.equal(st.cash_kopecks, 30000 - 20000);
+  });
+
+  it('зачёт предоплаты: больше суммы чека или в оплату позиции «предоплата» — ошибка 9', async () => {
+    const prepaidItem = { type: 'position', name: 'Пакет 10 ч', price: 5000, quantity: 1, amount: 5000, tax: { type: 'none' }, paymentMethod: 'fullPrepayment', paymentObject: 'service' };
+    for (const [uuid, task] of [
+      ['pv-1', sell({ payments: [{ type: 'prepaid', sum: 1200 }] })],
+      ['pv-2', sell({ items: [prepaidItem], total: 5000, payments: [{ type: 'prepaid', sum: 5000 }] })],
+      ['pv-3', sell({ items: [sell().items[0], prepaidItem], total: 5300, payments: [{ type: 'prepaid', sum: 400 }, { type: 'cash', sum: 4900 }] })],
+    ]) {
+      await call('POST', '/api/v2/requests', { uuid, request: [task] });
+      const [r] = await result(uuid);
+      assert.equal(r.status, 'error', uuid);
+      assert.equal(r.error.code, 9, uuid);
+    }
+    assert.equal(emu.control.state().receipts, 0);
+  });
+
   it('после ошибки остальные задачи задания — interrupted (502)', async () => {
     await call('POST', '/api/v2/requests', { uuid: 'i-1', request: [sell({ total: 1 }), { type: 'getShiftStatus' }] });
     const rs = await result('i-1');

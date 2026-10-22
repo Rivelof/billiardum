@@ -5,6 +5,10 @@
 // чеков ККТ этих платежей (bl.receipts channel kkt, kind sale, printed) по типу оплаты в задании;
 // возвраты — против чеков возврата. Платёж без пробитого чека — в списке missing (чек в очереди,
 // с ошибкой или его нет).
+// Чеки зачёта предоплаты (M3: бронь, пакет часов, депозит; bl.receipts.settles_payment_id) — не приём
+// денег: в сумму чеков ККТ против продаж не входят и не закрывают «платёж без чека» (оплата prepaid
+// АТОЛ). Они показаны отдельно (settlements) — чеки зачёта по платежам смены и созданные в смене.
+// Возврат остатка депозита наличными — обычный возврат с чеком возврата ККТ (входит в сверку).
 // Онлайн: каждый платёж ЮKassa смены (СБП, карта) запрашивается по API ключами клуба (функции
 // money: loadPaymentSettings, clientFor) — статус и сумма; возвраты ЮKassa — так же.
 
@@ -18,7 +22,7 @@ const CONCURRENCY = 4;
 const zero = () => ({ cash: 0, card_terminal: 0 });
 
 /** Сверка чеков ККТ с продажами смены. */
-export async function reconcileKkt(db, { clubId, payments, refunds }) {
+export async function reconcileKkt(db, { clubId, payments, refunds, from = null, to = null }) {
   const sysSales = zero();
   const sysRefunds = zero();
   const pays = payments.filter((p) => KKT_METHODS.includes(p.method) && p.status === 'succeeded');
@@ -32,7 +36,7 @@ export async function reconcileKkt(db, { clubId, payments, refunds }) {
     `select id, kind, status, amount_kopecks, payment_id, refund_id, kkt_job, fd
        from bl.receipts
       where club_id = $1 and channel = 'kkt'
-        and ((kind = 'sale' and payment_id = any($2::uuid[])) or (kind = 'refund' and refund_id = any($3::uuid[])))`,
+        and ((kind = 'sale' and settles_payment_id is null and payment_id = any($2::uuid[])) or (kind = 'refund' and refund_id = any($3::uuid[])))`,
     [clubId, ids, refundIds],
   );
   const kktSales = zero();
@@ -57,6 +61,7 @@ export async function reconcileKkt(db, { clubId, payments, refunds }) {
     if (r.kind === 'refund') printedRefund.add(r.refund_id);
     else printedSale.add(r.payment_id);
   }
+  const settlements = await settlementReceipts(db, { clubId, paymentIds: ids, from, to });
   const missing = pays.filter((p) => !printedSale.has(p.id)).map((p) => ({ payment_id: p.id, method: p.method, amount_kopecks: p.counted_kopecks }));
   const missingRefunds = refs.filter((f) => !printedRefund.has(f.id)).map((f) => ({ refund_id: f.id, method: f.method, amount_kopecks: f.amount_kopecks }));
   const diff = {};
@@ -75,7 +80,34 @@ export async function reconcileKkt(db, { clubId, payments, refunds }) {
     missing: missing.slice(0, 100),
     missing_refunds: missingRefunds.slice(0, 100),
     missing_count: missing.length + missingRefunds.length,
+    settlements,
   };
+}
+
+/**
+ * Чеки зачёта предоплаты ККТ (не приём денег): по платежам смены или созданные в смене.
+ * @returns {{ count: number, amount_kopecks: number, settlement_kopecks: number, by_state: object }}
+ */
+export async function settlementReceipts(db, { clubId, paymentIds = [], from = null, to = null }) {
+  const { rows } = await db.query(
+    `select status, kkt_job ->> 'state' as job_state, amount_kopecks, settlement_kopecks
+       from bl.receipts
+      where club_id = $1 and channel = 'kkt' and kind = 'sale' and settles_payment_id is not null
+        and (payment_id = any($2::uuid[]) or settles_payment_id = any($2::uuid[])
+             or ($3::timestamptz is not null and created_at >= $3 and created_at <= $4))`,
+    [clubId, paymentIds, from, to ?? from],
+  );
+  const byState = { printed: { count: 0, amount_kopecks: 0 }, pending: { count: 0, amount_kopecks: 0 }, unknown: { count: 0, amount_kopecks: 0 }, failed: { count: 0, amount_kopecks: 0 } };
+  let amount = 0;
+  let settled = 0;
+  for (const r of rows) {
+    const state = r.status === 'printed' ? 'printed' : r.status === 'failed' ? 'failed' : r.job_state === 'lost' ? 'unknown' : 'pending';
+    byState[state].count += 1;
+    byState[state].amount_kopecks += Number(r.amount_kopecks);
+    amount += Number(r.amount_kopecks);
+    settled += Number(r.settlement_kopecks ?? 0);
+  }
+  return { count: rows.length, amount_kopecks: amount, settlement_kopecks: settled, by_state: byState };
 }
 
 async function mapLimit(items, limit, fn) {

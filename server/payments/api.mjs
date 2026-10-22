@@ -27,7 +27,8 @@ import { MoneyError } from './errors.mjs';
 import { enterClub } from './context.mjs';
 import { createYooKassaPayment } from './pay.mjs';
 import { receiptPhone, yookassaReceipt, receiptItems } from './receipt.mjs';
-import { insertReceipt, receiptPhoneOf, sessionIdOf, stableUuid } from './records.mjs';
+import { insertReceipt, receiptPhoneOf, stableUuid } from './records.mjs';
+import { refunded } from './refunded.mjs';
 import { clientFor, loadPaymentSettings } from './settings.mjs';
 import { YooKassaError, formatValue, parseValue } from './yookassa.mjs';
 
@@ -214,33 +215,6 @@ export async function applyRefundStatus(db, deps, refund, status, { now = deps.c
   return rows[0];
 }
 
-async function refunded(db, deps, refund, now) {
-  const { rows } = await db.query('select * from bl.payments where id = $1', [refund.payment_id]);
-  const p = rows[0];
-  const amount = Number(refund.amount_kopecks);
-  await deps.audit.appendAudit(db, {
-    action: 'payment.refunded',
-    objectType: 'payment',
-    objectId: p.id,
-    reason: refund.reason,
-    data: { payment_id: p.id, refund_id: refund.id, method: p.method, amount_kopecks: amount, status: refund.status },
-  });
-  const sessionId = await sessionIdOf(db, p);
-  await deps.outbox.enqueue(db, 'payment.refunded', { payment_id: p.id, club_id: p.club_id, session_id: sessionId, amount_kopecks: amount });
-  try {
-    await deps.notify.sendToClubStaff(db, p.club_id, refund.status === 'manual' ? ['owner', 'manager', 'reception'] : ['owner'], {
-      kind: 'refund',
-      text:
-        refund.status === 'manual'
-          ? `Возврат ${formatValue(amount).replace('.', ',')} ₽ гостю на ресепшене: ${refund.reason}`
-          : `Возврат ${formatValue(amount).replace('.', ',')} ₽: ${refund.reason}`,
-      data: { payment_id: p.id, refund_id: refund.id, amount_kopecks: amount },
-    });
-  } catch (err) {
-    deps.log?.warn?.('refund_notify_failed', { refund_id: refund.id, error: err.message });
-  }
-  deps.log?.info?.('payment_refunded', { payment_id: p.id, refund_id: refund.id, club_id: p.club_id, amount_kopecks: amount, at: now.toISOString() });
-}
 
 /**
  * Возврат денег гостю.
@@ -367,4 +341,159 @@ export async function refund(db, args, injected) {
   });
   f = await applyRefundStatus(db, deps, { ...f, provider_refund_id: remote.id }, remote.status, { now });
   return { refund_id: f.id, status: f.status, amount_kopecks: amountKopecks };
+}
+
+// M3: предоплата брони, баланс пакетов, депозит (контракт m3.md §3) ----------------------------
+// Обёртки с зависимостями модуля (init) — сигнатуры контракта: функция(db, args).
+
+/** Предоплата брони: платёж ЮKassa kind booking с чеком full_prepayment → { payment, confirmation }. */
+export async function createPrepayment(db, args, injected) {
+  const { deps, config } = injected ?? (await rt());
+  const { createPrepayment: impl } = await import('./prepayments.mjs');
+  return impl(db, deps, config, args);
+}
+
+/** Котировка старта по брони (доплата при приходе, №113, №116) → { quote_id, amount_kopecks, minutes, valid_until, ... }. */
+export async function createBookingQuote(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { createBookingQuote: impl } = await import('./prepayments.mjs');
+  return impl(db, deps, args);
+}
+
+/** Игра по брони началась: чек зачёта предоплаты. */
+export async function settlePrepayment(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { settlePrepayment: impl } = await import('./prepayments.mjs');
+  return impl(db, deps, args);
+}
+
+/** Бронь сгорела или отменена: удержать percent % (по умолчанию — настройка клуба), остальное вернуть. */
+export async function forfeitPrepayment(db, args, injected) {
+  const inj = injected ?? (await rt());
+  const { forfeitPrepayment: impl } = await import('./prepayments.mjs');
+  return impl(db, inj.deps, inj.config, args, refund);
+}
+
+/**
+ * Списать минуты баланса гостя (пакеты часов) — для соседей (бронь, light):
+ * { userId, clubId, minutes, sessionId, paymentId? } → { payment_id, minutes, value_kopecks }.
+ * Без paymentId создаётся платёж balance (kind extend по сессии), подтверждённый сразу, но без
+ * outbox payment.confirmed: время сессии назначает вызывающий. Чеки зачёта — сразу.
+ */
+export async function debitBalance(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { planDebit, applyDebit, issueBalanceReceipts } = await import('../packages/balance.mjs');
+  const { clubId, userId, minutes, sessionId = null } = args;
+  if (!UUID.test(clubId ?? '') || !UUID.test(userId ?? '')) throw new MoneyError('bad_request', 'clubId, userId');
+  const { enterClub } = await import('./context.mjs');
+  await enterClub(db, clubId);
+  const now = deps.clock.now();
+  const plan = await planDebit(db, { clubId, userId, minutes, now });
+  let paymentId = args.paymentId ?? null;
+  if (!paymentId) {
+    if (!UUID.test(sessionId ?? '')) throw new MoneyError('bad_request', 'sessionId');
+    const { rows: s } = await db.query('select resource_id from bl.sessions where id = $1', [sessionId]);
+    if (!s[0]) throw new MoneyError('not_found', 'session');
+    const { rows } = await db.query(
+      `insert into bl.payments (club_id, resource_id, user_id, session_id, kind, provider, method, idempotence_key, status,
+                                amount_kopecks, capture, minutes, balance_minutes, confirmed_at, captured_at, created_at, updated_at)
+       values ($1, $2, $3, $4, 'extend', 'balance', 'balance', $5, 'succeeded', $6, true, $7, $7, $8, $8, $8, $8) returning id`,
+      [clubId, s[0].resource_id, userId, sessionId, `bal-${stableUuid(`${sessionId}/${now.toISOString()}/${minutes}`)}`.slice(0, 64), plan.valueKopecks, minutes, now],
+    );
+    paymentId = rows[0].id;
+  }
+  await applyDebit(db, plan, { paymentId, userId, now });
+  await issueBalanceReceipts(db, deps, { paymentId, now });
+  return { payment_id: paymentId, minutes, value_kopecks: plan.valueKopecks };
+}
+
+/** Остаток минут гостя в клубе. */
+export async function balance(db, { clubId, userId }, injected) {
+  const { deps } = injected ?? (await rt());
+  const { balanceOf } = await import('../packages/balance.mjs');
+  return balanceOf(db, { clubId, userId, now: deps.clock.now() });
+}
+
+/** Депозит наличными по сессии «Без лимита» (сессию уже начал light startFromDeposit). */
+export async function takeDeposit(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { takeDeposit: impl } = await import('./deposits.mjs');
+  return impl(db, deps, args);
+}
+
+/** Закрытие депозитной сессии: зачёт сыгранного, возврат остатка наличными с чеком. */
+export async function settleDeposit(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { settleDeposit: impl } = await import('./deposits.mjs');
+  return impl(db, deps, args);
+}
+
+/**
+ * Касса pos (M3): позиция чека пакета часов (предоплата 100 %) и начисление после оплаты продажи.
+ *   packageSaleLine(db, { packageId }) → { line, amount_kopecks, package }
+ *   creditPackageForSale(db, { payment, packageId, userId, index? }) → партия минут (повтор — та же)
+ */
+export async function packageSaleLine(db, { packageId }) {
+  if (!UUID.test(packageId ?? '')) throw new MoneyError('bad_request', 'packageId');
+  const { rows } = await db.query('select * from bl.tariff_packages where id = $1 and active', [packageId]);
+  const pkg = rows[0];
+  if (!pkg) throw new MoneyError('not_found', 'package');
+  const settings = await loadPaymentSettings(db, pkg.club_id);
+  const { packageItem } = await import('../packages/service.mjs');
+  return { line: packageItem(pkg, settings.vat_code), amount_kopecks: Number(pkg.price_kopecks), package: pkg };
+}
+
+export async function creditPackageForSale(db, { payment, packageId, userId, index = 0 }, injected) {
+  const { deps } = injected ?? (await rt());
+  const { creditPackage } = await import('../packages/balance.mjs');
+  if (payment?.status !== 'succeeded') throw new MoneyError('payment_pending', 'продажа не оплачена');
+  return creditPackage(db, deps, { payment, packageId, userId, index, now: deps.clock.now() });
+}
+
+/**
+ * Возврат пакета часов из приложения (decisions №118): партия отзывается целиком (если не тронута)
+ * и деньги возвращаются через ЮKassa с чеком возврата предоплаты.
+ * { lotId, reason, staffId } → { lot_id, payment_id, amount_kopecks, refund_id };
+ * 409 package_used — из партии уже списано; already_refunded — уже отозвана;
+ * пакет, проданный на кассе (платёж kind bar), — bad_request: его деньги возвращает pos, партию — revokeLotOnly.
+ */
+export async function revokePackageLot(db, args, injected) {
+  const inj = injected ?? (await rt());
+  const { revokeLot } = await import('../packages/balance.mjs');
+  const { packageItem } = await import('../packages/service.mjs');
+  if (!UUID.test(args.lotId ?? '') || !UUID.test(args.staffId ?? '')) throw new MoneyError('bad_request', 'lotId, staffId');
+  const { rows } = await db.query('select p.kind from bl.balance_lots l join bl.payments p on p.id = l.payment_id where l.id = $1', [args.lotId]);
+  if (!rows[0]) throw new MoneyError('not_found', 'lot');
+  if (rows[0].kind !== 'package') throw new MoneyError('bad_request', 'пакет продан на кассе: возврат — через кассу (pos)');
+  const now = inj.deps.clock.now();
+  const { lot, payment } = await revokeLot(db, inj.deps, { ...args, now });
+  const { rows: pk } = await db.query('select * from bl.tariff_packages where id = $1', [lot.package_id]);
+  const settings = await loadPaymentSettings(db, lot.club_id);
+  const amount = Number(lot.price_kopecks);
+  const r = await refund(
+    db,
+    {
+      paymentId: payment.id,
+      amountKopecks: amount,
+      reason: args.reason,
+      key: `pkr-${lot.id}`,
+      items: [packageItem({ ...pk[0], price_kopecks: amount }, settings.vat_code)],
+      requestedBy: args.staffId,
+      description: `Возврат пакета часов «${pk[0].title}»`,
+    },
+    inj,
+  );
+  return { lot_id: lot.id, payment_id: payment.id, amount_kopecks: amount, refund_id: r.refund_id };
+}
+
+/**
+ * Только отозвать партию (пакет, проданный на кассе): деньги возвращает pos в своём возврате.
+ * { lotId, reason, staffId } → { lot_id, payment_id, amount_kopecks }; те же 409, журнал и тревога.
+ */
+export async function revokeLotOnly(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { revokeLot } = await import('../packages/balance.mjs');
+  if (!UUID.test(args.lotId ?? '') || !UUID.test(args.staffId ?? '')) throw new MoneyError('bad_request', 'lotId, staffId');
+  const { lot, payment } = await revokeLot(db, deps, { ...args, now: deps.clock.now() });
+  return { lot_id: lot.id, payment_id: payment.id, amount_kopecks: Number(lot.price_kopecks) };
 }

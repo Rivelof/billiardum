@@ -22,7 +22,7 @@ Postgres из образа `supabase/postgres` (decisions №11). Клиенты
 
 | Таблица | Суть |
 |---|---|
-| `users` | пользователь платформы (гость и персонал), не привязан к клубу: `phone` (E.164, необязателен до «Поделиться контактом», уникален при наличии), `telegram_user_id`, `max_user_id`, `notify_channel`, `phone_verified_at`, `merged_into` (учётка мессенджера влита в учётку с тем же телефоном) |
+| `users` | пользователь платформы (гость и персонал), не привязан к клубу: `phone` (E.164, необязателен до «Поделиться контактом», уникален при наличии), `telegram_user_id`, `max_user_id`, `notify_channel`, `phone_verified_at`, `merged_into` (учётка мессенджера влита в учётку с тем же телефоном); `name` (0105), `channels_order` (0700) — порядок каналов уведомлений |
 | `clubs` | `name`, `city`, `timezone` (IANA, проверяется), `settings jsonb` |
 | `club_members` | `club_id`, `user_id`, `role` (`owner`, `manager`, `reception`, `installer`, `bar` — с 0107, №97), `pin_hash` (`scrypt$N$r$p$соль$хеш`), `pin_failed_count`, `pin_locked_until`, `pin_set_at`, `active` |
 | `resources` | стол: `type` (`billiard_pyramid`, `billiard_pool`, `billiard_snooker`), `number`, `title`, план зала `plan_x`, `plan_y` (центр стола в сантиметрах от левого верхнего угла зала), `plan_rotation` (градусы) |
@@ -38,6 +38,8 @@ Postgres из образа `supabase/postgres` (decisions №11). Клиенты
 | `idempotency_keys` (0101) | ответы на запросы с `Idempotency-Key`: `(user_id, key, route)`, 24 часа |
 | `push_subscriptions` (0102) | подписки Web Push пользователя (`endpoint`, `p256dh`, `auth`) |
 | `notifications` (0102) | уведомления: получатель, клуб, текст без ПДн, статус, попытки по каналам |
+| `staff_invites` (0702) | приглашения персонала: телефон, роль, 7 дней, кем, принято кем и когда, отзыв; одно открытое на номер в клубе |
+| `club_summaries` (0701) | отправленные сводки клуба (утренняя): рабочие сутки, данные, время отправки; одна на сутки |
 | `alarms` (0102, 0106) | тревоги клуба: тип, уровень, стол, `open`/`acked`, счётчик повторов (одна открытая тревога типа на стол), `last_notified_at` — повторное уведомление о критичной не раньше чем через 10 минут (№75) |
 
 Таблицы денег (0200–0201) описаны в `server/payments/README.md`, сессий и устройств (0300–0330) — в разделе «Сессии и устройства (light)» ниже и в `server/sessions/README.md`. Имя пользователя `users.name` (0105) — для персонала: `GET /api/me`, терминал ресепшена, журнал; задаёт сам пользователь (`PATCH /api/me`).
@@ -98,6 +100,10 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl.auth_user_for(kind text, value text) → uuid` (0103) | `bl_definer` | найденный или созданный пользователь по `phone`, `telegram`, `max` | вход до того, как пользователь известен |
 | `bl.auth_attach_phone(phone text) → uuid` (0103) | `bl_definer` | id учётки, которой теперь принадлежит номер | «Поделиться контактом» — только пользователю из `app.user_id`; номер у другой учётки — вливание (`merged_into`, Telegram/MAX и согласия переходят); конфликт — ошибка `BL409` |
 | `bl.notify_route(user_id uuid)` (0103) | `bl_definer` | `notify_channel`, `telegram_user_id`, `max_user_id` — без телефона | доставка уведомлений |
+| `bl.booking_due(now, lead, stale, limit)` (0600, booking) | `bl_definer` | `(kind, id, club_id)`: брони (`booking`) — неоплаченные после `pay_until`, подтверждённые и удержанные ближе `lead` к началу, идущие после конца; лист ожидания (`waitlist`) — просроченные предложения и записи старше `stale` | планировщик брони: напоминания, `state.reserved`, сгорание, следующий в очереди |
+| `bl.summary_clubs()` (0701) | `bl_definer` | `(club_id, timezone, day_start_local, summary_time_local)` всех клубов | планировщик сводок в контексте платформы |
+| `bl.staff_accept_invites()` (0702) | `bl_definer` | `(invite_id, club_id, role)` привязанных | при входе: действующие приглашения на номер пользователя из `app.user_id` |
+| `bl.staff_revoke(user_id uuid) → integer` (0702) | `bl_definer` | число отозванных токенов; не участник клуба — `NULL` | отзыв доступа в клубе из `app.club_id`: членство, PIN, все токены; владельца — ошибка |
 | `bl.user_brief(user_id uuid)` (0103) | `bl_definer` | `phone_masked`, `has_phone` | персонал клуба видит гостя только маской; без контекста клуба — только себя |
 
 | `bl.resource_by_code(code text)` (0300, light) | `bl_definer` | `(resource_id, club_id)` активного стола по коду | `/api/t/{code}` до того, как известен клуб |
@@ -110,7 +116,7 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl.pos_due(limit integer)` (0420, pos) | `bl_definer` | `(club_id, sale_id)` продаж в `pending`, у которых платёж уже `succeeded` или `canceled` | планировщик кассы завершает или отменяет продажу |
 | `bl.kkt_due(cutoff timestamptz, limit integer)` (0500, kkt) | `bl_definer` | `(club_id, receipt_id)` чеков ККТ в `receipt_pending` дольше порога без тревоги | тревога «чек не пробит больше 10 минут» |
 
-`bl_definer` видит только столбцы, нужные этим функциям: у `users`, `auth_tokens`, `staff_terminals`, `consents` (core); `resources(id, club_id, code, active)`, `sessions(id, club_id, status)`, `device_bind_windows(id, club_id, device_id, until, claimed_at, closed_at, created_at)` (light); `payments(id, club_id, status, provider, created_at, checked_at)` (money: `money_object_club`, `money_due`, `server/payments/README.md`); `orders(id, club_id)`, `pos_sales(id, club_id, status, payment_id, created_at)` (pos, `server/orders/README.md`); `receipts(id, club_id, channel, status, created_at, alarmed_at)` (kkt, `server/kkt/README.md`). Других функций `SECURITY DEFINER` в `bl` нет: список закреплён тестом `isolation` — новая функция добавляется в него вместе с миграцией.
+`bl_definer` видит только столбцы, нужные этим функциям: у `users` (в том числе `channels_order`, 0700), `auth_tokens` (отзыв), `staff_terminals`, `consents`, `clubs(id, timezone, settings)`, `club_members` и `staff_invites` (персонал, 0702) (core); `resources(id, club_id, code, active)`, `sessions(id, club_id, status)`, `device_bind_windows(id, club_id, device_id, until, claimed_at, closed_at, created_at)` (light); `payments(id, club_id, status, provider, created_at, checked_at)` (money: `money_object_club`, `money_due`, `server/payments/README.md`); `orders(id, club_id)`, `pos_sales(id, club_id, status, payment_id, created_at)` (pos, `server/orders/README.md`); `bookings(id, club_id, status, starts_at, ends_at, pay_until)`, `waitlist(id, club_id, status, offer_until, created_at)` (booking); `tariff_packages(id, club_id, active)` (money, `money_object_club` с видом `package`); `receipts(id, club_id, channel, status, created_at, alarmed_at)` (kkt, `server/kkt/README.md`). Других функций `SECURITY DEFINER` в `bl` нет: список закреплён тестом `isolation` — новая функция добавляется в него вместе с миграцией.
 
 ## Журнал `audit_log`
 
@@ -192,6 +198,27 @@ alter event trigger bl_audit_guard_drop enable always;
 ## Касса, бар, смены, ККТ (M2)
 
 Миграции `0400`–`0430` (backend-pos: каталог, платежи бара, заказы, продажи кассы, склад) — `server/orders/README.md`; `0500`–`0510` (backend-kkt: очередь чеков ККТ, мосты, смены) — `server/kkt/README.md`. Узкие функции — в таблице выше.
+
+## Бронь, пакеты, депозит, уведомления и персонал (M3)
+
+Контракт `docs/contracts/m3.md`, решения №104–112. Все таблицы с `club_id`: `ENABLE` + `FORCE ROW LEVEL SECURITY`, политики `app_api` по `bl.ctx_club_id()`.
+
+| Миграция | Таблица, поле | Суть |
+|---|---|---|
+| `0600` (booking) | `bookings` | бронь стола: `starts_at`–`ends_at` (`period tstzrange`), статусы `pending_payment → confirmed → reserved → started → completed`, `expired` (`unpaid`, `no_show`), `canceled`; источник (`app`, `site`, `phone`, `staff`), имя и телефон для брони по телефону, предоплата (`none`, `deposit`, `full`, сумма, `prepayment_id` — мягкая ссылка на платёж), `hold_minutes`, `forfeit_percent`. Пересечения живых броней стола запрещены `exclude using gist (resource_id with =, period with &&)` (№105, расширение `btree_gist` в схеме `extensions`). Гость видит свои брони в личном контексте |
+| `0600` (booking) | `waitlist` | лист ожидания стола: `waiting → offered` (предложение на 5 минут, `offer_until`) `→ accepted` или `expired`, `canceled`; одна живая запись гостя на стол; гость видит свои записи |
+| `0650` (money) | `payments` | `kind` += `booking` (предоплата брони), `package` (покупка пакета); `provider`/`method` += `balance` (игра балансом минут); `booking_id`, `package_id`, `balance_minutes`, `deposit` (депозит наличными для «Без лимита»), `settlement_status` (`open → settled | forfeited`), `settled_kopecks`, `settled_at`; у `quotes` — `balance_minutes` |
+| `0650` (money) | `receipts` | `settles_payment_id` и `settlement_kopecks` — чек зачёта предоплаты; `provider_receipt_id` — чек ЮKassa `/v3/receipts` (уникален) |
+| `0650` (money) | `club_payment_settings.booking_forfeit_percent` | сколько процентов предоплаты удержать при сгорании брони (по умолчанию 100, №108) |
+| `0650` (money) | `tariff_packages` | пакеты часов клуба «N часов за X ₽ на M дней»; не меняются — новый пакет новой строкой |
+| `0650` (money) | `balance_lots` | минуты гостя по покупкам пакетов: всего, осталось, цена, срок; `source_key` уникален (покупка зачисляется один раз) |
+| `0650` (money) | `balance_debits` | списания минут на игру: лот, платёж, минуты, стоимость для чека зачёта, `restored_at` — возврат минут |
+| `0700` (core) | `users.channels_order`, `notifications.actions` | порядок каналов уведомлений гостя; действия уведомления `[{id, title, url}]` (№110) |
+| `0701` (core) | `club_summaries` | отправленные утренние сводки (см. выше) |
+| `0702` (core) | `staff_invites` | приглашения персонала (см. выше) |
+| `0750` (light) | `sessions.booking_id`, `sessions.deposit_kopecks` | сессия по брони (одна бронь — не больше одной сессии) и по депозиту наличными; `device_commands.queue_no` — порядок очереди команд |
+
+Подробности — `server/payments/README.md` (деньги) и README модулей брони и сессий.
 
 ## Деньги
 

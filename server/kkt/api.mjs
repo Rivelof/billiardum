@@ -1,18 +1,28 @@
-// Интерфейс модуля ККТ для соседей (контракт M2 §5).
+// Интерфейс модуля ККТ для соседей (контракт M2 §5; M3 §1 п. 5, 10, 11).
 //
-//   enqueueReceipt(db, { clubId, kind: 'sell'|'sell_refund', lines, payments, operatorName, paymentId?, saleId?, refundId? })
+//   enqueueReceipt(db, { clubId, kind: 'sell'|'sell_refund', lines, payments, operatorName, paymentId?, saleId?, refundId?,
+//                        settlesPaymentId?, settlementKopecks?, customerUserId? })
 //     → receipt_id. Строка bl.receipts (channel kkt, receipt_pending) в транзакции вызывающего;
 //     мост пробьёт её, когда ККТ на связи. Задание проверяется сразу: неверная позиция или сумма
 //     оплат ≠ сумме чека — 400 bad_request (продажа откатится вместе с чеком).
-//     Повтор с тем же saleId (или paymentId) и kind — тот же receipt_id.
 //   outbox receipt.printed { receipt_id, club_id, fd, fp } и receipt.failed { receipt_id, club_id, error }.
 //
 // lines: позиции в формате чека ЮKassa ({ description, quantity, amount: { value }, vat_code,
 //        payment_mode, payment_subject }, как bl.receipts.items M1) или короткие
 //        ({ name, price_kopecks, quantity = 1, vat_code?, payment_subject = 'commodity', payment_mode?, measure? });
 //        цена — за единицу; ставка НДС по умолчанию — club_payment_settings.vat_code (money).
-// payments: [{ method: 'cash' | 'card_terminal' (или 'electronically'), amount_kopecks }] — сумма равна сумме чека.
+// payments: [{ method: 'cash' | 'card_terminal' (или 'electronically') | 'prepayment', amount_kopecks }] —
+//        сумма равна сумме чека. prepayment — зачёт предоплаты (АТОЛ payments.type = prepaid): чек
+//        зачёта брони, пакета часов, депозита (M3). Покрывает только позиции «полный расчёт».
+// settlesPaymentId — платёж предоплаты, которую зачитывает чек (bl.receipts.settles_payment_id);
+//        settlementKopecks — сумма зачёта (bl.receipts.settlement_kopecks), по умолчанию — сумма оплат
+//        prepayment; оплата prepayment без settlesPaymentId — ошибка, и наоборот.
 // operatorName — имя сотрудника смены (кассир в чеке, 54-ФЗ).
+//
+// Повтор (идемпотентность): тот же чек — тот же receipt_id. Ключ — клуб, вид (sale | refund),
+// продажа (saleId) или платёж (paymentId), возврат (refundId) и зачитываемый платёж
+// (settlesPaymentId). Поэтому у одного платежа различаются чек предоплаты (settles null),
+// чек зачёта (settles = платёж предоплаты) и чек возврата (kind refund, refund_id).
 
 import { afterCommit } from '../lib/store.mjs';
 import { HttpError } from '../http/errors.mjs';
@@ -22,8 +32,11 @@ import { lineAmount, operatorName as cleanOperator, parseRub, ReceiptDataError, 
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const KINDS = { sell: 'sale', sell_refund: 'refund' };
-/** Оплата чека ККТ: наличные или терминал банка (electronically — как тип оплаты АТОЛ). */
-const KKT_METHODS = { cash: 'cash', card_terminal: 'card_terminal', electronically: 'card_terminal' };
+/**
+ * Оплата чека ККТ: наличные, терминал банка (electronically — как тип оплаты АТОЛ) или зачёт
+ * предоплаты (prepayment; АТОЛ prepaid).
+ */
+const KKT_METHODS = { cash: 'cash', card_terminal: 'card_terminal', electronically: 'card_terminal', prepayment: 'prepayment' };
 
 let kickHook = null;
 let clock = { now: () => new Date() };
@@ -79,15 +92,26 @@ export function lineToItem(line, defaultVat) {
  * @param {import('pg').ClientBase} db транзакция вызывающего в контексте клуба clubId
  * @returns {Promise<string>} receipt_id
  */
-export async function enqueueReceipt(db, { clubId, kind, lines, payments, operatorName, paymentId = null, saleId = null, refundId = null, customerUserId = null, at = null, now = at ? new Date(at) : clock.now() }) {
+export async function enqueueReceipt(
+  db,
+  {
+    clubId, kind, lines, payments, operatorName, paymentId = null, saleId = null, refundId = null, settlesPaymentId = null,
+    settlementKopecks = null, customerUserId = null, at = null, now = at ? new Date(at) : clock.now(),
+  },
+) {
   if (typeof clubId !== 'string' || !UUID.test(clubId)) throw bad('clubId');
   const ctxClub = (await db.query('select bl.ctx_club_id() as club_id')).rows[0].club_id;
   if (ctxClub !== clubId) throw new Error('enqueueReceipt: транзакция не в контексте клуба чека');
   const rkind = KINDS[kind];
   if (!rkind) throw bad('kind');
-  for (const [k, v] of [['paymentId', paymentId], ['saleId', saleId], ['refundId', refundId], ['customerUserId', customerUserId]]) {
+  const ids = [['paymentId', paymentId], ['saleId', saleId], ['refundId', refundId], ['settlesPaymentId', settlesPaymentId], ['customerUserId', customerUserId]];
+  for (const [k, v] of ids) {
     if (v !== null && v !== undefined && !(typeof v === 'string' && UUID.test(v))) throw bad(k);
   }
+  paymentId ??= null;
+  saleId ??= null;
+  refundId ??= null;
+  settlesPaymentId ??= null;
   if (!paymentId && !saleId && !refundId) throw bad('paymentId, saleId или refundId');
   if (rkind === 'refund' && !refundId && !saleId) throw bad('чек возврата: refundId или saleId');
   if (!Array.isArray(lines) || lines.length === 0 || lines.length > 100) throw bad('lines');
@@ -95,15 +119,43 @@ export async function enqueueReceipt(db, { clubId, kind, lines, payments, operat
   for (const p of payments) {
     if (!p || !KKT_METHODS[p.method] || !Number.isSafeInteger(p.amount_kopecks) || p.amount_kopecks <= 0) throw bad('payments');
   }
+  // Зачёт предоплаты: оплата prepayment ⇔ settlesPaymentId; сумма зачёта = сумме оплат prepayment.
+  const prepaid = payments.reduce((a, p) => (KKT_METHODS[p.method] === 'prepayment' ? a + p.amount_kopecks : a), 0);
+  if ((prepaid > 0) !== (settlesPaymentId !== null)) throw bad('оплата prepayment и settlesPaymentId — только вместе');
+  if (settlesPaymentId !== null) {
+    if (rkind !== 'sale') throw bad('зачёт предоплаты — только в чеке прихода');
+    if (settlementKopecks === null || settlementKopecks === undefined) settlementKopecks = prepaid;
+    if (!Number.isSafeInteger(settlementKopecks) || settlementKopecks !== prepaid) throw bad('settlementKopecks');
+  } else if (settlementKopecks !== null && settlementKopecks !== undefined) {
+    throw bad('settlementKopecks без settlesPaymentId');
+  } else {
+    settlementKopecks = null;
+  }
 
-  // Повтор: тот же чек продажи (или платежа) того же вида.
+  // Повтор: тот же чек продажи (или платежа) того же вида, того же возврата и того же зачёта.
   const prev = saleId
-    ? await db.query(`select id from bl.receipts where club_id = $1 and channel = 'kkt' and sale_id = $2 and kind = $3 and coalesce(refund_id::text, '') = coalesce($4::text, '') limit 1`, [clubId, saleId, rkind, refundId])
+    ? await db.query(
+        `select id from bl.receipts
+          where club_id = $1 and channel = 'kkt' and sale_id = $2 and kind = $3
+            and refund_id is not distinct from $4::uuid and settles_payment_id is not distinct from $5::uuid
+          order by created_at, id limit 1`,
+        [clubId, saleId, rkind, refundId, settlesPaymentId],
+      )
     : await db.query(
-        `select id from bl.receipts where club_id = $1 and channel = 'kkt' and payment_id = $2 and kind = $3 and coalesce(refund_id::text, '') = coalesce($4::text, '') limit 1`,
-        [clubId, paymentId, rkind, refundId],
+        `select id from bl.receipts
+          where club_id = $1 and channel = 'kkt' and payment_id = $2 and kind = $3
+            and refund_id is not distinct from $4::uuid and settles_payment_id is not distinct from $5::uuid
+          order by created_at, id limit 1`,
+        [clubId, paymentId, rkind, refundId, settlesPaymentId],
       );
   if (prev.rows[0]) return prev.rows[0].id;
+
+  if (settlesPaymentId !== null) {
+    // Зачитываемый платёж — в этом клубе (RLS) и оплачен.
+    const { rows: src } = await db.query('select status from bl.payments where id = $1', [settlesPaymentId]);
+    if (!src[0]) throw bad('settlesPaymentId');
+    if (src[0].status !== 'succeeded') throw bad('settlesPaymentId: предоплата не оплачена');
+  }
 
   const settings = await loadPaymentSettings(db, clubId);
   const items = lines.map((l) => lineToItem(l, settings.vat_code));
@@ -120,10 +172,10 @@ export async function enqueueReceipt(db, { clubId, kind, lines, payments, operat
   const job = { v: 1, state: 'queued', type: rkind === 'refund' ? 'sellReturn' : 'sell', operator_name: op, payments: pays };
   const { rows } = await db.query(
     `insert into bl.receipts (club_id, payment_id, refund_id, sale_id, kind, channel, status, amount_kopecks, items, tax_system_code,
-                              customer_user_id, kkt_job, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, 'kkt', 'receipt_pending', $6, $7::jsonb, $8, $9, $10, $11, $11)
+                              customer_user_id, kkt_job, settles_payment_id, settlement_kopecks, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, 'kkt', 'receipt_pending', $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $13)
      returning id`,
-    [clubId, paymentId, refundId, saleId, rkind, amount, JSON.stringify(items), settings.tax_system_code, customerUserId, job, now],
+    [clubId, paymentId, refundId, saleId, rkind, amount, JSON.stringify(items), settings.tax_system_code, customerUserId, job, settlesPaymentId, settlementKopecks, now],
   );
   const id = rows[0].id;
   await afterCommit(db, () => kickHook?.(clubId));
@@ -140,6 +192,8 @@ function receiptView(r) {
     payment_id: r.payment_id ?? null,
     sale_id: r.sale_id ?? null,
     refund_id: r.refund_id ?? null,
+    settles_payment_id: r.settles_payment_id ?? null,
+    settlement_kopecks: r.settlement_kopecks === null || r.settlement_kopecks === undefined ? null : Number(r.settlement_kopecks),
     created_at: new Date(r.created_at).toISOString(),
     attempts: r.attempts,
     error: r.error ?? null,

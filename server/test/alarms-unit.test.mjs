@@ -19,6 +19,7 @@ describe('тревоги и коды ошибок M2', () => {
       service_light_threshold: 'important',
       kkt_shift_failed: 'important',
       receipt_fd_conflict: 'critical',
+      settlement_receipt_failed: 'important',
     };
     for (const [type, level] of Object.entries(expected)) {
       assert.equal(ALARM_LEVELS[type], level, type);
@@ -31,7 +32,7 @@ describe('тревоги и коды ошибок M2', () => {
   });
 
   it('коды ошибок M2 в словаре', () => {
-    for (const code of ['shift_closed', 'shift_open', 'stop_list', 'already_paid', 'duplicate', 'receipt_not_failed', 'receipt_not_unknown', 'no_tariff']) {
+    for (const code of ['booking_conflict', 'booking_expired', 'booking_not_active', 'too_early', 'table_free', 'offer_expired', 'fd_conflict', 'shift_closed', 'shift_open', 'stop_list', 'already_paid', 'duplicate', 'receipt_not_failed', 'receipt_not_unknown', 'no_tariff']) {
       assert.ok(ERROR_CODES.has(code), code);
     }
   });

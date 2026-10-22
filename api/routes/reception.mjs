@@ -6,7 +6,7 @@
 //   GET  /api/reception/requests/{id}               — гость, автор заявки: статус, у отклонённой — reason_code
 // Роли проверяет и сам маршрут: клуб заявки находится по её id.
 
-import { acceptRequest, declineRequest, guestRequestStatus, listRequests, STAFF_ROLES } from '../../server/reception/index.mjs';
+import { acceptRequest, createDeposit, declineRequest, guestRequestStatus, listRequests, STAFF_ROLES } from '../../server/reception/index.mjs';
 import { moneyRoute } from '../../server/payments/route.mjs';
 
 /** У сотрудника несколько клубов: роутер ищет заявку в каждом (RLS — только в своём). */
@@ -16,6 +16,17 @@ async function requestInClub(db, req) {
 }
 
 export const routes = [
+  {
+    // Депозит наличными для «Без лимита» (M3, №112): сессия light + платёж и чек ККТ предоплаты.
+    method: 'POST',
+    path: '/api/reception/deposits',
+    auth: 'staff',
+    roles: [...STAFF_ROLES],
+    idempotent: true,
+    findClub: async (db, req) =>
+      /^[0-9a-f-]{36}$/.test(req.body?.resource_id ?? '') && (await db.query('select 1 from bl.resources where id = $1', [req.body.resource_id])).rowCount > 0,
+    handler: moneyRoute(({ db, deps, info }) => createDeposit(db, deps, info)),
+  },
   {
     method: 'GET',
     path: '/api/clubs/{club}/reception/requests',

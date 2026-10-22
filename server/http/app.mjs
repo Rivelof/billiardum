@@ -5,6 +5,7 @@
 import { createRouter, loadRoutes } from '../../api/router.mjs';
 import { alarms } from '../alarms/index.mjs';
 import { createNotifier } from '../notify/index.mjs';
+import { createMaxBot } from '../notify/max.mjs';
 import { outbox as defaultOutbox } from '../outbox.mjs';
 import { appendAudit } from '../lib/audit.mjs';
 import { withContext } from '../lib/store.mjs';
@@ -15,8 +16,9 @@ import { createHttpHandler } from './server.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 
 /**
- * Модули по порядку подъёма (контракт M1 §2.1, M2): light, money, затем каталог и склад бара,
- * заказы и касса (pos), ККТ и смены (kkt). Останавливаются в обратном порядке.
+ * Модули по порядку подъёма (контракт M1 §2.1, M2, M3): light, money, затем каталог и склад бара,
+ * заказы и касса (pos), ККТ и смены (kkt), пакеты, бронь, лист ожидания, сводки.
+ * Останавливаются в обратном порядке.
  * Каталог и склад таймеров не держат — init/stop только для порядка и лога.
  */
 export const MODULES = [
@@ -26,6 +28,12 @@ export const MODULES = [
   { name: 'stock', spec: '../stock/index.mjs' },
   { name: 'pos', spec: '../orders/index.mjs' },
   { name: 'kkt', spec: '../kkt/index.mjs' },
+  // M3: пакеты часов (money), бронь и лист ожидания (booking), утренняя сводка (core).
+  // Пока файла модуля нет — сервер работает без него (module_missing).
+  { name: 'packages', spec: '../packages/index.mjs' },
+  { name: 'bookings', spec: '../bookings/index.mjs' },
+  { name: 'waitlist', spec: '../waitlist/index.mjs' },
+  { name: 'summaries', spec: '../summaries/index.mjs' },
 ];
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -55,6 +63,7 @@ export async function createApp({
   outbox = defaultOutbox,
   sse = defaultHub,
   telegram = null,
+  max = null,
   routes = null,
   listen = true,
 }) {
@@ -64,7 +73,7 @@ export async function createApp({
       token: config.telegram?.botToken ?? null,
       proxyUrl: config.telegram?.proxyUrl ?? null,
     });
-  const notify = createNotifier({ config, log, telegram: bot, clock });
+  const notify = createNotifier({ config, log, telegram: bot, max: max ?? createMaxBot({ token: config.max?.botToken ?? null }), clock });
   const ctx = {
     config,
     log,

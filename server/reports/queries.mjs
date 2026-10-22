@@ -5,6 +5,14 @@
 // бар — kind bar (0410 backend-pos). Сумма платежа: одностадийный — amount_kopecks, заморозка
 // «Без лимита» — списанная captured_kopecks (ещё не списанная — отдельно, holds). Возвраты —
 // bl.refunds, созданные в смене (succeeded и manual).
+//
+// M3 (предоплаты, decisions №52, №87, №112): выручка — только приём денег.
+// * Пакеты часов — своя строка packages: покупка в приложении (kind package) и доля пакетов в
+//   продаже кассы (bl.pos_sales.package_kopecks у платежа kind bar).
+// * Игра балансом минут (provider/method balance) — не деньги: в выручку, столы и сверки не входит.
+// * Депозит наличными «Без лимита» — приём наличных в смене (столы, наличные); возврат остатка —
+//   возврат наличными (bl.refunds manual); зачёт сыгранного — чек зачёта, не платёж.
+// * Бронь — предоплата ЮKassa (kind booking, строка other); зачёт при старте — чек, не платёж.
 
 export const METHODS = ['cash', 'card_terminal', 'sbp', 'card'];
 
@@ -14,22 +22,34 @@ const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
 function categoryOf(kind) {
   if (kind === 'start' || kind === 'extend') return 'tables';
   if (kind === 'bar') return 'bar';
+  if (kind === 'package') return 'packages';
   return 'other';
 }
 
 /** Платежи смены (для выручки и сверок). */
 export async function shiftPayments(db, { clubId, from, to }) {
   const { rows } = await db.query(
-    `select id, kind, provider, method, status, capture, amount_kopecks, captured_kopecks, provider_payment_id, confirmed_at, resource_id
-       from bl.payments
-      where club_id = $1 and confirmed_at >= $2 and confirmed_at <= $3 and status in ('succeeded', 'waiting_for_capture')
-      order by confirmed_at, id`,
+    `select p.id, p.kind, p.provider, p.method, p.status, p.capture, p.amount_kopecks, p.captured_kopecks, p.provider_payment_id, p.confirmed_at,
+            p.resource_id, coalesce(ps.package_kopecks, 0)::bigint as package_kopecks
+       from bl.payments p
+       left join bl.pos_sales ps on ps.payment_id = p.id
+      where p.club_id = $1 and p.confirmed_at >= $2 and p.confirmed_at <= $3 and p.status in ('succeeded', 'waiting_for_capture')
+        and p.provider <> 'balance'
+      order by p.confirmed_at, p.id`,
     [clubId, from, to],
   );
   return rows.map((p) => {
     const amount = Number(p.amount_kopecks);
     const counted = p.status === 'succeeded' ? (p.capture ? amount : Number(p.captured_kopecks ?? 0)) : 0;
-    return { ...p, amount_kopecks: amount, counted_kopecks: counted, hold_kopecks: p.status === 'waiting_for_capture' ? amount : 0, category: categoryOf(p.kind) };
+    return {
+      ...p,
+      amount_kopecks: amount,
+      counted_kopecks: counted,
+      // Доля пакетов часов в продаже кассы (платёж kind bar).
+      package_kopecks: p.kind === 'bar' ? Math.min(Number(p.package_kopecks), counted) : 0,
+      hold_kopecks: p.status === 'waiting_for_capture' ? amount : 0,
+      category: categoryOf(p.kind),
+    };
   });
 }
 
@@ -50,6 +70,7 @@ export function revenueOf(payments, refunds) {
   const out = {
     tables: { by_method: zero() },
     bar: { by_method: zero() },
+    packages: { by_method: zero() },
     other: { by_method: zero() },
     by_method: zero(),
     refunds: { by_method: zero(), tables_kopecks: 0, bar_kopecks: 0, count: refunds.length },
@@ -58,7 +79,9 @@ export function revenueOf(payments, refunds) {
   };
   for (const p of payments) {
     if (!METHODS.includes(p.method)) continue;
-    out[p.category].by_method[p.method] += p.counted_kopecks;
+    const pkg = p.package_kopecks ?? 0;
+    out[p.category].by_method[p.method] += p.counted_kopecks - pkg;
+    out.packages.by_method[p.method] += pkg;
     out.by_method[p.method] += p.counted_kopecks;
     out.holds_kopecks += p.hold_kopecks;
   }
@@ -68,7 +91,7 @@ export function revenueOf(payments, refunds) {
     if (f.category === 'tables') out.refunds.tables_kopecks += f.amount_kopecks;
     if (f.category === 'bar') out.refunds.bar_kopecks += f.amount_kopecks;
   }
-  for (const k of ['tables', 'bar', 'other']) out[k].total_kopecks = sum(out[k].by_method);
+  for (const k of ['tables', 'bar', 'packages', 'other']) out[k].total_kopecks = sum(out[k].by_method);
   out.total_kopecks = sum(out.by_method);
   out.refunds.total_kopecks = sum(out.refunds.by_method);
   out.net_kopecks = out.total_kopecks - out.refunds.total_kopecks;
@@ -231,5 +254,5 @@ export async function shiftLinks(db, { clubId, shiftId, from, to }) {
 export const REVENUE_TOTAL_SQL = `(select coalesce(sum(case when p.status = 'succeeded'
                      then case when p.capture then p.amount_kopecks else coalesce(p.captured_kopecks, 0) end else 0 end), 0)::bigint
           from bl.payments p
-         where p.club_id = s.club_id and p.status in ('succeeded', 'waiting_for_capture')
+         where p.club_id = s.club_id and p.status in ('succeeded', 'waiting_for_capture') and p.provider <> 'balance'
            and p.confirmed_at >= s.opened_at and p.confirmed_at <= coalesce(s.closed_at, $NOW))`;

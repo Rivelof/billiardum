@@ -130,7 +130,7 @@ export function createLightStore(pool, { clock = { now: () => new Date() } } = {
       return withContext(pool, sys(clubId), async (c) => {
         const { rows } = await c.query(
           `select id, type, body, cause, session_id, payment_id from bl.device_commands
-            where device_id = $1 and status = 'queued' order by created_at, id`,
+            where device_id = $1 and status = 'queued' order by created_at, queue_no`,
           [deviceId],
         );
         return rows;

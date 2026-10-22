@@ -309,6 +309,10 @@ describe('оплата СБП и картой', () => {
       unlimited: false,
       amount_kopecks: 100000,
       method: 'sbp',
+      booking_id: null,
+      package_id: null,
+      balance_minutes: 0,
+      deposit: false,
     });
     const audit = (await h.audit('payment.succeeded')).filter((a) => a.object_id === paid.payment_id);
     assert.equal(audit.length, 1);

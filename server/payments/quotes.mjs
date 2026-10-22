@@ -12,6 +12,7 @@ import { amountFor, pricesAround, TariffError } from '../tariffs/index.mjs';
 import { enterClub, isUuid, requireGuestReady } from './context.mjs';
 import { MoneyError, checkNeighborResult, fromNeighbor } from './errors.mjs';
 import { loadPaymentSettings } from './settings.mjs';
+import { balanceOf } from '../packages/balance.mjs';
 
 export const QUOTE_TTL_MS = 3 * 60_000;
 export const FIXED_MINUTES = Object.freeze([30, 60, 120, 180]);
@@ -96,7 +97,33 @@ export function parseQuoteRequest(body, { devAllowAnyMinutes = false } = {}) {
     const ok = devAllowAnyMinutes ? minutes >= 1 && minutes <= 1440 : FIXED_MINUTES.includes(minutes);
     if (!ok) throw new MoneyError('bad_request', 'minutes');
   }
-  return { resourceId, kind, minutes, sessionId: kind === 'extend' ? sessionId : null, exact: devAllowAnyMinutes && minutes !== null && !FIXED_MINUTES.includes(minutes) };
+  const useBalance = body.use_balance === true;
+  if (body.use_balance !== undefined && typeof body.use_balance !== 'boolean') throw new MoneyError('bad_request', 'use_balance');
+  if (useBalance && minutes === null) throw new MoneyError('bad_request', 'балансом — только фиксированное время');
+  return {
+    resourceId,
+    kind,
+    minutes,
+    sessionId: kind === 'extend' ? sessionId : null,
+    exact: devAllowAnyMinutes && minutes !== null && !FIXED_MINUTES.includes(minutes),
+    useBalance,
+  };
+}
+
+/** Зазор перед бронью: продлить можно до начала брони минус 5 минут (M3, decisions №106). */
+export const BOOKING_GAP_MS = 5 * 60_000;
+
+/**
+ * Предел игры перед ближайшей бронью стола: { limitUntil, maxMinutes } или нули, если брони нет.
+ * Брони уже нет места даже на минуту — booking_conflict.
+ */
+export async function bookingLimit(db, deps, { resourceId, from }) {
+  const next = await deps.bookings.nextBookingStart(db, { resourceId, after: from });
+  if (!next) return { limitUntil: null, maxMinutes: null };
+  const limitUntil = new Date(new Date(next).getTime() - BOOKING_GAP_MS);
+  const maxMinutes = Math.floor((limitUntil.getTime() - from.getTime()) / 60_000);
+  if (maxMinutes < 1) throw new MoneyError('booking_conflict', `бронь в ${new Date(next).toISOString()}`);
+  return { limitUntil, maxMinutes };
 }
 
 /**
@@ -129,8 +156,15 @@ export async function createQuote(db, deps, info, config) {
     if (!OPEN_SESSION.includes(session.status)) throw new MoneyError('session_not_active');
     // Новая заморозка («Без лимита» по карте) — только у сессии «Без лимита».
     if (req.minutes === null && !session.unlimited) throw new MoneyError('bad_request', 'unlimited extend');
+    // «Без лимита» по депозиту наличными сам не продлевается (M3 §1 п. 11): доплата — на ресепшене.
+    const dep = await db.query('select 1 from bl.payments where session_id = $1 and deposit limit 1', [session.id]);
+    if (dep.rowCount > 0) throw new MoneyError('bad_request', 'депозитная сессия не продлевается');
     from = new Date(session.paid_until);
   }
+
+  // Бронь стола впереди: игра заканчивается за 5 минут до её начала (№106).
+  const { limitUntil, maxMinutes } = await bookingLimit(db, deps, { resourceId: req.resourceId, from });
+  const capped = (m) => (maxMinutes === null ? m : Math.min(m, maxMinutes));
 
   // Цена до удержания стола: если тарифа нет, стол не держим.
   let priced;
@@ -138,13 +172,37 @@ export async function createQuote(db, deps, info, config) {
   const unlimited = req.minutes === null;
   try {
     if (unlimited) {
-      priced = await amountFor(db, { resourceId: req.resourceId, from, minutes: settings.unlimited_hold_minutes, minimum: req.kind === 'start' });
-      block = await amountFor(db, { resourceId: req.resourceId, from, minutes: settings.sbp_block_minutes, minimum: req.kind === 'start' });
+      priced = await amountFor(db, { resourceId: req.resourceId, from, minutes: capped(settings.unlimited_hold_minutes), minimum: req.kind === 'start' });
+      block = await amountFor(db, { resourceId: req.resourceId, from, minutes: capped(settings.sbp_block_minutes), minimum: req.kind === 'start' });
     } else {
       priced = await amountFor(db, { resourceId: req.resourceId, from, minutes: req.minutes, minimum: req.kind === 'start', exact: req.exact });
     }
   } catch (err) {
     throw tariffFail(err);
+  }
+  if (maxMinutes !== null && (priced.minutes > maxMinutes || (block && block.minutes > maxMinutes))) {
+    throw new MoneyError('booking_conflict', `можно до ${limitUntil.toISOString()}`);
+  }
+
+  // Часть минут — балансом пакетов (№112): доплата только за остальные.
+  let balanceMinutes = 0;
+  let available = null;
+  if (req.useBalance) {
+    available = (await balanceOf(db, { clubId, userId, now })).minutes;
+    balanceMinutes = Math.min(available, priced.minutes);
+    if (balanceMinutes > 0) {
+      const rest = priced.minutes - balanceMinutes;
+      if (rest === 0) {
+        priced = { ...priced, amount_kopecks: 0, breakdown: [] };
+      } else {
+        try {
+          const tail = await amountFor(db, { resourceId: req.resourceId, from: new Date(from.getTime() + balanceMinutes * 60_000), minutes: rest, minimum: false, exact: true });
+          priced = { ...priced, amount_kopecks: tail.amount_kopecks, breakdown: tail.breakdown };
+        } catch (err) {
+          throw tariffFail(err);
+        }
+      }
+    }
   }
 
   if (req.kind === 'start') {
@@ -157,8 +215,8 @@ export async function createQuote(db, deps, info, config) {
 
   const ins = await db.query(
     `insert into bl.quotes (club_id, resource_id, user_id, kind, session_id, unlimited, minutes, from_at, amount_kopecks,
-                            breakdown, hold_minutes, block_minutes, block_amount_kopecks, created_at, valid_until)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15)
+                            breakdown, hold_minutes, block_minutes, block_amount_kopecks, created_at, valid_until, balance_minutes)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16)
      returning id`,
     [
       clubId,
@@ -176,6 +234,7 @@ export async function createQuote(db, deps, info, config) {
       unlimited ? block.amount_kopecks : null,
       now,
       validUntil,
+      balanceMinutes,
     ],
   );
   const out = {
@@ -185,6 +244,12 @@ export async function createQuote(db, deps, info, config) {
     valid_until: validUntil.toISOString(),
     breakdown: priced.breakdown.map(({ from: f, to, price_per_hour_kopecks: p, amount_kopecks: a }) => ({ from: f, to, price_per_hour_kopecks: p, amount_kopecks: a })),
   };
+  // До какого момента можно играть перед ближайшей бронью (null — брони нет).
+  out.extend_limit_until = limitUntil ? limitUntil.toISOString() : null;
+  if (req.useBalance) {
+    out.balance_minutes = balanceMinutes;
+    out.balance_available_minutes = available;
+  }
   if (unlimited) {
     out.unlimited = {
       hold_minutes: priced.minutes,

@@ -13,6 +13,13 @@
 //   getSessionForExtend(db, { sessionId, userId })
 //       → { id, club_id, resource_id, paid_until, status, is_participant, is_payer, unlimited, grace_ms } | null
 //
+//   startFromBooking(db, { booking, userId, paidMinutes, paymentIds }) → session_id (M3)
+//       booking: { id, club_id, resource_id }; время покрыто предоплатой и доплатой (paidMinutes);
+//       идемпотентно по booking.id; стол занят — LightError table_busy | table_pending | table_service.
+//   setReserved(db, { resourceId, until, userId? }) → { ok, applied, until, reason? } (M3, №107)
+//   clearReserved(db, { resourceId }) → { ok, released }
+//   startFromDeposit(db, { resourceId, userId?, staffId, depositKopecks }) → { session_id, paid_until, minutes } (№112)
+//
 // До init() модуля (тесты money, скрипты) работает автономный экземпляр: часы — системные,
 // онлайн контроллера — по devices.last_seen_at (не старше 150 с).
 
@@ -42,6 +49,7 @@ function service() {
           sse: { publish() {} },
           tariffs: {},
           payments: { refund: async () => { throw new Error('refund без модуля light'); } },
+          bookings: { nextBookingStart: async () => null },
         },
       });
     }
@@ -67,4 +75,20 @@ export function releasePending(db, { resourceId, userId }) {
 
 export function getSessionForExtend(db, { sessionId, userId }) {
   return service().getSessionForExtend(db, { sessionId, userId });
+}
+
+export function startFromBooking(db, args) {
+  return service().startFromBooking(db, args);
+}
+
+export function setReserved(db, args) {
+  return service().setReserved(db, args);
+}
+
+export function clearReserved(db, args) {
+  return service().clearReserved(db, args);
+}
+
+export function startFromDeposit(db, args) {
+  return service().startFromDeposit(db, args);
 }

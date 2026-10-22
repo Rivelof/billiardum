@@ -31,6 +31,11 @@ export function confirmedPayload(p) {
     unlimited: p.unlimited,
     amount_kopecks: Number(p.amount_kopecks),
     method: p.method,
+    // M3: бронь, пакет часов, часть минут балансом, депозит наличными.
+    booking_id: p.booking_id ?? null,
+    package_id: p.package_id ?? null,
+    balance_minutes: p.balance_minutes ?? 0,
+    deposit: Boolean(p.deposit),
   };
 }
 

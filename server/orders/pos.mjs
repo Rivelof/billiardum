@@ -16,8 +16,21 @@
 // возврата, склад (return), журнал pos.refund, тревога владельцу; деньги, чек возврата и
 // payment.refunded — функция refund money.
 // Платежи — только через функции money (server/payments/api.mjs), см. ./payments.mjs.
+//
+// Пакет часов на кассе (M3, контракт m3.md §1 п. 10; decisions №112): позиция корзины
+// { kind: 'package', package_id, user_id | phone } — гость обязателен (guest_required). Строка чека —
+// money packageSaleLine (признак расчёта «предоплата 100 %»), скидка кассы на пакет не действует.
+// Платёж продажи — бар после скидки + пакеты (bl.pos_sales.package_kopecks, строки
+// bl.pos_sale_packages). После оплаты (completeSale) — money creditPackageForSale: минуты на баланс
+// гостя (повтор — та же партия). Гость — только существующий (decisions №117): учётка по id или
+// телефону с согласием на обработку данных (bl.pos_guest, учётку не создаёт); нет — 409
+// guest_not_found, в лог — маска телефона.
+// Возврат пакета (№118) — в возврате продажи (`packages: [idx]`), целиком и пока партия минут не
+// тронута: money revokeLotOnly отзывает партию (package_used, already_refunded — 409), деньги и чек
+// возврата (позиция «предоплата 100 %») — как у бара. Без `packages` возврат пакеты не затрагивает.
 
 import { randomUUID } from 'node:crypto';
+import { maskPhone } from '../lib/log.mjs';
 import { acceptRequest } from '../reception/index.mjs';
 import { stableUuid } from '../payments/records.mjs';
 import { syncPayment } from '../payments/pay.mjs';
@@ -27,7 +40,7 @@ import { recordReturns, recordSales } from '../stock/api.mjs';
 import { enqueueReceiptDirect } from './deps.mjs';
 import { PosError } from './errors.mjs';
 import { allocate, discountKopecks, overLimit, receiptLines, refundAmount, rub } from './money.mjs';
-import { offlinePayment, onlinePayment, receiptCustomer, refundPayment } from './payments.mjs';
+import { creditPackage, offlinePayment, onlinePayment, packageLine, receiptCustomer, refundPayment, revokePackage } from './payments.mjs';
 import { posSettings } from './settings.mjs';
 import { useApproval } from './approvals.mjs';
 import {
@@ -46,6 +59,9 @@ import {
 export const POS_METHODS = Object.freeze(['cash', 'card_terminal', 'sbp']);
 export const GUEST_METHODS = Object.freeze(['sbp', 'card']);
 const MAX_CHANGE_KOPECKS = 10_000_000;
+export const MAX_CART_LINES = 50;
+export const MAX_PACKAGES = 5;
+const PHONE = /^\+[1-9]\d{7,14}$/;
 
 const bad = (detail) => new PosError('bad_request', detail);
 
@@ -76,6 +92,65 @@ async function enqueueKktReceipt(db, deps, args) {
     return typeof res === 'string' ? res : res?.receipt_id ?? res?.id ?? null;
   }
   return enqueueReceiptDirect(db, args);
+}
+
+// Корзина: товары бара и пакеты часов -------------------------------------------------------------
+
+/**
+ * Разделить корзину кассы на товары бара (как в каталоге) и пакеты часов.
+ * Пакет: { kind: 'package', package_id, user_id } или { kind: 'package', package_id, phone } (E.164).
+ * @returns {{ products: object[], packages: { package_id: string, user_id: string|null, phone: string|null }[] }}
+ */
+export function splitCart(items) {
+  if (items === undefined || items === null) return { products: [], packages: [] };
+  if (!Array.isArray(items) || items.length > MAX_CART_LINES) throw bad('items');
+  const products = [];
+  const packages = [];
+  items.forEach((it, i) => {
+    if (!it || typeof it !== 'object' || Array.isArray(it)) throw bad(`items[${i}]`);
+    if (it.kind === 'package') {
+      if (!isUuid(it.package_id)) throw bad(`items[${i}].package_id`);
+      if (it.qty !== undefined && it.qty !== 1) throw bad(`items[${i}].qty: один пакет в строке`);
+      const hasUser = it.user_id !== undefined && it.user_id !== null;
+      const hasPhone = it.phone !== undefined && it.phone !== null && it.phone !== '';
+      if (!hasUser && !hasPhone) throw new PosError('guest_required', `items[${i}]`);
+      if (hasUser && hasPhone) throw bad(`items[${i}]: user_id или phone`);
+      if (hasUser && !isUuid(it.user_id)) throw bad(`items[${i}].user_id`);
+      if (hasPhone && (typeof it.phone !== 'string' || !PHONE.test(it.phone))) throw bad(`items[${i}].phone`);
+      packages.push({ package_id: it.package_id, user_id: hasUser ? it.user_id : null, phone: hasPhone ? it.phone : null });
+      return;
+    }
+    if (it.kind !== undefined && it.kind !== 'product') throw bad(`items[${i}].kind`);
+    const { kind: _kind, ...product } = it;
+    products.push(product);
+  });
+  if (packages.length > MAX_PACKAGES) throw bad(`пакетов в продаже не больше ${MAX_PACKAGES}`);
+  return { products, packages };
+}
+
+/**
+ * Гость пакета — только существующий (№117): учётка по id или телефону, не влитая, с телефоном и
+ * согласием (bl.pos_guest; учётку не создаёт). Нет — 409 guest_not_found, телефон в лог — маской.
+ */
+async function resolveGuest(db, p) {
+  const { rows } = await db.query('select bl.pos_guest($1, $2) as id', [p.user_id ?? null, p.user_id ? null : p.phone]);
+  if (!rows[0]?.id) throw new PosError('guest_not_found', p.user_id ? `user ${p.user_id}` : `phone ${maskPhone(p.phone)}`);
+  return rows[0].id;
+}
+
+/** Пакеты корзины: позиция чека и цена (money), гость. */
+async function resolvePackages(db, packages) {
+  const out = [];
+  for (const p of packages) {
+    const sale = await packageLine(db, p.package_id);
+    out.push({ package_id: p.package_id, user_id: await resolveGuest(db, p), amount_kopecks: sale.amount_kopecks, line: sale.line, title: sale.package.title });
+  }
+  return out;
+}
+
+async function loadSalePackages(db, saleId) {
+  const { rows } = await db.query('select * from bl.pos_sale_packages where sale_id = $1 order by idx', [saleId]);
+  return rows.map((r) => ({ ...r, amount_kopecks: Number(r.amount_kopecks) }));
 }
 
 // Строки продажи ---------------------------------------------------------------------------------
@@ -145,6 +220,7 @@ export async function saleView(db, saleId, { confirmation = null } = {}) {
   }
   // Чек продажи бара: статус и фискальные признаки ККТ (fd, fp — после пробития, server/kkt).
   const receipt = s.receipt_id ? (await db.query('select status, fd, fp from bl.receipts where id = $1', [s.receipt_id])).rows[0] ?? null : null;
+  const packages = await loadSalePackages(db, saleId);
   return {
     sale_id: s.id,
     channel: s.channel,
@@ -157,7 +233,8 @@ export async function saleView(db, saleId, { confirmation = null } = {}) {
     discount_kopecks: Number(s.discount_kopecks),
     bar_kopecks: Number(s.bar_total_kopecks),
     table_kopecks: Number(s.table_kopecks),
-    total_kopecks: Number(s.bar_total_kopecks) + Number(s.table_kopecks),
+    package_kopecks: Number(s.package_kopecks ?? 0),
+    total_kopecks: Number(s.bar_total_kopecks) + Number(s.package_kopecks ?? 0) + Number(s.table_kopecks),
     received_kopecks: s.received_kopecks === null ? null : Number(s.received_kopecks),
     change_kopecks: s.change_kopecks === null ? null : Number(s.change_kopecks),
     refunded_kopecks: Number(s.refunded_kopecks),
@@ -178,6 +255,15 @@ export async function saleView(db, saleId, { confirmation = null } = {}) {
       outcome: i.outcome,
       refunded_qty: i.refunded_qty,
       refunded_kopecks: i.refunded_kopecks,
+    })),
+    packages: packages.map((p) => ({
+      package_id: p.package_id,
+      user_id: p.user_id,
+      title: typeof p.line?.description === 'string' ? p.line.description : null,
+      idx: p.idx,
+      amount_kopecks: p.amount_kopecks,
+      lot_id: p.lot_id ?? null,
+      refunded_at: iso(p.refunded_at ?? null),
     })),
     table_payments: req.rows.map((r) => ({ request_id: r.request_id, payment_id: r.payment_id, amount_kopecks: Number(r.amount_kopecks) })),
     ...(conf && s.status === 'pending' ? { confirmation: conf } : {}),
@@ -220,10 +306,11 @@ export async function createSale(db, deps, info) {
   const b = info.body ?? {};
   const method = b.method;
   if (!POS_METHODS.includes(method)) throw bad('method');
-  const hasItems = b.items !== undefined && b.items !== null && !(Array.isArray(b.items) && b.items.length === 0);
+  const cart = splitCart(b.items);
+  const hasItems = cart.products.length > 0;
   const tabs = parseUuidList(b.tabs, 5, 'tabs');
   const requests = parseUuidList(b.requests, 10, 'requests');
-  if (!hasItems && tabs.length === 0 && requests.length === 0) throw bad('пустая корзина');
+  if (!hasItems && cart.packages.length === 0 && tabs.length === 0 && requests.length === 0) throw bad('пустая корзина');
   if (b.to_bar !== undefined && typeof b.to_bar !== 'boolean') throw bad('to_bar');
   if (method === 'sbp' && requests.length > 0) throw bad('заявку стола принимают наличными или картой (money M1)');
 
@@ -236,7 +323,9 @@ export async function createSale(db, deps, info) {
   const settings = await loadPaymentSettings(db, clubId);
   const pos = await posSettings(db, clubId);
 
-  const lines = hasItems ? await resolveItems(db, { clubId, items: b.items, audience: 'staff', defaultVat: settings.vat_code }) : [];
+  const lines = hasItems ? await resolveItems(db, { clubId, items: cart.products, audience: 'staff', defaultVat: settings.vat_code }) : [];
+  const packages = await resolvePackages(db, cart.packages);
+  const packageTotal = packages.reduce((sum, p) => sum + p.amount_kopecks, 0);
   const tabOrders = await lockOpenTabOrders(db, tabs);
   if (tabs.length > 0 && tabOrders.length === 0) throw new PosError('already_paid', 'счёт стола пуст или оплачен');
   for (const sid of tabs) {
@@ -277,7 +366,9 @@ export async function createSale(db, deps, info) {
   const barTotal = barSubtotal - discount;
   if (barSubtotal > 0 && barTotal <= 0) throw bad('скидка на всю сумму');
   const tableTotal = reqRows.reduce((s, r) => s + r.amount, 0);
-  const total = barTotal + tableTotal;
+  // Платёж продажи: бар после скидки и пакеты часов (заявки стола — свои платежи money).
+  const saleTotal = barTotal + packageTotal;
+  const total = saleTotal + tableTotal;
   if (total <= 0) throw bad('сумма');
 
   let received = null;
@@ -315,7 +406,7 @@ export async function createSale(db, deps, info) {
   // Платёж бара: наличные и терминал — сразу; СБП — QR ЮKassa.
   let payment = null;
   let confirmation = null;
-  if (barTotal > 0) {
+  if (saleTotal > 0) {
     if (sbp) {
       const customer = receiptCustomer({ phone: b.customer_phone ?? null, email: pos.receipt_email });
       if (b.customer_phone !== undefined && b.customer_phone !== null && !receiptCustomer({ phone: b.customer_phone })) throw bad('customer_phone');
@@ -326,8 +417,8 @@ export async function createSale(db, deps, info) {
         clubId,
         saleId,
         method: 'sbp',
-        amount: barTotal,
-        lines: receiptLines(preview),
+        amount: saleTotal,
+        lines: [...(preview.length > 0 ? receiptLines(preview) : []), ...packages.map((p) => p.line)],
         customer,
         phone: typeof b.customer_phone === 'string' ? b.customer_phone : null,
         confirmation: 'qr',
@@ -342,7 +433,7 @@ export async function createSale(db, deps, info) {
         clubId,
         saleId,
         method,
-        amount: barTotal,
+        amount: saleTotal,
         received: method === 'cash' ? received - tableTotal : null,
         staffId,
         requestKey: key,
@@ -353,17 +444,24 @@ export async function createSale(db, deps, info) {
   await db.query(
     `insert into bl.pos_sales (id, club_id, channel, method, status, payment_id, session_id, created_by, shift_id, bar_subtotal_kopecks,
                                discount_kopecks, bar_total_kopecks, table_kopecks, received_kopecks, change_kopecks, discount_reason,
-                               discount_over_limit, request_key, created_at, updated_at)
-     values ($1, $2, 'pos', $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)`,
+                               discount_over_limit, request_key, package_kopecks, created_at, updated_at)
+     values ($1, $2, 'pos', $3, 'pending', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)`,
     [saleId, clubId, method, payment?.id ?? null, tabs.length === 1 ? tabs[0] : null, staffId, shift.id, barSubtotal, discount, barTotal,
-      tableTotal, received, change, reason || null, over, key, at],
+      tableTotal, received, change, reason || null, over, key, packageTotal, at],
   );
   if (saleOrderItems.length > 0) await insertSaleItems(db, { clubId, saleId, items: saleOrderItems, discount });
+  for (const [idx, p] of packages.entries()) {
+    await db.query(
+      `insert into bl.pos_sale_packages (club_id, sale_id, idx, package_id, user_id, amount_kopecks, line, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+      [clubId, saleId, idx, p.package_id, p.user_id, p.amount_kopecks, JSON.stringify(p.line), at],
+    );
+  }
 
   // Заявки стола — через ресепшн money (платёж, чек ККТ, payment.confirmed для света).
   // Наличные: каждой заявке — ровно её сумма, сдача — у последнего платежа (бар или заявка).
   for (const [k, r] of reqRows.entries()) {
-    const lastMoney = barTotal === 0 && k === reqRows.length - 1;
+    const lastMoney = saleTotal === 0 && k === reqRows.length - 1;
     const res = await acceptRequest(db, deps.money, {
       params: { id: r.id },
       idempotencyKey: stableUuid(`bl.pos.request/${key}/${r.id}`),
@@ -406,11 +504,14 @@ export async function createSale(db, deps, info) {
     }
   }
 
-  if (!sbp || barTotal === 0) {
+  if (!sbp || saleTotal === 0) {
     const { rows } = await db.query('select * from bl.pos_sales where id = $1', [saleId]);
     await completeSale(db, deps, rows[0], { at, actorId: staffId });
   }
-  deps.log?.info?.('pos_sale', { sale_id: saleId, club_id: clubId, method, bar_kopecks: barTotal, table_kopecks: tableTotal, pending: sbp && barTotal > 0 });
+  deps.log?.info?.('pos_sale', {
+    sale_id: saleId, club_id: clubId, method, bar_kopecks: barTotal, package_kopecks: packageTotal, packages: packages.length, table_kopecks: tableTotal,
+    pending: sbp && saleTotal > 0,
+  });
   return saleView(db, saleId, { confirmation });
 }
 
@@ -496,27 +597,38 @@ export async function completeSale(db, deps, sale, { at = deps.clock.now(), acto
     userId: actorId ?? s.created_by ?? null,
   });
 
-  // Чек продажи бара.
+  // Чек продажи: бар и пакеты часов (позиции пакетов — «предоплата 100 %»).
   let receiptId = null;
   const barTotal = Number(s.bar_total_kopecks);
-  if (barTotal > 0) {
+  const packageTotal = Number(s.package_kopecks ?? 0);
+  const salePackages = packageTotal > 0 ? await loadSalePackages(db, s.id) : [];
+  const saleTotal = barTotal + packageTotal;
+  if (saleTotal > 0) {
     if (s.method === 'cash' || s.method === 'card_terminal') {
       const settings = await loadPaymentSettings(db, s.club_id);
       receiptId = await enqueueKktReceipt(db, deps, {
         clubId: s.club_id,
         kind: 'sell',
-        lines: linesFor(items),
-        payments: [{ method: s.method === 'cash' ? 'cash' : 'electronically', amount_kopecks: barTotal }],
+        lines: [...(items.length > 0 ? linesFor(items) : []), ...salePackages.map((p) => p.line)],
+        payments: [{ method: s.method === 'cash' ? 'cash' : 'electronically', amount_kopecks: saleTotal }],
         operatorName: await operatorName(db, s.created_by),
         paymentId: s.payment_id,
         saleId: s.id,
-        amountKopecks: barTotal,
+        amountKopecks: saleTotal,
         taxSystemCode: settings.tax_system_code,
         at,
       });
     } else {
       const { rows } = await db.query("select id from bl.receipts where payment_id = $1 and kind = 'sale' order by created_at limit 1", [s.payment_id]);
       receiptId = rows[0]?.id ?? null;
+    }
+  }
+  // Пакеты часов: минуты на баланс гостя (money; повтор — та же партия).
+  if (salePackages.length > 0) {
+    const { rows: pay } = await db.query('select * from bl.payments where id = $1', [s.payment_id]);
+    for (const p of salePackages) {
+      const lot = await creditPackage(db, deps, { payment: pay[0], packageId: p.package_id, userId: p.user_id, index: p.idx });
+      if (!p.lot_id) await db.query('update bl.pos_sale_packages set lot_id = $2 where id = $1', [p.id, lot.id]);
     }
   }
   const shiftId = s.shift_id ?? (await currentShift(db, deps, s.club_id))?.id ?? null;
@@ -533,8 +645,9 @@ export async function completeSale(db, deps, sale, { at = deps.clock.now(), acto
     channel: s.channel,
     payment_id: s.payment_id,
     method: s.method,
-    amount_kopecks: barTotal + tableTotal,
+    amount_kopecks: saleTotal + tableTotal,
     bar_kopecks: barTotal,
+    packages_kopecks: packageTotal,
     tables_kopecks: tableTotal,
     table_payment_ids: tp.map((r) => r.payment_id),
     discount_kopecks: Number(s.discount_kopecks),
@@ -551,6 +664,8 @@ export async function completeSale(db, deps, sale, { at = deps.clock.now(), acto
       method: s.method,
       payment_id: s.payment_id,
       bar_kopecks: barTotal,
+      packages_kopecks: packageTotal,
+      packages: salePackages.map((p) => ({ package_id: p.package_id, user_id: p.user_id, amount_kopecks: p.amount_kopecks })),
       tables_kopecks: tableTotal,
       discount_kopecks: Number(s.discount_kopecks),
       received_kopecks: s.received_kopecks === null ? null : Number(s.received_kopecks),
@@ -568,7 +683,7 @@ export async function completeSale(db, deps, sale, { at = deps.clock.now(), acto
 
   const fresh = await loadOrders(db, orderIds);
   for (const o of fresh) if (paidIds.includes(o.id) || byId.get(o.id)?.committed_at !== o.committed_at) await publishOrder(db, deps, o);
-  await publishClub(db, deps, s.club_id, 'pos_sale', { sale_id: s.id, status: 'completed', method: s.method, total_kopecks: barTotal + tableTotal });
+  await publishClub(db, deps, s.club_id, 'pos_sale', { sale_id: s.id, status: 'completed', method: s.method, total_kopecks: saleTotal + tableTotal });
   return { result: 'completed', receipt_id: receiptId, duplicates: dupIds.length };
 }
 
@@ -690,15 +805,17 @@ async function refundLate(db, deps, sale, { at = deps.clock.now() } = {}) {
   const s = locked[0];
   if (!s || s.status !== 'canceled' || Number(s.refunded_kopecks) > 0) return { result: 'already' };
   const items = await loadSaleItems(db, s.id);
-  const amount = Number(s.bar_total_kopecks);
-  if (amount <= 0 || items.length === 0) return { result: 'already' };
+  const salePackages = await loadSalePackages(db, s.id);
+  const amount = Number(s.bar_total_kopecks) + Number(s.package_kopecks ?? 0);
+  if (amount <= 0 || (items.length === 0 && salePackages.length === 0)) return { result: 'already' };
   const reason = 'Оплата после отмены продажи на кассе';
   const phone = (await db.query("select customer_phone from bl.receipts where payment_id = $1 and kind = 'sale' and customer_phone is not null limit 1", [s.payment_id])).rows[0]?.customer_phone ?? null;
   const pos = await posSettings(db, s.club_id);
   const refund = await refundPayment(db, deps, {
     paymentId: s.payment_id,
     amount,
-    lines: linesFor(items),
+    // Отменённая продажа пакеты не начисляла: возвращается и их предоплата.
+    lines: [...(items.length > 0 ? linesFor(items) : []), ...salePackages.map((p) => p.line)],
     customer: receiptCustomer({ phone, email: pos.receipt_email }),
     reason,
     key: `barl-${s.id}`,
@@ -775,6 +892,14 @@ function parseRefundItems(v) {
   });
 }
 
+/** Номера пакетов продажи к возврату: [idx], без повторов. */
+function parseRefundPackages(v) {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v) || v.length === 0 || v.length > MAX_PACKAGES) throw bad('packages');
+  if (!v.every((x) => Number.isInteger(x) && x >= 0 && x <= 9) || new Set(v).size !== v.length) throw bad('packages');
+  return v;
+}
+
 /**
  * POST /api/pos/sales/{id}/refund — управляющий и выше (PRODUCT §4): причина обязательна,
  * чек возврата, склад, журнал, тревога владельцу (инвариант 8).
@@ -789,6 +914,7 @@ export async function refundSale(db, deps, info) {
   if (!reason) throw new PosError('reason_required');
   if (reason.length > 2000) throw bad('reason');
   const wanted = parseRefundItems(b.items);
+  const wantedPackages = parseRefundPackages(b.packages);
 
   const prev = await db.query('select * from bl.pos_refunds where club_id = $1 and request_key = $2', [info.clubId, key]);
   if (prev.rowCount > 0) return refundView(db, prev.rows[0]);
@@ -797,9 +923,21 @@ export async function refundSale(db, deps, info) {
   const s = rows[0];
   if (!s) throw new PosError('not_found', 'sale');
   if (s.status !== 'completed') throw new PosError('payment_pending', 'продажа не завершена');
-  if (Number(s.bar_total_kopecks) === 0) throw bad('в продаже нет бара (стол возвращает money)');
+  if (Number(s.bar_total_kopecks) === 0 && !wantedPackages) throw bad('в продаже нет бара (стол возвращает money)');
   const items = (await loadSaleItems(db, s.id)).filter((i) => i.outcome === 'paid');
   const plan = [];
+  // Пакеты к возврату: строка продажи, не возвращена, партия начислена (её отзывает money ниже).
+  const packagePlan = [];
+  if (wantedPackages) {
+    const salePackages = await loadSalePackages(db, s.id);
+    for (const idx of wantedPackages) {
+      const p = salePackages.find((x) => x.idx === idx);
+      if (!p) throw new PosError('not_found', `package ${idx}`);
+      if (p.refunded_at) throw new PosError('already_refunded', `package ${idx}`);
+      if (!p.lot_id) throw new PosError('payment_pending', `package ${idx}: партия не начислена`);
+      packagePlan.push(p);
+    }
+  }
   if (wanted) {
     for (const w of wanted) {
       const i = items.find((x) => x.order_item_id === w.order_item_id);
@@ -807,10 +945,10 @@ export async function refundSale(db, deps, info) {
       if (i.refunded_qty + w.qty > i.qty) throw new PosError('limit_exceeded', 'возврат больше проданного');
       plan.push({ i, qty: w.qty });
     }
-  } else {
+  } else if (!wantedPackages) {
     for (const i of items) if (i.refunded_qty < i.qty) plan.push({ i, qty: i.qty - i.refunded_qty });
   }
-  if (plan.length === 0) throw new PosError('already_paid', 'всё уже возвращено');
+  if (plan.length === 0 && packagePlan.length === 0) throw new PosError('already_paid', 'всё уже возвращено');
   const at = deps.clock.now();
   const rowsForReceipt = [];
   let amount = 0;
@@ -828,8 +966,12 @@ export async function refundSale(db, deps, info) {
       to: p.i.qty - p.i.refunded_qty,
     });
   }
-  if (Number(s.refunded_kopecks) + amount > Number(s.bar_total_kopecks)) throw new PosError('limit_exceeded', 'возврат больше оплаченного');
-  const lines = receiptLines(rowsForReceipt);
+  for (const p of packagePlan) amount += p.amount_kopecks;
+  if (Number(s.refunded_kopecks) + amount > Number(s.bar_total_kopecks) + Number(s.package_kopecks ?? 0)) {
+    throw new PosError('limit_exceeded', 'возврат больше оплаченного');
+  }
+  // Чек возврата: позиции бара и пакетов (у пакета — «предоплата 100 %», как в чеке продажи).
+  const lines = [...(rowsForReceipt.length > 0 ? receiptLines(rowsForReceipt) : []), ...packagePlan.map((p) => p.line)];
   const { rows: pr } = await db.query('select * from bl.payments where id = $1 for update', [s.payment_id]);
   const payment = pr[0];
   // Наличные возвращаются из кассы смены (№81): без открытой смены — нельзя.
@@ -837,6 +979,8 @@ export async function refundSale(db, deps, info) {
   if (s.method === 'cash' && !shift) throw new PosError('shift_closed');
 
   const posRefundId = randomUUID();
+  // Партии минут пакетов — отозвать (money: только нетронутые, журнал и тревога там же).
+  for (const p of packagePlan) await revokePackage(db, deps, { lotId: p.lot_id, reason, staffId });
   // Деньги, чек возврата (ККТ — receipt_pending, ЮKassa — с чеком), payment.refunded — у money.
   let customer = null;
   if (payment.provider !== 'reception') {
@@ -856,7 +1000,10 @@ export async function refundSale(db, deps, info) {
     description: 'Возврат: бар',
   });
   const receiptId = (await db.query("select id from bl.receipts where refund_id = $1 and kind = 'refund' order by created_at limit 1", [refundRow.refund_id])).rows[0]?.id ?? null;
-  const refundItems = plan.map((p) => ({ sale_item_id: p.i.id, order_item_id: p.i.order_item_id, qty: p.qty, amount_kopecks: p.amount }));
+  const refundItems = [
+    ...plan.map((p) => ({ sale_item_id: p.i.id, order_item_id: p.i.order_item_id, qty: p.qty, amount_kopecks: p.amount })),
+    ...packagePlan.map((p) => ({ sale_package_id: p.id, idx: p.idx, package_id: p.package_id, lot_id: p.lot_id, amount_kopecks: p.amount_kopecks })),
+  ];
   await db.query(
     `insert into bl.pos_refunds (id, club_id, sale_id, refund_id, kind, amount_kopecks, reason, items, receipt_id, shift_id, created_by, request_key, created_at)
      values ($1, $2, $3, $4, 'staff', $5, $6, $7::jsonb, $8, $9, $10, $11, $12)`,
@@ -864,6 +1011,9 @@ export async function refundSale(db, deps, info) {
   );
   for (const p of plan) {
     await db.query('update bl.pos_sale_items set refunded_qty = refunded_qty + $2, refunded_kopecks = refunded_kopecks + $3 where id = $1', [p.i.id, p.qty, p.amount]);
+  }
+  for (const p of packagePlan) {
+    await db.query('update bl.pos_sale_packages set refunded_at = $2, pos_refund_id = $3 where id = $1', [p.id, at, posRefundId]);
   }
   await db.query('update bl.pos_sales set refunded_kopecks = refunded_kopecks + $2, updated_at = $3 where id = $1', [s.id, amount, at]);
   await recordReturns(db, {
@@ -878,7 +1028,10 @@ export async function refundSale(db, deps, info) {
     objectType: 'pos_sale',
     objectId: s.id,
     reason,
-    data: { sale_id: s.id, refund_id: refundRow.refund_id, pos_refund_id: posRefundId, amount_kopecks: amount, method: s.method, items: refundItems.length },
+    data: {
+      sale_id: s.id, refund_id: refundRow.refund_id, pos_refund_id: posRefundId, amount_kopecks: amount, method: s.method, items: plan.length,
+      packages: packagePlan.map((p) => ({ idx: p.idx, package_id: p.package_id, lot_id: p.lot_id, amount_kopecks: p.amount_kopecks })),
+    },
     actorType: 'user',
     actorId: staffId,
   });

@@ -13,6 +13,7 @@ const OPTIONAL = {
   sse: '../http/sse.mjs',
   tariffs: '../tariffs/index.mjs',
   payments: '../payments/api.mjs',
+  bookings: '../bookings/api.mjs',
 };
 
 async function tryImport(spec) {
@@ -64,6 +65,8 @@ function stubs(log) {
         throw new Error('server/payments/api.mjs (money) недоступен');
       },
     },
+    // Без модуля брони (M3) броней нет: предел продления не ограничен.
+    bookings: { async nextBookingStart() { return null; } },
   };
 }
 
@@ -89,8 +92,9 @@ export async function resolveDeps(ctx, log) {
     sse: ['publish'],
     tariffs: ['amountForActual'],
     payments: ['refund'],
+    bookings: ['nextBookingStart'],
   };
-  const ctxKey = { audit: 'audit', alarms: 'alarms', notify: 'notify', sse: 'sse', tariffs: 'tariffs', payments: 'paymentsApi' };
+  const ctxKey = { audit: 'audit', alarms: 'alarms', notify: 'notify', sse: 'sse', tariffs: 'tariffs', payments: 'paymentsApi', bookings: 'bookingsApi' };
   for (const [name, spec] of Object.entries(OPTIONAL)) {
     const fromCtx = ctx[ctxKey[name]];
     const fromModule = fromCtx ? null : await tryImport(spec);

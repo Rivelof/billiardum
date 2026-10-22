@@ -13,6 +13,8 @@ const MODULES = {
   notify: { spec: '../notify/index.mjs', ctxKey: 'notify', need: ['sendToClubStaff'] },
   sse: { spec: '../http/sse.mjs', ctxKey: 'sse', need: ['publish'] },
   shifts: { spec: '../shifts/api.mjs', ctxKey: 'shiftsApi', need: ['currentShift'] },
+  kkt: { spec: '../kkt/api.mjs', ctxKey: 'kktApi', need: ['enqueueReceipt'] },
+  bookings: { spec: '../bookings/api.mjs', ctxKey: 'bookingsApi', need: ['nextBookingStart'] },
 };
 
 const imported = new Map();
@@ -77,6 +79,10 @@ function stubs(log) {
     sse: { publish() {} },
     // Без модуля смен (kkt) деньги на ресепшене не принимаются: ошибка, откат (decisions №93).
     shifts: missing('shifts'),
+    // Чек ККТ (депозит, зачёт предоплаты наличными) без модуля kkt не ставится: ошибка, откат.
+    kkt: missing('kkt'),
+    // Без модуля броней (M3) продление ничем не ограничено.
+    bookings: { nextBookingStart: async () => null },
   };
 }
 

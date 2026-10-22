@@ -4,6 +4,8 @@
 //
 // Коды M2 вне словаря M1: shift_closed (касса без открытой смены, контракт M2 §1.8),
 // stop_list (товар в стоп-листе или кончился), already_paid (счёт или заказ уже оплачен).
+// Коды M3: guest_required (пакет часов в корзине кассы без гостя: нужен user_id или телефон),
+// guest_not_found (такого гостя нет: учётку заводит только сам гость входом и согласием, №117).
 
 export const STATUS_BY_CODE = Object.freeze({
   bad_request: 400,
@@ -21,6 +23,10 @@ export const STATUS_BY_CODE = Object.freeze({
   shift_closed: 409,
   stop_list: 409,
   already_paid: 409,
+  guest_required: 400,
+  guest_not_found: 409,
+  package_used: 409,
+  already_refunded: 409,
 });
 
 export class PosError extends Error {

@@ -64,6 +64,7 @@ export function createEmulator(opts = {}) {
   const state = {
     payments: new Map(),
     refunds: new Map(),
+    receipts: new Map(),
     idempotence: new Map(),
     webhooks: [],
     requests: [],
@@ -372,6 +373,83 @@ export function createEmulator(opts = {}) {
     return refundView(r);
   }
 
+  // Отдельные чеки (POST /v3/receipts): чек зачёта предоплаты — позиции full_payment и расчёт
+  // settlements [{type: 'prepayment', amount}] по платежу предоплаты (decisions №108, №112).
+  const SETTLEMENT_TYPES = ['cashless', 'prepayment', 'postpayment', 'consideration'];
+
+  function createReceipt(shop, body) {
+    const type = body.type;
+    if (type !== 'payment' && type !== 'refund') throw new EmuError(400, 'invalid_request', 'type — payment или refund', 'type');
+    if (body.send !== true) throw new EmuError(400, 'invalid_request', 'send должен быть true', 'send');
+    let payment = null;
+    if (type === 'payment') {
+      if (typeof body.payment_id !== 'string') throw new EmuError(400, 'invalid_request', 'Нет payment_id', 'payment_id');
+      payment = getPayment(shop, body.payment_id);
+      if (payment.status !== 'succeeded') throw new EmuError(400, 'invalid_request', 'Платёж не succeeded', 'payment_id');
+    } else {
+      const r = state.refunds.get(body.refund_id);
+      if (!r || r.shopId !== shop.shopId) throw new EmuError(400, 'invalid_request', 'Нет refund_id', 'refund_id');
+    }
+    const settlements = body.settlements;
+    if (!Array.isArray(settlements) || settlements.length === 0 || settlements.length > 10) {
+      throw new EmuError(400, 'invalid_request', 'Нужны settlements', 'settlements');
+    }
+    let total = 0;
+    let prepaid = 0;
+    settlements.forEach((st, i) => {
+      if (!st || !SETTLEMENT_TYPES.includes(st.type)) throw new EmuError(400, 'invalid_request', 'Неверный тип расчёта', `settlements[${i}].type`);
+      const a = parseAmount(st.amount, `settlements[${i}].amount`);
+      total += a;
+      if (st.type === 'prepayment') prepaid += a;
+    });
+    checkReceipt({ customer: body.customer, items: body.items, tax_system_code: body.tax_system_code }, total);
+    if (prepaid > 0) {
+      // Зачёт предоплаты — позиции полного или частичного расчёта, не больше оплаченного по платежу.
+      for (const [i, it] of body.items.entries()) {
+        if (!['full_payment', 'partial_payment'].includes(it.payment_mode)) {
+          throw new EmuError(400, 'invalid_request', 'Зачёт предоплаты: payment_mode full_payment или partial_payment', `items[${i}].payment_mode`);
+        }
+      }
+      if (payment) {
+        const used = payment.prepaymentSettled ?? 0;
+        if (used + prepaid > payment.amountKopecks - payment.refundedKopecks) {
+          throw new EmuError(400, 'invalid_request', 'Зачёт больше остатка предоплаты', 'settlements');
+        }
+        payment.prepaymentSettled = used + prepaid;
+      }
+    }
+    const rec = {
+      id: `rt_${randomUUID()}`,
+      type,
+      ...(payment ? { payment_id: payment.id } : { refund_id: body.refund_id }),
+      status: 'succeeded',
+      fiscal_document_number: String(1000 + state.receipts.size),
+      fiscal_storage_number: '9999078900004792',
+      fiscal_attribute: String(1000000000 + state.receipts.size),
+      registered_at: nowIso(),
+      fiscal_provider_id: 'emu',
+      items: body.items,
+      settlements,
+      ...(body.tax_system_code !== undefined ? { tax_system_code: body.tax_system_code } : {}),
+      shopId: shop.shopId,
+      customer: body.customer,
+    };
+    state.receipts.set(rec.id, rec);
+    if (payment) payment.receipts.push({ kind: 'settlement', receipt: { customer: body.customer, items: body.items, settlements }, amount_kopecks: total, receipt_id: rec.id });
+    return receiptView(rec);
+  }
+
+  function receiptView(r) {
+    const { shopId: _shop, customer: _customer, ...rest } = r;
+    return { ...rest };
+  }
+
+  function getReceiptObject(shop, id) {
+    const r = state.receipts.get(id);
+    if (!r || r.shopId !== shop.shopId) throw new EmuError(404, 'not_found', 'Чек не найден');
+    return receiptView(r);
+  }
+
   function getRefund(shop, id) {
     const r = state.refunds.get(id);
     if (!r || r.shopId !== shop.shopId) throw new EmuError(404, 'not_found', 'Возврат не найден');
@@ -447,6 +525,14 @@ export function createEmulator(opts = {}) {
       const r = idempotent(shop, req, `cancel/${m[1]}`, body, () => cancelPayment(shop, m[1]));
       return send(res, r.status, r.body);
     }
+    if (req.method === 'POST' && path === '/v3/receipts') {
+      const body = await readJson(req);
+      const r = idempotent(shop, req, 'receipts', body, () => createReceipt(shop, body));
+      return send(res, r.status, r.body);
+    }
+    if (req.method === 'GET' && (m = /^\/v3\/receipts\/([\w-]{1,64})$/.exec(path))) {
+      return send(res, 200, getReceiptObject(shop, m[1]));
+    }
     if (req.method === 'POST' && path === '/v3/refunds') {
       const body = await readJson(req);
       const r = idempotent(shop, req, 'refunds', body, () => createRefund(shop, body));
@@ -517,6 +603,7 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       await readBody(req);
       state.payments.clear();
       state.refunds.clear();
+      state.receipts.clear();
       state.idempotence.clear();
       state.webhooks.length = 0;
       state.requests.length = 0;
@@ -570,6 +657,7 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       return send(res, 200, { ok: true, deliveries: results.map((r) => ({ delivered: r.delivered, attempts: r.attempts })) });
     }
     if (req.method === 'GET' && path === '/__emu/webhooks') return send(res, 200, state.webhooks);
+    if (req.method === 'GET' && path === '/__emu/receipts') return send(res, 200, [...state.receipts.values()]);
     if (req.method === 'GET' && path === '/__emu/requests') return send(res, 200, state.requests);
     throw new EmuError(404, 'not_found', 'Неизвестная команда эмулятора');
   }

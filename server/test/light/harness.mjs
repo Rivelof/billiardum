@@ -400,7 +400,7 @@ export function fakeOutbox(pool, log) {
 }
 
 /** Запустить модуль light на временной базе. */
-export async function startLight(t, { devices = [1, 2, 3, 4], connect = true, time = new FakeTime() } = {}) {
+export async function startLight(t, { devices = [1, 2, 3, 4], connect = true, time = new FakeTime(), extra = {} } = {}) {
   const lines = [];
   const log = createLogger({ level: 'debug', write: (l) => lines.push(l), now: time.now });
   const client = new FakeMqtt();
@@ -425,6 +425,7 @@ export async function startLight(t, { devices = [1, 2, 3, 4], connect = true, ti
     paymentsApi,
     mqttClient: client,
     dynsec,
+    ...extra,
   };
   const st = await init(ctx);
   const ctl = new Map();

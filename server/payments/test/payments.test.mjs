@@ -189,7 +189,7 @@ describe('настройки', () => {
 
 describe('котировка и план оплаты', () => {
   it('разбор запроса котировки', () => {
-    assert.deepEqual(parseQuoteRequest({ resource_id: RES, kind: 'start', minutes: 60 }), { resourceId: RES, kind: 'start', minutes: 60, sessionId: null, exact: false });
+    assert.deepEqual(parseQuoteRequest({ resource_id: RES, kind: 'start', minutes: 60 }), { resourceId: RES, kind: 'start', minutes: 60, sessionId: null, exact: false, useBalance: false });
     assert.equal(parseQuoteRequest({ resource_id: RES, kind: 'start', minutes: null }).minutes, null);
     for (const bad of [null, {}, { resource_id: 'x', kind: 'start', minutes: 60 }, { resource_id: RES, kind: 'start', minutes: 90 }, { resource_id: RES, kind: 'start', minutes: '60' }, { resource_id: RES, kind: 'start' }]) {
       assert.throws(() => parseQuoteRequest(bad), (e) => e.code === 'bad_request', JSON.stringify(bad));

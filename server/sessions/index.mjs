@@ -100,7 +100,7 @@ export async function init(ctx) {
       if (!s) return null;
       const { rows } = await db.query('select ordinal from bl.session_participants where session_id = $1 order by ordinal', [s.id]);
       // Только общие поля: is_payer зависит от зрителя, клиент берёт его из GET /api/sessions/{id}.
-      const { is_payer: _viewerOnly, ...common } = sessionView(s, { now: clock.now(), participants: rows });
+      const { is_payer: _viewerOnly, ...common } = sessionView(s, { now: clock.now(), participants: rows, bookingLimit: await service.bookingLimit(db, s) });
       return common;
     });
     if (view) deps.sse.publish(`session:${sessionId}`, 'session', view);

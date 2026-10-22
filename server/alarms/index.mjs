@@ -56,6 +56,8 @@ export const ALARM_TEXTS = {
   service_light_threshold: 'Сервисный свет за смену дольше порога клуба',
   kkt_shift_failed: 'ККТ не открыла или не закрыла смену',
   receipt_fd_conflict: 'Касса вернула номер документа, который уже есть у другого чека — проверьте чек на ленте',
+  // M3: предоплата брони и пакеты (backend-money).
+  settlement_receipt_failed: 'Не пробит чек зачёта предоплаты',
 };
 
 /**
@@ -90,6 +92,7 @@ export const ALARM_LEVELS = {
   service_light_threshold: 'important',
   kkt_shift_failed: 'important',
   receipt_fd_conflict: 'critical',
+  settlement_receipt_failed: 'important',
 };
 
 /**
@@ -101,6 +104,7 @@ export const DEDUPE_FIELDS = {
   receipt_failed: 'receipt_id',
   receipt_fd_conflict: 'receipt_id',
   receipt_double: 'receipt_id',
+  settlement_receipt_failed: 'receipt_id',
   payment_mismatch: 'payment_id',
   refund_mismatch: 'refund_id',
   unlimited_overrun: 'session_id',

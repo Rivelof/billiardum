@@ -13,6 +13,9 @@ import { onSessionClosed } from './capture.mjs';
 import { loadMoneyConfig } from './config.mjs';
 import { resolveDeps } from './deps.mjs';
 import { syncPayment } from './pay.mjs';
+import { enterClub } from './context.mjs';
+import { settleDeposit } from './deposits.mjs';
+import { SETTLE_TOPIC, sendSettlementReceipt } from './settle.mjs';
 
 const TICK_MS = 10_000;
 let state = null;
@@ -61,6 +64,21 @@ export async function init(ctx) {
     'session.closed',
     async (payload, { db, log } = {}) => onSessionClosed(db, log ? { ...deps, log } : deps, config, payload),
     { name: 'money.capture' },
+  );
+  // M3: чеки зачёта предоплаты в ЮKassa и расчёт депозитных сессий при закрытии.
+  deps.outbox.subscribe(
+    SETTLE_TOPIC,
+    async (payload, { db, log } = {}) => sendSettlementReceipt(db, log ? { ...deps, log } : deps, config, payload),
+    { name: 'money.receipt_settle' },
+  );
+  deps.outbox.subscribe(
+    'session.closed',
+    async (payload, { db, log } = {}) => {
+      if (!payload?.session_id || !payload?.club_id) return;
+      await enterClub(db, payload.club_id);
+      await settleDeposit(db, log ? { ...deps, log } : deps, { sessionId: payload.session_id, usedKopecks: payload.used_kopecks ?? null });
+    },
+    { name: 'money.deposit' },
   );
   let running = null;
   const timer = setInterval(() => {

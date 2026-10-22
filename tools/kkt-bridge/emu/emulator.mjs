@@ -25,6 +25,10 @@
 //                                                         его «забыл»: GET по UUID — 404 (исход неизвестен у моста)
 //   POST /__emu/shift { expired: true }                   смена ККТ старше 24 часов
 // Выдаёт номер ФД (сквозной), ФП (10 цифр, HMAC от ФН и ФД), номер чека в смене и номер смены.
+// Оплаты чека: cash, electronically, prepaid (зачёт предоплаты), credit, other. Сумма оплат = сумма чека
+// (больше — только наличными, сдача); зачёт предоплаты — не больше позиций «полный расчёт» (позиции
+// fullPrepayment, prepayment, advance зачётом не оплачиваются). Счётчики смены по типам оплаты
+// (sell и sellReturn) и наличные в ящике — в /__emu/state (shift.totals, cash_kopecks).
 // Номер ФН — случайный при каждом запуске (randomFn): счётчики в памяти, после перезапуска ФД с 1.
 
 import { createHmac, randomBytes } from 'node:crypto';
@@ -42,6 +46,8 @@ export const PAYMENT_OBJECTS = [
   'intellectualActivity', 'payment', 'agentCommission', 'composite', 'another',
 ];
 export const PAYMENT_TYPES = ['cash', 'electronically', 'prepaid', 'credit', 'other'];
+const PREPAYMENT_METHODS = new Set(['fullPrepayment', 'prepayment', 'advance']);
+const zeroTotals = () => Object.fromEntries(PAYMENT_TYPES.map((t) => [t, 0]));
 const FISCAL = new Set(['sell', 'sellReturn', 'openShift', 'closeShift']);
 const KNOWN = new Set([...FISCAL, 'getShiftStatus', 'getDeviceStatus', 'getFnStatus', 'continuePrint', 'reportX']);
 
@@ -107,7 +113,7 @@ export function createAtolEmulator({
       delayMs: 0,
       faults: [],
       fd: 0,
-      shift: { state: 'closed', number: 0, openedAt: null, receipts: 0, docs: 0 },
+      shift: { state: 'closed', number: 0, openedAt: null, receipts: 0, docs: 0, totals: { sell: zeroTotals(), sellReturn: zeroTotals() }, cash: 0 },
       documents: [],
       requests: new Map(),
       waiting: [],
@@ -171,7 +177,7 @@ export function createAtolEmulator({
   }
 
   function openShiftDoc(operator) {
-    st.shift = { state: 'opened', number: st.shift.number + 1, openedAt: clock.now(), receipts: 0, docs: 0 };
+    st.shift = { state: 'opened', number: st.shift.number + 1, openedAt: clock.now(), receipts: 0, docs: 0, totals: { sell: zeroTotals(), sellReturn: zeroTotals() }, cash: 0 };
     return newDocument('openShift', { operator });
   }
 
@@ -183,6 +189,7 @@ export function createAtolEmulator({
     if (!task.operator || typeof task.operator.name !== 'string' || task.operator.name.trim() === '' || task.operator.name.length > 64) fail('operator.name');
     if (!Array.isArray(task.items) || task.items.length === 0 || task.items.length > 100) fail('items');
     let total = 0;
+    let settleable = 0;
     for (const [i, it] of task.items.entries()) {
       if (it.type !== undefined && it.type !== 'position') fail(`items[${i}].type`);
       if (typeof it.name !== 'string' || it.name.length < 1 || it.name.length > 128) fail(`items[${i}].name`);
@@ -194,20 +201,25 @@ export function createAtolEmulator({
       if (!PAYMENT_METHODS.includes(it.paymentMethod)) fail(`items[${i}].paymentMethod`);
       if (!PAYMENT_OBJECTS.includes(it.paymentObject)) fail(`items[${i}].paymentObject`);
       total += kop(it.amount);
+      if (!PREPAYMENT_METHODS.has(it.paymentMethod)) settleable += kop(it.amount);
     }
     if (typeof task.total === 'number' && kop(task.total) !== total) fail('total != сумма позиций');
     if (!Array.isArray(task.payments) || task.payments.length === 0) fail('payments');
     let paid = 0;
     let nonCash = 0;
+    const byType = zeroTotals();
     for (const [i, p] of task.payments.entries()) {
       if (!PAYMENT_TYPES.includes(p.type)) fail(`payments[${i}].type`);
       if (typeof p.sum !== 'number' || !(p.sum > 0)) fail(`payments[${i}].sum`);
       paid += kop(p.sum);
+      byType[p.type] += kop(p.sum);
       if (p.type !== 'cash') nonCash += kop(p.sum);
     }
     if (paid < total) fail('оплат меньше суммы чека');
     if (nonCash > total) fail('безналичных больше суммы чека');
-    return { total, paid };
+    if (byType.prepaid > settleable) fail('зачёт предоплаты больше позиций «полный расчёт»');
+    // Сдача — только с наличных: в ящик идёт наличными сумма чека без безналичных и зачёта.
+    return { total, paid, byType, change: paid - total };
   }
 
   /** Выполнить одну задачу. Возвращает { result } или { result, block } ; ошибка — TaskError. */
@@ -246,16 +258,21 @@ export function createAtolEmulator({
       result = { fiscalParams: fiscalBase(made.doc.fd, made.at), warnings: null };
       st.shift = { ...st.shift, state: 'closed', openedAt: null };
     } else {
-      const { total } = validateReceipt(task);
+      const { total, byType, change } = validateReceipt(task);
       if (shiftExpired()) throw new TaskError(CODES.SHIFT_EXPIRED);
       if (st.shift.state === 'closed') {
         if (!autoOpenShift) throw new TaskError(CODES.DENIED_IN_CLOSED_SHIFT);
         openShiftDoc(operator);
       }
       st.shift.receipts += 1;
+      for (const [t, v] of Object.entries(byType)) st.shift.totals[type][t] += v;
+      const cashNet = byType.cash - change;
+      st.shift.cash += type === 'sell' ? cashNet : -cashNet;
       made = newDocument(type, {
         uuid: task.__uuid ?? null,
         total_kopecks: total,
+        prepaid_kopecks: byType.prepaid,
+        cash_kopecks: cashNet,
         payments: task.payments.map((p) => ({ type: p.type, sum_kopecks: kop(p.sum) })),
         items: task.items.map((it) => ({ name: it.name, price_kopecks: kop(it.price), quantity: it.quantity, amount_kopecks: kop(it.amount), tax: it.tax.type, payment_object: it.paymentObject, payment_method: it.paymentMethod })),
         taxation_type: task.taxationType ?? null,
@@ -438,7 +455,7 @@ export function createAtolEmulator({
       fn_error: st.fnError,
       delay_ms: st.delayMs,
       fd: st.fd,
-      shift: shiftStatus(),
+      shift: { ...shiftStatus(), totals: structuredClone(st.shift.totals), cash_kopecks: st.shift.cash },
       documents: st.documents.length,
       receipts: st.documents.filter((d) => d.kind === 'sell' || d.kind === 'sellReturn').length,
       requests: st.requests.size,

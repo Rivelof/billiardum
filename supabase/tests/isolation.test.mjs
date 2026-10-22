@@ -163,6 +163,27 @@ describe('узкие функции SECURITY DEFINER', () => {
     });
   });
 
+  it('pos_guest: только поиск (учётку не создаёт), только id, только персоналу кассы клуба из контекста', async () => {
+    const guest = 'a9000000-0000-4000-8000-0000000000dd';
+    const noConsent = 'a9000000-0000-4000-8000-0000000000de';
+    const reception = 'a1000000-0000-4000-8000-000000000004';
+    await db.pool.query("insert into bl.users (id, phone) values ($1, '+79990004411'), ($2, '+79990004422') on conflict do nothing", [guest, noConsent]);
+    await db.pool.query("insert into bl.consents (user_id, version, accepted_at) values ($1, '2026-10-21', now()) on conflict do nothing", [guest]);
+    const users = async () => (await db.pool.query('select count(*)::int as n from bl.users')).rows[0].n;
+    const before = await users();
+    const find = (ctx, id, phone) => asRole(db.pool, 'app_api', ctx, async (c) => (await c.query('select bl.pos_guest($1, $2) as id', [id, phone])).rows);
+    const staff = { clubId: CLUB_A, userId: reception, actorType: 'user' };
+    assert.deepEqual(await find(staff, guest, null), [{ id: guest }]);
+    assert.deepEqual(await find(staff, null, '+79990004411'), [{ id: guest }]);
+    assert.deepEqual(await find(staff, noConsent, null), [{ id: null }], 'без согласия — нет');
+    assert.deepEqual(await find(staff, null, '+79990004499'), [{ id: null }], 'нет учётки — не создаёт');
+    assert.deepEqual(await find(staff, guest, '+79990004411'), [{ id: null }], 'id или телефон, не оба');
+    assert.deepEqual(await find({ clubId: CLUB_A, actorType: 'system' }, guest, null), [{ id: null }], 'без сотрудника');
+    assert.deepEqual(await find({ clubId: CLUB_B, userId: reception, actorType: 'user' }, guest, null), [{ id: null }], 'сотрудник другого клуба');
+    assert.deepEqual(await find({ userId: guest, actorType: 'user' }, guest, null), [{ id: null }], 'без клуба');
+    assert.equal(await users(), before);
+  });
+
   it('функции закреплены: SECURITY DEFINER только у перечисленных, у всех — search_path', async () => {
     const { rows } = await db.pool.query(`
       select p.proname, p.prosecdef, pg_get_userbyid(p.proowner) as owner, p.proconfig
@@ -176,6 +197,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['auth_attach_phone', 'bl_definer'],
         ['auth_resolve', 'bl_definer'],
         ['auth_user_for', 'bl_definer'],
+        // M3 booking (0600): дела планировщика броней и листа ожидания
+        ['booking_due', 'bl_definer'],
         // M1 light (0300–0320)
         ['device_bind_window', 'bl_definer'],
         // M0
@@ -192,11 +215,17 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['notify_route', 'bl_definer'],
         // M2 pos (0420): продажи к завершению, клуб заказа и продажи
         ['pos_due', 'bl_definer'],
+        // M3 pos (0481): поиск существующего гостя для пакета на кассе (без создания учётки)
+        ['pos_guest', 'bl_definer'],
         ['pos_object_club', 'bl_definer'],
         // M1 light
         ['resource_by_code', 'bl_definer'],
         ['resource_club', 'bl_definer'],
         ['session_club', 'bl_definer'],
+        // M3 core (0701, 0702): сводки и персонал
+        ['staff_accept_invites', 'bl_definer'],
+        ['staff_revoke', 'bl_definer'],
+        ['summary_clubs', 'bl_definer'],
         // M1 core
         ['user_brief', 'bl_definer'],
       ],

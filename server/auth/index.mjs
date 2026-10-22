@@ -96,7 +96,7 @@ export function clearSessionCookie() {
  */
 export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VERSION } = {}) {
   const { rows } = await db.query(
-    `select u.id, u.phone, u.name, u.notify_channel, u.telegram_user_id is not null as telegram, u.max_user_id is not null as max,
+    `select u.id, u.phone, u.name, u.notify_channel, u.channels_order, u.telegram_user_id is not null as telegram, u.max_user_id is not null as max,
             exists (select 1 from bl.consents c where c.user_id = u.id and c.version = $2) as consent
        from bl.users u where u.id = $1`,
     [userId, consentVersion],
@@ -112,6 +112,7 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
     consent_version: u.consent ? consentVersion : null,
     consent: { version: consentVersion, accepted: u.consent },
     notify_channel: u.notify_channel,
+    channels_order: u.channels_order,
     channels: { telegram: u.telegram, max: u.max },
   };
 }
@@ -161,6 +162,9 @@ export async function completeLogin(ctx, userId, { via }) {
   const now = ctx.clock.now();
   await setContext(db, { clubId: null, userId, actorType: 'user' });
   const issued = await issueToken(db, { userId, kind: 'session', now });
+  // Приглашения персонала на этот номер (M3 §1 п. 9) — до записи о входе персонала.
+  const { acceptInvites } = await import('../staff/index.mjs');
+  await acceptInvites(db, userId);
   await auditStaffLogin(db, userId, { via });
   const user = await userJson(db, userId, { consentVersion: ctx.config.consentVersion });
   ctx.setCookie(sessionCookie(issued.token, issued.expiresAt, now));

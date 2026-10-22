@@ -49,13 +49,17 @@ export async function loadClub(db, clubId) {
 
 const SESSION_COLS = `s.id, s.club_id, s.resource_id, s.status, s.source, s.payer_user_id, s.unlimited,
   s.started_at, s.paid_until, s.warn_ms, s.grace_ms, s.device_paid_until, s.interrupted_at, s.unplayed_ms,
-  s.ended_at, s.close_reason, s.notified, s.created_at, s.updated_at, r.number as resource_number,
+  s.ended_at, s.close_reason, s.notified, s.created_at, s.updated_at, s.booking_id, s.deposit_kopecks, r.number as resource_number,
   r.type as resource_type, r.title as resource_title, c.timezone as club_timezone`;
 const SESSION_FROM = `bl.sessions s join bl.resources r on r.id = s.resource_id left join bl.clubs c on c.id = s.club_id`;
 
 function mapSession(row) {
   if (!row) return null;
-  return { ...row, unplayed_ms: row.unplayed_ms === null ? null : Number(row.unplayed_ms) };
+  return {
+    ...row,
+    unplayed_ms: row.unplayed_ms === null ? null : Number(row.unplayed_ms),
+    deposit_kopecks: row.deposit_kopecks === null || row.deposit_kopecks === undefined ? null : Number(row.deposit_kopecks),
+  };
 }
 
 export async function loadSession(db, sessionId, { lock = false } = {}) {

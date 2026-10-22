@@ -12,9 +12,11 @@
 
 | Функция | Суть |
 |---|---|
-| `server/kkt/api.mjs` `enqueueReceipt(db, { clubId, kind: 'sell'\|'sell_refund', lines, payments, operatorName, paymentId?, saleId?, refundId?, at? })` → `receipt_id` | строка `bl.receipts` (`channel kkt`, `receipt_pending`, `kkt_job`) в транзакции вызывающего; задание проверяется сразу (сумма позиций = сумме оплат, НДС, признаки) — иначе `400 bad_request`, продажа откатывается; повтор с тем же `saleId` (или `paymentId`) и видом — тот же `receipt_id`; после коммита будит очередь клуба |
+| `server/kkt/api.mjs` `enqueueReceipt(db, { clubId, kind: 'sell'\|'sell_refund', lines, payments, operatorName, paymentId?, saleId?, refundId?, settlesPaymentId?, settlementKopecks?, customerUserId?, at? })` → `receipt_id` | строка `bl.receipts` (`channel kkt`, `receipt_pending`, `kkt_job`) в транзакции вызывающего; задание проверяется сразу (сумма позиций = сумме оплат, НДС, признаки, зачёт) — иначе `400 bad_request`, продажа откатывается; повтор того же чека — тот же `receipt_id` (ключ ниже); после коммита будит очередь клуба |
 | `lines` | позиции в виде чека ЮKassa (`description, quantity, amount.value — цена за единицу, vat_code, payment_mode, payment_subject`) или короткие (`name, price_kopecks, quantity, vat_code?, payment_subject?`) |
-| `payments` | `[{method: cash \| card_terminal \| electronically, amount_kopecks}]` |
+| `payments` | `[{method: cash \| card_terminal \| electronically \| prepayment, amount_kopecks}]`; `prepayment` — зачёт предоплаты (АТОЛ `payments.type = prepaid`, M3): покрывает только позиции «полный расчёт» (не `full_prepayment`/`partial_prepayment`/`advance`), только в чеке прихода |
+| `settlesPaymentId`, `settlementKopecks` | чек зачёта предоплаты (бронь, пакет часов, депозит — M3 §1 п. 5, 10, 11; №52, №112): платёж предоплаты (`succeeded`, этот клуб) и сумма зачёта → `bl.receipts.settles_payment_id`, `settlement_kopecks` (столбцы 0650 money). Оплата `prepayment` ⇔ `settlesPaymentId`; `settlementKopecks` по умолчанию — сумма оплат `prepayment` и должна с ней совпадать |
+| ключ повтора | клуб, вид (`sale`/`refund`), продажа (`saleId`) или платёж (`paymentId`), возврат (`refundId`) и зачитываемый платёж (`settlesPaymentId`). У одного платежа различаются чек предоплаты (`settles` пусто), чек зачёта (`settles` = платёж предоплаты; повтор зачёта — тот же чек) и чек возврата (`refund_id`) |
 | outbox `receipt.printed` | `{receipt_id, club_id, fd, fp}` (`fp` — `null`, если АТОЛ вернул только номер ФД) |
 | outbox `receipt.failed` | `{receipt_id, club_id, error}` |
 | `server/shifts/api.mjs` `currentShift(db, clubId)` | `{id, club_id, number, opened_at, opened_by, opened_by_name, float_kopecks}` или `null` |
@@ -68,11 +70,15 @@
 
 Коды вне словаря §3: `shift_open`, `shift_closed` (409), `receipt_not_failed`, `receipt_not_unknown` (409).
 
+## Предоплаты M3 в смене и сверке
+
+Зачёт предоплаты — не приём денег: чек зачёта (`settles_payment_id` не пуст) не входит в выручку, наличные смены и «сумму чеков ККТ против продаж» и не закрывает «платёж без чека»; он показан отдельно — `reconciliation.kkt.settlements` (`count`, `amount_kopecks`, `settlement_kopecks`, `by_state`: чеки зачёта по платежам смены и созданные в смене). Депозит наличными «Без лимита» — наличный платёж смены (столы) с чеком «предоплата 100 %»; возврат остатка — `bl.refunds manual` по наличному платежу с чеком возврата ККТ: минус наличные и сверка возвратов. Игра балансом минут (`provider/method balance`) — не деньги: вне выручки, выручки столов и `revenue_total_kopecks` списка смен. Пакеты часов — строка `revenue.packages` (покупка в приложении `kind package` и доля пакетов в продаже кассы — `bl.pos_sales.package_kopecks` у платежа `kind bar`); бронь — `revenue.other`. Ожидаемые наличные смены (`cashTotals`) не менялись: они считаются по платежам и возвратам, а не по чекам.
+
 ## Таблицы
 
 `0500_kkt.sql`: `bl.receipts` + `kkt_job`, `fd`, `fp`, `fn`, `printed_at`, `error`, `next_attempt_at`, `alarmed_at`, `sale_id`, статус `printed` (проверки `receipts_object_check`, `receipts_printed_check`, `receipts_kkt_fields_check`); `bl.kkt_bridges` (хеш токена, последний онлайн, состояние ККТ, отзыв один раз); `bl.kkt_ops`; `bl.kkt_due(cutoff, limit)` — SECURITY DEFINER, владелец `bl_definer`. `0510_shifts.sql`: `bl.shifts` (одна открытая на клуб, `shifts_guard`). Все — `ENABLE` + `FORCE RLS` по `bl.ctx_club_id()`, владелец `bl_owner`, без `DELETE`, `UPDATE` только изменяемых столбцов.
 
 ## Тесты
 
-- `npm test -w @billiardum/server` — `kkt/test/atol-task.test.mjs`: задание АТОЛ, НДС и СНО, копейки, UUID попыток, токен моста.
-- `npm run test:db -w @billiardum/server` — `kkt/test/db/`: `kkt.test.mjs` (токен и WebSocket, очередь, T14, обрыв, новая попытка, ошибки, исход неизвестен, чужой клуб, тревога 10 минут, RLS и права), `shifts.test.mjs` (смена, T16, смена ККТ, отчёт, сервисный свет, права), `reconcile.test.mjs` (50 продаж — сверка до копейки, расхождения, ЮKassa недоступна). Обвязка — `kkt/test/db/harness.mjs`: временная база, сервер с модулем kkt, эмулятор АТОЛ, настоящий мост, эмулятор ЮKassa.
+- `npm test -w @billiardum/server` — `kkt/test/atol-task.test.mjs`: задание АТОЛ, НДС и СНО, копейки, UUID попыток, токен моста; `kkt/test/m3-kkt.test.mjs`: оплата `prepaid`, проверки зачёта, выручка с пакетами и без игры балансом.
+- `npm run test:db -w @billiardum/server` — `kkt/test/db/`: `kkt.test.mjs` (токен и WebSocket, очередь, T14, обрыв, новая попытка, ошибки, исход неизвестен, чужой клуб, тревога 10 минут, RLS и права), `shifts.test.mjs` (смена, T16, смена ККТ, отчёт, сервисный свет, права), `reconcile.test.mjs` (50 продаж — сверка до копейки, расхождения, ЮKassa недоступна), `settlement.test.mjs` (M3: проверки зачёта, ключ повтора, `prepaid` на эмуляторе; депозит — чек предоплаты, зачёт и возврат остатка через функции money, отчёт смены и сверка, закрытие без расхождения; пакет часов — чек покупки, зачёт при списании минут, выручка без игры балансом). Обвязка — `kkt/test/db/harness.mjs`: временная база, сервер с модулем kkt, эмулятор АТОЛ, настоящий мост, эмулятор ЮKassa.

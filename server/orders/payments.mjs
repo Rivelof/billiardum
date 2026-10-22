@@ -8,9 +8,14 @@
 // * refundPayment   → refund money с позициями чека возврата (сумма позиций = сумме возврата):
 //   наличные и терминал — возврат manual и чек возврата ККТ (receipt_pending), ЮKassa — возврат
 //   с чеком; журнал payment.refunded, outbox payment.refunded и уведомление — у money.
+// * packageLine     → packageSaleLine: позиция чека пакета часов (предоплата 100 %) и цена (M3).
+// * revokePackage   → revokeLotOnly: отозвать нетронутую партию минут пакета при возврате продажи
+//   (№118; деньги и чек возврата — refundPayment, как у бара); package_used, already_refunded — 409.
+// * creditPackage   → creditPackageForSale: начислить минуты пакета гостю после оплаты продажи;
+//   повтор (тот же платёж, пакет и номер в продаже) — та же партия минут.
 // id платежа и ключ ЮKassa детерминированы по продаже: stableUuid('bl.payment/bar/<sale>'), bar-<sale>.
 
-import { createOnlinePayment, recordOfflinePayment, refund } from '../payments/api.mjs';
+import { createOnlinePayment, creditPackageForSale, packageSaleLine, recordOfflinePayment, refund, revokeLotOnly } from '../payments/api.mjs';
 
 /** Зависимости money для её функций: из контекста запроса или модуля (не из окружения процесса). */
 const injected = (deps) => ({ deps: deps.money, config: deps.moneyConfig });
@@ -72,4 +77,29 @@ export function refundPayment(db, deps, { paymentId, amount, lines, customer = n
     requestedBy: staffId,
     description,
   }, injected(deps));
+}
+
+/**
+ * Пакет часов в корзине кассы: позиция чека и цена (money; пакет — активный, этого клуба под RLS).
+ * @returns {Promise<{ line: object, amount_kopecks: number, package: object }>}
+ */
+export function packageLine(db, packageId) {
+  return packageSaleLine(db, { packageId });
+}
+
+/**
+ * Начислить пакет гостю по оплаченному платежу продажи (строка bl.payments).
+ * @returns {Promise<object>} партия минут bl.balance_lots
+ */
+export function creditPackage(db, deps, { payment, packageId, userId, index }) {
+  return creditPackageForSale(db, { payment, packageId, userId, index }, injected(deps));
+}
+
+/**
+ * Отозвать партию минут пакета (возврат пакета на кассе, №118): целиком и только нетронутую.
+ * Журнал manual.package_refund и тревога — у money. Деньги не возвращает.
+ * @returns {Promise<{ lot_id: string, payment_id: string, amount_kopecks: number }>}
+ */
+export function revokePackage(db, deps, { lotId, reason, staffId }) {
+  return revokeLotOnly(db, { lotId, reason, staffId }, injected(deps));
 }

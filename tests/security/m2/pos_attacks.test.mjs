@@ -11,7 +11,7 @@ import { before, after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { hashPin } from '../../../server/auth/pin.mjs';
-import { setup, waitFor, CLUB_A, CLUB_B, PHONES, P, M, table, newKey } from '../../../server/orders/test/db/harness.mjs';
+import { setup, CLUB_A, CLUB_B, PHONES, P, table, newKey } from '../../../server/orders/test/db/harness.mjs';
 
 let h;
 let guest; // участник сессии за столом 7
@@ -179,9 +179,8 @@ describe('Одобрение скидки по PIN управляющего (№
 
   it('неверный PIN — 401, и 5 ошибок подряд блокируют (429)', async () => {
     const rec = await h.login(PHONES.reception);
-    let last;
     for (let i = 0; i < 5; i += 1) {
-      last = await h.request('POST', '/api/pos/discount-approvals', {
+      await h.request('POST', '/api/pos/discount-approvals', {
         token: rec.token, key: newKey(), club: CLUB_A,
         body: { user_id: managerId, pin: '0000', reason_code: 'promo', reason_text: 'x', percent: 50, subtotal_kopecks: 90000 },
       });
