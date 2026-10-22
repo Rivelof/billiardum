@@ -108,7 +108,8 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
       reconnectTimer = null;
       connect();
     }, ms);
-    reconnectTimer.unref?.();
+    // Таймер переподключения держит процесс: без соединения и задач цикл событий пуст,
+    // и с unref процесс завершился бы с кодом 0 — касса молча перестала бы пробивать чеки.
   }
 
   function connect() {
@@ -377,7 +378,7 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
       }
       if (!stopping) statusLoop();
     }, config.statusPollMs);
-    statusTimer.unref?.();
+    // Опрос ККТ тоже держит процесс, пока мост запущен (stop() снимает таймер).
   }
 
   return {

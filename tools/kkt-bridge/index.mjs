@@ -42,7 +42,26 @@ const bridge = createBridge({ config, log: logger });
 log('info', 'bridge_started', { version: VERSION, name: config.name, server: new URL(config.serverUrl).host, atol: config.atolUrl, atol_api: config.atolApi });
 bridge.start();
 
+// Мост не завершается сам: обрыв связи — переподключение с паузой до reconnect_max_ms без предела.
+// Выход — только по сигналу (код 0) или из-за фатальной ошибки (код 1).
+process.on('uncaughtException', (err) => {
+  log('error', 'bridge_fatal', { error: err.message });
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  log('error', 'bridge_fatal', { error: err?.message ?? String(err) });
+  process.exit(1);
+});
+process.on('exit', (code) => {
+  if (stopping) return;
+  process.stderr.write(`${JSON.stringify({ t: new Date().toISOString(), level: 'error', msg: 'bridge_exit_unexpected', code })}\n`);
+  // Неожиданный выход — не «успех»: служба (Планировщик заданий, systemd) перезапустит мост.
+  if (!code) process.exitCode = 1;
+});
+
+let stopping = false;
 async function shutdown(signal) {
+  stopping = true;
   log('info', 'bridge_stopping', { signal });
   const force = setTimeout(() => process.exit(0), 15_000);
   force.unref();

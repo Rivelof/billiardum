@@ -3,7 +3,9 @@
 // состояние ККТ, настройки.
 
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -361,6 +363,53 @@ describe('мост ККТ: задания', () => {
     b.start();
     await waitFor(() => server.state.auth.length >= 2);
     assert.equal(server.state.auth[0], `Bearer ${'x'.repeat(64)}`);
+  });
+});
+
+describe('мост ККТ: процесс', () => {
+  it('сервер закрыл соединение 1001 и пропал — процесс моста жив и переподключается к новому серверу', async () => {
+    const first = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise((r) => first.once('listening', r));
+    const port = first.address().port;
+    const hellos = [];
+    const onConn = (srv) => srv.on('connection', (ws) => {
+      ws.send(JSON.stringify({ type: 'welcome', bridge_id: 'b1', club_id: 'c1', ping_ms: 60000 }));
+      ws.on('message', (d) => {
+        const m = JSON.parse(d.toString());
+        if (m.type === 'hello') hellos.push({ srv, ws });
+      });
+    });
+    onConn(first);
+    const cfgDir = mkdtempSync(join(tmpdir(), 'kkt-bridge-proc-'));
+    writeFileSync(join(cfgDir, 'kkt-bridge.json'), JSON.stringify({
+      server_url: `ws://127.0.0.1:${port}/api/kkt/ws`, token: TOKEN, atol_url: emu.url,
+      status_poll_ms: 600000, reconnect_min_ms: 50, reconnect_max_ms: 200,
+    }));
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../index.mjs', import.meta.url)), '--config', join(cfgDir, 'kkt-bridge.json')], { stdio: 'pipe' });
+    let exited = null;
+    child.on('exit', (code) => {
+      exited = code;
+    });
+    try {
+      await waitFor(() => hellos.length === 1);
+      // Сервер останавливается: 1001, порт закрыт; переподключения падают (1006) — процесс должен жить.
+      hellos[0].ws.close(1001, 'server stopping');
+      await new Promise((r) => first.close(r));
+      await new Promise((r) => setTimeout(r, 700));
+      assert.equal(exited, null, 'процесс моста не завершился');
+      const second = new WebSocketServer({ port, host: '127.0.0.1' });
+      onConn(second);
+      await waitFor(() => hellos.length === 2, 5000);
+      assert.equal(hellos[1].srv, second);
+      assert.equal(exited, null);
+      for (const c of second.clients) c.terminate();
+      await new Promise((r) => second.close(r));
+    } finally {
+      child.kill('SIGTERM');
+      await new Promise((r) => (exited !== null ? r() : child.on('exit', r)));
+      rmSync(cfgDir, { recursive: true, force: true });
+    }
+    assert.equal(exited, 0, 'по сигналу — код 0');
   });
 });
 

@@ -5,10 +5,10 @@
 // Эмулятор АТОЛ: POST /__emu/power {on:false, mode:"error"} — задание принимается и падает с
 // «Нет связи» (повтор с новым UUID, decisions №91). В конце ККТ включается в любом случае.
 //
-// «Исход неизвестен» (decisions №91: мост сообщил atol_task_lost или отозван с заданием в полёте)
-// на живом стеке не воспроизводится: у эмулятора нет команды «забыть задание», а сброс эмулятора
-// и отзыв моста ломают общий стенд. Проверяется то, что доступно: список unknown, права и коды
-// ручного решения (mark-printed, retry) на чеке с известным исходом.
+// «Исход неизвестен» (decisions №91): /__emu/fault {kind:"forget_request"} — документ в ФН есть,
+// а веб-сервер АТОЛ задание «забыл» → мост сообщает atol_task_lost → тревога receipt_unknown
+// (критично, владельцу) → управляющий отмечает чек пробитым с ФД/ФП с ленты → второго чека нет,
+// очередь клуба не стоит. Плюс права и коды ручного решения на чеке с известным исходом.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -32,6 +32,9 @@ import {
   waitReceiptsPrinted,
   waitSale,
   ensureStock,
+  kkt,
+  ok,
+  OWNER_ID,
 } from './helpers.mjs';
 
 let db;
@@ -183,4 +186,63 @@ test('T14: «исход неизвестен» — ручное решение �
   assert.equal(r.status, 'printed', 'чек не изменился');
 });
 
-test('T14: «исход неизвестен» → критичная тревога и mark-printed на стеке', { skip: 'нет способа на живом стеке: эмулятору АТОЛ нужна команда «потерять задание» (например /__emu/fault {kind:"forget_request"}); сброс эмулятора и отзыв моста ломают общий стенд' }, () => {});
+test('T14: «исход неизвестен» (АТОЛ забыл задание) → критичная тревога, mark-printed управляющим, второго чека нет', async (t) => {
+  // Эмулятор: задание выполнено (документ в ФН), но веб-сервер АТОЛ его «забыл» — GET 404 (decisions №91).
+  // Открытая тревога того же типа гасит уведомление о новой (повтор — только счётчик, №75): подтвердить старую.
+  const old = (await ok(api('GET', `/api/clubs/${CLUB_A}/alarms`, { token: man.token }))).filter((a) => a.type === 'receipt_unknown' && a.state === 'open');
+  for (const a of old) await api('POST', `/api/alarms/${a.id}/ack`, { token: man.token, body: {} });
+  t.diagnostic(`подтверждено старых тревог receipt_unknown: ${old.length}`);
+  kkt('/__emu/fault', { body: { kind: 'forget_request', times: 1 } });
+  const t0 = new Date(Date.now() - 1000);
+  const r = await posSale(rec.token, { items: [{ product_id: P.teaGreen, qty: 1, modifier_ids: [] }], method: 'cash', received_kopecks: 20_000 });
+  assert.equal(r.status, 201, r.text);
+  const s = r.json;
+  const lost = await waitFor(
+    async () => {
+      const x = await receiptRow(db, s.receipt_id);
+      return x.kkt_job?.state === 'lost' ? x : null;
+    },
+    { timeoutMs: 150_000, intervalMs: 1000, what: 'чек с неизвестным исходом (kkt_job.state = lost)' },
+  );
+  const docs0 = docsFor(kktDocs(), lost);
+  const { rows: al } = await db.query("select type, level, state, data from bl.alarms where club_id = $1 and type = 'receipt_unknown' and data->>'receipt_id' = $2", [CLUB_A, s.receipt_id]);
+  const { rows: au } = await db.query("select action from bl.audit_log where club_id = $1 and object_id = $2 and action = 'kkt.receipt_unknown'", [CLUB_A, s.receipt_id]);
+  const { rows: notes } = await db.query("select level, text from bl.notifications where club_id = $1 and user_id = $2 and kind = 'alarm' and created_at >= $3 and text like 'Исход чека%'", [CLUB_A, OWNER_ID, t0]);
+  const list = await ok(api('GET', `/api/clubs/${CLUB_A}/kkt/receipts?status=unknown`, { token: man.token }));
+  const st = await ok(api('GET', `/api/clubs/${CLUB_A}/kkt/status`, { token: rec.token }));
+  t.diagnostic(`чек ${s.receipt_id.slice(0, 8)}: status=${lost.status} state=${lost.kkt_job.state} error=${lost.error ?? lost.kkt_job.last_error?.code}; документов в АТОЛ по UUID: ${docs0.length} (ФД ${docs0.map((d) => d.fd)})`);
+  t.diagnostic(`тревога: ${JSON.stringify(al.map((a) => [a.type, a.level, a.state]))}; журнал kkt.receipt_unknown: ${au.length}; уведомление владельцу: ${notes.map((n) => `${n.level}: ${n.text}`).join(' | ') || 'нет'}; в списке unknown: ${list.some((x) => x.id === s.receipt_id)}; kkt/status: ${st.state}/${st.reason} unknown=${st.queue.unknown}`);
+  assert.equal(lost.status, 'receipt_pending');
+  assert.equal(al.length, 1);
+  assert.equal(al[0].level, 'critical');
+  assert.equal(au.length, 1);
+  assert.ok(notes.length >= 1, 'владелец уведомлён');
+  assert.equal(docs0.length, 1, 'документ в ФН есть (АТОЛ лишь забыл задание)');
+
+  // Очередь не стоит: следующий чек пробивается.
+  const next = await posSale(rec.token, { items: [{ product_id: P.waterStill, qty: 1 }], method: 'card_terminal' });
+  assert.equal(next.status, 201);
+  await waitReceiptsPrinted(db, [next.json.receipt_id], { timeoutMs: 60_000 });
+  sales.push(next.json);
+
+  // Управляющий нашёл чек на ленте ККТ: ФД и ФП — с ленты (документ эмулятора).
+  const d = docs0[0];
+  const mp = await api('POST', `/api/kkt/receipts/${s.receipt_id}/mark-printed`, { token: man.token, body: { fd: d.fd, fp: String(d.fp), reason: 'Чек найден на ленте ККТ (e2e)' } });
+  t.diagnostic(`mark-printed управляющим (ФД ${d.fd}, ФП ${d.fp}) → ${mp.status} ${mp.text.slice(0, 160)}`);
+  assert.equal(mp.status, 200, mp.text);
+  await new Promise((res) => setTimeout(res, 3000));
+  const after1 = await receiptRow(db, s.receipt_id);
+  const docs1 = docsFor(kktDocs(), after1);
+  const sameFd = kktDocs().filter((x) => x.kind === 'sell' && x.total_kopecks === s.total_kopecks && new Date(x.at) >= t0);
+  const { rows: man1 } = await db.query("select action, reason from bl.audit_log where club_id = $1 and object_id = $2 and action = 'manual.receipt_mark_printed'", [CLUB_A, s.receipt_id]);
+  const { rows: al2 } = await db.query("select level from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'receipt_id' = $2", [CLUB_A, s.receipt_id]);
+  const v = await waitSale(rec.token, s.sale_id);
+  t.diagnostic(`после: чек ${after1.status} ФД ${after1.fd}; продажа receipt_fd=${v.receipt_fd}; документов по UUID ${docs1.length}, продаж на ${s.total_kopecks} коп. в АТОЛ после t0: ${sameFd.length}; журнал ${JSON.stringify(man1)}; тревога manual_action ${JSON.stringify(al2)}`);
+  assert.equal(after1.status, 'printed');
+  assert.equal(Number(after1.fd), d.fd);
+  assert.equal(docs1.length, 1, 'второго чека нет');
+  assert.equal(sameFd.length, 1, 'второго чека нет');
+  assert.equal(man1.length, 1);
+  assert.equal(al2[0]?.level, 'critical');
+  sales.push(s);
+});

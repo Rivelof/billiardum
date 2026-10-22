@@ -14,8 +14,12 @@
 
 name: billiardum
 
+# restart: unless-stopped у всех сервисов (одноразовых в этом файле нет): процесс,
+# завершившийся сам (в том числе с кодом 0), и весь стек после перезапуска демона Docker
+# поднимаются сами; `npm run down` и `docker compose stop` останавливают их насовсем.
 x-node-service: &node-service
   image: node:22.23.4-alpine
+  restart: unless-stopped
   working_dir: /repo
   init: true
   volumes:
@@ -24,6 +28,7 @@ x-node-service: &node-service
 services:
   db:
     image: supabase/postgres:15.8.1.085
+    restart: unless-stopped
     ports:
       # Только с этой машины: Postgres наружу не открывается.
       - "127.0.0.1:54322:5432"
@@ -44,6 +49,7 @@ services:
 
   mosquitto:
     image: eclipse-mosquitto:2.1.2-alpine
+    restart: unless-stopped
     ports:
       - "8883:8883"
     environment:
@@ -266,6 +272,7 @@ services:
 
   caddy:
     image: caddy:2.11.7-alpine
+    restart: unless-stopped
     ports:
       - "8443:443"
     environment:
