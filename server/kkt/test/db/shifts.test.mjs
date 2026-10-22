@@ -102,11 +102,24 @@ describe('смена: открытие и закрытие, T16', () => {
       await appendAudit(db, { action: 'service.start', objectType: 'resource', objectId: TABLE_1, reason: 'Уборка', actorType: 'user', actorId: RECEPTION_A, data: { minutes: 70, reason_code: 'cleaning', resource_id: TABLE_1 } });
       // №125 (дефект tester Д4): ручные — только manual.*; действия системы — «автоматические».
       await appendAudit(db, { action: 'manual.extend_free', objectType: 'resource', objectId: TABLE_1, reason: 'Гость ждал', actorType: 'user', actorId: RECEPTION_A, data: { minutes: 10 } });
-      await appendAudit(db, { action: 'payment.forfeited', objectType: 'payment', objectId: GUEST, reason: 'Бронь сгорела', actorType: 'system', data: { amount_kopecks: 50000 } });
-      await appendAudit(db, { action: 'payment.refunded', objectType: 'payment', objectId: GUEST, reason: 'Платёж прошёл после отмены', actorType: 'system', data: { amount_kopecks: 30000 } });
+      await appendAudit(db, { action: 'payment.forfeited', objectType: 'payment', objectId: 'f0000000-0000-4000-8000-0000000000c1', reason: 'Бронь сгорела', actorType: 'system', data: { amount_kopecks: 50000 } });
+      await appendAudit(db, { action: 'payment.refunded', objectType: 'payment', objectId: 'f0000000-0000-4000-8000-0000000000c2', reason: 'Платёж прошёл после отмены', actorType: 'system', data: { amount_kopecks: 30000 } });
       await appendAudit(db, { action: 'payment.canceled', objectType: 'payment', objectId: GUEST, reason: 'not_found_at_provider', actorType: 'system', data: {} });
       await appendAudit(db, { action: 'payment.canceled', objectType: 'payment', objectId: GUEST, actorType: 'system', data: {} });
       await appendAudit(db, { action: 'session.start', objectType: 'session', objectId: GUEST, actorType: 'system', data: {} });
+      // Гость сам поздно отменил бронь: возврат с причиной от гостя — не ручное действие.
+      await appendAudit(db, { action: 'payment.refunded', objectType: 'payment', objectId: GUEST, reason: 'Бронь отменена гостем поздно', actorType: 'user', actorId: GUEST, data: { payment_id: GUEST, refund_id: 'f0000000-0000-4000-8000-0000000000f1', amount_kopecks: 20000 } });
+      // Возврат пакета: manual.package_refund + возврат денег (money) + возврат кассы — одна строка.
+      const lot = 'f0000000-0000-4000-8000-0000000000a1';
+      const pay = 'f0000000-0000-4000-8000-0000000000a2';
+      const ref = 'f0000000-0000-4000-8000-0000000000a3';
+      await appendAudit(db, { action: 'manual.package_refund', objectType: 'payment', objectId: pay, reason: 'Ошибка продажи', actorType: 'user', actorId: RECEPTION_A, data: { lot_id: lot, payment_id: pay, amount_kopecks: 60000 } });
+      await appendAudit(db, { action: 'payment.refunded', objectType: 'payment', objectId: pay, reason: 'Ошибка продажи', actorType: 'user', actorId: RECEPTION_A, data: { payment_id: pay, refund_id: ref, amount_kopecks: 60000 } });
+      await appendAudit(db, { action: 'pos.refund', objectType: 'pos_sale', objectId: GUEST, reason: 'Ошибка продажи', actorType: 'user', actorId: RECEPTION_A, data: { refund_id: ref, pos_refund_id: 'f0000000-0000-4000-8000-0000000000a4', amount_kopecks: 60000, packages: [{ lot_id: lot }] } });
+      // Возврат бара сотрудником: запись money и запись кассы по одному возврату — одна строка.
+      const ref2 = 'f0000000-0000-4000-8000-0000000000b3';
+      await appendAudit(db, { action: 'payment.refunded', objectType: 'payment', objectId: 'f0000000-0000-4000-8000-0000000000b2', reason: 'Не тот чай', actorType: 'user', actorId: RECEPTION_A, data: { payment_id: 'f0000000-0000-4000-8000-0000000000b2', refund_id: ref2, amount_kopecks: 15000 } });
+      await appendAudit(db, { action: 'pos.refund', objectType: 'pos_sale', objectId: GUEST, reason: 'Не тот чай', actorType: 'user', actorId: RECEPTION_A, data: { refund_id: ref2, amount_kopecks: 15000 } });
     });
     const expected = 500000 + 160000 + 30000 - 20000;
     const live = await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: await t.login('owner') });
@@ -189,6 +202,18 @@ describe('смена: открытие и закрытие, T16', () => {
     for (const k of ['payment.forfeited', 'payment.canceled', 'session.start']) assert.equal(r.manual_actions.by_action[k], undefined, k);
     assert.ok(r.manual_actions.items.every((x) => x.kind === 'manual' || x.kind === 'staff'));
     assert.ok(r.manual_actions.automatic.items.every((x) => x.kind === 'automatic'));
+    // Действия гостя — не ручные: отдельная строка guests.
+    assert.ok(!r.manual_actions.items.some((x) => x.reason === 'Бронь отменена гостем поздно'));
+    assert.equal(r.manual_actions.guests.count, 1);
+    assert.equal(r.manual_actions.guests.items[0].kind, 'guest');
+    // Возврат пакета — одна строка ручных с прикреплёнными денежными записями.
+    const pkg = r.manual_actions.items.filter((x) => x.reason === 'Ошибка продажи');
+    assert.equal(pkg.length, 1);
+    assert.deepEqual([pkg[0].action, pkg[0].kind, pkg[0].linked], ['manual.package_refund', 'manual', ['payment.refunded', 'pos.refund']]);
+    const tea = r.manual_actions.items.filter((x) => x.reason === 'Не тот чай');
+    assert.equal(tea.length, 1);
+    assert.deepEqual([tea[0].action, tea[0].kind, tea[0].linked], ['payment.refunded', 'staff', ['pos.refund']]);
+    assert.equal(r.manual_actions.by_action['pos.refund'], undefined);
     assert.equal(r.manual_actions.automatic.by_action['payment.forfeited'], 1);
     assert.equal(r.manual_actions.automatic.by_action['payment.refunded'], 1);
     assert.equal(r.manual_actions.automatic.by_action['payment.canceled'], 1, 'отмена без причины — не действие для отчёта');

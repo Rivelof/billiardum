@@ -227,6 +227,19 @@ describe('касса: пакет часов', { skip: SKIP }, () => {
       assert.ok((await h.alarms('pos_refund')).some((x) => x.data.sale_id === s.sale_id));
       const view = await h.request('GET', `/api/pos/sales/${s.sale_id}`, { token: reception.token, club: CLUB_A });
       assert.ok(view.json.packages[0].refunded_at);
+      // Отчёт: возврат пакета — одна строка ручных (возврат денег и возврат кассы склеены с ней).
+      const { manualActions } = await import('../../../reports/queries.mjs');
+      const { withContext } = await import('../../../lib/store.mjs');
+      const acts = await withContext(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) =>
+        manualActions(db, { clubId: CLUB_A, from: new Date(Date.now() - 600_000), to: new Date(Date.now() + 60_000) }),
+      );
+      const mine = acts.items.filter((x) => x.reason === 'Ошибка продажи');
+      assert.equal(mine.length, 1, JSON.stringify(mine));
+      assert.equal(mine[0].action, 'manual.package_refund');
+      assert.ok(mine[0].linked.includes('pos.refund'), JSON.stringify(mine[0]));
+      assert.ok(mine[0].linked.includes('payment.refunded'), JSON.stringify(mine[0]));
+      assert.ok(!acts.guests.items.some((x) => x.reason === 'Ошибка продажи'), JSON.stringify(acts.guests));
+      assert.ok(!acts.automatic.items.some((x) => x.reason === 'Ошибка продажи'), JSON.stringify(acts.automatic));
       const again = await refund(s.sale_id, { packages: [0], reason: 'Ещё раз' });
       assert.deepEqual([again.status, again.json], [409, { error: 'already_refunded' }]);
       // Бар той же продажи возвращается отдельно.

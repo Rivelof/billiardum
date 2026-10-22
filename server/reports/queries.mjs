@@ -193,24 +193,78 @@ export async function serviceLight(db, { clubId, from, to }) {
 export const AUTOMATIC_ACTIONS = Object.freeze(['payment.forfeited', 'payment.refunded', 'payment.canceled', 'pos.refund', 'pos.sale_canceled', 'booking.late_payment', 'reception.deposit_settled']);
 /** Действия персонала, которые журнал пишет не как manual.* (сервисный свет, возвраты, повтор чека). */
 const STAFF_ACTIONS = ['payment.refunded', 'pos.refund', 'kkt.receipt_retry'];
+/** Денежные записи, которые порождает другое действие (возврат пакета, возврат кассы): склеиваются с ним. */
+const DERIVED_ACTIONS = new Set(['payment.refunded', 'pos.refund']);
+/** Связь по общему платежу — только у записей одного актора в пределах этого окна (одна операция). */
+const LINK_WINDOW_MS = 60_000;
+const STAFF_ROLES = ['owner', 'manager', 'reception', 'bar', 'installer'];
+
+/** Ключи связи записи журнала: сильные (возврат, возврат кассы, партия минут) и слабый (платёж). */
+function linkKeys(r) {
+  const d = r.data ?? {};
+  const strong = new Set();
+  const add = (prefix, v) => {
+    if (typeof v === 'string' && v) strong.add(`${prefix}:${v}`);
+  };
+  add('refund', d.refund_id);
+  add('pos_refund', d.pos_refund_id);
+  add('lot', d.lot_id);
+  if (Array.isArray(d.packages)) for (const p of d.packages) add('lot', p?.lot_id);
+  const payment = typeof d.payment_id === 'string' ? d.payment_id : r.object_type === 'payment' ? r.object_id : null;
+  return { strong, payment };
+}
 
 /**
- * Действия смены или суток из журнала (инвариант 8; decisions №125 с уточнением, дефект tester Д4).
- * * «ручные» (count, by_action, items) — записи журнала manual.* и действия персонала (staff);
- *   у записи items поле kind: 'manual' | 'staff'.
+ * Склеить записи одной операции: денежная запись (payment.refunded, pos.refund), порождённая уже
+ * учтённым действием той же группы (общий возврат, возврат кассы или партия минут; либо общий платёж
+ * у того же актора в пределах минуты), отдельно не считается — она прикрепляется к нему (linked).
+ */
+function mergeDerived(list) {
+  const kept = [];
+  for (const r of list) {
+    const k = linkKeys(r);
+    const t = new Date(r.created_at).getTime();
+    const parent = DERIVED_ACTIONS.has(r.action)
+      ? kept.find((p) => {
+          if ([...k.strong].some((x) => p.keys.strong.has(x))) return true;
+          return k.payment && p.keys.payment === k.payment && (p.row.actor_id ?? null) === (r.actor_id ?? null) && Math.abs(t - p.t) <= LINK_WINDOW_MS;
+        })
+      : null;
+    if (parent) {
+      parent.linked.push(r.action);
+      for (const x of k.strong) parent.keys.strong.add(x);
+      continue;
+    }
+    kept.push({ row: r, keys: k, t, linked: [] });
+  }
+  return kept;
+}
+
+/**
+ * Действия смены или суток из журнала (инвариант 8; decisions №125 с уточнением, дефекты tester Д4 и frontend).
+ * * «ручные» (count, by_action, items) — записи журнала manual.* и действия персонала (staff: актор —
+ *   сотрудник этого клуба по членству, в т. ч. отозванный, или роль в самой записи); у записи items
+ *   поле kind: 'manual' | 'staff'.
  * * automatic — действия системы (actor_type не user): сгорание предоплаты, автоматические возвраты
  *   (двойная и поздняя оплата, оплата после отмены), отмены платежей с причиной (в т. ч. по 404
  *   ЮKassa), расчёт депозита; отдельной строкой «автоматические».
+ * * guests — действия гостей (отмена брони гостем с возвратом и т. п.): не ручные и не автоматические.
  * * staff — разбивка: действия персонала, которые журнал пишет не как manual.* (сервисный свет
  *   service.*, возвраты сотрудником, повтор чека ККТ, записи с причиной); входят в «ручные».
- * @returns {Promise<{ count, by_action, items, automatic: { count, by_action, items }, staff: { count, by_action, items } }>}
+ * Денежная запись, порождённая учтённым действием (возврат денег при возврате пакета, запись money
+ * рядом с возвратом кассы), склеивается с ним: одна строка, у неё linked — действия-спутники.
+ * @returns {Promise<{ count, by_action, items, automatic, guests, staff }>}
  */
 export async function manualActions(db, { clubId, from, to, limit = 100 }) {
   const { rows } = await db.query(
-    `select a.created_at, a.action, a.actor_type, a.reason, a.actor_id, a.object_id, a.data, u.name as actor_name, r.id as res_id, r.number as resource_number,
+    `select a.created_at, a.action, a.actor_type, a.reason, a.actor_id, a.object_type, a.object_id, a.data, u.name as actor_name,
+            r.id as res_id, r.number as resource_number,
             case when a.action like 'manual.%' then 'manual'
-                 when a.actor_type = 'user' then 'staff'
-                 else 'automatic' end as bucket
+                 when a.actor_type <> 'user' then 'automatic'
+                 when (a.data ->> 'actor_role') = any($6::text[])
+                      or exists (select 1 from bl.club_members m where m.club_id = a.club_id and m.user_id = a.actor_id and m.role = any($6::text[]))
+                   then 'staff'
+                 else 'guest' end as bucket
        from bl.audit_log a
        left join bl.users u on u.id = a.actor_id
        left join bl.resources r on r.club_id = a.club_id
@@ -223,15 +277,16 @@ export async function manualActions(db, { clubId, from, to, limit = 100 }) {
              or (a.actor_type <> 'user' and (a.action = 'payment.forfeited'
                                              or (a.action = any($5::text[]) and (a.reason is not null or a.action <> 'payment.canceled')))))
       order by a.seq`,
-    [clubId, from, to, STAFF_ACTIONS, AUTOMATIC_ACTIONS],
+    [clubId, from, to, STAFF_ACTIONS, AUTOMATIC_ACTIONS, STAFF_ROLES],
   );
-  const group = (list) => {
+  const group = (list) => fromMerged(mergeDerived(list));
+  const fromMerged = (merged) => {
     const byAction = {};
-    for (const r of list) byAction[r.action] = (byAction[r.action] ?? 0) + 1;
+    for (const { row } of merged) byAction[row.action] = (byAction[row.action] ?? 0) + 1;
     return {
-      count: list.length,
+      count: merged.length,
       by_action: byAction,
-      items: list.slice(0, limit).map((r) => ({
+      items: merged.slice(0, limit).map(({ row: r, linked }) => ({
         at: new Date(r.created_at).toISOString(),
         action: r.action,
         kind: r.bucket,
@@ -241,11 +296,18 @@ export async function manualActions(db, { clubId, from, to, limit = 100 }) {
         resource_id: r.res_id ?? null,
         resource_number: r.resource_number ?? null,
         amount_kopecks: Number.isSafeInteger(r.data?.amount_kopecks) ? r.data.amount_kopecks : null,
+        linked,
       })),
     };
   };
-  const manual = group(rows.filter((r) => r.bucket === 'manual' || r.bucket === 'staff'));
-  return { ...manual, automatic: group(rows.filter((r) => r.bucket === 'automatic')), staff: group(rows.filter((r) => r.bucket === 'staff')) };
+  // Ручные: manual.* и персонал склеиваются вместе (возврат пакета manual.* + возврат денег сотрудником).
+  const manualMerged = mergeDerived(rows.filter((r) => r.bucket === 'manual' || r.bucket === 'staff'));
+  return {
+    ...fromMerged(manualMerged),
+    automatic: group(rows.filter((r) => r.bucket === 'automatic')),
+    guests: group(rows.filter((r) => r.bucket === 'guest')),
+    staff: fromMerged(manualMerged.filter((m) => m.row.bucket === 'staff')),
+  };
 }
 
 /**
