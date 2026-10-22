@@ -125,6 +125,19 @@ export function BookScreen({ clubId }) {
   const [askAuth, setAskAuth] = useState(false);
   const now = useNow(0, true);
 
+  // Рабочие сутки клуба (после полуночи до day_start — ещё вчерашние): дата availability без date
+  const [workday, setWorkday] = useState(null);
+  useEffect(() => {
+    api
+      .availability(clubId)
+      .then((res) => {
+        if (!res?.date) return;
+        setWorkday(res.date);
+        // Сохранённый день уже прошёл — на сегодня
+        setDate((x) => (x && x < res.date ? res.date : x));
+      })
+      .catch(() => {});
+  }, [clubId]);
   const load = useCallback(
     async (d) => {
       try {
@@ -144,7 +157,7 @@ export function BookScreen({ clubId }) {
   useEffect(() => sessionStore.set(KEY, { date, slot, resourceId, minutes }), [date, slot, resourceId, minutes]);
 
   const tz = day?.club?.timezone ?? 'Europe/Moscow';
-  const today = localDate(now, tz);
+  const today = workday ?? localDate(now, tz);
   const days = useMemo(() => Array.from({ length: Math.min((day?.max_days ?? 6) + 1, 14) }, (_, i) => addDays(today, i)), [today, day?.max_days]);
   const ready = day && day.date === date;
   const minLen = day?.min_minutes ?? 60;

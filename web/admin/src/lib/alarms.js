@@ -78,6 +78,10 @@ const RETRY_URL = /^\/api\/receipts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  */
 export function alarmAction(alarm) {
   const d = alarm?.data;
+  // Тревоги, поднятые до Д2, без action_*: тот же повтор по receipt_id
+  if (alarm?.type === 'settlement_receipt_failed' && d?.action_id === undefined && typeof d?.receipt_id === 'string' && RETRY_URL.test(`/api/receipts/${d.receipt_id}/retry`)) {
+    return { id: 'retry', title: 'Повторить', receiptId: d.receipt_id };
+  }
   if (d?.action_id !== 'retry' || typeof d.action_url !== 'string') return null;
   const m = RETRY_URL.exec(d.action_url);
   if (!m) return null;

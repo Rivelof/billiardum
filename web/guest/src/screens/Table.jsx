@@ -63,6 +63,14 @@ export function TableScreen({ code, search }) {
   useEffect(() => {
     load();
   }, [load]);
+  // Очередь сдвинулась (предложение, удержание снято, истекло) — стол тоже изменился: перечитать
+  // (и когда запись ушла из очереди совсем — status пропал)
+  const lastWait = useRef(undefined);
+  useEffect(() => {
+    const st = waitEntry?.status ?? null;
+    if (lastWait.current !== undefined && lastWait.current !== st) load();
+    lastWait.current = st;
+  }, [waitEntry?.status]);
   // Вход завершился (бот, мини-приложение) — перечитать: появится своя бронь
   useEffect(() => {
     if (authStatus === 'user' && table) load();

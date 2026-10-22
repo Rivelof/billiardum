@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { formatDate, formatMoney, formatTime } from '@billiardum/shared/format';
 import { addDays, durationsFor, localDate, normalizePhone } from '@billiardum/shared/booking';
 import { Shell } from '../components/Shell.jsx';
@@ -22,8 +22,20 @@ export function Bookings({ ctx }) {
   const { club, role, user, timeZone } = ctx;
   const clubId = club.club_id;
   const now = useNow(60_000, true);
-  const today = localDate(now, timeZone);
+  // «Сегодня» — рабочие сутки клуба (с day_start, после полуночи — ещё вчерашние): дата availability без date
+  const [today, setToday] = useState(() => localDate(Date.now(), timeZone));
   const [date, setDate] = useState(today);
+  useEffect(() => {
+    const calendar = localDate(Date.now(), timeZone);
+    api
+      .availability(clubId)
+      .then((d) => {
+        if (!d?.date) return;
+        setToday(d.date);
+        setDate((x) => (x === calendar ? d.date : x));
+      })
+      .catch(() => {});
+  }, [clubId]);
   const [day, setDay] = useState(null);
   const [list, setList] = useState(null);
   const [error, setError] = useState(null);
@@ -55,6 +67,19 @@ export function Bookings({ ctx }) {
   const live = bookings.filter((b) => b.status !== 'canceled').sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
   const fmtT = (x) => formatTime(x, timeZone);
   const nowPos = win.to > win.from && now >= win.from && now <= win.to ? ((now - win.from) / (win.to - win.from)) * 100 : null;
+  // Сегодня лента сама прокручивается к «сейчас» (час назад — у левого края), один раз на день
+  const tlRef = useRef(null);
+  const scrolledFor = useRef(null);
+  useEffect(() => {
+    const el = tlRef.current;
+    if (!el || nowPos === null || scrolledFor.current === date) return;
+    scrolledFor.current = date;
+    const inner = el.firstElementChild;
+    const lane = inner?.querySelector('.tl__lane');
+    if (!lane) return;
+    const x = lane.offsetLeft + (lane.offsetWidth * nowPos) / 100 - lane.offsetWidth / win.hours.length;
+    el.scrollLeft = Math.max(0, x - (inner.querySelector('.tl__table')?.offsetWidth ?? 0));
+  }, [day, nowPos === null, date]);
 
   const tools = (
     <div class="datenav" role="group" aria-label="День">
@@ -93,7 +118,7 @@ export function Bookings({ ctx }) {
         {!day && !error ? <p class="muted">Загружаем брони…</p> : null}
 
         {day ? (
-          <div class="tl" role="region" aria-label="Лента броней по столам" tabIndex={0}>
+          <div class="tl" role="region" aria-label="Лента броней по столам" tabIndex={0} ref={tlRef}>
             <div class="tl__inner" style={{ '--hours': win.hours.length }}>
               <div class="tl__corner" aria-hidden="true" />
               <div class="tl__hours" aria-hidden="true">

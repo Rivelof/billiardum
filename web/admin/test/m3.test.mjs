@@ -49,6 +49,7 @@ test('«гость пришёл» — только бронь по телефо�
   assert.equal(alarmAction({ data: { action_id: 'retry', action_url: 'https://evil.example/api/receipts/x/retry' } }), null);
   assert.equal(alarmAction({ data: { action_id: 'retry', action_url: `/api/staff/${rid}/retry` } }), null);
   assert.equal(alarmAction({ type: 'bypass_detected' }), null);
+  assert.equal(alarmAction({ type: 'settlement_receipt_failed', data: { code: 'not_found', receipt_id: rid } }).receiptId, rid, 'старая тревога без action_* — повтор по receipt_id');
 });
 
 test('пакет часов в чеке кассы: позиция с телефоном гостя, без скидки, items для сервера', () => {

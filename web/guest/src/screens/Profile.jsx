@@ -351,14 +351,16 @@ export function NotifyScreen() {
                           {busy === c ? 'Подключаем…' : c === 'webpush' ? 'Включить на этом устройстве' : `Подключить ${meta.name}`}
                         </button>
                       ) : null}
-                      <span class="chan__tools">
-                        <button type="button" class="icon-btn" disabled={i === 0} aria-label={`${meta.name}: выше в списке`} onClick={() => move(c, -1)}>
-                          <Icon name="up" />
-                        </button>
-                        <button type="button" class="icon-btn" disabled={i === order.length - 1} aria-label={`${meta.name}: ниже в списке`} onClick={() => move(c, 1)}>
-                          <Icon name="down" />
-                        </button>
-                      </span>
+                      {order.length > 1 ? (
+                        <span class="chan__tools">
+                          <button type="button" class="icon-btn" disabled={i === 0} aria-label={`${meta.name}: выше в списке`} onClick={() => move(c, -1)}>
+                            <Icon name="up" />
+                          </button>
+                          <button type="button" class="icon-btn" disabled={i === order.length - 1} aria-label={`${meta.name}: ниже в списке`} onClick={() => move(c, 1)}>
+                            <Icon name="down" />
+                          </button>
+                        </span>
+                      ) : null}
                     </li>
                   );
                 })}
