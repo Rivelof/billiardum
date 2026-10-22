@@ -22,7 +22,8 @@ jobs:
   ci:
     name: lint, test, конфиги, миграции, тесты на базе и брокере
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # --base и --config — минуты; --db — до 20 мин у сторожа тестов light (scripts/ci-test-db.mjs).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,6 +55,7 @@ jobs:
       # test:db @billiardum/db и @billiardum/server → server/test/light с LIGHT_IT=1:
       # интеграция light + свой брокер (TLS, Dynamic Security) + симулятор, p95 до ack.
       - name: Миграции, сид, тесты на базе и брокере
+        timeout-minutes: 30
         run: node scripts/ci.mjs --db
 
   web:

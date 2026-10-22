@@ -38,3 +38,19 @@ test('test:db: база из окружения главнее .env, LIGHT_IT=1 
   assert.equal(dbTestEnv({ DATABASE_ADMIN_URL: 'x', LIGHT_IT: '0' }, {}).LIGHT_IT, '0');
   assert.throws(() => dbTestEnv({}, {}), /DATABASE_ADMIN_URL/);
 });
+
+test('сторож тестов light: зависший процесс останавливается с понятной ошибкой', async () => {
+  const { lightTestArgs, runWithWatchdog } = await import('./ci-test-db.mjs');
+  assert.ok(lightTestArgs().includes('--test-timeout=600000'));
+  const orig = console.log;
+  console.log = () => {};
+  try {
+    await assert.rejects(
+      runWithWatchdog(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: process.env, limitMs: 200, what: 'тесты light' }),
+      /зависли.*сторожем/,
+    );
+    assert.equal(await runWithWatchdog(process.execPath, ['-e', 'process.exit(3)'], { env: process.env, limitMs: 5000, what: 'x' }), 3);
+  } finally {
+    console.log = orig;
+  }
+});
