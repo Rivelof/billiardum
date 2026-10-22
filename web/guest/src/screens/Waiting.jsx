@@ -60,6 +60,15 @@ export function WaitPayment({ paymentId }) {
   const paid = payment && (payment.status === 'succeeded' || payment.status === 'waiting_for_capture');
   const sessionId = paid ? payment.session_id ?? (flow.kind === 'extend' ? flow.sessionId : null) : null;
   useGoToGame(sessionId, flow.kind);
+  // M3: return_url ЮKassa у пакета часов и предоплаты брони — тоже /app/wait/{id}; после оплаты — в профиль или к брони
+  useEffect(() => {
+    if (!paid || flow.paymentId !== paymentId) return;
+    if (flow.kind === 'package') navigate(`${BASE}me?paid=package`, { replace: true });
+    if (flow.kind === 'booking' && flow.bookingId) navigate(`${BASE}bookings/${encodeURIComponent(flow.bookingId)}`, { replace: true });
+  }, [paid, flow.kind]);
+  useEffect(() => {
+    if (payment?.status === 'canceled' && flow.kind === 'booking' && flow.bookingId) navigate(`${BASE}bookings/${encodeURIComponent(flow.bookingId)}`, { replace: true });
+  }, [payment?.status]);
 
   const back = backToTable(flow);
   const slow = !paid && Date.now() - started.current > 3 * 60 * 1000;

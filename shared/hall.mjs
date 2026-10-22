@@ -161,7 +161,8 @@ export function planLayout(resources, options = {}) {
  * @param {{ status: string, session?: { status?: string, paid_until?: string, grace_until?: string | null, unlimited?: boolean } | null, until?: string | null, busy_until?: string | null, device?: { online?: boolean } }} item элемент `GET /api/clubs/{club}/hall`
  * @param {{ formatTime?: (iso: string) => string }} [options]
  * word — коротко для подписи на плане, spoken (если есть) — полностью для экранного диктора.
- * @returns {{ tone: 'free' | 'pending' | 'reserved' | 'play' | 'ending' | 'grace' | 'service' | 'offline', lit: boolean, word: string, spoken?: string }}
+ * item.next_booking — { starts_at } ближайшей брони сегодня (M3), стол с ней получает янтарную рамку.
+ * @returns {{ tone: 'free' | 'pending' | 'reserved' | 'booked' | 'play' | 'ending' | 'grace' | 'service' | 'offline', lit: boolean, word: string, spoken?: string }}
  */
 export function tableState(item, options = {}) {
   const fmt = options.formatTime ?? ((iso) => iso);
@@ -179,6 +180,14 @@ export function tableState(item, options = {}) {
     if (sStatus === 'ending') return { tone: 'ending', lit: true, word: '<\u00a05\u00a0мин', spoken: 'меньше 5 минут' };
     if (session.unlimited) return { tone: 'play', lit: true, word: 'Без лимита' };
     return { tone: 'play', lit: true, word: session.paid_until ? `До ${fmt(session.paid_until)}` : 'Идёт игра' };
+  }
+  // Бронь (M3): стол пока свободен, а на него бронь сегодня — янтарная рамка и время брони (DESIGN §1, §4)
+  const booking = item.next_booking ?? null;
+  if (item.status === 'reserved') {
+    return { tone: 'reserved', lit: false, word: booking?.starts_at ? `Бронь ${fmt(booking.starts_at)}` : 'Бронь', spoken: booking?.starts_at ? `ждёт гостя по брони на ${fmt(booking.starts_at)}` : 'забронирован' };
+  }
+  if ((item.status === 'free' || !item.status) && booking?.starts_at) {
+    return { tone: 'booked', lit: false, word: `Бронь ${fmt(booking.starts_at)}`, spoken: `свободен, бронь на ${fmt(booking.starts_at)}` };
   }
   switch (item.status) {
     case 'fault':

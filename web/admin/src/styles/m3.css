@@ -1,0 +1,223 @@
+/*
+ * M3 в программе клуба: брони на день (лента по столам), персонал, пакеты часов, депозит.
+ * Бронь — янтарная рамка (DESIGN §1, §4), идущая игра — заливка лампой, занятость без брони — штриховка зала.
+ */
+
+.datenav { display: inline-flex; align-items: center; gap: 4px; }
+
+.bookings__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+.bookings__head .section-title { margin: 0; margin-right: auto; }
+.bookings .bookings__head { justify-content: flex-start; }
+.bookings__head .hint { max-width: 62ch; margin: 0; }
+
+/* ---------- лента броней: столы строками, часы колонками ---------- */
+.tl {
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  scrollbar-width: thin;
+}
+.tl:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
+.tl__inner {
+  display: grid;
+  grid-template-columns: 84px minmax(calc(var(--hours) * 64px), 1fr);
+  min-width: 100%;
+  width: max-content;
+}
+.tl__corner { position: sticky; left: 0; z-index: 3; background: var(--card); border-bottom: 1px solid var(--line); }
+.tl__hours {
+  display: grid;
+  grid-template-columns: repeat(var(--hours), 1fr);
+  border-bottom: 1px solid var(--line);
+}
+.tl__hour {
+  padding: 8px 0 6px 6px;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink-2);
+  border-left: 1px solid var(--line);
+}
+.tl__row { display: contents; }
+.tl__table {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  min-height: 60px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 1px 0 0 var(--line);
+}
+.tl__num { font-weight: 700; white-space: nowrap; }
+.tl__lane {
+  position: relative;
+  min-height: 60px;
+  border-bottom: 1px solid var(--line);
+  background-image: linear-gradient(to right, var(--line) 1px, transparent 1px);
+  background-size: calc(100% / var(--hours)) 100%;
+}
+.tl__busy {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
+  background: repeating-linear-gradient(135deg, var(--card-2) 0 6px, color-mix(in oklab, var(--card-2) 55%, var(--line)) 6px 12px);
+}
+.tl__busy--session { color: var(--ink); background: color-mix(in oklab, var(--lamp) 22%, var(--card-2)); }
+.tl__busy--closed { background: var(--card-2); color: var(--ink-3); }
+.tl__bk {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  z-index: 1;
+  display: grid;
+  align-content: center;
+  gap: 1px;
+  min-width: 0;
+  padding: 2px 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  background: var(--lamp-tint);
+  box-shadow: inset 0 0 0 2px var(--lamp);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.tl__bk:hover { box-shadow: inset 0 0 0 3px var(--lamp); }
+.tl__bk:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
+.tl__bk--started { background: var(--lamp); color: var(--on-lamp); }
+.tl__bk--pending_payment { background: var(--card); box-shadow: inset 0 0 0 2px var(--lamp); background-image: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in oklab, var(--lamp) 16%, transparent) 6px 12px); }
+.tl__bk--expired, .tl__bk--completed { background: var(--card-2); box-shadow: inset 0 0 0 1px var(--line-strong); color: var(--ink-2); }
+.tl__bk-time { font-size: var(--fs-13); font-weight: 700; white-space: nowrap; }
+.tl__bk-who { font-size: var(--fs-13); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl__now { position: absolute; top: 0; bottom: -1px; z-index: 2; width: 2px; margin-left: -1px; background: var(--ball-red); pointer-events: none; }
+
+/* ---------- брони списком ---------- */
+.bklist {
+  display: grid;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.bklist > li + li { border-top: 1px solid var(--line); }
+.bkrow {
+  display: grid;
+  grid-template-columns: 7.5rem 5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 14px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 14px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.bkrow:hover { background: var(--card-2); }
+.bkrow:focus-visible { outline: 2px solid var(--cloth); outline-offset: -2px; }
+.bkrow__time { font-weight: 700; }
+.bkrow__table { font-weight: 600; }
+.bkrow__who { display: flex; flex-wrap: wrap; gap: 2px 10px; min-width: 0; }
+.bkrow__phone { color: var(--ink-2); font-size: var(--fs-15); }
+.bkrow__state {
+  justify-self: end;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1.5px var(--lamp);
+  white-space: nowrap;
+}
+.bkrow__state--started { background: var(--lamp); color: var(--on-lamp); box-shadow: none; }
+.bkrow__state--expired, .bkrow__state--completed { box-shadow: inset 0 0 0 1.5px var(--line-strong); color: var(--ink-2); }
+.bkrow--expired .bkrow__time, .bkrow--completed .bkrow__time { color: var(--ink-2); }
+@media (max-width: 639px) {
+  .bkrow { grid-template-columns: minmax(0, 1fr) auto; }
+  .bkrow__table { grid-column: 2; grid-row: 1; justify-self: end; }
+  .bkrow__who { grid-column: 1 / -1; }
+  .bkrow__state { grid-column: 1 / -1; justify-self: start; }
+}
+
+/* ---------- формы M3 ---------- */
+.pbook__grid { display: grid; gap: 14px; }
+@media (min-width: 640px) {
+  .pbook__grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* Персонал — список, не карточки */
+.people {
+  display: grid;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.people > li + li { border-top: 1px solid var(--line); }
+.person {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 12px 14px;
+}
+.person__main { display: grid; gap: 2px; min-width: 0; }
+.person__name { font-weight: 600; }
+.person__tag { margin-left: 8px; padding: 1px 8px; border-radius: var(--radius-pill); background: var(--card-2); font-size: var(--fs-13); font-weight: 600; color: var(--ink-2); }
+.person__sub { font-size: var(--fs-15); color: var(--ink-2); }
+.person__tools { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.person__revoke { color: var(--ball-red); }
+.person--invite { background: color-mix(in oklab, var(--card-2) 50%, var(--card)); }
+@media (max-width: 639px) {
+  .person { grid-template-columns: minmax(0, 1fr); }
+  .person__tools { justify-content: flex-start; }
+}
+
+.rolechoice { display: grid; gap: 8px; }
+.rolechoice__item { position: relative; }
+.rolechoice__item input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.rolechoice__box {
+  display: grid;
+  gap: 2px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+}
+.rolechoice__title { font-weight: 600; }
+.rolechoice__sub { font-size: var(--fs-13); color: var(--ink-2); }
+.rolechoice__item input:checked + .rolechoice__box { background: var(--lamp-tint); box-shadow: inset 0 0 0 2.5px var(--lamp); }
+.rolechoice__item input:focus-visible + .rolechoice__box { outline: 2px solid var(--cloth); outline-offset: 2px; }
+
+/* Пакеты часов */
+.packages .prow { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: 'main price edit'; }
+.packages .prow__sub { margin: 0; font-size: var(--fs-13); color: var(--ink-2); }
+.packages .prow__name { margin: 0; }
+.packages .prow__price { margin: 0; }
+@media (max-width: 639px) {
+  .packages .prow { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'main price' 'edit edit'; }
+  .packages .prow > .btn { justify-self: start; }
+}
+.tile--pack { background: var(--lamp-tint); box-shadow: inset 0 0 0 1.5px var(--lamp); }
+.tile--pack:not([disabled]):hover { box-shadow: inset 0 0 0 2.5px var(--lamp); }
+
+.recon__extra { margin: 6px 0 0; color: var(--ink-2); }

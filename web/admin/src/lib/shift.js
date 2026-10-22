@@ -55,10 +55,12 @@ export function revenueTable(revenue) {
   const t = byMethod(revenue?.tables);
   const b = byMethod(revenue?.bar);
   const o = byMethod(revenue?.other);
+  // M3: пакеты часов — своя строка отчёта (server/reports/queries.mjs)
+  const pk = byMethod(revenue?.packages);
   const val = (x, m) => (Number.isSafeInteger(x[m]) ? x[m] : 0);
-  const rows = REPORT_METHODS.map((m) => ({ method: m, tables: val(t, m), bar: val(b, m), other: val(o, m), total: val(t, m) + val(b, m) + val(o, m) }));
+  const rows = REPORT_METHODS.map((m) => ({ method: m, tables: val(t, m), bar: val(b, m), packages: val(pk, m), other: val(o, m), total: val(t, m) + val(b, m) + val(pk, m) + val(o, m) }));
   const sum = (k) => rows.reduce((acc, r) => acc + r[k], 0);
-  return { rows, tables: sum('tables'), bar: sum('bar'), other: sum('other'), total: sum('total') };
+  return { rows, tables: sum('tables'), bar: sum('bar'), packages: sum('packages'), other: sum('other'), total: sum('total') };
 }
 
 /**

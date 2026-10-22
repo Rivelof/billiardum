@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'preact/hooks';
-import { formatDuration, formatTime } from '@billiardum/shared/format';
+import { formatDuration, formatMoney, formatTime } from '@billiardum/shared/format';
 import { SERVICE_REASONS, reasonLabel } from '@billiardum/shared/reasons';
 import { tableState, typeLabel } from '@billiardum/shared/hall';
 import { Dialog } from '../components/Dialog.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
-import { api } from '../lib/api.js';
+import { CashEntry } from '../components/CashEntry.jsx';
+import { api, newIdempotencyKey } from '../lib/api.js';
+import { parseRubles } from '../lib/cash.js';
 import { can } from '../lib/auth.js';
 import { minutesWords } from '../lib/words.js';
 
@@ -17,7 +19,7 @@ const FREE_MINUTES = [10, 15, 30, 60];
  * «Сервисный свет» (ресепшн и выше), «Продлить без оплаты» (управляющий и владелец).
  */
 export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
-  const [mode, setMode] = useState(null); // null | 'service' | 'free'
+  const [mode, setMode] = useState(null); // null | 'service' | 'free' | 'deposit'
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -74,6 +76,14 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
           </dl>
         ) : null}
 
+        {s?.deposit_kopecks ? (
+          <p class="note note--lamp">
+            <Icon name="cash" />
+            <span class="note__title">Депозит наличными {formatMoney(s.deposit_kopecks)}</span>
+            <span class="note__body">Игра идёт, пока хватает депозита, и сама не продлевается. При закрытии посчитаем по факту, остаток верните гостю наличными — программа подскажет сумму.</span>
+          </p>
+        ) : null}
+
         {item.status === 'service' ? (
           <dl class="facts">
             <div>
@@ -117,6 +127,8 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
           <ServiceForm item={item} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'free' ? (
           <ExtendFreeForm session={s} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
+        ) : mode === 'deposit' ? (
+          <DepositForm item={item} timeZone={timeZone} onCancel={() => setMode(null)} onDone={() => onChanged?.()} onClose={onClose} />
         ) : (
           <div class="dialog__actions">
             {item.status === 'service' && can.reception(role) ? (
@@ -124,7 +136,13 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
                 {busy ? 'Выключаем…' : 'Выключить сервисный свет'}
               </button>
             ) : null}
-            {st.tone === 'free' && can.reception(role) ? (
+            {['free', 'booked'].includes(st.tone) && can.reception(role) ? (
+              <button type="button" class="btn btn--primary btn--block btn--lg" onClick={() => setMode('deposit')}>
+                <Icon name="cash" />
+                Без лимита: депозит наличными
+              </button>
+            ) : null}
+            {['free', 'booked'].includes(st.tone) && can.reception(role) ? (
               <button type="button" class="btn btn--secondary btn--block btn--lg" onClick={() => setMode('service')}>
                 <Icon name="wrench" />
                 Сервисный свет
@@ -319,6 +337,81 @@ function ExtendFreeForm({ session, onCancel, onDone }) {
         </button>
         <button type="button" class="btn btn--quiet btn--block" onClick={onCancel}>
           Отмена
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * Депозит наличными для «Без лимита» (№87, №112): сумма депозита и полученные наличные (сдача), нужна открытая смена.
+ * Игра идёт до исчерпания депозита по тарифу; при закрытии — расчёт по факту и возврат остатка с чеком возврата.
+ */
+function DepositForm({ item, timeZone, onCancel, onDone, onClose }) {
+  const [amount, setAmount] = useState('2000');
+  const [received, setReceived] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(null);
+  const [key] = useState(() => newIdempotencyKey());
+  const amountK = parseRubles(amount);
+  const receivedK = received ? parseRubles(received) : amountK;
+  const okAmount = amountK !== null && amountK >= 10000;
+  const okReceived = receivedK !== null && amountK !== null && receivedK >= amountK;
+
+  if (done) {
+    return (
+      <div class="form" role="status">
+        <div class="change change--big">
+          <p class="change__label">Сдача</p>
+          <p class="change__value display">{formatMoney(done.change_kopecks ?? 0)}</p>
+        </div>
+        <p class="lead">
+          Свет включён. Депозит {formatMoney(amountK)} — игра до <b class="mono">{done.paid_until ? formatTime(done.paid_until, timeZone) : '—'}</b>, если гость не закончит раньше.
+        </p>
+        <p class="hint">Чек ККТ на депозит пробит. Когда гость закончит, остаток вернётся наличными с чеком возврата — сумму покажет программа.</p>
+        <button type="button" class="btn btn--primary btn--block btn--lg" onClick={onClose}>
+          Готово
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      class="form deposit"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (!okAmount || !okReceived) return;
+        setBusy(true);
+        setError(null);
+        try {
+          const res = await api.deposit({ resource_id: item.resource.id, amount_kopecks: amountK, received_kopecks: receivedK }, key);
+          setDone(res ?? {});
+          onDone();
+        } catch (err) {
+          setError(err);
+        } finally {
+          setBusy(false);
+        }
+      }}
+      noValidate
+    >
+      <div class="field">
+        <label class="field__label" for="dep-amount">
+          Депозит, ₽
+        </label>
+        <input id="dep-amount" class="field__input field__input--money mono" inputMode="decimal" value={amount} aria-invalid={!okAmount ? 'true' : undefined} onInput={(e) => setAmount(e.currentTarget.value.replace(/[^\d,.]/g, ''))} />
+        {!okAmount ? <p class="field__error">Депозит не меньше 100 ₽.</p> : <p class="field__hint">Игра идёт, пока хватает депозита по тарифу. Остаток вернём при закрытии.</p>}
+      </div>
+      {okAmount ? <CashEntry amount={amountK} value={received} onChange={setReceived} id="dep-received" /> : null}
+      <ErrorNote error={error} />
+      <div class="dialog__actions dialog__actions--row">
+        <button type="submit" class="btn btn--primary btn--lg" disabled={busy || !okAmount || !okReceived}>
+          {busy ? 'Включаем свет…' : `Принять ${okAmount ? formatMoney(amountK) : ''} и включить свет`}
+        </button>
+        <button type="button" class="btn btn--quiet btn--lg" onClick={onCancel}>
+          Назад
         </button>
       </div>
     </form>

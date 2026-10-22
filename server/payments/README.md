@@ -54,6 +54,8 @@
 
 Подстраховка от потерянных вебхуков: планировщик раз в 10 с сверяет по API платежи, которые больше минуты в `pending` (`bl.money_due`).
 
+Платёж, которого ЮKassa не знает (404 на `GET /v3/payments/{id}`: сбой при создании, чужой магазин, перезапущенный эмулятор; `0653_money_not_found.sql`, `onProviderNotFound` в `pay.mjs`): первый 404 ставит `payments.provider_missing_at` и пишет `payment_not_found_at_provider` в лог один раз (дальше сверка молчит, `payment_reconcile_failed` не пишется). `pending` старше часа отменяется через `cancelLocal` с причиной `not_found_at_provider` (журнал, outbox `payment.canceled`, pending со стола снят, сессия и бронь не запускаются; поздний `succeeded` такой платёж уже не подтвердит) и тревога `payment_not_found_at_provider` (important, `action: canceled`) — один раз. Если у нас платёж уже `succeeded`/`waiting_for_capture` — не трогаем, только тревога (critical, `action: kept`), тоже один раз.
+
 ### Списание «Без лимита» и возвраты
 
 - Подписка outbox `session.closed` (`money.capture`): заморозки сессии (`session_payments` light или `payments.session_id`) списываются на `amountForActual(started_at, min(ended_at, paid_until))` с чеком на фактическую сумму; остаток размораживается ЮKassa; лишние заморозки отменяются; уже списанное учитывается (идемпотентно). Журнал `payment.captured`. Не хватило заморозок — тревога `unlimited_overrun`.

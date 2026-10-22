@@ -8,6 +8,7 @@ import { AlarmList } from './AlarmList.jsx';
 import { TableDialog } from './TableDialog.jsx';
 import { mergeHall } from '../lib/hall.js';
 import { api, streamClub } from '../lib/api.js';
+import { withNextBooking } from '../lib/bookings.js';
 import { METHOD_LABEL } from '../lib/words.js';
 
 const METHODS = ['sbp', 'card', 'cash', 'card_terminal'];
@@ -23,11 +24,16 @@ export function Now({ ctx }) {
   const [error, setError] = useState(null);
   const [table, setTable] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [bookings, setBookings] = useState([]); // M3: брони сегодня — янтарная рамка на плане зала
   const narrow = useMedia('(max-width: 639px)');
 
   const load = useCallback(async () => {
     try {
       const [n, a] = await Promise.all([api.now(clubId), api.alarms(clubId)]);
+      api
+        .bookings(clubId)
+        .then((r) => setBookings(Array.isArray(r) ? r : (r?.bookings ?? [])))
+        .catch(() => {});
       setData(n);
       setAlarms(Array.isArray(a) ? a : Array.isArray(n?.alarms_open) ? n.alarms_open : []);
       setUpdatedAt(Date.now());
@@ -65,7 +71,7 @@ export function Now({ ctx }) {
 
   const revenue = data?.revenue_today_kopecks ?? {};
   const total = METHODS.reduce((s, m) => s + (Number.isSafeInteger(revenue[m]) ? revenue[m] : 0), 0);
-  const hall = Array.isArray(data?.hall) ? data.hall : [];
+  const hall = withNextBooking(Array.isArray(data?.hall) ? data.hall : [], bookings);
 
   return (
     <Shell club={club} role={role} user={user} timeZone={timeZone} active="now" title="Сейчас" alarmsCount={alarms?.length ?? 0}>

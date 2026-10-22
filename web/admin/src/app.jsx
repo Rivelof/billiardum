@@ -19,6 +19,9 @@ import { ShiftReport } from './screens/ShiftReport.jsx';
 import { Stock } from './screens/Stock.jsx';
 import { MenuAdmin } from './screens/Menu.jsx';
 import { Kkt } from './screens/Kkt.jsx';
+import { Bookings } from './screens/Bookings.jsx';
+import { Staff } from './screens/Staff.jsx';
+import { Packages } from './screens/Packages.jsx';
 import { setClub } from './lib/api.js';
 import { Icon } from './components/Icon.jsx';
 
@@ -44,6 +47,10 @@ const SCREENS = {
   stock: { allow: can.stock, render: (ctx) => <Stock ctx={ctx} />, title: 'Склад' },
   menu: { allow: can.menu, render: (ctx) => <MenuAdmin ctx={ctx} />, title: 'Меню' },
   kkt: { allow: can.kkt, render: (ctx) => <Kkt ctx={ctx} />, title: 'Касса ККТ' },
+  // M3
+  bookings: { allow: can.bookings, render: (ctx) => <Bookings ctx={ctx} />, title: 'Брони' },
+  staff: { allow: can.staff, render: (ctx) => <Staff ctx={ctx} />, title: 'Персонал' },
+  packages: { allow: can.packages, render: (ctx) => <Packages ctx={ctx} />, title: 'Пакеты часов' },
 };
 
 /** Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — касса, бармен — экран бара. */

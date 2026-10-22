@@ -160,6 +160,7 @@ function Revenue({ revenue }) {
   const t = revenueTable(revenue);
   const refunds = revenue?.refunds?.total_kopecks ?? 0;
   const withOther = t.other > 0;
+  const withPk = t.packages > 0;
   return (
     <section class="rcard rcard--wide" aria-labelledby="r-rev">
       <h3 class="rcard__title" id="r-rev">
@@ -177,6 +178,11 @@ function Revenue({ revenue }) {
             <th scope="col" class="num">
               Бар
             </th>
+            {withPk ? (
+              <th scope="col" class="num">
+                Пакеты
+              </th>
+            ) : null}
             {withOther ? (
               <th scope="col" class="num">
                 Прочее
@@ -197,6 +203,11 @@ function Revenue({ revenue }) {
               <td class="num mono" data-label="Бар">
                 {formatMoney(r.bar)}
               </td>
+              {withPk ? (
+                <td class="num mono" data-label="Пакеты">
+                  {formatMoney(r.packages)}
+                </td>
+              ) : null}
               {withOther ? (
                 <td class="num mono" data-label="Прочее">
                   {formatMoney(r.other)}
@@ -217,6 +228,11 @@ function Revenue({ revenue }) {
             <td class="num mono" data-label="Бар">
               {formatMoney(t.bar)}
             </td>
+            {withPk ? (
+              <td class="num mono" data-label="Пакеты">
+                {formatMoney(t.packages)}
+              </td>
+            ) : null}
             {withOther ? (
               <td class="num mono" data-label="Прочее">
                 {formatMoney(t.other)}
@@ -229,7 +245,7 @@ function Revenue({ revenue }) {
         </tfoot>
       </table>
       <p class="small">
-        Наличные и карта на терминале — чеки ККТ клуба; СБП и карта онлайн — ЮKassa.
+        Наличные и карта на терминале — чеки ККТ клуба; СБП и карта онлайн — ЮKassa.{withPk ? ' Пакеты часов — предоплата: чек при покупке, зачёт при игре.' : ''}
         {refunds ? ` Возвраты за смену: ${formatMoney(refunds)}, после возвратов — ${formatMoney(revenue.net_kopecks ?? t.total - refunds)}.` : ''}
       </p>
     </section>
@@ -275,6 +291,16 @@ function Reconcile({ rec }) {
           <p class="recon__word">
             {word(kkt, [pending ? `${pending} ${plural(pending, RECEIPTS)} ещё в очереди кассы` : '', failed ? `не пробились ${failed}` : ''].filter(Boolean).join(', ')) ?? 'Не проверено.'}
           </p>
+          {k.settlements?.count ? (
+            <p class="small recon__extra">
+              Отдельно — чеки зачёта предоплаты (брони, пакеты, депозиты): {k.settlements.count} {plural(k.settlements.count, RECEIPTS)} на{' '}
+              <span class="mono">{formatMoney(k.settlements.settlement_kopecks ?? k.settlements.amount_kopecks ?? 0)}</span>
+              {k.settlements.by_state?.pending?.count || k.settlements.by_state?.failed?.count
+                ? `, не пробито ${(k.settlements.by_state?.pending?.count ?? 0) + (k.settlements.by_state?.unknown?.count ?? 0) + (k.settlements.by_state?.failed?.count ?? 0)}`
+                : ''}
+              .
+            </p>
+          ) : null}
         </li>
         <li class={`recon recon--${online.state === 'diff' ? 'bad' : online.state === 'ok' ? 'ok' : 'wait'}`}>
           <p class="recon__title">

@@ -157,6 +157,36 @@ export const api = {
   retryReceipt: (id, reason) => client.post(`/kkt/receipts/${e(id)}/retry`, { reason }),
   /** Управляющий: исход неизвестен, а чек на ленте есть — ФД и ФП с ленты, причина; ручное действие. */
   markPrinted: (id, body) => client.post(`/kkt/receipts/${e(id)}/mark-printed`, body),
+
+  // ---------- M3: брони, персонал, пакеты часов, депозит (docs/contracts/m3.md §4, server/bookings/README.md) ----------
+  /** Брони клуба на рабочий день: { date, from, to, bookings: [бронь + guest: { name, phone_masked, user }] }. */
+  bookings: (club, date) => client.get(`/clubs/${e(club)}/bookings`, { query: { date } }),
+  /** Столы и занятость дня (без входа): для ленты броней — игры, сервис, закрытые часы. */
+  availability: (club, date) => client.get(`/clubs/${e(club)}/availability`, { query: { date } }),
+  /** Бронь по телефону: { resource_id, starts_at, minutes, name, phone, source: 'phone' | 'staff' } → confirmed. */
+  createPhoneBooking: (club, body) => client.post(`/clubs/${e(club)}/bookings`, body),
+  /** Отмена с причиной: ресепшн — только брони phone/staff без предоплаты (№115). */
+  cancelBooking: (id, reason) => client.post(`/bookings/${e(id)}/cancel`, { reason }),
+  /** «Гость пришёл» для брони по телефону: бронь started, стол — дальше обычной оплатой на ресепшене. */
+  arriveBooking: (id) => client.post(`/bookings/${e(id)}/arrive`),
+
+  /** Персонал (владелец): { staff: [{ user_id, name, phone_masked, role, active, pin_set }], invites: [{ id, phone_masked, role, expires_at }] }. */
+  staff: (club) => client.get(`/clubs/${e(club)}/staff`),
+  /** Пригласить по телефону (+7…) с ролью manager | reception | installer | bar; приглашение на 7 дней (№111). */
+  inviteStaff: (club, phone, role) => client.post(`/clubs/${e(club)}/staff`, { phone, role }),
+  setStaffRole: (club, userId, role) => client.request('PATCH', `/clubs/${e(club)}/staff/${e(userId)}`, { body: { role } }),
+  /** Отозвать доступ в один шаг: членство, PIN и все токены сотрудника. */
+  revokeStaff: (club, userId) => client.request('DELETE', `/clubs/${e(club)}/staff/${e(userId)}`),
+  revokeInvite: (club, inviteId) => client.request('DELETE', `/clubs/${e(club)}/staff/invites/${e(inviteId)}`),
+
+  /** Пакеты часов: [{ id, title, hours, minutes, price_kopecks, valid_days, active }]. */
+  packages: (club) => client.get(`/clubs/${e(club)}/packages`),
+  /** { title, hours, price_kopecks, valid_days, reason } — управляющий, владельцу уходит уведомление. */
+  createPackage: (club, body) => client.post(`/clubs/${e(club)}/packages`, body),
+  archivePackage: (id, reason) => client.post(`/packages/${e(id)}/archive`, { reason }),
+
+  /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
+  deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),
 };
 
 export { newIdempotencyKey };
@@ -169,7 +199,7 @@ export { newIdempotencyKey };
 export function streamClub(club, handlers) {
   return openStream(client.url('/stream', { club }), {
     ...handlers,
-    events: handlers.events ?? ['hall', 'reception_request', 'alarm', 'session', 'bar', 'stop_list', 'pos_sale', 'shift', 'kkt'],
+    events: handlers.events ?? ['hall', 'reception_request', 'alarm', 'session', 'bar', 'stop_list', 'pos_sale', 'shift', 'kkt', 'booking'],
     EventSource: EventSourceImpl,
   });
 }

@@ -31,12 +31,15 @@ test('выручка отчёта backend-kkt: столы и бар по спо�
     bar: { by_method: { cash: 500050, card_terminal: 214000, sbp: 96000, card: 61000 } },
     other: { by_method: { cash: 0, card_terminal: 0, sbp: 0, card: 0 } },
   });
-  assert.deepEqual(t.rows[0], { method: 'cash', tables: 960000, bar: 500050, other: 0, total: 1460050 });
+  assert.deepEqual(t.rows[0], { method: 'cash', tables: 960000, bar: 500050, packages: 0, other: 0, total: 1460050 });
   assert.equal(t.tables, 3860000);
   assert.equal(t.bar, 871050);
   assert.equal(t.total, 4731050);
   assert.equal(revenueTable({ tables: { cash: 100 } }).total, 100, 'старый плоский вид тоже');
   assert.equal(revenueTable(null).total, 0);
+  const pk = revenueTable({ tables: { by_method: { cash: 100 } }, packages: { by_method: { sbp: 300000, cash: 550000 } } });
+  assert.equal(pk.packages, 850000, 'пакеты часов (M3) — своя колонка');
+  assert.equal(pk.total, 850100);
 });
 
 test('сверка: сходится, расходится, не проверено (ЮKassa не ответила)', () => {

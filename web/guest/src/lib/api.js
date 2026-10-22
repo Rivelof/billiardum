@@ -73,6 +73,9 @@ async function once(map, fingerprint, run) {
 }
 const orderKeys = new Map();
 const tabKeys = new Map();
+const bookingKeys = new Map();
+const moneyKeys = new Map();
+const e = encodeURIComponent;
 
 export const api = {
   table: (code) => client.get(`/t/${encodeURIComponent(code)}`),
@@ -86,18 +89,24 @@ export const api = {
   logout: () => client.post('/auth/logout'),
 
   /** @param {{ resourceId: string, kind: 'start' | 'extend', minutes: number | null, sessionId?: string }} q */
+  /** M3: useBalance — часть минут оплатить часами пакета (ответ: balance_minutes, balance_available_minutes, доплата amount_kopecks). */
   quote: (q) =>
     client.post('/quotes', {
       resource_id: q.resourceId,
       kind: q.kind,
       minutes: q.minutes,
       ...(q.sessionId ? { session_id: q.sessionId } : {}),
+      ...(q.useBalance ? { use_balance: true } : {}),
     }),
-  /** @param {string} quoteId @param {'sbp' | 'card' | 'reception'} method */
-  async pay(quoteId, method) {
-    const k = `${quoteId}:${method}`;
+  /**
+   * @param {string} quoteId
+   * @param {'sbp' | 'card' | 'reception' | 'balance'} method
+   * @param {{ rest_method?: 'sbp' | 'card' }} [extra] balance не покрыл всё — доплата остатка (M3, №112)
+   */
+  async pay(quoteId, method, extra = {}) {
+    const k = `${quoteId}:${method}:${extra.rest_method ?? ''}`;
     if (!payKeys.has(k)) payKeys.set(k, newIdempotencyKey());
-    const res = await client.post(`/quotes/${encodeURIComponent(quoteId)}/pay`, { method }, { idempotencyKey: payKeys.get(k) });
+    const res = await client.post(`/quotes/${encodeURIComponent(quoteId)}/pay`, { method, ...extra }, { idempotencyKey: payKeys.get(k) });
     return res;
   },
   payment: (id) => client.get(`/payments/${encodeURIComponent(id)}`),
@@ -133,4 +142,40 @@ export const api = {
   /** Оплата счёта стола онлайн: { method } → { sale_id, payment_id, status, confirmation }; return_url — /app/sessions/{id}/tab. */
   payTab: (sessionId, method, total) =>
     once(tabKeys, `${sessionId}:${method}:${total}`, (key) => client.post(`/sessions/${encodeURIComponent(sessionId)}/tab/pay`, { method }, { idempotencyKey: key })),
+
+  // ---------- M3: бронь, лист ожидания, пакеты часов, каналы уведомлений (docs/contracts/m3.md §4) ----------
+  /** Клубы для брони — предложение frontend (GET /api/clubs); пока его нет, клуб берём со стола, где гость был. */
+  clubs: () => client.get('/clubs'),
+  /** Свободные интервалы столов на рабочий день клуба (без входа, server/bookings/availability.mjs). */
+  availability: (clubId, date) => client.get(`/clubs/${e(clubId)}/availability`, { query: { date } }),
+  /** { resource_id, starts_at, minutes } → бронь: pending_payment при предоплате, иначе confirmed. */
+  createBooking: (body) => once(bookingKeys, JSON.stringify(body), (key) => client.post('/bookings', body, { idempotencyKey: key })),
+  booking: (id) => client.get(`/bookings/${e(id)}`),
+  myBookings: () => client.get('/me/bookings'),
+  /** Предоплата брони: { method } → { booking, payment_id, confirmation }. */
+  payBooking: (id, method) => once(moneyKeys, `booking:${id}:${method}`, (key) => client.post(`/bookings/${e(id)}/pay`, { method }, { idempotencyKey: key })),
+  cancelBooking: (id) => client.post(`/bookings/${e(id)}/cancel`, {}),
+  /**
+   * Старт по брони у стола: { code } — код стола с QR (+ method для доплаты) →
+   * { status: 'started', session_id } | { status: 'payment_required', amount_kopecks, confirmation | quote }.
+   */
+  startBooking: (id, code, method) => client.post(`/bookings/${e(id)}/start`, { code, ...(method ? { method } : {}) }),
+
+  joinWaitlist: (resourceId) => client.post('/waitlist', { resource_id: resourceId }),
+  /** Свои записи в очереди: [{ id, resource, status, position, offer_until, hold_until }]. */
+  myWaitlist: () => client.get('/me/waitlist'),
+  leaveWaitlist: (id) => client.request('DELETE', `/waitlist/${e(id)}`),
+  /** Занять стол по предложению (5 минут, №109): стол держится за гостем 3 минуты, дальше — обычная котировка и оплата. */
+  acceptWaitlist: (id) => client.post(`/waitlist/${e(id)}/accept`),
+
+  /** Пакеты часов клуба: [{ id, title, hours, minutes, price_kopecks, valid_days, active }]. */
+  packages: (clubId) => client.get(`/clubs/${e(clubId)}/packages`),
+  /** Покупка пакета: { method } → { payment_id, status, confirmation }. */
+  buyPackage: (id, method) => once(moneyKeys, `package:${id}:${method}`, (key) => client.post(`/packages/${e(id)}/buy`, { method }, { idempotencyKey: key })),
+  /** Часы на балансе в клубе: { minutes, lots: [{ id, package_id, minutes_left, expires_at }] }. */
+  balance: (clubId) => client.get(`/clubs/${e(clubId)}/balance`),
+
+  /** Каналы уведомлений: { notify_channel, channels_order } — max | telegram | webpush (№110). */
+  updateMe: (body) => client.request('PATCH', '/me', { body }),
 };
+

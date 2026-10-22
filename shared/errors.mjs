@@ -124,6 +124,22 @@ const TEXTS = {
   // Коды backend-kkt (server/kkt): повтор и «пробит» вручную — только для чеков в нужном состоянии
   receipt_not_failed: ['Этот чек не в ошибке, повторять его не нужно.', 'Обновите список чеков.'],
   receipt_not_unknown: ['Исход этого чека уже известен.', 'Обновите список чеков: возможно, касса уже ответила.'],
+
+  // M3: бронь и лист ожидания — коды server/bookings, server/waitlist (окончательный список backend-booking)
+  booking_conflict: {
+    guest: ['Стол забронирован — так долго продлить нельзя.', 'Продлить можно до начала брони минус 5 минут. Выберите время короче.'],
+    staff: ['На это время у стола есть бронь.', 'Продлить можно до начала брони минус 5 минут.'],
+  },
+  booking_expired: ['Бронь сгорела: время удержания вышло.', 'Забронируйте стол заново или подойдите на ресепшн.'],
+  booking_not_active: ['Эта бронь уже не действует.', 'Обновите страницу: возможно, её отменили или игра уже началась.'],
+  too_early: ['До начала брони ещё рано.', 'Начать игру можно ближе к времени брони.'],
+  table_free: ['Стол уже свободен — очередь не нужна.', 'Отсканируйте QR-код на столе и начните игру.'],
+  // backend-money (M3): пакет часов на кассе — нужен гость, на чей баланс лягут часы
+  guest_required: ['Для пакета часов нужен телефон гостя.', 'Введите номер: часы лягут на баланс гостя с этим номером.'],
+  guest_not_found: ['Гость с этим номером ещё не входил в Бильярдум.', 'Пусть гость войдёт в приложение с этим номером — затем добавьте пакет в чек снова.'],
+  package_used: ['Часы этого пакета уже начали тратить.', 'Вернуть можно только нетронутый пакет целиком.'],
+  fd_conflict: ['Этот номер документа уже у другого чека.', 'Проверьте номер ФД на чеке с ленты и введите его ещё раз.'],
+  offer_expired: ['Время предложения вышло.', 'Стол предложили следующему. Можно снова встать в очередь.'],
 };
 
 /** Коды, которые знает словарь (для тестов и подсказок разработчику). */
@@ -143,7 +159,8 @@ export function errorCode(err) {
 
 /**
  * @param {unknown} err ApiError, код строкой или любая ошибка
- * @param {{ audience?: 'guest' | 'staff', busyUntil?: string }} [ctx] busyUntil — уже отформатированное время клуба, '21:40'
+ * @param {{ audience?: 'guest' | 'staff', busyUntil?: string, limitUntil?: string }} [ctx] busyUntil — уже отформатированное
+ *   время клуба, '21:40'; limitUntil — extend_limit_until котировки в формате времени клуба, '20:55' (booking_conflict)
  * @returns {{ code: string, title: string, action: string, text: string }}
  */
 export function errorMessage(err, ctx = {}) {
@@ -153,5 +170,6 @@ export function errorMessage(err, ctx = {}) {
   const [baseTitle, action] = Array.isArray(entry) ? entry : entry[audience];
   let title = baseTitle;
   if (code === 'table_busy' && ctx.busyUntil) title = `Стол занят до ${ctx.busyUntil}.`;
+  if (code === 'booking_conflict' && ctx.limitUntil) title = `Стол забронирован — можно продлить до ${ctx.limitUntil}.`;
   return { code, title, action, text: `${title} ${action}` };
 }

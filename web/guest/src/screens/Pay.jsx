@@ -7,11 +7,15 @@ import { api } from '../lib/api.js';
 import { minutesWords, perHour } from '../lib/words.js';
 import { setFlow } from '../lib/flow.js';
 import { safeRedirectUrl } from '../lib/urls.js';
+import { navigate } from '../lib/router.js';
+import { BASE } from '../lib/env.js';
+import { balanceCover } from '@billiardum/shared/booking';
 
 const METHODS = {
   sbp: { icon: 'transfer', title: 'СБП', sub: 'В приложении вашего банка' },
   card: { icon: 'card', title: 'Банковская карта', sub: 'На странице оплаты ЮKassa' },
   reception: { icon: 'reception', title: 'На ресепшене', sub: 'Наличными или картой у администратора' },
+  balance: { icon: 'ticket', title: 'Часы пакета', sub: '' },
 };
 
 /**
@@ -27,18 +31,28 @@ const METHODS = {
  * @param {() => void} props.onRequote пересчитать цену после истечения
  * @param {(res: object) => void} props.onReception заявка создана
  */
-export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onReception, onError }) {
+export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onReception, onError, onWithoutBalance }) {
   // «Без лимита» (решение №26, блок unlimited котировки): карта — заморозка за hold_minutes,
   // СБП — оплата блоками по sbp_block_minutes, ресепшн — депозит. Нет блока unlimited — СБП не предлагаем.
   const u = unlimited ? quote.unlimited ?? null : null;
-  const methods = unlimited ? (u?.sbp_block_amount_kopecks ? ['card', 'sbp', 'reception'] : ['card', 'reception']) : ['sbp', 'card', 'reception'];
+  // Пакет часов (M3, №112): котировка с use_balance — баланс покрыл всё (способ balance) или часть (доплата СБП или картой)
+  const cover = unlimited ? { usable: false } : balanceCover(quote);
+  const methods = unlimited
+    ? u?.sbp_block_amount_kopecks
+      ? ['card', 'sbp', 'reception']
+      : ['card', 'reception']
+    : cover.usable
+      ? cover.full
+        ? ['balance']
+        : ['sbp', 'card']
+      : ['sbp', 'card', 'reception'];
   const [method, setMethod] = useState(methods[0]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const now = useNow();
   const left = Date.parse(quote.valid_until) - now;
   const expired = Number.isFinite(left) && left <= 0;
-  const payKopecks = unlimited && method === 'sbp' && u ? u.sbp_block_amount_kopecks : unlimited && u ? u.hold_amount_kopecks : quote.amount_kopecks;
+  const payKopecks = cover.usable ? cover.rest : unlimited && method === 'sbp' && u ? u.sbp_block_amount_kopecks : unlimited && u ? u.hold_amount_kopecks : quote.amount_kopecks;
   const amount = formatMoney(payKopecks);
   const breakdown = unlimited ? [] : Array.isArray(quote.breakdown) ? quote.breakdown : [];
   const holdWords = u?.hold_minutes ? minutesWords(u.hold_minutes, { accusative: true }) : '2 часа';
@@ -55,6 +69,12 @@ export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onRecep
         onReception?.(res);
         return;
       }
+      // Баланс покрыл всё — платёж сразу подтверждён, ждём свет без страницы ЮKassa
+      if (method === 'balance' && res.payment_id) {
+        setFlow({ paymentId: res.payment_id });
+        navigate(`${BASE}wait/${encodeURIComponent(res.payment_id)}`, { replace: true });
+        return;
+      }
       const url = safeRedirectUrl(res.confirmation?.url);
       if (!url) throw Object.assign(new Error('confirmation'), { code: 'payment_failed' });
       setFlow({ paymentId: res.payment_id });
@@ -66,8 +86,11 @@ export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onRecep
     }
   };
 
+  const coverWords = cover.usable ? minutesWords(cover.minutes, { accusative: true }) : '';
   let cta;
-  if (method === 'reception') cta = 'Отправить заявку на ресепшн';
+  if (method === 'balance') cta = `Списать ${coverWords} и ${kind === 'extend' ? 'продлить' : 'включить свет'}`;
+  else if (cover.usable) cta = `Доплатить ${amount} и ${kind === 'extend' ? 'продлить' : 'включить свет'}`;
+  else if (method === 'reception') cta = 'Отправить заявку на ресепшн';
   else if (unlimited && method === 'card') cta = kind === 'extend' ? `Заморозить ${amount} и продлить` : `Заморозить ${amount} и включить свет`;
   else if (unlimited && method === 'sbp') cta = kind === 'extend' ? `Оплатить ещё ${blockWords}` : `Оплатить первые ${blockWords} и включить свет`;
   else if (kind === 'extend') cta = `Оплатить ${amount} и продлить`;
@@ -88,6 +111,23 @@ export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onRecep
           {amount.replace(/\s?₽$/, '')}
           <span class="rub">&nbsp;₽</span>
         </p>
+        {cover.usable ? (
+          <div class="note note--lamp">
+            <Icon name="ticket" />
+            <p class="note__title">{cover.full ? `Оплатят часы пакета: спишем ${coverWords}` : `Часы пакета покроют ${coverWords}, доплата — ${amount}`}</p>
+            <p class="note__body">
+              На балансе {minutesWords(cover.available)}.
+              {onWithoutBalance ? (
+                <>
+                  {' '}
+                  <button type="button" class="btn btn--link" onClick={onWithoutBalance}>
+                    Оплатить без часов пакета
+                  </button>
+                </>
+              ) : null}
+            </p>
+          </div>
+        ) : null}
         {unlimitedNote ? (
           <p class="hint" aria-live="polite">
             {unlimitedNote}
@@ -142,7 +182,9 @@ export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onRecep
                     <Icon name={METHODS[m].icon} />
                     <span>
                       <span class="choice__title">{METHODS[m].title}</span>
-                      <span class="choice__sub">{METHODS[m].sub}</span>
+                      <span class="choice__sub">
+                        {m === 'balance' ? `Спишем ${coverWords} с баланса, доплаты нет` : METHODS[m].sub}
+                      </span>
                     </span>
                   </span>
                 </label>

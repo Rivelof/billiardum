@@ -99,3 +99,13 @@ test('ui.css и hall.css: только токены, без внешних ре�
     assert.deepEqual(hex, [], `${file}: цвета только через var(--…)`);
   }
 });
+
+test('бронь на плане зала (M3): свободный стол с бронью — янтарная рамка и время, reserved — ждёт гостя', () => {
+  const fmt = { formatTime: () => '21:00' };
+  const booked = tableState({ status: 'free', next_booking: { starts_at: '2026-10-22T16:00:00Z' } }, fmt);
+  assert.equal(booked.tone, 'booked');
+  assert.equal(booked.word, 'Бронь 21:00');
+  assert.match(booked.spoken, /свободен, бронь на 21:00/);
+  assert.equal(tableState({ status: 'reserved', next_booking: { starts_at: '2026-10-22T16:00:00Z' } }, fmt).word, 'Бронь 21:00');
+  assert.equal(tableState({ status: 'busy', next_booking: { starts_at: 'x' }, until: '2026-10-22T15:00:00Z' }, fmt).tone, 'play', 'идёт игра важнее брони');
+});

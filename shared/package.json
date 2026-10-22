@@ -15,6 +15,7 @@
     "./icons": "./icons.mjs",
     "./reasons": "./reasons.mjs",
     "./bar": "./bar.mjs",
+    "./booking": "./booking.mjs",
     "./tokens.css": "./tokens.css",
     "./fonts.css": "./fonts.css",
     "./hall.css": "./hall.css",

@@ -4,7 +4,7 @@ import { addFixed, addProduct, available, cartNeedsBar, defaultModifiers, emptyC
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
-import { ModifierDialog, DiscountDialog, PayDialog, StopListDialog } from './PosDialogs.jsx';
+import { ModifierDialog, DiscountDialog, PackageGuestDialog, PayDialog, StopListDialog } from './PosDialogs.jsx';
 import { api, streamClub } from '../lib/api.js';
 import { can } from '../lib/auth.js';
 import { session } from '../lib/store.js';
@@ -14,9 +14,11 @@ import { currentOf } from '../lib/shift.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { expiresOf } from '../lib/reception.js';
+import { packageLine, packagePerHour } from '../lib/packages.js';
 
 const CART_KEY = 'bl-pos-cart';
 const TABLES = 'tables';
+const PACKAGES = 'packages';
 const norm = (s) => String(s ?? '').toLowerCase().replace(/ё/g, 'е');
 
 /**
@@ -44,6 +46,9 @@ export function Pos({ ctx }) {
   const [discountOpen, setDiscountOpen] = useState(false);
   const [payMethod, setPayMethod] = useState(null);
   const [stopOpen, setStopOpen] = useState(false);
+  // M3: пакеты часов на кассе (№112) — плитки «Пакеты», телефон гостя для баланса
+  const [packages, setPackages] = useState([]);
+  const [packFor, setPackFor] = useState(null);
   const [announce, setAnnounce] = useState('');
   const [liveTick, setLiveTick] = useState(0); // события sale и receipt — окну оплаты перечитать продажу
   const [live, setLive] = useState('open');
@@ -114,9 +119,18 @@ export function Pos({ ctx }) {
     }
   }, [clubId]);
 
+  const loadPackages = useCallback(async () => {
+    try {
+      const l = await api.packages(clubId);
+      setPackages(Array.isArray(l) ? l.filter((p) => p.active !== false) : []);
+    } catch {
+      setPackages([]);
+    }
+  }, [clubId]);
+
   const loadAll = useCallback(
-    () => Promise.all([loadMenu(), loadTables(), loadShift(), loadKkt(), loadSettings()]),
-    [loadMenu, loadTables, loadShift, loadKkt, loadSettings],
+    () => Promise.all([loadMenu(), loadTables(), loadShift(), loadKkt(), loadSettings(), loadPackages()]),
+    [loadMenu, loadTables, loadShift, loadKkt, loadSettings, loadPackages],
   );
 
   useEffect(() => {
@@ -264,6 +278,12 @@ export function Pos({ ctx }) {
                   <span>{c.name}</span>
                 </label>
               ))}
+              {packages.length ? (
+                <label class="pill">
+                  <input type="radio" name="pos-cat" checked={activeCategory === PACKAGES} onChange={() => setCategory(PACKAGES)} />
+                  <span>Пакеты часов</span>
+                </label>
+              ) : null}
             </div>
           ) : (
             <p class="hint pos__found" role="status">
@@ -281,6 +301,20 @@ export function Pos({ ctx }) {
 
           {activeCategory === TABLES && !query ? (
             <TableTiles requests={requests} tabs={tabs} cart={cart} timeZone={timeZone} onAdd={(item) => setCart((c) => addFixed(c, item))} />
+          ) : activeCategory === PACKAGES && !query ? (
+            <ul class="tiles">
+              {packages.map((p) => (
+                <li key={p.id}>
+                  <button type="button" class="tile tile--pack" onClick={() => setPackFor(p)} aria-label={`Пакет «${p.title}», ${formatMoney(p.price_kopecks)}, ${p.valid_days} дней`}>
+                    <span class="tile__name">{p.title}</span>
+                    <span class="tile__foot">
+                      <span class="tile__price mono">{formatMoney(p.price_kopecks)}</span>
+                      <span class="tile__more">{formatMoney(packagePerHour(p))}/ч</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           ) : (
             <ul class="tiles">
               {shown.map((p) => {
@@ -478,6 +512,15 @@ export function Pos({ ctx }) {
         onApply={(d) => {
           setDiscount(d);
           setDiscountOpen(false);
+        }}
+      />
+      <PackageGuestDialog
+        pack={packFor}
+        onClose={() => setPackFor(null)}
+        onAdd={(phone) => {
+          setCart((c) => addFixed(c, packageLine(packFor, phone)));
+          setAnnounce(`Пакет «${packFor.title}» в чеке`);
+          setPackFor(null);
         }}
       />
       <PayDialog

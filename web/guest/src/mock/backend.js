@@ -4,10 +4,12 @@
  *
  * Состояние живёт в sessionStorage вкладки, поэтому переход на «страницу ЮKassa» и обратно его не теряет.
  * Сценарии для проверки глазами: ?mock=user | fresh | anon | game | warn | grace | unlimited | interrupted | closed | notpayer | decline;
- * M2 (mock/bar.js): barorders (игра, заказы бара и счёт стола) | closedtab (игра закончилась, счёт не оплачен)
+ * M2 (mock/bar.js): barorders (игра, заказы бара и счёт стола) | closedtab (игра закончилась, счёт не оплачен);
+ * M3 (mock/m3.js): book | mybooking | early | waitlist | balance; limit — продление ограничено бронью в 21:00 (№106)
  */
 
 import { barRoutes, barSeed } from './bar.js';
+import { m3Routes } from './m3.js';
 
 const CLUB = { id: '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c', name: 'Клуб для разработки', timezone: 'Asia/Yekaterinburg' };
 const SESSION_ID = '6f1c2a9e-0d4b-4c7e-9a51-3b2f8e7d4c10';
@@ -141,6 +143,8 @@ export function createBackend(storage) {
       is_payer: s.is_payer !== false,
       participants: s.participants,
       extend_limit_until: s.extend_limit_until ? new Date(s.extend_limit_until).toISOString() : null,
+      // M3 (№106): начало брони после этой игры — «Стол забронирован на 21:00, можно продлить до 20:55»
+      next_booking_at: s.next_booking_at ? new Date(s.next_booking_at).toISOString() : null,
     };
   }
 
@@ -230,7 +234,7 @@ export function createBackend(storage) {
       state.sessions[SESSION_ID].payments.push({ payment_id: uuid(), method: 'cash', amount_kopecks: 40000, minutes: 30, at: t - 30 * MIN });
       Object.assign(state.tables['4K7P9QW2XM'], { status: 'free', session_id: null, busy_until: null });
     }
-    if (name === 'limit') mk({ extend_limit_until: t + 65 * MIN + 75 * MIN });
+    if (name === 'limit') mk({ extend_limit_until: t + 65 * MIN + 40 * MIN, next_booking_at: t + 65 * MIN + 45 * MIN });
     // M2: бар — заказы и счёт стола
     if (name === 'barorders') mk({});
     if (name === 'closedtab') {
@@ -238,6 +242,7 @@ export function createBackend(storage) {
       Object.assign(state.tables['4K7P9QW2XM'], { status: 'free', session_id: null, busy_until: null });
     }
     barSeed(state, name, t, SESSION_ID);
+    m3.seed(name, t);
     save();
   }
 
@@ -269,7 +274,7 @@ export function createBackend(storage) {
       });
     }],
     // Как у core (§14): consent {version, accepted}
-    ['GET', /^\/api\/me$/, () => needUser() ?? ok({ user: { ...state.user, consent: { version: 'draft-2026-10', accepted: Boolean(state.user.consent_version) } }, clubs: [] })],
+    ['GET', /^\/api\/me$/, () => needUser() ?? ok({ user: { ...m3.meView(state.user), consent: { version: 'draft-2026-10', accepted: Boolean(state.user.consent_version) } }, clubs: [] })],
     ['POST', /^\/api\/auth\/dev$/, (_m, body) => {
       if (!/^\+7\d{10}$/.test(body?.phone ?? '')) return err(400, 'bad_request');
       state.user = { ...USER, phone_masked: `+7 *** ***-${body.phone.slice(-4, -2)}-${body.phone.slice(-2)}`, consent_version: null };
@@ -318,6 +323,8 @@ export function createBackend(storage) {
         const s = state.sessions[body.session_id];
         if (!s || ['closed', 'cancelled'].includes(sessionView(s).status)) return err(409, 'session_not_active');
         from = Math.max(s.paid_until, t);
+        // M3 (№106): перед бронью продлить можно до её начала минус 5 минут
+        if (s.extend_limit_until && !s.unlimited && body.minutes !== null && from + body.minutes * MIN > s.extend_limit_until) return err(409, 'booking_conflict');
       }
       const minutes = body.minutes === null ? 120 : body.minutes;
       const { amount_kopecks, breakdown } = amountFor(from, minutes);
@@ -326,6 +333,16 @@ export function createBackend(storage) {
       const out = { quote_id: id, amount_kopecks, minutes: body.minutes, valid_until: new Date(t + 3 * MIN).toISOString(), breakdown };
       // Блок «Без лимита» как у backend-money: заморозка за 2 часа по карте, блоки по 30 минут по СБП
       if (body.minutes === null) out.unlimited = { hold_minutes: 120, hold_amount_kopecks: amount_kopecks, sbp_block_minutes: 30, sbp_block_amount_kopecks: amountFor(from, 30).amount_kopecks };
+      // M3 (№112): use_balance — часть минут часами пакета, amount_kopecks — доплата
+      if (body.use_balance === true) {
+        if (body.minutes === null) return err(400, 'bad_request');
+        const b = m3.quoteBalance(body.minutes, from);
+        Object.assign(out, b);
+        Object.assign(state.quotes[id], { amount_kopecks: b.amount_kopecks, balance_minutes: b.balance_minutes });
+        if (b.balance_minutes > 0) out.breakdown = [];
+      }
+      const sess = body.kind === 'extend' ? state.sessions[body.session_id] : null;
+      out.extend_limit_until = sess?.extend_limit_until && !sess.unlimited ? new Date(sess.extend_limit_until).toISOString() : null;
       return ok(out);
     }],
     ['POST', /^\/api\/quotes\/([^/]+)\/pay$/, (m, body) => {
@@ -333,6 +350,16 @@ export function createBackend(storage) {
       if (!q) return err(404, 'not_found');
       if (q.valid_until < now()) return err(409, 'quote_expired');
       if (q.used) return err(409, 'quote_used');
+      if (body.method === 'balance') {
+        // Всё балансом (доплата 0): платёж сразу подтверждён, без ЮKassa
+        if (!q.balance_minutes || q.amount_kopecks > 0) return err(400, 'bad_request');
+        q.used = true;
+        m3.debit(q.balance_minutes);
+        const id = uuid();
+        state.payments[id] = { id, quote_id: q.id, method: 'balance', status: 'succeeded', paid_at: now(), amount_kopecks: 0 };
+        return ok({ payment_id: id, status: 'succeeded' });
+      }
+      if (q.balance_minutes) m3.debit(q.balance_minutes);
       q.used = true;
       if (body.method === 'reception') {
         const id = uuid();
@@ -433,19 +460,37 @@ export function createBackend(storage) {
       return ok({ lines, total_kopecks: total, payments: s.payments.map((p) => ({ method: p.method, amount_kopecks: p.amount_kopecks, payment_id: p.payment_id })), receipt_status: s.payments.some((p) => p.method === 'cash') ? 'receipt_pending' : 'sent' });
     }],
     ['GET', /^\/api\/push\/vapid-public-key$/, () => ok({ public_key: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U' })],
-    ['POST', /^\/api\/push\/subscribe$/, () => ok({ ok: true })],
+    ['POST', /^\/api\/push\/subscribe$/, () => {
+      // M3: подписка Web Push подключает канал «Уведомления браузера»
+      if (state.user) state.user.push_linked = true;
+      return ok({ ok: true });
+    }],
   ];
 
   const bar = barRoutes({ state: () => state, now, emit, needUser, sessionView, err, ok });
   routes.unshift(...bar.routes);
+  const m3 = m3Routes({
+    state: () => state,
+    now,
+    club: CLUB,
+    tables: () => Object.values(state.tables),
+    resourceId,
+    amountFor,
+    createSession,
+    err,
+    ok,
+    needUser,
+  });
+  routes.unshift(...m3.routes);
 
-  async function handle(method, path, body) {
+  async function handle(method, path, body, query) {
     bar.tick();
+    m3.tick();
     for (const [m, re, fn] of routes) {
       if (m !== method) continue;
       const match = re.exec(path);
       if (match) {
-        const res = fn(match, body);
+        const res = fn(match, body, query);
         save();
         return res;
       }
@@ -464,6 +509,11 @@ export function createBackend(storage) {
     confirm(paymentId, success) {
       const p = state.payments[paymentId];
       if (!p) return false;
+      if (['booking', 'booking_start', 'package'].includes(p.kind)) {
+        m3.confirm(p, success);
+        save();
+        return true;
+      }
       if (p.kind === 'order' || p.kind === 'tab') {
         bar.confirm(p, success);
         save();

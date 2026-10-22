@@ -15,7 +15,8 @@ import { useStore } from '../lib/store.js';
 import { navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { optionLabel, optionMinutes, tableName } from '../lib/words.js';
-import { getFlow, setFlow } from '../lib/flow.js';
+import { getFlow, rememberClub, rememberTable, setFlow } from '../lib/flow.js';
+import { MyBooking, Waitlist, startableBooking, useMyWaitlist } from '../components/TableExtras.jsx';
 
 const STEPS = ['choose', 'signin', 'consent', 'pay'];
 
@@ -35,12 +36,24 @@ export function TableScreen({ code, search }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const inFlight = useRef(false);
+  // M3: своя бронь на этот стол (GET /api/me/bookings) и стол, удержанный за гостем из очереди
+  const [myBooking, setMyBooking] = useState(null);
+  const [held, setHeld] = useState(false);
+  const [waitEntry, setWaitEntry] = useMyWaitlist(table?.resource?.id, authStatus === 'user' && Boolean(table) && table.status !== 'free', () => setHeld(true));
 
   const load = useCallback(async () => {
     try {
       const t = await api.table(code);
       setTable(t);
       setLoadError(null);
+      rememberClub(t.club);
+      rememberTable(t.resource?.id, code);
+      if (auth.get().status === 'user') {
+        api
+          .myBookings()
+          .then((list) => setMyBooking(startableBooking(list, t.resource?.id)))
+          .catch(() => {});
+      }
       return t;
     } catch (err) {
       setLoadError(err);
@@ -51,6 +64,10 @@ export function TableScreen({ code, search }) {
   useEffect(() => {
     load();
   }, [load]);
+  // Вход завершился (бот, мини-приложение) — перечитать: появится своя бронь
+  useEffect(() => {
+    if (authStatus === 'user' && table) load();
+  }, [authStatus]);
 
   // Свой стол во время игры: сразу на экран «Игра»
   useEffect(() => {
@@ -95,12 +112,15 @@ export function TableScreen({ code, search }) {
 
   /** Дальше после выбора времени, входа или согласия: вход → согласие → котировка → оплата (или присоединиться). */
   const proceed = async (intent = getFlow().intent ?? 'start') => {
+    if (step === 'choose') setFlow({ noBalance: false });
     if (inFlight.current) return;
     setError(null);
     setFlow({ code, intent, option, number: table?.resource?.number, resourceId: table?.resource?.id, timeZone: table?.club?.timezone, kind: 'start' });
     const st = auth.get();
     if (st.status !== 'user') return goStep('signin');
     if (needsConsent(st.user)) return goStep('consent');
+    // Лист ожидания (M3): после входа возвращаемся к столу, гость встаёт в очередь сам
+    if (intent === 'waitlist') return goStep(null, true);
     setBusy(true);
     inFlight.current = true;
     try {
@@ -109,7 +129,14 @@ export function TableScreen({ code, search }) {
         navigate(`${BASE}s/${encodeURIComponent(table.session_id)}`, { replace: true });
         return;
       }
-      const q = await api.quote({ resourceId: table.resource.id, kind: 'start', minutes: optionMinutes(option) });
+      // Часы пакета на балансе в клубе (M3, №112) — котировка сразу с use_balance; гость может отказаться
+      const minutes = optionMinutes(option);
+      let useBalance = false;
+      if (minutes !== null && !getFlow().noBalance && table.club?.id) {
+        const bal = await api.balance(table.club.id).catch(() => null);
+        useBalance = (bal?.minutes ?? 0) > 0;
+      }
+      const q = await api.quote({ resourceId: table.resource.id, kind: 'start', minutes, useBalance });
       setQuote(q);
       goStep('pay', step !== 'choose');
     } catch (err) {
@@ -180,11 +207,35 @@ export function TableScreen({ code, search }) {
       </Stage>
 
       <main class="wrap content">
-        {step === 'choose' && table.status === 'free' ? (
+        {step === 'choose' && myBooking ? <MyBooking table={table} booking={myBooking} code={code} onReload={load} /> : null}
+        {step === 'choose' && !myBooking && held ? (
+          <p class="note note--lamp" role="status">
+            <Icon name="clock" />
+            <span class="note__title">Стол держим за вами 3 минуты — выберите время и оплатите.</span>
+          </p>
+        ) : null}
+        {step === 'choose' && !myBooking && (table.status === 'free' || held) ? (
           <Choose table={table} option={option} setOption={setOption} busy={busy} error={error} onNext={() => proceed('start')} />
         ) : null}
-        {step === 'choose' && table.status !== 'free' ? (
-          <NotFree table={table} error={error} busy={busy} onReload={load} onJoin={() => proceed('join')} />
+        {step === 'choose' && !myBooking && !held && table.status !== 'free' ? (
+          <NotFree
+            table={table}
+            error={error}
+            busy={busy}
+            onReload={load}
+            onJoin={() => proceed('join')}
+            signedIn={authStatus === 'user'}
+            onSignIn={() => {
+              setFlow({ code, intent: 'waitlist' });
+              goStep('signin');
+            }}
+            waitEntry={waitEntry}
+            setWaitEntry={setWaitEntry}
+            onTaken={(w) => {
+              if (w?.status === 'accepted') setHeld(true);
+              load();
+            }}
+          />
         ) : null}
         {step === 'signin' ? (authStatus === 'user' ? <AutoProceed run={() => proceed()} /> : <SignIn />) : null}
         {step === 'consent' || step === 'pay' ? <SignedInAs /> : null}
@@ -197,6 +248,10 @@ export function TableScreen({ code, search }) {
             unlimited={optionMinutes(option) === null}
             timeZone={tz}
             onRequote={() => proceed('start')}
+            onWithoutBalance={() => {
+              setFlow({ noBalance: true });
+              proceed('start');
+            }}
             onError={handleFlowError}
             onReception={(res) => {
               setFlow({ requestId: res.reception_request_id, amount: quote.amount_kopecks, minutes: quote.minutes ?? null });
@@ -227,6 +282,8 @@ function AutoProceed({ run }) {
 function Choose({ table, option, setOption, busy, error, onNext }) {
   const now = useNow();
   const tz = table.club?.timezone;
+  // Бронь позже сегодня (M3, №106): играть можно до её начала минус 5 минут
+  const limit = table.next_booking?.starts_at ? Date.parse(table.next_booking.starts_at) - 5 * 60000 : null;
   return (
     <form
       class="step"
@@ -240,10 +297,11 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
         <div class="choice choice--grid">
           {(table.options ?? []).map((o) => {
             const m = optionMinutes(o);
-            const sub = m === null ? 'Платите за фактическое время' : `До ${formatTime(now + m * 60000, tz)}`;
+            const blocked = limit !== null && (m === null || now + m * 60000 > limit);
+            const sub = blocked ? 'Стол забронирован' : m === null ? 'Платите за фактическое время' : `До ${formatTime(now + m * 60000, tz)}`;
             return (
               <label class="choice__item" key={String(o)}>
-                <input type="radio" name="option" value={String(o)} checked={option === o} onChange={() => setOption(o)} />
+                <input type="radio" name="option" value={String(o)} checked={option === o} disabled={blocked} onChange={() => setOption(o)} />
                 <span class="choice__box">
                   <span class="choice__title">{optionLabel(o)}</span>
                   <span class="choice__sub">{sub}</span>
@@ -254,6 +312,14 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
         </div>
       </fieldset>
 
+      {limit !== null ? (
+        <p class="note note--lamp">
+          <Icon name="calendar" />
+          <span class="note__title">
+            Стол забронирован на {formatTime(table.next_booking.starts_at, tz)}, играть можно до {formatTime(limit, tz)}
+          </span>
+        </p>
+      ) : null}
       <p class="hint hint--icon">
         <Icon name="lamp" />
         Свет загорится сразу после оплаты. За 10 минут до конца напомним, продлить можно в один шаг.
@@ -262,7 +328,7 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
       <ErrorNote error={error} />
 
       <div class="actionbar">
-        <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || !option}>
+        <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || !option || (limit !== null && (optionMinutes(option) === null || now + optionMinutes(option) * 60000 > limit))}>
           {busy ? 'Считаем цену…' : 'Продолжить к оплате'}
         </button>
       </div>
@@ -286,7 +352,7 @@ function StagePrice({ now, next }) {
   );
 }
 
-function NotFree({ table, error, busy, onReload, onJoin }) {
+function NotFree({ table, error, busy, onReload, onJoin, signedIn, onSignIn, onTaken, waitEntry, setWaitEntry }) {
   const tz = table.club?.timezone;
   const until = table.busy_until ? formatTime(table.busy_until, tz) : null;
   const s = table.status;
@@ -299,14 +365,22 @@ function NotFree({ table, error, busy, onReload, onJoin }) {
     title = 'Стол сейчас занимают';
     text = 'Другой гость оплачивает игру. Если он не оплатит за 3 минуты, стол освободится.';
   } else if (s === 'reserved') {
-    title = 'Стол забронирован';
-    text = 'Скоро придут гости по брони. Выберите другой стол.';
+    title = table.next_booking?.starts_at ? `Стол забронирован на ${formatTime(table.next_booking.starts_at, tz)}` : 'Стол забронирован';
+    text = 'Скоро придут гости по брони. Выберите другой стол или забронируйте свой.';
   } else if (s === 'service') {
     title = until ? `Стол на обслуживании до ${until}` : 'Стол на обслуживании';
     text = 'Выберите другой стол или подойдите на ресепшн.';
   } else {
     title = 'Стол не на связи';
     text = 'Свет на нём сейчас не включится. Выберите другой стол или подойдите на ресепшн.';
+  }
+  // Предложение из очереди (5 минут) важнее всего остального на экране
+  if (waitEntry?.status === 'offered') {
+    return (
+      <div class="step">
+        <Waitlist table={table} entry={waitEntry} setEntry={setWaitEntry} signedIn={signedIn} onSignIn={onSignIn} onTaken={onTaken} />
+      </div>
+    );
   }
   return (
     <div class="step">
@@ -340,6 +414,10 @@ function NotFree({ table, error, busy, onReload, onJoin }) {
           </button>
         </>
       )}
+
+      {(s === 'busy' || s === 'pending' || s === 'reserved') && waitEntry?.status !== 'offered' ? (
+        <Waitlist table={table} entry={waitEntry} setEntry={setWaitEntry} signedIn={signedIn} onSignIn={onSignIn} onTaken={onTaken} />
+      ) : null}
     </div>
   );
 }

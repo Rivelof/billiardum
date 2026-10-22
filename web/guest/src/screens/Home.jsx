@@ -77,6 +77,26 @@ export function Home() {
             </li>
           </ol>
         )}
+        <nav class="homelinks" aria-label="Бронь и профиль">
+          <a class="homelinks__item homelinks__item--main" href={`${BASE}book`} onClick={linkHandler}>
+            <Icon name="calendar" />
+            <span>
+              Забронировать стол
+              <span class="homelinks__sub">День, время и стол на плане зала</span>
+            </span>
+            <Icon name="forward" />
+          </a>
+          <a class="homelinks__item" href={`${BASE}bookings`} onClick={linkHandler}>
+            <Icon name="list" />
+            <span>Мои брони</span>
+            <Icon name="forward" />
+          </a>
+          <a class="homelinks__item" href={`${BASE}me`} onClick={linkHandler}>
+            <Icon name="user" />
+            <span>Профиль, пакеты часов и уведомления</span>
+            <Icon name="forward" />
+          </a>
+        </nav>
         <footer class="foot">
           <a href={`${BASE}privacy`} onClick={linkHandler}>
             Политика обработки персональных данных

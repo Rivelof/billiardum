@@ -11,6 +11,8 @@ import { routes as receptionRoutes } from '../../api/routes/reception.mjs';
 import { routes as webhookRoutes } from '../../api/routes/webhooks.mjs';
 import { createBookingQuote, createPrepayment, creditPackageForSale, revokeLotOnly, revokePackageLot, debitBalance, forfeitPrepayment, packageSaleLine, recordOfflinePayment, settleDeposit, settlePrepayment } from '../../server/payments/api.mjs';
 import { resolveDeps } from '../../server/payments/deps.mjs';
+import { tick } from '../../server/payments/index.mjs';
+import { NOT_FOUND_REASON, onProviderNotFound } from '../../server/payments/pay.mjs';
 import { sendSettlementReceipt, SETTLE_TOPIC } from '../../server/payments/settle.mjs';
 import { cashTotals } from '../../server/shifts/service.mjs';
 import { withContext } from '../../server/lib/store.mjs';
@@ -492,5 +494,78 @@ describe('депозит наличными для «Без лимита» (№1
     await h.pool.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'stopped' where id = $1", [r.json.session_id, '2026-10-20T08:10:00Z']);
     const s = await asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) => settleDeposit(db, { sessionId: r.json.session_id }, inj()));
     assert.deepEqual({ u: s.used_kopecks, b: s.refunded_kopecks }, { u: 25000, b: 25000 });
+  });
+});
+
+describe('сверка: платёж, которого ЮKassa не знает (404)', () => {
+  const runTick = () => tick({ pool: h.pool, withContext: asAppApi, deps, config: h.config });
+  const notFoundLogs = (id) => h.logs.filter((l) => l.msg === 'payment_not_found_at_provider' && l.payment_id === id);
+  const reconcileFails = (id) => h.logs.filter((l) => l.msg === 'payment_reconcile_failed' && l.payment_id === id);
+  const notFoundAlarms = (id) => h.alarms.items.filter((a) => a.type === 'payment_not_found_at_provider' && a.data.payment_id === id);
+
+  it('pending: первый 404 — один лог; до часа ждём молча; старше часа — canceled (not_found_at_provider), стол освобождён, тревога один раз', async () => {
+    const t = T(7);
+    h.sessions.holds.delete(t);
+    for (const [id, s] of h.sessions.sessions) if (s.resource_id === t) h.sessions.sessions.delete(id);
+    const q = await h.call(QUOTE, { user: GUEST_2, body: { resource_id: t, kind: 'start', minutes: 60 } });
+    assert.equal(q.status, 200, JSON.stringify(q.json));
+    const r = await h.call(PAY, { user: GUEST_2, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const id = r.json.payment_id;
+    assert.ok(h.sessions.holds.get(t), 'pending на столе');
+    // ЮKassa (эмулятор после перезапуска) этот платёж не знает.
+    await h.pool.query('update bl.payments set provider_payment_id = $2 where id = $1', [id, `lost-${newKey().slice(0, 20)}`]);
+    let shift = 0;
+    const advance = (ms) => {
+      h.clock.advance(ms);
+      shift += ms;
+    };
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        advance(2 * 60_000);
+        await runTick();
+      }
+      let p = await payment(id);
+      assert.equal(p.status, 'pending', 'моложе часа — не отменяем');
+      assert.ok(p.provider_missing_at);
+      assert.equal(notFoundLogs(id).length, 1, 'лог — один раз на платёж');
+      assert.equal(reconcileFails(id).length, 0);
+      assert.equal(notFoundAlarms(id).length, 0);
+      advance(60 * 60_000);
+      await runTick();
+      await runTick();
+      p = await payment(id);
+      assert.deepEqual({ s: p.status, r: p.cancellation_reason }, { s: 'canceled', r: NOT_FOUND_REASON });
+      assert.equal(h.sessions.holds.get(t), undefined, 'pending со стола снят');
+      assert.equal(p.session_id, null, 'сессия не запущена');
+      const ev = await h.q("select payload from bl.outbox where topic = 'payment.canceled' and payload->>'payment_id' = $1", [id]);
+      assert.equal(ev.length, 1);
+      const alarms = notFoundAlarms(id);
+      assert.equal(alarms.length, 1, 'тревога один раз');
+      assert.deepEqual({ l: alarms[0].level, a: alarms[0].data.action }, { l: 'important', a: 'canceled' });
+      assert.equal(notFoundLogs(id).length, 1);
+      assert.equal(reconcileFails(id).length, 0);
+    } finally {
+      h.clock.advance(-shift);
+    }
+  });
+
+  it('у нас уже succeeded — платёж не трогаем, только тревога (один раз)', async () => {
+    h.sessions.holds.delete(T(7));
+    const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: T(7), kind: 'start', minutes: 60 } });
+    assert.equal(q.status, 200, JSON.stringify(q.json));
+    const r = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    await emuSucceed(r.json.payment_id);
+    const before = await payment(r.json.payment_id);
+    assert.equal(before.status, 'succeeded');
+    for (let i = 0; i < 2; i += 1) {
+      const out = await asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) => onProviderNotFound(db, deps, before, { source: 'test' }));
+      assert.equal(out.result, 'already');
+    }
+    const p = await payment(r.json.payment_id);
+    assert.deepEqual({ s: p.status, c: p.canceled_at }, { s: 'succeeded', c: null });
+    const alarms = notFoundAlarms(p.id);
+    assert.equal(alarms.length, 1);
+    assert.deepEqual({ l: alarms[0].level, a: alarms[0].data.action }, { l: 'critical', a: 'kept' });
   });
 });

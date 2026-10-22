@@ -11,4 +11,12 @@ export const ROUTES = [
   ['orders/:id', 'order'],
   ['sessions/:id/tab', 'tabpaid'],
   ['privacy', 'privacy'],
+  // M3: бронь (отдельный чанк), лист ожидания, профиль: баланс часов и каналы уведомлений
+  ['book', 'book'],
+  ['book/:club', 'bookclub'],
+  ['bookings', 'bookings'],
+  ['bookings/:id', 'booking'],
+  ['waitlist/:id', 'waitlist'],
+  ['me', 'me'],
+  ['me/notify', 'notify'],
 ];

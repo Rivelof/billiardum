@@ -41,7 +41,7 @@ export function install(configureApi) {
     await wait(LATENCY);
     const u = new URL(url, location.origin);
     const body = init.body ? JSON.parse(init.body) : undefined;
-    const res = await backend.handle(init.method ?? 'GET', u.pathname, body);
+    const res = await backend.handle(init.method ?? 'GET', u.pathname, body, u.searchParams);
     return new Response(JSON.stringify(res.body), { status: res.status, headers: { 'content-type': 'application/json' } });
   };
 

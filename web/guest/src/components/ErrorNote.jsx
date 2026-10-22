@@ -2,9 +2,9 @@ import { errorMessage } from '@billiardum/shared/errors';
 import { Icon } from './Icon.jsx';
 
 /** Ошибка словами: что случилось и что делать. role=alert — диктор прочтёт сразу. */
-export function ErrorNote({ error, busyUntil, children, class: cls = '' }) {
+export function ErrorNote({ error, busyUntil, limitUntil, children, class: cls = '' }) {
   if (!error) return null;
-  const msg = errorMessage(error, { audience: 'guest', busyUntil });
+  const msg = errorMessage(error, { audience: 'guest', busyUntil, limitUntil });
   return (
     <div class={`note note--error ${cls}`} role="alert">
       <Icon name="alert" />

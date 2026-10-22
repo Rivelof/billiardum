@@ -651,3 +651,47 @@ export function StopListDialog({ open, menu, onClose, onChanged }) {
     </Dialog>
   );
 }
+
+/**
+ * Пакет часов на кассе (M3, №112): телефон гостя — на его баланс лягут часы; войдя с этим номером, гость увидит их в профиле.
+ */
+export function PackageGuestDialog({ pack, onClose, onAdd }) {
+  const [phone, setPhone] = useState('');
+  const [tried, setTried] = useState(false);
+  useEffect(() => {
+    setPhone('');
+    setTried(false);
+  }, [pack?.id]);
+  if (!pack) return <Dialog open={false} onClose={onClose} title="" />;
+  const e164 = normalizePhone(phone);
+  return (
+    <Dialog open onClose={onClose} title={`Пакет «${pack.title}»`} labelledBy="pk-guest">
+      <form
+        class="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setTried(true);
+          if (e164) onAdd(e164);
+        }}
+        noValidate
+      >
+        <p class="lead">
+          {formatMoney(pack.price_kopecks)} · часы лягут на баланс гостя и действуют {pack.valid_days} дн.
+        </p>
+        <div class="field">
+          <label class="field__label" for="pk-phone">
+            Телефон гостя
+          </label>
+          <input id="pk-phone" class="field__input field__input--money mono" type="tel" inputMode="tel" autoComplete="off" placeholder="+7 900 000-00-00" value={phone} aria-invalid={tried && !e164 ? 'true' : undefined} onInput={(e) => setPhone(e.currentTarget.value)} />
+          {tried && !e164 ? <p class="field__error">Номер из 10 цифр после +7.</p> : <p class="field__hint">Гость должен уже входить в Бильярдум с этим номером — часы появятся у него в профиле. Скидка кассы на пакет не действует.</p>}
+        </div>
+        <Keypad label="Клавиатура телефона" compact onKey={(k) => setPhone((p) => (k === 'back' ? p.slice(0, -1) : k === 'clear' ? '' : (p + k).slice(0, 16)))} />
+        <div class="dialog__actions">
+          <button type="submit" class="btn btn--primary btn--block btn--lg">
+            Добавить в чек
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}

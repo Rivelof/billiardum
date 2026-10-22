@@ -1,6 +1,7 @@
 import { plural } from '@billiardum/shared/format';
 import { cartTotals, orderItems } from '@billiardum/shared/bar';
 import { minutesShort } from './words.js';
+import { packageItems } from './packages.js';
 
 /**
  * Касса POS ресепшена (контракт M2 §4 `POST /api/pos/sales`): скидка, лимит, тело продажи.
@@ -84,7 +85,8 @@ export function saleTotals(cart, discount) {
 export function saleBody(cart, opts) {
   const body = {
     method: opts.method,
-    items: orderItems(cart),
+    // Товары бара и пакеты часов (M3: { kind: 'package', package_id, phone })
+    items: [...orderItems(cart), ...packageItems(cart)],
     tabs: cart.lines.filter((l) => l.kind === 'tab').map((l) => l.session_id),
     requests: cart.lines.filter((l) => l.kind === 'request').map((l) => l.request_id),
   };
@@ -98,7 +100,7 @@ export function saleBody(cart, opts) {
     if (opts.approval?.approval_id) body.discount.approval_id = opts.approval.approval_id;
   }
   if (opts.method === 'cash') body.received_kopecks = opts.receivedKopecks;
-  if (opts.toBar !== undefined) body.to_bar = Boolean(opts.toBar) && body.items.length > 0;
+  if (opts.toBar !== undefined) body.to_bar = Boolean(opts.toBar) && body.items.some((i) => i.kind !== 'package');
   return body;
 }
 

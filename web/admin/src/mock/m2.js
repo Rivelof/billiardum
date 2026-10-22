@@ -500,10 +500,19 @@ export function m2Routes(ctx) {
     ['POST', /^\/api\/pos\/sales$/, (_m, b) => {
       if (!can('reception', 'manager', 'owner')) return err(403, 'forbidden');
       if (!['cash', 'card_terminal', 'sbp'].includes(b.method)) return err(400, 'bad_request');
-      const items = Array.isArray(b.items) ? b.items : [];
+      const all = Array.isArray(b.items) ? b.items : [];
+      // M3 (№112, №117): пакет часов — { kind: 'package', package_id, phone }; гость должен уже входить в приложение
+      const packs = all.filter((i) => i.kind === 'package');
+      const items = all.filter((i) => i.kind !== 'package');
+      for (const pk of packs) {
+        if (!pk.phone && !pk.user_id) return err(400, 'guest_required');
+        if (String(pk.phone ?? '').endsWith('0000')) return err(409, 'guest_not_found');
+        if (!(ctx.packages?.() ?? []).some((x) => x.id === pk.package_id && x.active)) return err(404, 'not_found');
+      }
+      const packageTotal = packs.reduce((a, pk) => a + ctx.packages().find((x) => x.id === pk.package_id).price_kopecks, 0);
       const tabs = Array.isArray(b.tabs) ? b.tabs : [];
       const requests = Array.isArray(b.requests) ? b.requests : [];
-      if (!items.length && !tabs.length && !requests.length) return err(400, 'bad_request');
+      if (!all.length && !tabs.length && !requests.length) return err(400, 'bad_request');
       if (b.method === 'sbp' && requests.length) return err(400, 'bad_request');
       if (!S().shift) return err(409, 'shift_closed');
       const lines = [];
@@ -545,7 +554,7 @@ export function m2Routes(ctx) {
       }
       const barTotal = barSubtotal - discount;
       if (barSubtotal > 0 && barTotal <= 0) return err(400, 'bad_request');
-      const total = barTotal + tableTotal;
+      const total = barTotal + tableTotal + packageTotal;
       if (b.method === 'cash' && !(Number.isSafeInteger(b.received_kopecks) && b.received_kopecks >= total)) return err(400, 'bad_request');
       const sid = uuid();
       const sale = {
@@ -559,6 +568,8 @@ export function m2Routes(ctx) {
         bar_subtotal_kopecks: barSubtotal,
         discount_kopecks: discount,
         bar_kopecks: barTotal,
+        package_kopecks: packageTotal,
+        packages: packs.map((pk) => ({ package_id: pk.package_id, title: ctx.packages().find((x) => x.id === pk.package_id).title, amount_kopecks: ctx.packages().find((x) => x.id === pk.package_id).price_kopecks })),
         table_kopecks: tableTotal,
         total_kopecks: total,
         received_kopecks: b.method === 'cash' ? b.received_kopecks : null,

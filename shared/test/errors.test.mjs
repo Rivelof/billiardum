@@ -42,6 +42,11 @@ test('гостю и персоналу — разные тексты, где э�
 
 test('«Стол занят до 21:40» — время подставляется (DESIGN §7)', () => {
   assert.equal(errorMessage('table_busy', { busyUntil: '21:40' }).title, 'Стол занят до 21:40.');
+  // M3: продление перед бронью — время из extend_limit_until котировки.
+  assert.equal(errorMessage('booking_conflict', { limitUntil: '20:55' }).title, 'Стол забронирован — можно продлить до 20:55.');
+  assert.match(errorMessage('booking_conflict').title, /забронирован/);
+  for (const code of ['booking_expired', 'booking_not_active', 'too_early', 'table_free', 'fd_conflict']) assert.notEqual(errorMessage(code).code, 'unknown');
+  assert.notEqual(errorMessage('booking_expired').title, errorMessage('unknown').title);
   assert.equal(errorMessage('table_busy').title, 'Стол уже занят.');
 });
 

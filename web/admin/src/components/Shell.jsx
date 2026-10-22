@@ -21,6 +21,7 @@ export function navItems(role, club) {
   if (can.reception(role)) add('reception', 'reception', 'Ресепшн', manage);
   if (can.bar(role)) add('bar', 'cup', 'Бар', manage);
   if (can.shift(role)) add('shift', 'register', manage ? 'Смены' : 'Смена');
+  if (can.bookings(role)) add('bookings', 'calendar', 'Брони', true);
   if (manage) {
     add('journal', 'journal', 'Журнал');
     add('alarms', 'bell', 'Тревоги');
@@ -28,6 +29,8 @@ export function navItems(role, club) {
   if (can.stock(role)) add('stock', 'box', 'Склад', true);
   if (can.menu(role)) add('menu', 'list', 'Меню', true);
   if (can.kkt(role)) add('kkt', 'printer', 'ККТ', true);
+  if (can.packages(role)) add('packages', 'ticket', 'Пакеты', true);
+  if (can.staff(role)) add('staff', 'users', 'Персонал', true);
   if (can.devices(role)) add('devices', 'chip', 'Контроллеры', manage);
   add('more', 'more', 'Ещё');
   return items;

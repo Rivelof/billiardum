@@ -104,6 +104,10 @@ export const can = {
   // Касса ККТ: очередь чеков — управляющий и владелец (повтор и «пробит» — ручные действия); мосты — только владелец
   kkt: (role) => ['manager', 'owner'].includes(role),
   kktBridges: (role) => role === 'owner',
+  // M3: брони — ресепшн и выше; персонал — только владелец (№111); пакеты часов — управляющий и владелец (№112)
+  bookings: (role) => ['reception', 'manager', 'owner'].includes(role),
+  staff: (role) => role === 'owner',
+  packages: (role) => ['manager', 'owner'].includes(role),
   /** Скидку выше лимита даёт сам: управляющий и владелец (с причиной). */
   bigDiscount: (role) => ['manager', 'owner'].includes(role),
 };

@@ -413,8 +413,53 @@ export async function syncPayment(db, deps, config, payment, { source = 'sync' }
   if (payment.provider !== 'yookassa') return { result: 'already', payment };
   const settings = await loadPaymentSettings(db, payment.club_id);
   const client = clientFor(settings, config);
-  const remote = await client.getPayment(payment.provider_payment_id);
+  let remote;
+  try {
+    remote = await client.getPayment(payment.provider_payment_id);
+  } catch (err) {
+    if (err instanceof YooKassaError && err.status === 404) return onProviderNotFound(db, deps, payment, { source });
+    throw err;
+  }
   return applyRemote(db, deps, payment, remote, { source });
+}
+
+/** Через сколько pending-платёж, которого ЮKassa не знает, отменяется. */
+export const NOT_FOUND_CANCEL_AFTER_MS = 60 * 60 * 1000;
+export const NOT_FOUND_REASON = 'not_found_at_provider';
+
+/**
+ * ЮKassa ответила 404 на GET платежа: сбой при создании, чужой магазин, перезапущенный эмулятор.
+ * * Первый 404 — отметка provider_missing_at и одна запись в логе (дальше сверка молчит).
+ * * pending старше часа — отмена (причина not_found_at_provider): payment.canceled, pending со стола
+ *   снимается, сессия и бронь не запускаются; тревога владельцу один раз.
+ * * Платёж у нас уже оплачен (succeeded / waiting_for_capture) — не трогаем, только тревога (один раз).
+ */
+export async function onProviderNotFound(db, deps, payment, { source = 'reconcile' } = {}) {
+  const now = deps.clock.now();
+  const { rows } = await db.query('select * from bl.payments where id = $1 for update', [payment.id]);
+  const p = rows[0];
+  if (!p) return { result: 'already', payment };
+  const first = !p.provider_missing_at;
+  await db.query('update bl.payments set provider_missing_at = coalesce(provider_missing_at, $2), checked_at = $2 where id = $1', [p.id, now]);
+  const alarm = (level, action) =>
+    deps.alarms.raise(db, p.club_id, {
+      type: 'payment_not_found_at_provider',
+      level,
+      resourceId: p.resource_id ?? undefined,
+      data: { payment_id: p.id, kind: p.kind, status: p.status, amount_kopecks: Number(p.amount_kopecks), action },
+    });
+  if (p.status !== 'pending') {
+    if (first && (p.status === 'succeeded' || p.status === 'waiting_for_capture')) {
+      deps.log?.error?.('payment_not_found_at_provider', { payment_id: p.id, club_id: p.club_id, status: p.status, source });
+      await alarm('critical', 'kept');
+    }
+    return { result: 'already', payment: p };
+  }
+  if (first) deps.log?.warn?.('payment_not_found_at_provider', { payment_id: p.id, club_id: p.club_id, status: p.status, source });
+  if (now.getTime() - new Date(p.created_at).getTime() < NOT_FOUND_CANCEL_AFTER_MS) return { result: 'pending', payment: p };
+  const r = await cancelLocal(db, deps, p, { reason: NOT_FOUND_REASON, now });
+  if (r.result === 'canceled') await alarm('important', 'canceled');
+  return r;
 }
 
 /** GET /api/payments/{id}: статус для плательщика; давно в pending — сверка по API. */

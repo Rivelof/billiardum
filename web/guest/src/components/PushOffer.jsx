@@ -1,7 +1,7 @@
 import { useState } from 'preact/hooks';
 import { Icon } from './Icon.jsx';
-import { api } from '../lib/api.js';
-import { base64UrlToBytes, pushAvailability } from '../lib/platform.js';
+import { pushAvailability } from '../lib/platform.js';
+import { subscribePush } from '../lib/push.js';
 import { local } from '../lib/store.js';
 
 const DISMISSED = 'bl-push-dismissed';
@@ -19,17 +19,7 @@ export function PushOffer() {
   const enable = async () => {
     setBusy(true);
     try {
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        setState('denied-now');
-        return;
-      }
-      const reg = await navigator.serviceWorker.ready;
-      const key = import.meta.env?.VITE_VAPID_PUBLIC_KEY || (await api.pushKey())?.public_key;
-      if (!key) throw new Error('no vapid key');
-      const sub = (await reg.pushManager.getSubscription()) ?? (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(key) }));
-      await api.pushSubscribe(sub.toJSON());
-      setState('done');
+      setState((await subscribePush()) === 'done' ? 'done' : 'denied-now');
     } catch {
       setState('failed');
     } finally {

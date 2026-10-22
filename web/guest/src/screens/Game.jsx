@@ -16,6 +16,7 @@ import { BASE } from '../lib/env.js';
 import { clubTimeZone, getFlow, setFlow } from '../lib/flow.js';
 import { currentOrder, ordersWord, tabSummary } from '../lib/bar.js';
 import { orderWord } from '@billiardum/shared/bar';
+import { extendLimitText } from '@billiardum/shared/booking';
 
 const EXTEND_OPTIONS = [30, 60, 120, 180];
 const TONE = { play: 'play', warn: 'warn', grace: 'grace', unlimited: 'play' };
@@ -275,20 +276,33 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
   const max = maxExtendMinutes(session);
   const paidUntil = Date.parse(session.paid_until);
   const from = Math.max(paidUntil, Date.now());
+  // Бронь после игры (№106): к вариантам добавляем «до 20:55» — ровно до предела, если он не совпал с вариантом
+  const limitText = extendLimitText(session, (x) => formatTime(x, tz));
+  const options = max !== null && max >= 5 && !EXTEND_OPTIONS.includes(max) ? [...EXTEND_OPTIONS.filter((m) => m < max), max] : EXTEND_OPTIONS;
 
   useEffect(() => {
     if (!open) {
       setQuote(null);
       setError(null);
+    } else if (max !== null && minutes > max) {
+      // Бронь близко: выбираем самый длинный доступный вариант
+      const fit = options.filter((m) => m <= max);
+      if (fit.length) setMinutes(fit[fit.length - 1]);
     }
   }, [open]);
 
   const unlimited = Boolean(session.unlimited);
-  const requestQuote = async () => {
+  const requestQuote = async (opts = {}) => {
     setBusy(true);
     setError(null);
     try {
-      const q = await api.quote({ resourceId: session.resource.id, kind: 'extend', minutes: unlimited ? null : minutes, sessionId: session.id });
+      // Часы пакета (№112): есть на балансе — продление сразу с use_balance, гость может отказаться
+      let useBalance = false;
+      if (!unlimited && !opts.noBalance && session.club?.id) {
+        const bal = await api.balance(session.club.id).catch(() => null);
+        useBalance = (bal?.minutes ?? 0) > 0;
+      }
+      const q = await api.quote({ resourceId: session.resource.id, kind: 'extend', minutes: unlimited ? null : minutes, sessionId: session.id, useBalance });
       setFlow({
         kind: 'extend',
         sessionId: session.id,
@@ -299,7 +313,7 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
       setQuote(q);
     } catch (err) {
       setError(err);
-      if (err?.code === 'session_not_active') reload();
+      if (err?.code === 'session_not_active' || err?.code === 'booking_conflict') reload();
     } finally {
       setBusy(false);
     }
@@ -314,7 +328,8 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
           kind="extend"
           unlimited={unlimited}
           timeZone={tz}
-          onRequote={requestQuote}
+          onRequote={() => requestQuote()}
+          onWithoutBalance={() => requestQuote({ noBalance: true })}
           onReception={(res) => {
             setFlow({
               extendRequest: {
@@ -341,7 +356,7 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
             Игра без лимита оплачена до <span class="mono">{formatTime(session.paid_until, tz)}</span>. Продлите сейчас: картой — новая заморозка,
             по СБП — следующий блок. Платите всё равно только за сыгранное.
           </p>
-          <ErrorNote error={error} />
+          <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
           <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
             {busy ? 'Считаем цену…' : 'Рассчитать продление'}
           </button>
@@ -357,13 +372,14 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
           <fieldset>
             <legend class="step__label">На сколько продлить?</legend>
             <div class="choice choice--grid">
-              {EXTEND_OPTIONS.map((m) => {
+              {options.map((m) => {
                 const blocked = max !== null && m > max;
+                const toLimit = max !== null && m === max && !EXTEND_OPTIONS.includes(m);
                 return (
                   <label class="choice__item" key={m}>
                     <input type="radio" name="extend" value={m} checked={minutes === m} disabled={blocked} onChange={() => setMinutes(m)} />
                     <span class="choice__box">
-                      <span class="choice__title">{optionLabel(m)}</span>
+                      <span class="choice__title">{toLimit ? `До ${formatTime(session.extend_limit_until, tz)}` : optionLabel(m)}</span>
                       <span class="choice__sub">{blocked ? 'Стол забронирован' : `До ${formatTime(from + m * 60000, tz)}`}</span>
                     </span>
                   </label>
@@ -371,12 +387,13 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
               })}
             </div>
           </fieldset>
-          {max !== null ? (
-            <p class="hint">
-              После {formatTime(session.extend_limit_until, tz)} стол забронирован, поэтому продлить можно не больше чем на {minutesWords(max, { accusative: true })}.
+          {limitText ? (
+            <p class="note note--lamp">
+              <Icon name="calendar" />
+              <span class="note__title">{limitText}</span>
             </p>
           ) : null}
-          <ErrorNote error={error} />
+          <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
           <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || (max !== null && minutes > max)}>
             {busy ? 'Считаем цену…' : `Рассчитать цену за ${minutesWords(minutes, { accusative: true })}`}
           </button>

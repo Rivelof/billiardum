@@ -1,10 +1,12 @@
 /*
  * BL_MOCK_MARKER — заглушка API программы клуба по контракту M1 (§4–§7), только для разработки (VITE_MOCK=1).
  * Сценарии: ?mock=reception (по умолчанию) | owner | manager | anon | empty | broken | terminal;
- * M2 (mock/m2.js): pos | noshift (смены нет) | kktoff (касса ККТ не на связи) | bar (бармен)
+ * M2 (mock/m2.js): pos | noshift (смены нет) | kktoff (касса ККТ не на связи) | bar (бармен);
+ * M3 (mock/m3.js): брони, персонал, пакеты и депозит — в каждом сценарии (empty — без броней)
  */
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
+import { m3Routes, m3State } from './m3.js';
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -74,6 +76,7 @@ function freshState(scenario, t) {
     revenue: { sbp: 1248000, card: 486000, cash: 320000, card_terminal: 160000 },
     nextRequestAt: t + 45_000,
     m2: m2State(scenario, t, hall),
+    m3: m3State(scenario, t, hall),
   };
 }
 
@@ -122,6 +125,7 @@ export function createBackend(storage, now = () => Date.now()) {
   let state = storage.load() ?? freshState('reception', now());
   // Состояние из sessionStorage до M2 — дополняем данными кассы, бара и смен
   if (!state.m2?.catalog) state.m2 = m2State(state.scenario, now(), state.hall);
+  if (!state.m3?.packages) state.m3 = m3State(state.scenario, now(), state.hall);
   const listeners = new Set();
   const save = () => storage.save(state);
   const emit = (name, data) => {
@@ -299,8 +303,10 @@ export function createBackend(storage, now = () => Date.now()) {
     audit,
     staffById: (id) => Object.values(STAFF).find((u) => u.id === id),
     approvers: () => [STAFF.manager, STAFF.owner].map((u) => ({ user_id: u.id, name: u.name, role: u.role })),
+    packages: () => state.m3.packages,
   };
   routes.push(...m2Routes(m2ctx));
+  routes.push(...m3Routes({ state: () => state, now, me, err, ok, emit, audit }).routes);
 
   async function handle(method, url) {
     tick();

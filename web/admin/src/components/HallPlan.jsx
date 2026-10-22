@@ -7,11 +7,13 @@ const pct = (v) => `${(v * 100).toFixed(3)}%`;
 
 /** Подсчёт столов по состояниям для легенды и заголовка. */
 export function hallCounts(items, timeZone) {
-  const counts = { play: 0, free: 0, service: 0, offline: 0, pending: 0, reserved: 0 };
+  const counts = { play: 0, free: 0, service: 0, offline: 0, pending: 0, reserved: 0, booked: 0 };
   for (const it of items) {
     const st = tableState(it, { formatTime: (iso) => formatTime(iso, timeZone) });
     const key = ['ending', 'grace'].includes(st.tone) ? 'play' : st.tone;
     counts[key] = (counts[key] ?? 0) + 1;
+    // Стол с бронью позже сегодня пока свободен (M3): считаем и в «Свободно», и в «Бронь»
+    if (key === 'booked') counts.free += 1;
   }
   return counts;
 }
@@ -45,6 +47,12 @@ export function HallPlan({ items, timeZone, onSelect, perRow, label = 'План 
             <span class="legend__mark" aria-hidden="true" />
             Свободно <b>{counts.free}</b>
           </li>
+          {counts.booked + counts.reserved ? (
+            <li>
+              <span class="legend__mark legend__mark--booked" aria-hidden="true" />
+              Бронь <b>{counts.booked + counts.reserved}</b>
+            </li>
+          ) : null}
           {counts.service ? (
             <li>
               <span class="legend__mark legend__mark--service" aria-hidden="true" />
