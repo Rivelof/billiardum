@@ -79,8 +79,13 @@ test(`браузер T1: гость на 360 px, стол ${T1_TABLE}, 2 час�
     assert.ok(ok360, `${name}: горизонтальная прокрутка на 360 px`);
   };
 
-  // Ссылка с QR-наклейки (/t/{код}) проверяется отдельным тестом ниже; поток T1 — с /app/t/{код}.
-  await page.goto(`${BASE}/app/t/${tableCode(T1_TABLE)}`, { waitUntil: 'networkidle' });
+  // Скан QR: ссылка с наклейки https://{PUBLIC_HOST}/t/{код} → 302 → экран стола.
+  const qr = await page.goto(`${BASE}/t/${tableCode(T1_TABLE)}`, { waitUntil: 'networkidle' });
+  const redirect = qr.request().redirectedFrom();
+  t.diagnostic(`скан QR: ${redirect ? `${new URL(redirect.url()).pathname} → ${(await redirect.response())?.status()} → ` : ''}${new URL(page.url()).pathname} HTTP ${qr.status()}`);
+  assert.equal((await redirect?.response())?.status(), 302, 'перенаправление 302');
+  assert.match(new URL(page.url()).pathname, new RegExp(`/app/t/${tableCode(T1_TABLE)}$`), 'короткая ссылка QR ведёт на экран стола');
+  await page.getByRole('radio', { name: /2 часа/ }).waitFor({ timeout: 10_000 });
   await shot('ui-t1-01-table-360');
   await page.getByRole('radio', { name: /2 часа/ }).check();
   await page.getByRole('button', { name: 'Продолжить к оплате' }).click();
@@ -177,6 +182,7 @@ test(`браузер T2: ресепшн 1280×800, стол ${T2_TABLE} — за
   const tileText = (await tile.first().textContent()).replace(/\s+/g, ' ');
   await shot('ui-t2-02-request-1280x800');
   t.diagnostic(`заявка ${r.reception_request_id.slice(0, 8)} на экране через ${Date.now() - t0} мс без перезагрузки: «${tileText}»`);
+  assert.match(tileText, /сгорит через 15 минут/, 'новая заявка живёт 15 минут');
   await tile.first().getByRole('button', { name: 'Принять оплату' }).click();
   await rec.waitForTimeout(400);
   for (const k of ['2', '0', '0', '0']) await rec.getByRole('group', { name: 'Клавиатура суммы' }).getByRole('button', { name: k, exact: true }).click();

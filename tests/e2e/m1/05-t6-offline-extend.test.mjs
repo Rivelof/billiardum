@@ -174,7 +174,8 @@ describe('T6: связь пропала, гость оплатил продле�
     );
     const total = refunds.reduce((a, x) => a + Number(x.amount_kopecks), 0);
     t.diagnostic(`стол ${TC}: bl.refunds ${JSON.stringify(refunds.map((x) => ({ amount_kopecks: x.amount_kopecks, status: x.status })))}; неотыгранное ${s.remaining_ms} мс; продление стоило ${ctx.ext.q.amount_kopecks} коп.`);
-    assert.ok(Math.abs(total - ctx.ext.q.amount_kopecks) <= 100, 'вернули стоимость неотыгранных 3 минут (±1 ₽)');
+    // №73: продление, свет по которому контроллер не показал ни секунды, возвращается целиком.
+    assert.equal(total, ctx.ext.q.amount_kopecks, 'вернули продление целиком');
     for (const x of refunds) {
       const p = emuPayment(x.provider_payment_id);
       const refundReceipts = (p.receipts ?? []).filter((rc) => rc.kind === 'refund');

@@ -1,6 +1,8 @@
 // T1. Гость сканирует QR, платит 2 часа по СБП → свет < 1 с после вебхука, таймер 2:00:00, чек.
 //
-// Только API гостя: /api/t/{code} → котировка 120 мин → оплата sbp → «Оплатить» в эмуляторе
+// Скан QR: ссылка с наклейки https://{PUBLIC_HOST}/t/{код} → 302 на /app/t/{код} (№72); кривой код
+// и попытки открытого перенаправления → 404, Location только на свой /app/t/{код}.
+// Дальше только API гостя: /api/t/{code} → котировка 120 мин → оплата sbp → «Оплатить» в эмуляторе
 // ЮKassa (вебхук на сервер) → симулятор: relay true. Время до света — от payments.confirmed_at
 // (сервер принял вебхук) до строки sim_relay симулятора с cmd_id команды session.start
 // (часы одного хоста), плюс light_latency сервера (confirmed_at → ack).
@@ -22,6 +24,7 @@ import {
   sim,
   SIM_CONTAINER,
   startGame,
+  tableCode,
   waitFor,
   waitSim,
   waitTableFree,
@@ -38,6 +41,45 @@ before(async () => {
 
 after(async () => {
   await db?.end();
+});
+
+test(`T1: скан QR — /t/{код} → 302 /app/t/{код}; кривой код и открытое перенаправление → 404`, async (t) => {
+  const code = tableCode(TABLE);
+  const r = await api('GET', `/t/${code}`, { headers: { accept: 'text/html' } });
+  t.diagnostic(`GET /t/${code} → HTTP ${r.status} Location: ${r.headers.location}`);
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.location, `/app/t/${code}`);
+  const app = await api('GET', r.headers.location, { headers: { accept: 'text/html' } });
+  t.diagnostic(`GET ${r.headers.location} → HTTP ${app.status} ${app.headers['content-type']}`);
+  assert.equal(app.status, 200);
+  assert.match(app.headers['content-type'], /text\/html/);
+  const lower = await api('GET', `/t/${code.toLowerCase()}`);
+  t.diagnostic(`строчными /t/${code.toLowerCase()} → ${lower.status} ${lower.headers.location}`);
+  assert.equal(lower.headers.location, `/app/t/${code}`);
+
+  const bad = [
+    '/t/AAA', // короче 10
+    '/t/TEST0000011', // длиннее 10
+    '/t/TESTI00001', // I вне Crockford Base32
+    '/t/BADCODE%21%21%21', // недопустимые символы
+    '/t/%2F%2Fevil.example.com',
+    '/t//evil.example.com',
+    '/t/https:%2F%2Fevil.example.com',
+    '/t/%5Cevil.example.com',
+    '/t/evil.example.com',
+    `/t/${code}%0d%0aLocation:%20https://evil.example.com`,
+    `/t/${code}/..%2F..%2Fevil`,
+  ];
+  for (const p of bad) {
+    const x = await api('GET', p);
+    t.diagnostic(`${p} → HTTP ${x.status}${x.headers.location ? ` Location: ${x.headers.location}` : ''} ${x.text.slice(0, 40)}`);
+    assert.equal(x.status, 404, p);
+    assert.equal(x.headers.location, undefined, p);
+  }
+  // Параметры запроса и чужой Host в адрес перенаправления не попадают.
+  const q = await api('GET', `/t/${code}?next=https://evil.example.com&url=//evil.example.com`, { headers: { 'x-forwarded-host': 'evil.example.com' } });
+  t.diagnostic(`с ?next=…&url=… и X-Forwarded-Host → HTTP ${q.status} Location: ${q.headers.location}`);
+  assert.equal(q.headers.location, `/app/t/${code}`);
 });
 
 test(`T1: стол ${TABLE}, 2 часа по СБП → свет, таймер 2:00:00`, async (t) => {
