@@ -210,7 +210,10 @@ export async function setupMoney({ start, configOverrides = {} } = {}) {
       },
     },
     notify: {
-      async send() {},
+      async send(_db, userId, msg) {
+        notes.items.push({ userId, ...msg });
+        return { notification_id: null };
+      },
       async sendToClubStaff(_db, clubId, roles, msg) {
         notes.items.push({ clubId, roles, ...msg });
       },

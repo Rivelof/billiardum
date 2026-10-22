@@ -12,7 +12,8 @@ import { routes as webhookRoutes } from '../../api/routes/webhooks.mjs';
 import { createBookingQuote, createPrepayment, creditPackageForSale, revokeLotOnly, revokePackageLot, debitBalance, forfeitPrepayment, packageSaleLine, recordOfflinePayment, settleDeposit, settlePrepayment } from '../../server/payments/api.mjs';
 import { resolveDeps } from '../../server/payments/deps.mjs';
 import { tick } from '../../server/payments/index.mjs';
-import { NOT_FOUND_REASON, onProviderNotFound } from '../../server/payments/pay.mjs';
+import { cancelLocal, NOT_FOUND_REASON, onProviderNotFound } from '../../server/payments/pay.mjs';
+import { clientFor, loadPaymentSettings } from '../../server/payments/settings.mjs';
 import { sendSettlementReceipt, SETTLE_TOPIC } from '../../server/payments/settle.mjs';
 import { cashTotals } from '../../server/shifts/service.mjs';
 import { withContext } from '../../server/lib/store.mjs';
@@ -670,3 +671,111 @@ describe('партии гостя для экрана возврата (№118, 
     assert.ok(n <= 31 && n >= 29, `сработало на ${n}-м запросе`);
   });
 });
+
+describe('B-L1: платёж отменён у нас, а в ЮKassa оплачен — автовозврат, тревога один раз', () => {
+  const runTick = () => tick({ pool: h.pool, withContext: asAppApi, deps, config: h.config });
+  const lateAlarms = (id) => h.alarms.items.filter((a) => a.type === 'payment_paid_after_cancel' && a.data.payment_id === id);
+  const guestNotes = (id) => h.notes.items.filter((n) => n.kind === 'payment_returned' && n.data?.payment_id === id);
+  const startPay = async (t, user, body) => {
+    h.sessions.holds.delete(t);
+    for (const [sid, s] of h.sessions.sessions) if (s.resource_id === t) h.sessions.sessions.delete(sid);
+    const q = await h.call(QUOTE, { user, body: { resource_id: t, kind: 'start', ...body.quote } });
+    assert.equal(q.status, 200, JSON.stringify(q.json));
+    const r = await h.call(PAY, { user, params: { id: q.json.quote_id }, body: { method: body.method }, idempotencyKey: newKey() });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    return r.json.payment_id;
+  };
+  const webhookAgain = (pid, event) =>
+    h.call(WEBHOOK, { params: { club_id: CLUB_A }, body: { type: 'notification', event, object: { id: pid } }, actor: 'system' });
+
+  it('отмена по 404, затем гость оплатил: возврат всей суммы с чеком возврата (как чек продажи), игры нет, тревога и уведомление гостю — один раз', async () => {
+    const id = await startPay(T(7), GUEST_2, { quote: { minutes: 60 }, method: 'sbp' });
+    const real = (await payment(id)).provider_payment_id;
+    await h.pool.query('update bl.payments set provider_payment_id = $2 where id = $1', [id, `lost-${newKey().slice(0, 20)}`]);
+    let shift = 0;
+    try {
+      h.clock.advance(5 * 60_000);
+      shift += 5 * 60_000;
+      await runTick();
+      h.clock.advance(61 * 60_000);
+      shift += 61 * 60_000;
+      await runTick();
+      assert.deepEqual([(await payment(id)).status, (await payment(id)).cancellation_reason], ['canceled', NOT_FOUND_REASON]);
+      // Платёж снова виден в ЮKassa, гость оплачивает; вебхук.
+      await h.pool.query('update bl.payments set provider_payment_id = $2 where id = $1', [id, real]);
+      await fetch(`${h.emuBase}/__emu/payments/${real}/succeed?wait=1`, { method: 'POST' });
+      await h.emu.settle();
+      const p = await payment(id);
+      assert.equal(p.status, 'canceled', 'статус окончательный');
+      assert.equal(p.session_id, null, 'игра не началась');
+      assert.equal(h.sessions.holds.get(T(7)), undefined);
+      assert.ok(p.late_paid_at);
+      assert.equal((await h.q("select * from bl.outbox where topic = 'payment.confirmed' and payload->>'payment_id' = $1", [id])).length, 0);
+      const refunds = await h.q('select * from bl.refunds where payment_id = $1', [id]);
+      assert.equal(refunds.length, 1);
+      assert.deepEqual({ k: refunds[0].idempotence_key, a: Number(refunds[0].amount_kopecks), s: refunds[0].status }, { k: `late-${id}`, a: Number(p.amount_kopecks), s: 'succeeded' });
+      const emuP = await (await fetch(`${h.emuBase}/__emu/payments/${real}`)).json();
+      assert.deepEqual(emuP.refunded_amount, { value: formatRub(Number(p.amount_kopecks)), currency: 'RUB' });
+      const sale = (await h.q("select items from bl.receipts where payment_id = $1 and kind = 'sale'", [id]))[0];
+      const ret = (await h.q("select * from bl.receipts where refund_id = $1 and kind = 'refund'", [refunds[0].id]))[0];
+      assert.equal(ret.channel, 'yookassa');
+      assert.deepEqual(ret.items, sale.items, 'чек возврата повторяет чек продажи');
+      assert.ok(emuP.receipts.some((x) => x.kind === 'refund'));
+      assert.equal((await h.audit('payment.refunded')).filter((a) => a.object_id === id).length, 1);
+      const alarms = lateAlarms(id);
+      assert.equal(alarms.length, 1);
+      assert.deepEqual({ l: alarms[0].level, a: alarms[0].data.action, s: alarms[0].data.provider_status }, { l: 'critical', a: 'refunded', s: 'succeeded' });
+      assert.equal(guestNotes(id).length, 1);
+      assert.equal(guestNotes(id)[0].userId, GUEST_2);
+      // Повтор вебхука — ни второго возврата, ни второй тревоги.
+      const again = await webhookAgain(real, 'payment.succeeded');
+      assert.equal(again.status, 200);
+      assert.equal((await h.q('select * from bl.refunds where payment_id = $1', [id])).length, 1);
+      assert.equal(lateAlarms(id).length, 1);
+      assert.equal(guestNotes(id).length, 1);
+    } finally {
+      h.clock.advance(-shift);
+    }
+  });
+
+  it('перед отменой по 404 — повторный запрос: платёж нашёлся — не отменяем', async () => {
+    const id = await startPay(T(7), GUEST_2, { quote: { minutes: 60 }, method: 'sbp' });
+    const shift = 61 * 60_000;
+    h.clock.advance(shift);
+    try {
+      const out = await asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, async (db) => {
+        const client = clientFor(await loadPaymentSettings(db, CLUB_A), h.config);
+        return onProviderNotFound(db, deps, await payment(id), { source: 'test', client });
+      });
+      assert.equal(out.result, 'pending');
+      const p = await payment(id);
+      assert.deepEqual({ s: p.status, c: p.canceled_at }, { s: 'pending', c: null });
+    } finally {
+      h.clock.advance(-shift);
+    }
+  });
+
+  it('заморозка «Без лимита», отменённая у нас, затем подтверждённая в ЮKassa — заморозка снимается, тревога один раз, возврата нет', async () => {
+    const id = await startPay(T(6), GUEST_1, { quote: { minutes: null }, method: 'card' });
+    assert.equal((await payment(id)).capture, false);
+    await asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, async (db) => cancelLocal(db, deps, await payment(id), { reason: 'expired_on_confirmation', now: h.clock.now() }));
+    const real = (await payment(id)).provider_payment_id;
+    await fetch(`${h.emuBase}/__emu/payments/${real}/succeed?wait=1`, { method: 'POST' });
+    await h.emu.settle();
+    const emuP = await (await fetch(`${h.emuBase}/__emu/payments/${real}`)).json();
+    assert.equal(emuP.status, 'canceled', 'заморозка снята в ЮKassa');
+    const p = await payment(id);
+    assert.deepEqual({ s: p.status, sess: p.session_id }, { s: 'canceled', sess: null });
+    assert.equal((await h.q('select * from bl.refunds where payment_id = $1', [id])).length, 0);
+    const alarms = lateAlarms(id);
+    assert.equal(alarms.length, 1);
+    assert.deepEqual({ l: alarms[0].level, a: alarms[0].data.action, s: alarms[0].data.provider_status }, { l: 'critical', a: 'released', s: 'waiting_for_capture' });
+    assert.equal(guestNotes(id).length, 1);
+    await webhookAgain(real, 'payment.canceled');
+    assert.equal(lateAlarms(id).length, 1);
+  });
+});
+
+function formatRub(k) {
+  return `${Math.floor(k / 100)}.${String(k % 100).padStart(2, '0')}`;
+}
