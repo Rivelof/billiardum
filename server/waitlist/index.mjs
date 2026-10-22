@@ -63,9 +63,13 @@ export async function init(ctx) {
         );
         for (const row of due.rows) {
           if (stopped) break;
-          if (row.kind !== 'waitlist') continue;
+          // waitlist — запись очереди; waitlist_resource — стол с очередью без предложения (id — стол):
+          // предложить, если он свободен (очередь не «засыпает» без события session.closed).
+          if (row.kind !== 'waitlist' && row.kind !== 'waitlist_resource') continue;
           try {
-            await withContext(pool, { clubId: row.club_id, actorType: 'system' }, (db) => service.step(db, row.id));
+            await withContext(pool, { clubId: row.club_id, actorType: 'system' }, (db) =>
+              row.kind === 'waitlist' ? service.step(db, row.id) : service.offerNext(db, row.id),
+            );
             processed += 1;
           } catch (err) {
             log.error('waitlist_step_failed', { waitlist_id: row.id, error: err.message, code: err.code });

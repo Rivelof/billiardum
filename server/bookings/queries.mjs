@@ -99,7 +99,7 @@ export async function openSession(db, resourceId) {
 /** Действующие удержания стола (light): pending, reserved, service. */
 export async function activeHolds(db, resourceId, now) {
   const { rows } = await db.query(
-    `select id, kind, user_id, until, created_at from bl.resource_holds
+    `select id, kind, user_id, until, created_at, source, ref_id from bl.resource_holds
       where resource_id = $1 and released_at is null and until > $2 order by created_at desc`,
     [resourceId, now],
   );

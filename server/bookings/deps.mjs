@@ -22,6 +22,12 @@ const MODULES = {
   notify: '../notify/index.mjs',
 };
 
+/** Необязательные функции соседей: есть — берутся, нет — модуль обходится своим способом. */
+const OPTIONAL = {
+  light: ['getResourceStatus'],
+  payments: ['pendingPlayUntil'],
+};
+
 const NEED = {
   light: ['startFromBooking', 'setReserved', 'clearReserved', 'holdPending', 'releasePending'],
   payments: ['createPrepayment', 'createBookingQuote', 'settlePrepayment', 'forfeitPrepayment', 'refund'],
@@ -72,6 +78,10 @@ export async function resolveDeps(ctx, log) {
         missing.push(`${group}.${name}`);
         out[group][name] = group === 'light' && (name === 'setReserved' || name === 'clearReserved') ? softStub(log, group, name) : notConfigured(group, name);
       }
+    }
+    for (const name of OPTIONAL[group] ?? []) {
+      const fn = typeof o[name] === 'function' ? o[name] : typeof mod?.[name] === 'function' ? mod[name] : null;
+      if (fn) out[group][name] = fn;
     }
   }
   const audit = ctx.audit?.appendAudit ? ctx.audit : await tryImport(MODULES.audit);

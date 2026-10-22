@@ -111,7 +111,11 @@ export async function setup({ settings = {} } = {}) {
           lightCalls.push({ fn: 'setReserved', args: a });
           return lightService.setReserved(d, a);
         },
-        clearReserved: (d, a) => lightService.clearReserved(d, a),
+        clearReserved: (d, a) => {
+          lightCalls.push({ fn: 'clearReserved', args: a });
+          return lightService.clearReserved(d, a);
+        },
+        getResourceStatus: (d, id, o) => lightService.resourceStatus(d, id, o),
         holdPending: (d, a) => lightService.holdPending(d, a),
         releasePending: (d, a) => lightService.releasePending(d, a),
       };

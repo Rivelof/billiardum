@@ -202,6 +202,42 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     }
     const other = await overlapping(db, resourceId, from, to, exceptBooking);
     if (other.length > 0) fail('booking_conflict', 'пересечение с бронью');
+    // №129: на столе ждёт оплаты котировка (старт или продление), конец которой заходит в бронь.
+    const pending = await pendingPlayUntil(db, resourceId, t);
+    if (pending && ms(pending) + EXTEND_GAP_MS > ms(from)) fail('booking_conflict', 'ждёт оплаты котировка');
+  }
+
+  /**
+   * До какого момента может дойти игра по живой котировке стола (money): неиспользованная и
+   * не истёкшая или оплаченная, но ещё не подтверждённая (платёж pending, не старше часа).
+   * Функция money payments.pendingPlayUntil(db, {resourceId, now}), если есть; иначе — чтение
+   * bl.quotes/bl.payments (таблицы money, §13) в точке сохранения.
+   */
+  async function pendingPlayUntil(db, resourceId, t) {
+    if (typeof deps.payments.pendingPlayUntil === 'function') {
+      const v = await deps.payments.pendingPlayUntil(db, { resourceId, now: t });
+      return v ? new Date(v) : null;
+    }
+    await db.query('savepoint bl_booking_pending_quotes');
+    try {
+      const { rows } = await db.query(
+        `select max(case when q.kind = 'extend' then q.from_at else greatest(q.valid_until, $2::timestamptz) end
+                    + make_interval(mins => coalesce(q.minutes, 120))) as until
+           from bl.quotes q
+          where q.resource_id = $1 and q.kind in ('start', 'extend')
+            and ((q.used_at is null and q.valid_until > $2)
+                 or exists (select 1 from bl.payments p
+                             where p.quote_id = q.id and p.status in ('pending', 'waiting_for_capture') and p.confirmed_at is null
+                               and p.created_at > $2::timestamptz - interval '1 hour'))`,
+        [resourceId, t],
+      );
+      await db.query('release savepoint bl_booking_pending_quotes');
+      return rows[0]?.until ? new Date(rows[0].until) : null;
+    } catch (err) {
+      await db.query('rollback to savepoint bl_booking_pending_quotes');
+      log.warn('booking_pending_quotes_failed', { resource_id: resourceId, code: err.code });
+      return null;
+    }
   }
 
   async function priceOf(db, resourceId, from, minutes, minimum = true) {
@@ -273,6 +309,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     await validateSlot(db, club, settings, startsAt, minutes, t, { guest: true });
     const res = await lockResource(db, resourceId);
     if (!res || !res.active) fail('not_found', 'resource');
+    // Лимит живых броней гостя: параллельные брони одного гостя на разные столы — по очереди.
+    await db.query("select pg_advisory_xact_lock(hashtextextended('bl.booking.guest:' || $1 || ':' || $2, 0))", [clubId, userId]);
     const { rows: mine } = await db.query(
       'select count(*)::int as n from bl.bookings where club_id = $1 and user_id = $2 and status = any($3::text[])',
       [clubId, userId, ['pending_payment', 'confirmed', 'reserved']],
@@ -286,7 +324,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const payUntil = prepayment > 0 ? new Date(Math.min(ms(t) + settings.payMinutes * MIN, ms(startsAt))) : null;
     const id = await insertBooking(db, {
       clubId, resourceId, userId, guestName: null, guestPhone: null, source: src, createdBy: userId, startsAt, endsAt,
-      status, mode: settings.prepayment, amount, prepayment, payUntil, hold: holdFor(settings, prepayment), t,
+      status, mode: settings.prepayment, amount, prepayment, payUntil, hold: Math.min(holdFor(settings, prepayment), minutes), t,
     });
     const b = await loadBooking(db, id);
     await audit(db, {
@@ -330,7 +368,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const amount = await priceOf(db, resourceId, startsAt, body.minutes);
     const id = await insertBooking(db, {
       clubId, resourceId, userId: null, guestName: name, guestPhone: phone, source, createdBy: staffId, startsAt, endsAt,
-      status: 'confirmed', mode: 'none', amount, prepayment: 0, payUntil: null, hold: settings.holdMinutes, t,
+      status: 'confirmed', mode: 'none', amount, prepayment: 0, payUntil: null, hold: Math.min(settings.holdMinutes, body.minutes), t,
     });
     const b = await loadBooking(db, id);
     await audit(db, {
@@ -497,7 +535,18 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       return { result: 'refunded', booking_id: b.id };
     }
     // Доплата при старте (котировка createBookingQuote).
-    if (b.status === 'started') return { result: 'duplicate', booking_id: b.id };
+    if (b.status === 'started') {
+      const { rows: linked } = await db.query('select 1 from bl.session_payments where payment_id = $1', [p.payment_id]);
+      if (linked.length > 0) return { result: 'duplicate', booking_id: b.id };
+      // Лишняя оплаченная доплата (вторая вкладка, повтор): игра уже идёт — вернуть целиком.
+      if (Number.isSafeInteger(amount) && amount > 0) {
+        await deps.payments.refund(db, { paymentId: p.payment_id, amountKopecks: amount, reason: 'Игра по брони уже идёт: лишняя доплата' });
+      }
+      await audit(db, { action: 'booking.extra_refund', objectType: 'booking', objectId: b.id, actorType: 'system', data: { booking_id: b.id, payment_id: p.payment_id, amount_kopecks: amount } });
+      await notifyGuest(db, b, { kind: 'booking.refund', text: `Игра по брони на столе ${b.resource_number} уже идёт — лишняя оплата ${formatMoney(amount)} вернётся.` });
+      log.warn('booking_extra_payment', { booking_id: b.id, payment_id: p.payment_id });
+      return { result: 'refunded', booking_id: b.id };
+    }
     const ids = [b.prepaid_kopecks > 0 ? b.prepayment_id : null, p.payment_id].filter(isUuid);
     return startPaid(db, b, ids, t, { extraPaymentId: p.payment_id, extraAmount: amount });
   }
@@ -520,6 +569,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     // Стол занят или бронь не действует: вернуть доплату, предоплата остаётся за бронью.
     if (extraPaymentId && Number.isSafeInteger(extraAmount) && extraAmount > 0) {
       await deps.payments.refund(db, { paymentId: extraPaymentId, amountKopecks: extraAmount, reason: 'Игра по брони не началась: стол недоступен' });
+      await audit(db, { action: 'booking.extra_refund', objectType: 'booking', objectId: b.id, actorType: 'system', data: { booking_id: b.id, payment_id: extraPaymentId, amount_kopecks: extraAmount, status: b.status } });
     }
     await notifyGuest(db, b, { kind: 'booking.start_failed', text: `Не удалось начать игру по брони на столе ${b.resource_number}. Деньги за доплату вернутся.`, level: 'important' });
     return { result: 'refunded', booking_id: b.id };
@@ -580,7 +630,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const club = await loadClub(db, b.club_id);
     const settings = bookingSettings(club.settings);
     const startMs = ms(b.starts_at);
-    if (ms(t) >= startMs + b.hold_minutes * MIN) fail('booking_expired');
+    if (ms(t) >= startMs + b.hold_minutes * MIN || ms(t) >= ms(b.ends_at)) fail('booking_expired');
     if (ms(t) < startMs - settings.earlyMaxMinutes * MIN) fail('too_early');
     // Стол: чужая игра, сервис, чужой pending; при раннем приходе — чужая бронь до нашей.
     if (await openSession(db, b.resource_id)) fail('table_busy');
@@ -606,6 +656,18 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     // Доплата (ранний приход, остаток предоплаты, бронь без предоплаты — №113, №116): котировка money,
     // гость платит POST /api/quotes/{id}/pay, старт — по payment.confirmed {kind: 'booking_start'}.
     const paidMinutes = Math.max(1, Math.floor((ms(b.ends_at) - ms(t)) / MIN));
+    // Живая неоплаченная котировка этой брони — та же (повтор, вторая вкладка); оплаченная и ещё
+    // не подтверждённая — payment_pending: вторую доплату не создаём.
+    const live = await liveStartQuote(db, b, t);
+    if (live?.paid) fail('payment_pending', 'доплата ждёт подтверждения');
+    if (live) {
+      return {
+        status: 'payment_required',
+        amount_kopecks: live.amount_kopecks,
+        quote: { quote_id: live.id, amount_kopecks: live.amount_kopecks, minutes: live.minutes, valid_until: iso(live.valid_until) },
+        booking: await view(db, b, { t }),
+      };
+    }
     const quote = await deps.payments.createBookingQuote(db, {
       clubId: b.club_id, bookingId: b.id, resourceId: b.resource_id, userId, from: t, minutes: paidMinutes, amountKopecks: due,
       earlyMinutes: early ? Math.max(1, Math.floor((startMs - ms(t)) / MIN)) : 0,
@@ -622,6 +684,31 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     };
   }
 
+  /** Котировка старта брони (money, bl.quotes): живая неиспользованная или оплаченная без подтверждения. */
+  async function liveStartQuote(db, b, t) {
+    if (!b.start_quote_id) return null;
+    await db.query('savepoint bl_booking_quote');
+    try {
+      const { rows } = await db.query(
+        `select q.id, q.amount_kopecks, q.minutes, q.valid_until, q.used_at,
+                exists (select 1 from bl.payments p where p.quote_id = q.id and p.status in ('pending', 'waiting_for_capture')
+                          and p.confirmed_at is null) as paid
+           from bl.quotes q where q.id = $1`,
+        [b.start_quote_id],
+      );
+      await db.query('release savepoint bl_booking_quote');
+      const q = rows[0];
+      if (!q) return null;
+      if (q.used_at) return q.paid ? { paid: true } : null;
+      if (ms(q.valid_until) <= ms(t)) return null;
+      return { id: q.id, amount_kopecks: Number(q.amount_kopecks), minutes: q.minutes, valid_until: q.valid_until, paid: false };
+    } catch (err) {
+      await db.query('rollback to savepoint bl_booking_quote');
+      log.warn('booking_quote_read_failed', { booking_id: b.id, code: err.code });
+      return null;
+    }
+  }
+
   /**
    * POST /api/bookings/{id}/arrive — ресепшн и выше: гость брони по телефону пришёл. Снимает
    * reserved со стола (ресепшн начинает игру обычной оплатой), бронь — started.
@@ -631,7 +718,13 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     if (!staff) fail('forbidden');
     if (b.status === 'started') return view(db, b, { staff: true, roles });
     if (!['confirmed', 'reserved'].includes(b.status)) fail('booking_not_active', b.status);
-    await deps.light.clearReserved(db, { resourceId: b.resource_id });
+    // Только бронь по телефону или персонала без предоплаты и только в окне прихода: бронь гостя
+    // приложения и предоплата начинаются у стола (старт по брони, чек зачёта).
+    if (!['phone', 'staff'].includes(b.source) || b.prepayment_id || b.prepaid_kopecks > 0) fail('forbidden', 'arrive: не бронь по телефону');
+    const settings = bookingSettings((await loadClub(db, b.club_id)).settings);
+    const t = now();
+    if (ms(t) < ms(b.starts_at) - settings.earlyMaxMinutes * MIN || ms(t) >= ms(b.starts_at) + b.hold_minutes * MIN) fail('forbidden', 'arrive: вне окна прихода');
+    await deps.light.clearReserved(db, { resourceId: b.resource_id, source: 'booking', refId: b.id });
     await markStarted(db, { bookingId: b.id, sessionId: null });
     await audit(db, { action: 'booking.arrive', objectType: 'booking', objectId: b.id, data: { booking_id: b.id, resource_id: b.resource_id } });
     return view(db, await loadBooking(db, b.id), { staff: true, roles });
@@ -666,7 +759,9 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         reason: staff ? `Бронь отменена клубом: ${why}` : percent === 0 ? 'Бронь отменена гостем вовремя' : 'Бронь отменена гостем поздно',
       });
     }
-    if (b.status === 'reserved' || b.notified?.reserved_hold) await deps.light.clearReserved(db, { resourceId: b.resource_id });
+    if (b.status === 'reserved' || ms(t) >= ms(b.starts_at) - RESERVE_BEFORE_MS) {
+      await deps.light.clearReserved(db, { resourceId: b.resource_id, source: 'booking', refId: b.id });
+    }
     await updateBooking(db, b.id, {
       status: 'canceled', canceled_at: t, canceled_by: userId, cancel_reason: why, forfeit_percent: b.prepaid_kopecks > 0 ? percent : null, updated_at: t,
     });
@@ -725,10 +820,20 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     }
     if (!['confirmed', 'reserved'].includes(b.status)) return null;
     if (ms(t) >= startMs + b.hold_minutes * MIN) {
-      await expire(db, b, 'no_show', t);
+      // №128: удерживаем предоплату, только если стол был доступен гостю всё окно удержания.
+      const unavailable = flags.unavailable || (await unavailableInWindow(db, b, startMs, startMs + b.hold_minutes * MIN));
+      await expire(db, b, unavailable ? 'table_unavailable' : 'no_show', t);
       return 'expired';
     }
     let changed = false;
+    // В окне удержания отмечаем, если стол сейчас недоступен гостю (тик раз в 10 с).
+    if (ms(t) >= startMs && !flags.unavailable) {
+      const why = await unavailableNow(db, b, t);
+      if (why) {
+        flags.unavailable = why;
+        changed = true;
+      }
+    }
     if (!flags.h1 && ms(t) >= startMs - REMIND_BEFORE_MS) {
       flags.h1 = true;
       changed = true;
@@ -752,9 +857,23 @@ export function createBookingService({ deps, log, clock, config = {} }) {
           });
         }
       }
-      if (b.status === 'confirmed') {
+      if (b.status === 'confirmed' && b.hold_minutes > 0) {
         const until = new Date(startMs + b.hold_minutes * MIN);
-        const r = await deps.light.setReserved(db, { resourceId: b.resource_id, until, userId: b.user_id ?? null, source: 'booking', refId: b.id });
+        let r;
+        try {
+          r = await deps.light.setReserved(db, { resourceId: b.resource_id, until, userId: b.user_id ?? null, source: 'booking', refId: b.id });
+        } catch (err) {
+          if (!isConflict(err)) throw err;
+          r = { applied: false, reason: err.code };
+        }
+        // №14 ревью: стол не показал бронь (занят, сервис, pending, нет стола) — reserved не ставим,
+        // повторяем на следующих тиках; в окне удержания это и есть «стол недоступен» (№128).
+        if (!r?.applied) {
+          flags.reserve_tries = (flags.reserve_tries ?? 0) + 1;
+          if (ms(t) >= startMs && !flags.unavailable) flags.unavailable = r?.reason ?? 'not_shown';
+          await updateBooking(db, b.id, { notified: flags, updated_at: t });
+          return null;
+        }
         flags.reserved_hold = true;
         await updateBooking(db, b.id, { status: 'reserved', reserved_at: t, notified: flags, updated_at: t });
         const nb = await loadBooking(db, b.id);
@@ -767,14 +886,73 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     return null;
   }
 
+  /**
+   * Почему стол сейчас недоступен гостю брони (или null): игра не этого гостя, сервис, чужой pending,
+   * чужое удержание reserved, стол неактивен или без связи (light getResourceStatus).
+   */
+  async function unavailableNow(db, b, t) {
+    const { rows } = await db.query('select active from bl.resources where id = $1', [b.resource_id]);
+    if (!rows[0]?.active) return 'inactive';
+    const s = await openSession(db, b.resource_id);
+    if (s && s.payer_user_id !== b.user_id) return 'busy';
+    for (const h of await activeHolds(db, b.resource_id, t)) {
+      if (h.kind === 'service') return 'service';
+      if (h.kind === 'pending' && h.user_id !== b.user_id) return 'pending';
+      if (h.kind === 'reserved' && h.ref_id && h.ref_id !== b.id) return 'reserved_other';
+    }
+    if (typeof deps.light.getResourceStatus === 'function') {
+      try {
+        const st = await deps.light.getResourceStatus(db, b.resource_id, { userId: b.user_id ?? null });
+        if (st?.status === 'offline') return 'offline';
+        if (st?.status === 'service') return 'service';
+      } catch (err) {
+        log.warn('booking_status_failed', { booking_id: b.id, code: err.code });
+      }
+    }
+    return null;
+  }
+
+  /** Был ли стол недоступен гостю в окне удержания [from, to): чужая игра, сервис, чужие удержания. */
+  async function unavailableInWindow(db, b, fromMs, toMs) {
+    const from = new Date(fromMs);
+    const to = new Date(toMs);
+    const { rows: s } = await db.query(
+      `select 1 from bl.sessions where resource_id = $1 and started_at < $3 and coalesce(ended_at, paid_until) > $2
+          and payer_user_id is distinct from $4 limit 1`,
+      [b.resource_id, from, to, b.user_id ?? null],
+    );
+    if (s.length > 0) return true;
+    const { rows: h } = await db.query(
+      `select 1 from bl.resource_holds where resource_id = $1 and created_at < $3 and coalesce(released_at, until) > $2
+          and (kind = 'service' or (kind = 'pending' and user_id is distinct from $4) or (kind = 'reserved' and ref_id is not null and ref_id <> $5))
+        limit 1`,
+      [b.resource_id, from, to, b.user_id ?? null, b.id],
+    );
+    return h.length > 0;
+  }
+
   async function expire(db, b, reason, t) {
     let forfeit = null;
     if (reason === 'no_show' && b.prepaid_kopecks > 0 && b.prepayment_id) {
       // percent не передаётся: money берёт booking_forfeit_percent клуба (по умолчанию 100 %, №108).
       forfeit = await deps.payments.forfeitPrepayment(db, { paymentId: b.prepayment_id, reason: 'Гость не пришёл на бронь' });
     }
-    if (b.status === 'reserved' || b.notified?.reserved_hold) await deps.light.clearReserved(db, { resourceId: b.resource_id });
-    const percent = reason === 'no_show' && b.prepaid_kopecks > 0 ? await forfeitPercentOf(db, await loadClub(db, b.club_id)) : null;
+    if (reason === 'table_unavailable' && b.prepaid_kopecks > 0 && b.prepayment_id) {
+      forfeit = await deps.payments.forfeitPrepayment(db, { paymentId: b.prepayment_id, percent: 0, reason: 'Стол был недоступен в окне удержания брони' });
+    }
+    if (b.status !== 'pending_payment') await deps.light.clearReserved(db, { resourceId: b.resource_id, source: 'booking', refId: b.id });
+    let percent = null;
+    if (reason === 'no_show' && b.prepaid_kopecks > 0) percent = await forfeitPercentOf(db, await loadClub(db, b.club_id));
+    if (reason === 'table_unavailable' && b.prepaid_kopecks > 0) percent = 0;
+    if (reason === 'table_unavailable') {
+      await deps.alarms.raise(db, b.club_id, {
+        type: 'booking_table_unavailable',
+        level: 'important',
+        resourceId: b.resource_id,
+        data: { booking_id: b.id, why: String(b.notified?.unavailable ?? 'history').slice(0, 32) },
+        text: `Бронь стола ${b.resource_number} на ${at(b)}: стол был недоступен гостю, предоплата возвращена`,
+      });
+    }
     await updateBooking(db, b.id, { status: 'expired', expired_at: t, expire_reason: reason, forfeit_percent: percent, updated_at: t });
     const nb = await loadBooking(db, b.id);
     await audit(db, {
@@ -785,6 +963,13 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       data: { booking_id: b.id, resource_id: b.resource_id, reason, prepaid_kopecks: b.prepaid_kopecks, forfeit_percent: percent, kept_kopecks: forfeit?.kept_kopecks ?? null },
     });
     await emit(db, 'booking.expired', nb, { reason });
+    if (reason === 'table_unavailable') {
+      await notifyGuest(db, nb, {
+        kind: 'booking.expired',
+        level: 'important',
+        text: `Бронь стола ${b.resource_number} на ${at(b)} закрыта: стол был недоступен.${b.prepaid_kopecks > 0 ? ` Предоплата ${formatMoney(b.prepaid_kopecks)} вернётся.` : ''}`,
+      });
+    }
     if (reason === 'no_show') {
       const refund = b.prepaid_kopecks > 0 && percent !== null ? refundFor(b.prepaid_kopecks, percent) : 0;
       await notifyGuest(db, nb, {

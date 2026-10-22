@@ -16,6 +16,8 @@ import { createBookingService } from './service.mjs';
 import { REMIND_BEFORE_MS, WAITLIST_STALE_MS } from './settings.mjs';
 
 export const TICK_MS = 10_000;
+/** Сколько неудач шага брони подряд до тревоги. */
+export const FAIL_ALARM = 5;
 const BATCH = 200;
 
 let state = null;
@@ -52,6 +54,32 @@ export async function init(ctx) {
     ctx.outbox.subscribe('session.started', guard(service.onSessionStarted), { name: 'bookings.session_started' }),
   ];
 
+  // «Ядовитая» бронь (шаг падает раз за разом) не держит планировщик: пауза растёт 10 с → 10 мин,
+  // после FAIL_ALARM неудач подряд — тревога клубу (один раз до успеха).
+  const failures = new Map();
+  async function stepFailed(row, err, nowMs) {
+    const f = failures.get(row.id) ?? { n: 0, nextAt: 0, alarmed: false };
+    f.n += 1;
+    f.nextAt = nowMs + Math.min(10_000 * 2 ** (f.n - 1), 600_000);
+    failures.set(row.id, f);
+    log.error('booking_step_failed', { booking_id: row.id, error: err.message, code: err.code, failures: f.n });
+    if (f.n >= FAIL_ALARM && !f.alarmed) {
+      f.alarmed = true;
+      try {
+        await withContext(pool, { clubId: row.club_id, actorType: 'system' }, (db) =>
+          deps.alarms.raise(db, row.club_id, {
+            type: 'booking_step_failed',
+            level: 'important',
+            data: { booking_id: row.id },
+            text: 'Бронь не обрабатывается планировщиком: проверьте её в программе клуба',
+          }),
+        );
+      } catch (e) {
+        log.error('booking_alarm_failed', { booking_id: row.id, error: e.message });
+      }
+    }
+  }
+
   /** Брони, по которым пора действовать (bl.booking_due), — каждая в своей транзакции клуба. */
   let running = null;
   function tick() {
@@ -68,14 +96,18 @@ export async function init(ctx) {
             BATCH,
           ]),
         );
+        const nowMs = clock.now().getTime();
         for (const row of due.rows) {
           if (stopped) break;
           if (row.kind !== 'booking') continue;
+          const f = failures.get(row.id);
+          if (f && f.nextAt > nowMs) continue;
           try {
             await withContext(pool, { clubId: row.club_id, actorType: 'system' }, (db) => service.step(db, row.id));
+            failures.delete(row.id);
             processed += 1;
           } catch (err) {
-            log.error('booking_step_failed', { booking_id: row.id, error: err.message, code: err.code });
+            await stepFailed(row, err, nowMs);
           }
         }
       } catch (err) {
