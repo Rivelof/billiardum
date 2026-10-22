@@ -280,17 +280,23 @@ async function terminalPinFailure(ctx, terminalId, now) {
   });
 }
 
+/**
+ * POST /api/staff/pin — смена сотрудника на терминале. Маршрут без транзакции запроса
+ * (db: false, pentester R-1): проверка блокировки, проверка PIN со счётчиком, счётчик терминала
+ * и выдача токена — короткие транзакции по очереди, одно соединение пула за раз.
+ */
 async function pinSwitch(ctx, req) {
   const { user_id: userId, pin } = req.body;
   if (!isUuid(userId) || typeof pin !== 'string' || !PIN.test(pin)) throw new HttpError(400, 'bad_request');
   const terminalId = ctx.principal.terminalId;
   const now = ctx.clock.now();
-  const term = await ctx.db.query('select locked_at from bl.staff_terminals where id = $1', [terminalId]);
+  const inClub = (fn, opts = {}) => ctx.withContext(ctx.pool, { clubId: ctx.club, actorType: 'system', ...opts }, fn);
+  const term = await inClub((db) => db.query('select locked_at from bl.staff_terminals where id = $1', [terminalId]));
   if (term.rows[0]?.locked_at) {
     ctx.log.warn('pin_terminal_locked', { terminal_id: terminalId });
     return { status: 429, json: { error: 'rate_limited' } };
   }
-  // Проверка и счётчик ошибок — в своей транзакции (общая блокировка PIN, checkStaffPin).
+  // Проверка и счётчик ошибок — своя транзакция (общая блокировка PIN, checkStaffPin).
   const check = await checkStaffPin({
     pool: ctx.pool,
     withContext: ctx.withContext,
@@ -313,21 +319,23 @@ async function pinSwitch(ctx, req) {
     return { status: 401, json: { error: 'unauthorized' } };
   }
   const m = { role: check.role };
-  // Предыдущий сотрудник на этом терминале выходит.
-  await ctx.db.query(
-    "update bl.auth_tokens set revoked_at = $2 where terminal_id = $1 and kind = 'pin' and revoked_at is null",
-    [terminalId, now],
+  const issued = await inClub(
+    async (db) => {
+      // Предыдущий сотрудник на этом терминале выходит.
+      await db.query("update bl.auth_tokens set revoked_at = $2 where terminal_id = $1 and kind = 'pin' and revoked_at is null", [terminalId, now]);
+      const out = await issueToken(db, { userId, kind: 'pin', clubId: ctx.club, terminalId, now, ttlMs: PIN_TTL_MS });
+      await appendAudit(db, {
+        action: 'auth.pin_switch',
+        objectType: 'user',
+        objectId: userId,
+        actorType: 'user',
+        actorId: userId,
+        data: { terminal_id: terminalId },
+      });
+      return out;
+    },
+    { userId, actorType: 'user' },
   );
-  await setContext(ctx.db, { userId, actorType: 'user' });
-  const issued = await issueToken(ctx.db, { userId, kind: 'pin', clubId: ctx.club, terminalId, now, ttlMs: PIN_TTL_MS });
-  await appendAudit(ctx.db, {
-    action: 'auth.pin_switch',
-    objectType: 'user',
-    objectId: userId,
-    actorType: 'user',
-    actorId: userId,
-    data: { terminal_id: terminalId },
-  });
   ctx.setCookie(sessionCookie(issued.token, issued.expiresAt, now));
   ctx.log.info('pin_switch', { terminal_id: terminalId, user_id: userId });
   // Короткий PIN у владельца или управляющего — попросить сменить на 6 цифр (ревью входа п. 5).
@@ -433,7 +441,7 @@ export const routes = [
   { method: 'DELETE', path: '/api/clubs/{club}/terminals/{id}', auth: 'staff', roles: ['owner'], handler: revokeTerminal },
   { method: 'POST', path: '/api/clubs/{club}/terminals/{id}/unlock', auth: 'staff', roles: ['owner'], handler: unlockTerminal },
   { method: 'GET', path: '/api/staff/terminal', auth: 'terminal', handler: terminalInfo },
-  { method: 'POST', path: '/api/staff/pin', auth: 'terminal', rateLimit: { max: 20, windowMs: MINUTE }, handler: pinSwitch },
+  { method: 'POST', path: '/api/staff/pin', auth: 'terminal', db: false, rateLimit: { max: 20, windowMs: MINUTE }, handler: pinSwitch },
   { method: 'PUT', path: '/api/staff/pin', auth: 'staff', roles: PIN_SWITCH_ROLES, clubFromBody: true, rateLimit: { max: 10, windowMs: MINUTE }, handler: pinSet },
 ];
 

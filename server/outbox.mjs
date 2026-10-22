@@ -8,13 +8,16 @@
 //   коммитятся вместе. Ошибка — повтор с паузой 1, 2, 4 … до 300 с; после 5 неудач подряд —
 //   тревога outbox_failed клубу. Доставка «хотя бы один раз»: обработчики идемпотентны.
 // * Задержка — LISTEN bl_outbox (NOTIFY шлёт триггер при вставке) и запасной опрос раз в 1 с.
-// * У каждой темы своя очередь (№130): медленный обработчик одной темы не задерживает другие;
+// * У каждой темы своя очередь (№130): медленный обработчик одной темы не задерживает другие
+//   (одновременно — не больше LANES обработчиков, у каждого одно соединение пула);
 //   порядок гарантирован только внутри темы (между темами его не было и раньше: повтор с паузой).
 
 import { afterCommit, withContext } from './lib/store.mjs';
 
 export const POLL_MS = 1_000;
 export const BATCH = 100;
+/** Сколько событий разных тем обрабатывается одновременно (соединений пула под обработчики). */
+export const LANES = 4;
 export const BACKOFF_BASE_MS = 1_000;
 export const BACKOFF_MAX_MS = 300_000;
 export const FAILURES_BEFORE_ALARM = 5;
@@ -64,9 +67,19 @@ export async function enqueue(db, topic, payload, options = {}) {
  * подписчиков в разных модулях (иначе — тема#порядковый номер).
  * @param {{ pollMs?: number, batch?: number, clock?: { now(): Date } }} [options]
  */
-export function createOutbox({ pollMs = POLL_MS, batch = BATCH, clock = { now: () => new Date() } } = {}) {
+export function createOutbox({ pollMs = POLL_MS, batch = BATCH, lanes: laneSlots = LANES, clock = { now: () => new Date() } } = {}) {
   /** @type {Map<string, { name: string, handler: Function }[]>} */
   const subscribers = new Map();
+  // Слоты обработки: очереди тем идут параллельно, но не больше laneSlots соединений пула сразу
+  // (пул общий с HTTP); медленный обработчик держит один слот, остальные темы идут в других.
+  let freeSlots = laneSlots;
+  const waiting = [];
+  const acquire = () => (freeSlots > 0 ? ((freeSlots -= 1), Promise.resolve()) : new Promise((r) => waiting.push(r)));
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next();
+    else freeSlots += 1;
+  };
   let deps = null; // { pool, log, alarms, listen }
   let running = false;
   let stopping = false;
@@ -158,7 +171,12 @@ export function createOutbox({ pollMs = POLL_MS, batch = BATCH, clock = { now: (
           );
           for (const ev of rows) {
             if (stopping) break;
-            await processEvent(ev);
+            await acquire();
+            try {
+              await processEvent(ev);
+            } finally {
+              release();
+            }
           }
           if (rows.length === batch) lane.again = true;
         } while (lane.again && !stopping);

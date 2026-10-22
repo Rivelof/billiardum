@@ -464,6 +464,31 @@ describe('терминал ресепшена и PIN', () => {
     assert.equal(other.status, 403);
   });
 
+  it('R-1: 2× размер пула параллельных POST /api/staff/pin — пул не блокируется, остальные запросы отвечают', async () => {
+    const manager = await t.login('+70000000003');
+    const reg = await t.request('POST', '/api/staff/terminal', { token: manager.token, body: { club_id: CLUB_A, name: 'Стойка R-1' } });
+    const term = reg.json.terminal_token;
+    const size = t.pool.options.max;
+    t.app.router.rateLimiter.clear();
+    const started = Date.now();
+    const pins = Array.from({ length: 2 * size }, (_, i) =>
+      t.request('POST', '/api/staff/pin', { token: term, body: { user_id: [RECEPTION_A, MANAGER_A, OWNER_A][i % 3], pin: '909090' } }),
+    );
+    const others = Array.from({ length: size }, () => t.request('GET', '/api/me', { token: manager.token }));
+    const done = await Promise.race([
+      Promise.all([...pins, ...others]),
+      new Promise((r) => setTimeout(() => r(null), 15_000)),
+    ]);
+    assert.ok(done, 'запросы не ответили за 15 с — пул заблокирован');
+    assert.ok(Date.now() - started < 15_000);
+    for (const r of done.slice(0, pins.length)) assert.ok([401, 429].includes(r.status), String(r.status));
+    for (const r of done.slice(pins.length)) assert.equal(r.status, 200);
+    // Терминал после такого перебора заблокирован (10 ошибок за час); остальные не тронуты.
+    assert.ok((await t.admin.query('select locked_at from bl.staff_terminals where id = $1', [reg.json.terminal_id])).rows[0].locked_at);
+    await t.admin.query('update bl.club_members set pin_failed_count = 0, pin_locked_until = null where club_id = $1', [CLUB_A]);
+    t.app.router.rateLimiter.clear();
+  });
+
   it('PIN владельца и управляющего — 6 цифр; старый короткий — вход с просьбой сменить', async () => {
     const owner = await t.login('+70000000001');
     assert.equal((await t.request('PUT', '/api/staff/pin', { token: owner.token, body: { club_id: CLUB_A, pin: '2468' } })).status, 400);
@@ -500,7 +525,7 @@ describe('терминал ресепшена и PIN', () => {
     }
     const blocked = await t.request('POST', '/api/staff/pin', { token: term, body: { user_id: RECEPTION_A, pin: '4821' } });
     assert.equal(blocked.status, 429);
-    const alarm = await t.admin.query("select level, data from bl.alarms where club_id = $1 and type = 'terminal_locked'", [CLUB_A]);
+    const alarm = await t.admin.query("select level, data from bl.alarms where club_id = $1 and type = 'terminal_locked' and data->>'terminal_id' = $2", [CLUB_A, termId]);
     assert.equal(alarm.rows.length, 1);
     assert.equal(alarm.rows[0].level, 'critical');
     assert.equal(alarm.rows[0].data.terminal_id, termId);

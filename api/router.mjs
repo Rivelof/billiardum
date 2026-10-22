@@ -15,7 +15,11 @@
 //   findClub  — async (db, req) => boolean: для 'staff' без клуба в запросе, когда у пользователя
 //               несколько подходящих клубов, — есть ли объект в клубе из контекста;
 //   queryAuth — async (app, token, query) => principal|null: вход по ?token= (одноразовый токен SSE);
-//   db: false — только для auth 'none': обработчик без транзакции и базы (перенаправления).
+//   db: false — auth 'none' или 'terminal': обработчик без транзакции запроса (ctx.db = null).
+//               Сам открывает короткие транзакции ctx.withContext(ctx.pool, …) ПО ОЧЕРЕДИ:
+//               обработчик не держит два соединения пула сразу (иначе параллельные запросы
+//               числом с пул взаимно блокируют пул — pentester R-1). Для 'terminal' ctx.club —
+//               клуб терминала; есть setCookie, нет afterCommit и useClub.
 //
 // Обработчик: async handler(ctx, req) → { status?, json?, headers?, body?, stream? }.
 //   ctx = { ...общий контекст сервера, db, user, club, roles, principal, log, idempotencyKey,
@@ -93,7 +97,7 @@ function validateRoute(r, file) {
   }
   if (r.requires && !r.requires.every((x) => x === 'phone' || x === 'consent')) throw new Error(`${where}: requires`);
   if (r.actor && r.actor !== 'system' && r.actor !== 'user') throw new Error(`${where}: actor`);
-  if (r.db === false && (r.auth !== 'none' || r.idempotent)) throw new Error(`${where}: db: false только для auth 'none'`);
+  if (r.db === false && ((r.auth !== 'none' && r.auth !== 'terminal') || r.idempotent)) throw new Error(`${where}: db: false только для auth 'none' и 'terminal'`);
 }
 
 /**
@@ -317,7 +321,14 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
 
       const result = route.db === false
         ? await (async () => {
-            const out = (await route.handler({ ...app, db: null, log, principal, user: reqInfo.user, club: null, roles: [] }, reqInfo)) ?? { status: 204 };
+            const own = route.auth === 'terminal' ? club : null;
+            reqInfo.club = own;
+            const out =
+              (await route.handler(
+                { ...app, db: null, log, principal, user: reqInfo.user, club: own, roles: [], setCookie: (header) => cookies.push(header) },
+                reqInfo,
+              )) ?? { status: 204 };
+            if (Array.isArray(out.cookies)) cookies.push(...out.cookies);
             return { status: out.status ?? 200, json: out.json, headers: out.headers ?? {}, body: out.body, stream: out.stream };
           })()
         : await runInContext(
