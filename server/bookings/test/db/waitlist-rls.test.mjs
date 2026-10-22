@@ -83,6 +83,9 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     h.clock.set(T0 + 37 * MIN);
     await h.tickWaitlist();
     assert.equal((await h.q('select status from bl.waitlist where id = $1', [ja.json.id]))[0].status, 'expired');
+    // Гость видит причину: истекло (не снято клубом).
+    assert.equal((await h.request('GET', '/api/me/waitlist', { token: a.token })).json.find((x) => x.id === ja.json.id).close_reason, 'expired');
+    assert.ok(h.sseEvents.some((e) => e.channel === `user:${a.id}` && e.data.type === 'waitlist.updated' && e.data.id === ja.json.id && e.data.close_reason === 'expired'));
     assert.equal((await h.q('select status from bl.waitlist where id = $1', [jb.json.id]))[0].status, 'offered');
     const heldB = (await h.holds(table(1))).filter((x) => x.kind === 'reserved' && !x.released_at && new Date(x.until).getTime() > T0 + 37 * MIN);
     assert.deepEqual(heldB.map((x) => x.user_id), [b.id]);
@@ -113,6 +116,7 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     assert.ok(!JSON.stringify(h.sseEvents.filter((e) => e.channel.startsWith('user:'))).includes(code));
     // Повтор принятия — тот же ответ.
     assert.equal((await h.request('POST', `/api/waitlist/${jb.json.id}/accept`, { token: b.token, body: {} })).status, 200);
+    assert.equal(acc.json.close_reason, 'accepted');
     // Отказ после принятия — удержание снято.
     await h.request('DELETE', `/api/waitlist/${jb.json.id}`, { token: b.token, body: {} });
     assert.ok((await h.holds(table(1))).filter((x) => x.kind === 'pending').every((x) => x.released_at));
@@ -132,6 +136,8 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     const [w] = await h.q('select status, missed from bl.waitlist where id = $1', [j.json.id]);
     assert.equal(w.status, 'waiting');
     assert.equal(w.missed, 1);
+    const mine = (await h.request('GET', '/api/me/waitlist', { token: a.token })).json.find((x) => x.id === j.json.id);
+    assert.equal(mine.close_reason, 'table_taken');
   });
 
   it('ресепшн снимает удержание предложения: причина, manual.waitlist_release, тревога владельцу (№122)', async () => {
@@ -152,7 +158,11 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     assert.equal(au.length, 1);
     assert.equal(au[0].reason, 'Гость у стойки');
     assert.equal((await h.q("select * from bl.alarms where type = 'manual_action' and data->>'waitlist_id' = $1", [j.json.id])).length, 1);
-    assert.equal((await h.notifications(a.id, 'waitlist.released')).length, 1);
+    const nr = await h.notifications(a.id, 'waitlist.released');
+    assert.equal(nr.length, 1);
+    assert.equal(nr[0].data.close_reason, 'released');
+    assert.equal((await h.request('GET', '/api/me/waitlist', { token: a.token })).json.find((x) => x.id === j.json.id).close_reason, 'released');
+    assert.ok(h.sseEvents.some((e) => e.channel === `user:${a.id}` && e.data.type === 'waitlist.updated' && e.data.id === j.json.id && e.data.close_reason === 'released'));
     assert.equal((await h.request('POST', `/api/waitlist/offers/${j.json.id}/release`, { token: reception.token, club: CLUB_A, body: { reason: 'y' } })).json.error, 'offer_expired');
   });
 
@@ -169,6 +179,10 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     assert.equal((await h.q('select status from bl.waitlist where id = $1', [j.json.id]))[0].status, 'waiting');
     await h.request('POST', `/api/bookings/${r.json.id}/cancel`, { token: b.token, body: {} });
     await waitFor(async () => (await h.q('select status from bl.waitlist where id = $1', [j.json.id]))[0].status === 'offered');
+    // Гость отказался от предложения — declined, удержание снято.
+    const d = await h.request('DELETE', `/api/waitlist/${j.json.id}`, { token: a.token, body: {} });
+    assert.equal(d.json.close_reason, 'declined');
+    assert.ok((await h.holds(table(4))).filter((x) => x.kind === 'reserved').every((x) => x.released_at || new Date(x.until).getTime() <= h.clock.now().getTime()));
   });
 
   it('доступность: без входа, рабочие сутки клуба, занятость без ПДн, цены, чужой клуб — свой', async () => {

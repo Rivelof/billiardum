@@ -56,6 +56,8 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
       position: await position(db, w),
       offer_until: w.status === 'offered' ? iso(w.offer_until) : null,
       hold_until: w.status === 'accepted' ? iso(w.hold_until) : null,
+      // Почему запись закрыта (или вернулась в очередь): expired | released | declined | accepted | canceled | table_taken.
+      close_reason: w.close_reason ?? null,
       created_at: iso(w.created_at),
     };
   }
@@ -127,7 +129,8 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
       await deps.light.releasePending(db, { resourceId: w.resource_id, userId });
     }
     if (!['waiting', 'offered', 'accepted'].includes(w.status)) return view(db, w);
-    await set(db, w.id, { status: 'canceled', closed_at: t, close_reason: 'guest', updated_at: t });
+    // Отказ от предложения — declined, выход из очереди без предложения — canceled.
+    await set(db, w.id, { status: 'canceled', closed_at: t, close_reason: w.status === 'offered' ? 'declined' : 'canceled', updated_at: t });
     if (w.status === 'offered') await deps.light.clearReserved(db, { resourceId: w.resource_id });
     if (w.status !== 'waiting') await offerNext(db, w.resource_id);
     return publish(db, await load(db, w.id));
@@ -155,7 +158,8 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     } catch (err) {
       await db.query('rollback to savepoint bl_waitlist_hold');
       if (!(Number.isInteger(err?.status) && err.status === 409 && typeof err.code === 'string')) throw err;
-      await set(db, w.id, { status: 'waiting', offered_at: null, offer_until: null, missed: Math.min(100, w.missed + 1), updated_at: t });
+      // Стол успели занять: запись снова в очереди на своём месте, причина видна гостю.
+      await set(db, w.id, { status: 'waiting', offered_at: null, offer_until: null, close_reason: 'table_taken', missed: Math.min(100, w.missed + 1), updated_at: t });
       await deps.light.clearReserved(db, { resourceId: w.resource_id });
       await publish(db, await load(db, w.id));
       log.info('waitlist_accept_missed', { waitlist_id: w.id, code: err.code });
@@ -213,7 +217,7 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     const next = await nextBookingStart(db, { resourceId, after: t });
     if (next && new Date(next).getTime() - t.getTime() < OFFER_MIN_FREE_MS) return null;
     const until = new Date(t.getTime() + OFFER_MS);
-    await set(db, first[0].id, { status: 'offered', offered_at: t, offer_until: until, updated_at: t });
+    await set(db, first[0].id, { status: 'offered', offered_at: t, offer_until: until, close_reason: null, updated_at: t });
     const w = await load(db, first[0].id);
     // Стол за предложенным гостем до конца предложения (№122).
     await deps.light.setReserved(db, { resourceId, until, userId: w.user_id, source: 'waitlist', refId: w.id });
@@ -269,7 +273,7 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
         kind: 'waitlist.released',
         level: 'important',
         text: `Предложение стола ${w.resource_number} снято клубом. Вы можете встать в очередь снова.`,
-        data: { waitlist_id: w.id, resource_id: w.resource_id },
+        data: { waitlist_id: w.id, resource_id: w.resource_id, close_reason: 'released' },
       });
     } catch (err) {
       log.warn('waitlist_notify_failed', { waitlist_id: w.id, error: err.message });
@@ -286,14 +290,14 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     if (!w) return null;
     const t = now();
     if (w.status === 'offered' && new Date(w.offer_until) <= t) {
-      await set(db, w.id, { status: 'expired', closed_at: t, close_reason: 'no_answer', updated_at: t });
+      await set(db, w.id, { status: 'expired', closed_at: t, close_reason: 'expired', updated_at: t });
       await deps.light.clearReserved(db, { resourceId: w.resource_id });
       await publish(db, await load(db, w.id));
       await offerNext(db, w.resource_id);
       return 'expired';
     }
     if (w.status === 'waiting' && t.getTime() - new Date(w.created_at).getTime() >= WAITLIST_STALE_MS) {
-      await set(db, w.id, { status: 'expired', closed_at: t, close_reason: 'stale', updated_at: t });
+      await set(db, w.id, { status: 'expired', closed_at: t, close_reason: 'expired', updated_at: t });
       await publish(db, await load(db, w.id));
       return 'expired';
     }
