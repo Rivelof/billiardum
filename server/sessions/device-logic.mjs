@@ -156,7 +156,11 @@ export function createDeviceLogic({ kit, log, withContext, pool }) {
     const remaining = entry.body.remaining_ms;
     if (!Number.isSafeInteger(remaining)) return {};
     await withContext(pool, sys(clubId), async (db) => {
-      const deviceUntil = new Date(at.getTime() + remaining);
+      // Конец света по контроллеру — от первой отправки команды, а не от ack: задержка
+      // подтверждения не засчитывается гостю как игра (decisions №73). Повтор той же команды
+      // контроллер мог исполнить позже — расхождение до 15 с в пользу гостя.
+      const base = Number.isFinite(entry.sentAt) ? entry.sentAt : at.getTime();
+      const deviceUntil = new Date(base + remaining);
       await db.query(
         `update bl.sessions set device_paid_until = $2 where id = $1 and status = any('{active,ending,grace}'::text[])`,
         [entry.body.session_id, deviceUntil],

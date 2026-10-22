@@ -2,7 +2,9 @@
 // raise(db, clubId, { type, level, resourceId?, data }) в транзакции вызывающего (контекст
 // клуба clubId): строка bl.alarms, запись журнала alarm.raised, уведомление владельцам
 // и управляющим, после коммита — событие alarm в SSE club:{id}. Пока тревога того же типа
-// по тому же столу открыта, повтор только увеличивает счётчик (без журнала и уведомлений).
+// по тому же столу открыта, повтор только увеличивает счётчик (без журнала и уведомлений),
+// кроме ручных действий (уведомляют всегда, №66) и критичной тревоги, о которой не
+// уведомляли 10 минут (№75).
 
 import { appendAudit } from '../lib/audit.mjs';
 import { afterCommit } from '../lib/store.mjs';
@@ -11,6 +13,8 @@ import { sendToClubStaff } from '../notify/index.mjs';
 
 export const LEVELS = ['critical', 'important', 'info'];
 export const NOTIFY_ROLES = ['owner', 'manager'];
+/** Повтор открытой критичной тревоги уведомляет снова не чаще этого (decisions №75). */
+export const RENOTIFY_CRITICAL_MS = 10 * 60_000;
 const TYPE = /^[a-z][a-z0-9_.]{0,63}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -87,6 +91,7 @@ export function alarmJson(row) {
     last_raised_at: row.last_raised_at instanceof Date ? row.last_raised_at.toISOString() : row.last_raised_at,
     acked_at: row.acked_at instanceof Date ? row.acked_at.toISOString() : (row.acked_at ?? null),
     acked_by: row.acked_by ?? null,
+    last_notified_at: row.last_notified_at instanceof Date ? row.last_notified_at.toISOString() : (row.last_notified_at ?? null),
     text: alarmText(row.type, row.resource_number),
   };
 }
@@ -120,7 +125,7 @@ export async function raise(db, clubId, { type, level, resourceId = null, data =
      values ($1, $2, $3, $4, $5::jsonb)
      on conflict (club_id, type, coalesce(resource_id, '00000000-0000-0000-0000-000000000000'::uuid)) where state = 'open'
      do update set count = bl.alarms.count + 1, last_raised_at = now(), data = excluded.data
-     returning *, (xmax = 0) as created`,
+     returning *, (xmax = 0) as created, now() as db_now`,
     [clubId, type, level, resourceId, JSON.stringify(data)],
   );
   const alarm = rows[0];
@@ -138,9 +143,13 @@ export async function raise(db, clubId, { type, level, resourceId = null, data =
       data: { alarm_id: alarm.id, type, level, ...(resourceId ? { resource_id: resourceId } : {}) },
     });
   }
-  // Новая тревога — уведомление; повтор открытой — только счётчик, кроме ручных действий.
-  const notified = alarm.created || isManual;
+  // Новая тревога — уведомление; повтор открытой — только счётчик, кроме ручных действий
+  // и критичной тревоги, о которой не напоминали 10 минут (№75).
+  const critical = level === 'critical' || alarm.level === 'critical';
+  const stale = !alarm.last_notified_at || alarm.db_now.getTime() - alarm.last_notified_at.getTime() >= RENOTIFY_CRITICAL_MS;
+  const notified = alarm.created || isManual || (critical && stale);
   if (notified) {
+    await db.query('update bl.alarms set last_notified_at = now() where id = $1', [alarm.id]);
     await sendToClubStaff(db, clubId, NOTIFY_ROLES, {
       kind: 'alarm',
       level,

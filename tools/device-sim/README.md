@@ -76,6 +76,7 @@ node tools/device-sim/index.mjs --help
 | `POST /sim/tables/{number}/fault` | `{"name": "bypass", "on": true, "ms"?: 30000}` | `{"ok": true, "fault", "on", "replayed"?, "table": стол}` |
 | `POST /sim/tables/{number}/reboot` | `{"down_ms"?: 0, "reset_reason"?: "poweron"}` | `{"ok": true, "table": стол}` |
 | `POST /sim/tables/{number}/net` | `{"up": false}` | `{"ok": true, "table": стол}` |
+| `POST /sim/tables/{number}/inject` | `{"raw": "строка команды"}` | `{"ok": true, "result", "reason"?, "ack", "table": стол}`; больше 2048 байт — `413 too_large`, контроллер выключен — `409 powered_off` |
 
 `стол`:
 
@@ -92,6 +93,8 @@ node tools/device-sim/index.mjs --help
   "outbox": [{ "type": "offline_session_finished", "boot_id": "…", "n": 3 }]
 }
 ```
+
+`inject` подаёт строку так, будто она пришла в `cmd` по MQTT: проверка §3.1–§3.3, `ack` в топик `ack`, события, метрика. Так проверяется T9 (команда с неверной подписью) без доступа к брокеру. Сама строка в лог не пишется (в ней подпись), в логе — `sim_inject` с размером и итогом.
 
 `lamp` — лампа горит физически: при двойном мигании `state.relay` остаётся `true`, а `lamp` на 300 мс становится `false`. `signals` — счётчики с последней загрузки. `outbox` — недоставленные события.
 
@@ -112,7 +115,7 @@ curl -s -X POST -H 'content-type: application/json' -d '{"up":false}' 127.0.0.1:
 | `sim_signal` | сигнал у стола: `signal` (`warn`, `blink2`, `grace`, `grace_blink`), `beeps` |
 | `sim_relay` | свет включён командой: `relay: true`, `cmd_id`, `type` (`session.start` или `session.resume`), `ms_since_cmd` — метрика M1 |
 | `sim_cmd` | итог команды: `type`, `seq`, `cmd_id`, `result`; `reason` — для `bad_format`, `bad_sig` и `bad_body` |
-| `sim_fault`, `sim_net`, `sim_reboot`, `sim_slow_ack`, `sim_replay_old`, `sim_ota`, `sim_rebind` | режимы сбоя и служебные действия |
+| `sim_fault`, `sim_net`, `sim_reboot`, `sim_slow_ack`, `sim_replay_old`, `sim_inject`, `sim_ota`, `sim_rebind` | режимы сбоя и служебные действия |
 | `sim_control` | HTTP-управление запущено: адрес и порт |
 | `mqtt_connected`, `mqtt_disconnected`, `mqtt_error` | связь с брокером; одинаковая ошибка подряд пишется один раз |
 | `sim_event` (`debug`) | событие положено в буфер |

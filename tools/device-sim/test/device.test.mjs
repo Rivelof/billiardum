@@ -301,6 +301,51 @@ test('перепривязка (новый device_key): seq, id, ack и сесс
   await b.stop();
 });
 
+test('HTTP inject: сырая команда проходит весь путь проверки — ack, события; предел 2048 байт', async () => {
+  const r = rig({ nvs: new MemoryNvs() });
+  r.dev.start();
+  await tick();
+  const control = await startControl({ devices: [r.dev], port: 0, log: createLogger({ write: () => {} }) });
+  const inject = (raw) => fetch(`http://127.0.0.1:${control.port}/sim/tables/4/inject`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ raw }),
+  });
+  try {
+    const cmd = makeCommand({ seq: 1, type: 'session.start', body: { session_id: SESSION, remaining_ms: 600_000, buzzer: true } });
+    const ok = await (await inject(signed(cmd))).json();
+    assert.deepEqual([ok.ok, ok.result, ok.ack.ok, ok.ack.cmd_id, ok.table.state.mode], [true, 'ok', true, cmd.id, 'active']);
+    assert.equal(JSON.parse(r.on('ack').at(-1).payload).cmd_id, cmd.id, 'ack ушёл в топик ack');
+    assert.equal(r.log('sim_relay').length, 1, 'метрика — как у команды из MQTT');
+
+    // T9: подпись чужим ключом — bad_sig, событие, свет не тронут.
+    const forged = makeCommand({ seq: 2, type: 'session.stop', body: { session_id: SESSION, reason_code: 'guest_finished' } });
+    const bad = await (await inject(signed(forged, Buffer.alloc(32, 9).toString('base64')))).json();
+    assert.deepEqual([bad.result, bad.reason, bad.ack.error, bad.ack.cmd_id, bad.table.state.mode], ['bad_sig', 'sig_mismatch', 'bad_sig', forged.id, 'active']);
+    await tick();
+    assert.ok(r.on('event').some((p) => JSON.parse(p.payload).type === 'bad_sig'));
+    assert.ok(!JSON.stringify(r.lines).includes(JSON.parse(signed(forged)).sig), 'подпись не в логе');
+
+    const fmt = await (await inject('{"v":1,"id":')).json();
+    assert.deepEqual([fmt.result, fmt.ack.cmd_id, fmt.ack.error], ['bad_format', null, 'bad_format']);
+    const replay = await (await inject(signed(cmd))).json();
+    assert.equal(replay.result, 'resend', 'точный повтор — сохранённый ack');
+
+    const big = await inject(`{"pad":"${'x'.repeat(2048)}"}`);
+    assert.deepEqual([big.status, await big.json()], [413, { error: 'too_large' }]);
+    const edge = await (await inject(`{"pad":"${'x'.repeat(2048 - 10)}"}`)).json();
+    assert.equal(edge.result, 'bad_format', 'ровно 2048 байт доходят до проверки');
+    const notString = await fetch(`http://127.0.0.1:${control.port}/sim/tables/4/inject`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ raw: 5 }),
+    });
+    assert.deepEqual([notString.status, await notString.json()], [400, { error: 'bad_raw' }]);
+    r.dev.reboot({ downMs: 60_000 });
+    const off = await inject(signed(makeCommand({ seq: 3 })));
+    assert.deepEqual([off.status, await off.json()], [409, { error: 'powered_off' }]);
+  } finally {
+    await control.close();
+    await r.dev.stop();
+  }
+});
+
 test('HTTP-управление: маршруты, JSON обязателен, ошибки кодом', async () => {
   const r = rig({ nvs: new MemoryNvs() });
   r.dev.start();
@@ -328,7 +373,7 @@ test('HTTP-управление: маршруты, JSON обязателен, о
     assert.equal((await post('/sim/tables/4/fault', { name: 'bypass', on: true, ms: 'x' })).status, 400);
     const broken = await fetch(`${base}/sim/tables/4/net`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' });
     assert.deepEqual([broken.status, await broken.json()], [400, { error: 'bad_json' }]);
-    const big = await fetch(`${base}/sim/tables/4/net`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: `{"up":true,"x":"${'a'.repeat(5000)}"}` }).catch(() => ({ status: 413 }));
+    const big = await fetch(`${base}/sim/tables/4/net`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: `{"up":true,"x":"${'a'.repeat(17_000)}"}` }).catch(() => ({ status: 413 }));
     assert.equal(big.status, 413);
 
     const n = await (await post('/sim/tables/4/net', { up: false })).json();

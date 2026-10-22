@@ -554,28 +554,14 @@ export function createLightService(opts) {
     return { ok: true };
   }
 
-  /** Деление неотыгранного времени по платежам с конца: возврат долей суммы каждого платежа. */
+  /** Деление неотыгранного времени по платежам с конца (decisions №73, shareRefunds). */
   async function refundShares(db, s, unplayed) {
     const { rows } = await db.query(
       `select payment_id, minutes, amount_kopecks, refunded_kopecks from bl.session_payments
         where session_id = $1 and outcome = 'applied' order by created_at desc, payment_id desc`,
       [s.id],
     );
-    let left = BigInt(Math.max(0, Math.floor(unplayed)));
-    const out = [];
-    for (const r of rows) {
-      if (left <= 0n) break;
-      const covered = BigInt(r.minutes ?? 0) * 60_000n;
-      if (covered <= 0n) continue;
-      const take = left < covered ? left : covered;
-      const amount = BigInt(r.amount_kopecks);
-      const room = amount - BigInt(r.refunded_kopecks);
-      let refund = (amount * take) / covered; // вниз до копейки: не больше оплаченного
-      if (refund > room) refund = room;
-      left -= take;
-      if (refund > 0n) out.push({ paymentId: r.payment_id, amountKopecks: Number(refund) });
-    }
-    return out;
+    return shareRefunds(rows, unplayed);
   }
 
   /**
@@ -1014,6 +1000,36 @@ export function createLightService(opts) {
     hallItem,
     tick,
   };
+}
+
+/** Платёж, неотыгранный почти целиком (до 1 с — расхождение часов), не был показан: возврат целиком. */
+export const UNSHOWN_TOLERANCE_MS = 1_000;
+
+/**
+ * Возврат за неотыгранное время долями платежей, с последнего (decisions №73):
+ * время платежа, которое контроллер так и не показал, возвращается целиком; иначе доля
+ * суммы округляется вверх до копейки (в пользу гостя), не больше невозвращённого остатка.
+ * @param {{ payment_id, minutes, amount_kopecks, refunded_kopecks }[]} rows платежи от новых к старым
+ * @returns {{ paymentId: string, amountKopecks: number }[]}
+ */
+export function shareRefunds(rows, unplayedMs) {
+  let left = BigInt(Math.max(0, Math.floor(unplayedMs)));
+  const out = [];
+  for (const r of rows) {
+    if (left <= 0n) break;
+    const covered = BigInt(r.minutes ?? 0) * 60_000n;
+    if (covered <= 0n) continue;
+    const take = left < covered ? left : covered;
+    const amount = BigInt(r.amount_kopecks);
+    const room = amount - BigInt(r.refunded_kopecks ?? 0);
+    let refund;
+    if (covered - take <= BigInt(UNSHOWN_TOLERANCE_MS)) refund = room;
+    else refund = (amount * take + covered - 1n) / covered; // вверх до копейки
+    if (refund > room) refund = room;
+    left -= take;
+    if (refund > 0n) out.push({ paymentId: r.payment_id, amountKopecks: Number(refund) });
+  }
+  return out;
 }
 
 /**

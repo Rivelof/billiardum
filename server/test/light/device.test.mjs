@@ -193,6 +193,33 @@ describe('контроллер и сессии', { skip: SKIP }, () => {
     await h.until(() => c.received.at(-1).type === 'state.free', 'state.free');
   });
 
+  it('№73 (T6-C): ack пришёл с задержкой, продление не показано — возврат целиком, задержка не засчитана как игра', async () => {
+    const c = h.ctl.get(1);
+    c.auto = false;
+    const pay = await makePayment(t, { resource: 1, user: GUEST(2), minutes: 10, at: h.time.now() });
+    const { session_id: sid } = await h.outbox.deliver('payment.confirmed', pay);
+    await h.until(() => c.dropped.length === 1, 'session.start опубликован');
+    await h.advance(1_500); // подтверждение через 1,5 с
+    c.auto = true;
+    await c.onCmd(c.dropped.shift());
+    await h.until(async () => (await session(sid)).device_paid_until !== null, 'ack');
+    const s0 = await session(sid);
+    assert.equal(s0.device_paid_until.getTime(), s0.paid_until.getTime(), 'конец света — от отправки команды');
+    await h.advance(5 * MIN);
+    await c.disconnect();
+    const ext = await makePayment(t, { kind: 'extend', resource: 1, user: GUEST(2), sessionId: sid, minutes: 3, amount: 2_500, at: h.time.now() });
+    await h.outbox.deliver('payment.confirmed', ext);
+    await h.advance(11 * MIN);
+    const s = await session(sid);
+    assert.equal(s.status, 'interrupted');
+    assert.equal(Number(s.unplayed_ms), 3 * MIN);
+    await h.asUser(GUEST(2), (db) => svc.resolve(db, { sessionId: sid, userId: GUEST(2), choice: 'refund' }));
+    const mine = h.refunds.filter((r) => r.paymentId === ext.payment_id || r.paymentId === pay.payment_id);
+    assert.deepEqual(mine, [{ paymentId: ext.payment_id, amountKopecks: 2_500, reason: 'interrupted' }]);
+    await c.connect();
+    await h.until(() => c.received.at(-1).type === 'state.free', 'state.free');
+  });
+
   it('T7: перезагрузка посреди игры — session.resume, остаток верный, событие boot в журнале', async () => {
     const sid = await start(1, GUEST(1), 30);
     const c = h.ctl.get(1);

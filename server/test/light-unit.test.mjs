@@ -8,7 +8,7 @@ import { phaseOf, premarkNotified, unplayedMs } from '../sessions/kit.mjs';
 import { buzzerFlag, graceMs, inQuietHours, serviceMaxMinutes, warnMs } from '../sessions/settings.mjs';
 import { LightError, errorResponse } from '../sessions/errors.mjs';
 import { createScheduler } from '../scheduler.mjs';
-import { summarizeReceipts } from '../sessions/service.mjs';
+import { shareRefunds, summarizeReceipts } from '../sessions/service.mjs';
 import { toHttpError } from '../http/errors.mjs';
 
 const YEKB = 'Asia/Yekaterinburg';
@@ -84,6 +84,21 @@ describe('фазы сессии и сигналы', () => {
     assert.equal(unplayedMs({ paid_until: at(40), device_paid_until: at(10), started_at: now }), 30 * 60_000);
     assert.equal(unplayedMs({ paid_until: at(40), device_paid_until: null, started_at: now }), 40 * 60_000);
     assert.equal(unplayedMs({ paid_until: at(40), device_paid_until: at(41), started_at: now }), 0);
+  });
+});
+
+describe('возврат за неотыгранное (decisions №73)', () => {
+  const P = (id, minutes, amount, refunded = 0) => ({ payment_id: id, minutes, amount_kopecks: amount, refunded_kopecks: refunded });
+  it('непоказанное продление — целиком; частично — доля вверх до копейки; старшие платежи — после младших', () => {
+    assert.deepEqual(shareRefunds([P('e', 3, 2500), P('s', 10, 80000)], 3 * 60_000), [{ paymentId: 'e', amountKopecks: 2500 }]);
+    assert.deepEqual(shareRefunds([P('e', 3, 2500)], 3 * 60_000 - 800), [{ paymentId: 'e', amountKopecks: 2500 }], 'расхождение часов до 1 с');
+    assert.deepEqual(shareRefunds([P('e', 3, 1000)], 60_000), [{ paymentId: 'e', amountKopecks: 334 }], '333,33 → 334');
+    assert.deepEqual(shareRefunds([P('e', 3, 2500), P('s', 10, 80000)], 5 * 60_000), [
+      { paymentId: 'e', amountKopecks: 2500 },
+      { paymentId: 's', amountKopecks: 16000 },
+    ]);
+    assert.deepEqual(shareRefunds([P('e', 3, 2500, 2000)], 3 * 60_000), [{ paymentId: 'e', amountKopecks: 500 }], 'не больше невозвращённого');
+    assert.deepEqual(shareRefunds([P('e', 3, 2500)], 0), []);
   });
 });
 

@@ -12,6 +12,7 @@ import { RealClock } from './clock.mjs';
 import { FileNvs, MemoryNvs, NVS_KEYS } from './nvs.mjs';
 import { FAULTS, FAULT_DEFAULT_MS, MAX_FAULT_MS, FaultFlags } from './faults.mjs';
 import { simSensor } from './scenario.mjs';
+import { LIMITS } from './canonical.mjs';
 
 export const KEEPALIVE_S = 30;
 export const RECONNECT_MS = 3000;
@@ -53,6 +54,7 @@ export class SimDevice {
   #timers = new Map(); // имя → таймер снятия сбоя или отложенного действия
   #accepted = []; // [{ raw, seq, type }] принятые команды — для replay-old
   #currentRaw = null;
+  #lastAck = null; // последний ack (для inject)
   #cmdAt = null; // performance.now() при получении команды — метрика cmd → relay
 
   /**
@@ -235,6 +237,26 @@ export class SimDevice {
     this.#nvs.set(NVS_KEYS.binding, bind);
   }
 
+  /**
+   * Подаёт сырую строку команды так, будто она пришла в `cmd` по MQTT: весь путь проверки
+   * §3.1–§3.3, ack в топик `ack`, события (T9, pentester). Только из HTTP-управления (разработка).
+   * Больше 2048 байт — too_large, как предел `cmd` (§2). Сама строка в лог не пишется: в ней подпись.
+   */
+  inject(raw) {
+    if (typeof raw !== 'string') throw new FaultError('bad_raw');
+    const bytes = Buffer.from(raw, 'utf8');
+    if (bytes.length > LIMITS.maxBytes) throw new FaultError('too_large');
+    if (!this.#powered) throw new FaultError('powered_off');
+    this.#lastAck = null;
+    const res = this.#feed(bytes);
+    this.#log.warn('sim_inject', { bytes: bytes.length, result: res.result });
+    return {
+      result: res.result,
+      ...(res.reason ? { reason: res.reason } : {}),
+      ack: this.#lastAck === null ? null : JSON.parse(this.#lastAck),
+    };
+  }
+
   // ——— Питание и связь ———
 
   #powerOn(resetReason) {
@@ -372,6 +394,7 @@ export class SimDevice {
         break;
       }
       case 'ack': {
+        this.#lastAck = msg.payload;
         const delay = this.#faults.slowAckMs;
         if (delay > 0) {
           this.#log.info('sim_slow_ack', { cmd_id: msg.cmd_id, delay_ms: delay });

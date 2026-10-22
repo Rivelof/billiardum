@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { after, before, describe, it } from 'node:test';
-import { compilePath, createRouter, SECURITY_HEADERS } from '../../api/router.mjs';
+import { compilePath, createRouter, loadRoutes, SECURITY_HEADERS } from '../../api/router.mjs';
 import { clientIp, ipInCidrs, parseCidrs, parseCookies, serializeCookie } from '../http/request.mjs';
 import { createRateLimiter } from '../http/rate-limit.mjs';
 import { createSseHub, formatEvent } from '../http/sse.mjs';
@@ -145,6 +145,73 @@ describe('роутер', () => {
   it('маршрут объявлен дважды — ошибка при сборке', () => {
     assert.throws(() => createRouter(fakeApp(), { routes: [routes[0], { ...routes[0] }] }), /дважды/);
     assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/api/x', auth: 'staff', handler() {} }] }), /roles/);
+  });
+});
+
+describe('короткая ссылка с наклейки /t/{code} (decisions №72)', () => {
+  let srv;
+  let dbCalls = 0;
+
+  before(async () => {
+    const app = fakeApp();
+    app.withContext = async () => {
+      dbCalls += 1;
+      throw new Error('база не нужна');
+    };
+    const routes = await loadRoutes({ config: app.config, only: ['owner.mjs'] });
+    srv = await serve(createHttpHandler({ router: createRouter(app, { routes }), checkDb: async () => {}, mqttConnected: () => true, log: silent }));
+  });
+
+  after(() => srv.close());
+
+  const get = (path, headers = {}) => fetch(`${srv.base}${path}`, { redirect: 'manual', headers });
+
+  it('верный код — 302 на /app/t/{CODE}, no-store; нижний регистр приводится; запрос в базу не идёт', async () => {
+    for (const [path, loc] of [
+      ['/t/TEST000004', '/app/t/TEST000004'],
+      ['/t/test000004', '/app/t/TEST000004'],
+      ['/t/4K7P9QW2XM', '/app/t/4K7P9QW2XM'],
+      ['/t/TEST000004?next=https://evil.example&url=//evil.example', '/app/t/TEST000004'],
+    ]) {
+      const res = await get(path, { host: 'evil.example', referer: 'https://evil.example/' });
+      assert.equal(res.status, 302, path);
+      assert.equal(res.headers.get('location'), loc, path);
+      assert.equal(res.headers.get('cache-control'), 'no-store');
+    }
+    assert.equal(dbCalls, 0);
+  });
+
+  it('всё остальное — 404 без перенаправления', async () => {
+    for (const path of [
+      '/t/',
+      '/t',
+      '/t/TEST00000',
+      '/t/TEST0000044',
+      `/t/${'A'.repeat(500)}`,
+      '/t/TEST00000I',
+      '/t/TEST00000L',
+      '/t/TEST00000O',
+      '/t/TEST00000U',
+      '/t/TEST-00004',
+      '/t/..%2F..',
+      '/t/..%2F..%2Fapi%2Fme',
+      '/t/https:%2F%2Fevil.example',
+      '/t/%2F%2Fevil.example',
+      '/t/%5C%5Cevil.example',
+      '/t/TEST000004%0D%0ALocation:%20https://evil.example',
+      '/t/TEST000004/extra',
+      '/t/%E2%80%AETEST00004',
+      '/t/%ZZ',
+    ]) {
+      const res = await get(path);
+      assert.equal(res.status, 404, path);
+      assert.equal(res.headers.get('location'), null, path);
+      assert.deepEqual(await res.json(), { error: 'not_found' }, path);
+    }
+  });
+
+  it('db: false — только для маршрутов без входа', () => {
+    assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/x', auth: 'guest', db: false, handler() {} }] }), /db: false/);
   });
 });
 

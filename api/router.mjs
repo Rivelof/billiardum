@@ -14,7 +14,8 @@
 //   enabled   — (config) => boolean: маршрут не регистрируется, если false (вход для разработки в проде);
 //   findClub  — async (db, req) => boolean: для 'staff' без клуба в запросе, когда у пользователя
 //               несколько подходящих клубов, — есть ли объект в клубе из контекста;
-//   queryAuth — async (app, token, query) => principal|null: вход по ?token= (одноразовый токен SSE).
+//   queryAuth — async (app, token, query) => principal|null: вход по ?token= (одноразовый токен SSE);
+//   db: false — только для auth 'none': обработчик без транзакции и базы (перенаправления).
 //
 // Обработчик: async handler(ctx, req) → { status?, json?, headers?, body?, stream? }.
 //   ctx = { ...общий контекст сервера, db, user, club, roles, principal, log, idempotencyKey,
@@ -90,6 +91,7 @@ function validateRoute(r, file) {
   }
   if (r.requires && !r.requires.every((x) => x === 'phone' || x === 'consent')) throw new Error(`${where}: requires`);
   if (r.actor && r.actor !== 'system' && r.actor !== 'user') throw new Error(`${where}: actor`);
+  if (r.db === false && (r.auth !== 'none' || r.idempotent)) throw new Error(`${where}: db: false только для auth 'none'`);
 }
 
 /**
@@ -311,7 +313,12 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
         raw: req,
       };
 
-      const result = await runInContext(
+      const result = route.db === false
+        ? await (async () => {
+            const out = (await route.handler({ ...app, db: null, log, principal, user: reqInfo.user, club: null, roles: [] }, reqInfo)) ?? { status: 204 };
+            return { status: out.status ?? 200, json: out.json, headers: out.headers ?? {}, body: out.body, stream: out.stream };
+          })()
+        : await runInContext(
         { clubId: club, userId: route.actor === 'system' ? null : userId, actorType },
         async (db) => {
           const ctx = {

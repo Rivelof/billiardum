@@ -246,7 +246,22 @@ async function qrStickers(ctx) {
   };
 }
 
+/** Код стола: ровно 10 символов Crockford Base32 (decisions №47), без I, L, O, U. */
+export const TABLE_CODE = /^[0-9A-HJKMNP-TV-Z]{10}$/;
+
+/**
+ * Короткая ссылка с QR-наклейки (decisions №72): GET /t/{code} → 302 /app/t/{CODE}.
+ * Адрес перенаправления собирается только из проверенного кода (никаких параметров запроса,
+ * Host или Referer): открытого перенаправления нет. Иначе — 404.
+ */
+async function shortLink(_ctx, req) {
+  const code = typeof req.params.code === 'string' ? req.params.code.toUpperCase() : '';
+  if (!TABLE_CODE.test(code)) throw new HttpError(404, 'not_found');
+  return { status: 302, headers: { location: `/app/t/${code}` } };
+}
+
 export const routes = [
+  { method: 'GET', path: '/t/{code}', auth: 'none', db: false, rateLimit: { max: 120, windowMs: 60_000 }, handler: shortLink },
   { method: 'GET', path: '/api/clubs/{club}/now', auth: 'staff', roles: MANAGER_UP, handler: now },
   { method: 'GET', path: '/api/clubs/{club}/audit', auth: 'staff', roles: MANAGER_UP, handler: audit },
   { method: 'GET', path: '/api/clubs/{club}/audit/verify', auth: 'staff', roles: OWNER, rateLimit: { max: 10, windowMs: 60_000 }, handler: auditVerify },

@@ -151,6 +151,30 @@ describe('тревоги', () => {
     assert.equal(again.notified, false, 'не ручная тревога: повтор без уведомления');
   });
 
+  it('повтор открытой критичной тревоги: через 10 минут снова уведомляет владельца, раньше — только счётчик (№75)', async () => {
+    const RESOURCE_2 = 'e1000000-0000-4000-8000-000000000002';
+    const notes = async (id) =>
+      (await t.admin.query("select count(*)::int as n from bl.notifications where data->>'alarm_id' = $1 and user_id = $2", [id, OWNER_A])).rows[0].n;
+    const first = await inClub((db) => raise(db, CLUB_A, { type: 'bypass_detected', level: 'critical', resourceId: RESOURCE_2 }));
+    assert.equal(await notes(first.id), 1);
+    const soon = await inClub((db) => raise(db, CLUB_A, { type: 'bypass_detected', level: 'critical', resourceId: RESOURCE_2 }));
+    assert.deepEqual([soon.created, soon.notified, soon.count], [false, false, 2]);
+    assert.equal(await notes(first.id), 1, 'раньше 10 минут — без уведомления');
+    // Прошло 9 минут 59 секунд — всё ещё рано.
+    await t.admin.query("update bl.alarms set last_notified_at = now() - interval '599 seconds' where id = $1", [first.id]);
+    assert.equal((await inClub((db) => raise(db, CLUB_A, { type: 'bypass_detected', level: 'critical', resourceId: RESOURCE_2 }))).notified, false);
+    // Прошло 10 минут — снова уведомление, отсчёт заново.
+    await t.admin.query("update bl.alarms set last_notified_at = now() - interval '10 minutes' where id = $1", [first.id]);
+    const late = await inClub((db) => raise(db, CLUB_A, { type: 'bypass_detected', level: 'critical', resourceId: RESOURCE_2 }));
+    assert.deepEqual([late.created, late.notified, late.count], [false, true, 4]);
+    assert.equal(await notes(first.id), 2);
+    assert.equal((await inClub((db) => raise(db, CLUB_A, { type: 'bypass_detected', level: 'critical', resourceId: RESOURCE_2 }))).notified, false);
+    // Важная (не критичная) тревога через 10 минут повторно не уведомляет.
+    const imp = await inClub((db) => raise(db, CLUB_A, { type: 'lamp_fault', level: 'important', resourceId: RESOURCE_2 }));
+    await t.admin.query("update bl.alarms set last_notified_at = now() - interval '1 hour' where id = $1", [imp.id]);
+    assert.equal((await inClub((db) => raise(db, CLUB_A, { type: 'lamp_fault', level: 'important', resourceId: RESOURCE_2 }))).notified, false);
+  });
+
   it('raise вне контекста клуба тревоги — ошибка', async () => {
     await assert.rejects(withContext(t.pool, { clubId: null, actorType: 'system' }, (db) => raise(db, CLUB_A, { type: 'x', level: 'info' })));
   });

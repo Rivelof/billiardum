@@ -8,6 +8,7 @@
 //   POST /sim/tables/{number}/fault        {"name": "...", "on": true|false, "ms"?: n}
 //   POST /sim/tables/{number}/reboot       {"down_ms"?: n, "reset_reason"?: "poweron"|"sw"|...}
 //   POST /sim/tables/{number}/net          {"up": true|false}
+//   POST /sim/tables/{number}/inject       {"raw": "строка команды"} — как пришедшая в cmd (T9)
 //
 // POST принимает только Content-Type: application/json: браузер не может отправить такой запрос
 // на 127.0.0.1 с чужой страницы без CORS-preflight, а CORS здесь не разрешён.
@@ -15,7 +16,7 @@
 import http from 'node:http';
 import { FaultError } from './device.mjs';
 
-const MAX_BODY = 4096;
+const MAX_BODY = 16_384; // inject: команда до 2048 байт в строке JSON с экранированием
 const RESET_REASONS = new Set(['poweron', 'sw', 'panic', 'int_wdt', 'task_wdt', 'wdt', 'deepsleep', 'brownout', 'sdio', 'unknown']);
 
 class HttpError extends Error {
@@ -79,6 +80,7 @@ function readJson(req) {
  * @returns {Promise<{ server: http.Server, port: number, close(): Promise<void> }>}
  */
 export async function startControl({ devices, port, host = '127.0.0.1', log }) {
+  if (process.env.NODE_ENV === 'production') throw new Error('управление симулятором недоступно при NODE_ENV=production');
   const byTable = new Map(devices.map((d) => [d.table, d]));
 
   async function route(req) {
@@ -117,6 +119,10 @@ export async function startControl({ devices, port, host = '127.0.0.1', log }) {
       case 'net':
         device.setNet(body.up);
         return { status: 200, body: { ok: true, table: device.status() } };
+      case 'inject': {
+        const result = device.inject(body.raw);
+        return { status: 200, body: { ok: true, ...result, table: device.status() } };
+      }
       default:
         throw new HttpError(404, 'not_found');
     }
@@ -129,7 +135,8 @@ export async function startControl({ devices, port, host = '127.0.0.1', log }) {
         if (err instanceof HttpError) {
           send(res, err.status, { error: err.code });
         } else if (err instanceof FaultError) {
-          send(res, 400, { error: err.message });
+          const status = { too_large: 413, powered_off: 409 }[err.message] ?? 400;
+          send(res, status, { error: err.message });
         } else {
           log.error('sim_control_error', { error: err.message });
           send(res, 500, { error: 'internal' });
