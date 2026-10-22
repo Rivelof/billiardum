@@ -1,29 +1,34 @@
 import { createClient, newIdempotencyKey, openStream } from '@billiardum/shared/api';
-import { session, local } from './store.js';
+import { local } from './store.js';
 
 /**
- * Вызовы API программы клуба по контракту M1 (§4–§7).
- * Вход — cookie bl_session; после быстрой смены по PIN на терминале — Authorization: Bearer (токен смены во вкладке).
- * Терминал ресепшена хранит свой terminal_token в localStorage и шлёт его заголовком X-Bl-Terminal
- * только в маршруты терминала (имя заголовка запрошено у backend-core).
+ * Вызовы API программы клуба по контракту M1 (§4–§7, §14).
+ * Вход — cookie bl_session (Path=/api), её сервер ставит на всех входах, включая смену по PIN.
+ * Клуб для маршрутов без {club} в пути — заголовок X-Club-Id (программа шлёт его всегда, §14).
+ * Терминал ресепшена хранит terminal_token в localStorage и шлёт его как Authorization: Bearer
+ * только в маршруты терминала (GET /api/staff/terminal, POST /api/staff/pin).
  */
 
-const BEARER_KEY = 'bl-staff-bearer';
 export const TERMINAL_KEY = 'bl-terminal';
 
-const tokenFn = () => session.get(BEARER_KEY);
+let clubId = null;
 let doFetch;
-let client = createClient({ token: tokenFn });
 let EventSourceImpl = globalThis.EventSource;
+
+const clubHeader = (h) => {
+  if (clubId) h['X-Club-Id'] = clubId;
+};
+let client = createClient({ headers: clubHeader });
 
 export function configureApi({ fetch, EventSource } = {}) {
   doFetch = fetch;
-  client = createClient({ fetch, token: tokenFn });
+  client = createClient({ fetch, headers: clubHeader });
   if (EventSource) EventSourceImpl = EventSource;
 }
 
-export function setStaffBearer(token) {
-  session.set(BEARER_KEY, token || null);
+/** Текущий клуб экрана: уходит в X-Club-Id. */
+export function setClub(id) {
+  clubId = id || null;
 }
 
 /** Зарегистрированный терминал: { token, name, club_id } или null. */
@@ -40,29 +45,26 @@ export function setTerminal(value) {
   local.set(TERMINAL_KEY, value ? JSON.stringify(value) : null);
 }
 
-const terminalClient = () =>
-  createClient({
-    fetch: doFetch,
-    headers: (h) => {
-      const t = getTerminal();
-      if (t?.token) h['X-Bl-Terminal'] = t.token;
-    },
-  });
+const terminalClient = () => createClient({ fetch: doFetch, token: () => getTerminal()?.token ?? null });
 
 const e = encodeURIComponent;
 const acceptKeys = new Map();
 
 export const api = {
   me: () => client.get('/me'),
+  /** Персонал задаёт себе имя: PATCH /api/me {name} (§14). */
+  updateMe: (body) => client.request('PATCH', '/me', { body }),
   devLogin: (phone) => client.post('/auth/dev', { phone }),
   botLink: (channel) => client.post('/auth/bot-link', { channel }),
   botLinkStatus: (nonce) => client.get(`/auth/bot-link/${e(nonce)}`),
   logout: () => client.post('/auth/logout'),
 
-  registerTerminal: (clubId, name) => client.post('/staff/terminal', { club_id: clubId, name }),
-  // Нет в контракте M1: список сотрудников для экрана PIN на терминале. Запрошено у backend-core.
-  terminalUsers: () => terminalClient().get('/staff/terminal/users'),
+  registerTerminal: (club, name) => client.post('/staff/terminal', { club_id: club, name }),
+  /** Терминал и персонал для выбора перед PIN: { terminal, staff: [{ user_id, role, phone_masked, pin_set }] } */
+  terminalInfo: () => terminalClient().get('/staff/terminal'),
   pin: (userId, pin) => terminalClient().post('/staff/pin', { user_id: userId, pin }),
+  /** Сотрудник задаёт себе PIN для терминала (PUT /api/staff/pin, §14). */
+  setPin: (club, pin) => client.request('PUT', '/staff/pin', { body: { club_id: club, pin } }),
 
   hall: (club) => client.get(`/clubs/${e(club)}/hall`),
   requests: (club) => client.get(`/clubs/${e(club)}/reception/requests`),
@@ -77,6 +79,10 @@ export const api = {
   serviceStart: (resourceId, body) => client.post(`/resources/${e(resourceId)}/service`, body),
   serviceStop: (resourceId) => client.post(`/resources/${e(resourceId)}/service/stop`),
   extendFree: (sessionId, body) => client.post(`/sessions/${e(sessionId)}/extend-free`, body),
+
+  /** Контроллеры: окно привязки 30 минут по коду с наклейки (№67), «Подсветить стол». */
+  bindDevice: (club, body) => client.post(`/clubs/${e(club)}/devices/bind`, body),
+  identify: (resourceId, seconds = 30) => client.post(`/resources/${e(resourceId)}/identify`, { seconds }),
 
   now: (club) => client.get(`/clubs/${e(club)}/now`),
   audit: (club, query) => client.get(`/clubs/${e(club)}/audit`, { query }),

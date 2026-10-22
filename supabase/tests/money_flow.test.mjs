@@ -10,7 +10,7 @@ import { routes as quoteRoutes } from '../../api/routes/quotes.mjs';
 import { routes as paymentRoutes } from '../../api/routes/payments.mjs';
 import { routes as receptionRoutes } from '../../api/routes/reception.mjs';
 import { routes as webhookRoutes } from '../../api/routes/webhooks.mjs';
-import { refund } from '../../server/payments/api.mjs';
+import { receiptStatus, refund } from '../../server/payments/api.mjs';
 import { onSessionClosed } from '../../server/payments/capture.mjs';
 import { tick } from '../../server/payments/index.mjs';
 import { resolveDeps } from '../../server/payments/deps.mjs';
@@ -110,8 +110,8 @@ describe('стол по коду', () => {
     assert.equal((await h.call(TABLE_ROUTE, { params: { code: '../x' } })).status, 404);
   });
 
-  it('маршрут объявляет ограничение 30 запросов в минуту (считает роутер)', () => {
-    assert.deepEqual(TABLE_ROUTE.rateLimit, { max: 30, windowMs: 60_000 });
+  it('маршрут объявляет ограничение 120 запросов в минуту с IP (§14, считает роутер)', () => {
+    assert.deepEqual(TABLE_ROUTE.rateLimit, { max: 120, windowMs: 60_000 });
     assert.equal(TABLE_ROUTE.auth, 'none');
   });
 });
@@ -635,11 +635,17 @@ describe('ресепшн', () => {
     const q3 = (await quote(GUEST_2, { resource_id: t3, kind: 'start', minutes: 60 })).json;
     const r3 = (await pay(GUEST_2, q3.quote_id, 'reception')).json;
     assert.equal((await h.call(DECLINE, { user: RECEPTION_A, params: { id: r3.reception_request_id }, body: {} })).json.error, 'reason_required');
+    for (const bad of ['guest_gone', 'GUEST_LEFT', 'cleaning', 42]) {
+      assert.equal((await h.call(DECLINE, { user: RECEPTION_A, params: { id: r3.reception_request_id }, body: { reason_code: bad } })).json.error, 'bad_request', String(bad));
+    }
+    assert.equal((await h.call(GUEST_REQ, { user: GUEST_2, params: { id: r3.reception_request_id } })).json.reason_code, null, 'пока ждёт — без причины');
     const d = await h.call(DECLINE, { user: RECEPTION_A, params: { id: r3.reception_request_id }, body: { reason_code: 'guest_left' } });
     assert.deepEqual(d.json, { ok: true });
     assert.equal(h.sessions.holds.get(t3), undefined);
     const audit = (await h.audit('reception.decline')).find((x) => x.object_id === r3.reception_request_id);
     assert.deepEqual(audit.data, { request_id: r3.reception_request_id, method: null, amount_kopecks: 50000, reason_code: 'guest_left' });
+    const st = (await h.call(GUEST_REQ, { user: GUEST_2, params: { id: r3.reception_request_id } })).json;
+    assert.deepEqual({ s: st.status, r: st.reason_code }, { s: 'declined', r: 'guest_left' });
     assert.equal((await h.call(ACCEPT, { user: RECEPTION_A, params: { id: r3.reception_request_id }, body: { method: 'card_terminal' }, idempotencyKey: newKey() })).json.error, 'quote_expired');
   });
 
@@ -720,6 +726,35 @@ describe('возвраты (refund для light)', () => {
     const rec = (await h.q("select * from bl.receipts where refund_id = $1", [r.refund_id]))[0];
     assert.deepEqual({ k: rec.kind, c: rec.channel, s: rec.status }, { k: 'refund', c: 'kkt', s: 'receipt_pending' });
     assert.ok(h.notes.items.some((n) => n.kind === 'refund' && n.roles.includes('reception')));
+  });
+});
+
+describe('статус чеков (receiptStatus для light, §14)', () => {
+  it('по каждому платежу — действующий чек продажи; чужой клуб и неизвестный — none', async () => {
+    const pick = async (sql) => (await h.q(sql))[0]?.id;
+    const sbp = await pick("select p.id from bl.payments p where p.method = 'sbp' and p.status = 'succeeded' and p.capture and p.unlimited = false order by p.created_at limit 1");
+    const cash = await pick("select id from bl.payments where method = 'cash' limit 1");
+    const captured = await pick("select id from bl.payments where capture = false and status = 'succeeded' and captured_kopecks = 40000 limit 1");
+    const pending = await pick("select id from bl.payments where provider = 'yookassa' and status = 'pending' order by created_at limit 1");
+    const canceled = await pick("select id from bl.payments where status = 'canceled' and cancellation_reason = 'general_decline' limit 1");
+    for (const id of [sbp, cash, captured, pending, canceled]) assert.ok(id);
+    const foreign = 'c9999999-0000-4000-8000-000000000001';
+    const res = await h.tx({ clubId: CLUB_A, actorType: 'system' }, (db) =>
+      receiptStatus(db, { paymentIds: [sbp, cash, captured, pending, canceled, foreign, 'not-a-uuid', sbp] }),
+    );
+    assert.deepEqual(res, {
+      [sbp]: 'succeeded',
+      [cash]: 'receipt_pending',
+      [captured]: 'succeeded',
+      [pending]: 'pending',
+      [canceled]: 'canceled',
+      [foreign]: 'none',
+    });
+    // В контексте клуба Б платежи клуба А не видны.
+    const other = await h.tx({ clubId: CLUB_B, actorType: 'system' }, (db) => receiptStatus(db, { paymentIds: [sbp, cash] }));
+    assert.deepEqual(other, { [sbp]: 'none', [cash]: 'none' });
+    assert.deepEqual(await h.tx({ clubId: CLUB_A }, (db) => receiptStatus(db, { paymentIds: [] })), {});
+    await assert.rejects(h.tx({ clubId: CLUB_A }, (db) => receiptStatus(db, { paymentIds: 'x' })), (e) => e.code === 'bad_request');
   });
 });
 

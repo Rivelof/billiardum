@@ -9,6 +9,11 @@ import { ROLE_LABEL } from '../lib/words.js';
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'clear', '0', 'back'];
 
+/** Имя сотрудника (§14), пока его нет — маска телефона; роль — второй строкой. */
+function staffLabel(u) {
+  return u.name || u.phone_masked || ROLE_LABEL[u.role] || 'Сотрудник';
+}
+
 /**
  * Быстрая смена сотрудника по PIN на зарегистрированном терминале (контракт §4):
  * PIN 4–6 цифр; 5 ошибок подряд блокируют PIN на 15 минут — это делает сервер.
@@ -23,9 +28,10 @@ export function Pin() {
 
   useEffect(() => {
     if (!terminal) return;
+    // GET /api/staff/terminal → [{ user_id, name, role, phone_masked, pin_set }] (§14) или { terminal, staff: […] }
     api
-      .terminalUsers()
-      .then((list) => setUsers(Array.isArray(list) ? list : list?.users ?? []))
+      .terminalInfo()
+      .then((info) => setUsers(Array.isArray(info) ? info : Array.isArray(info?.staff) ? info.staff : []))
       .catch(setError);
   }, []);
 
@@ -38,7 +44,8 @@ export function Pin() {
       navigate(BASE, { replace: true });
     } catch (err) {
       setPin('');
-      setError(err?.code === 'forbidden' || err?.code === 'unauthorized' ? 'pin_wrong' : err);
+      // Неверный PIN — 401; после 5 ошибок подряд PIN заблокирован на 15 минут — 429
+      setError(err?.code === 'forbidden' || err?.code === 'unauthorized' ? 'pin_wrong' : err?.code === 'rate_limited' ? 'pin_locked' : err);
     } finally {
       setBusy(false);
     }
@@ -69,18 +76,21 @@ export function Pin() {
     <div class="signin" data-theme="dark">
       <div class="signin__card signin__card--wide">
         <p class="signin__brand display">Бильярдум</p>
-        <h1 class="signin__title">{who ? `PIN: ${who.name}` : `Кто работает? Терминал «${terminal.name}»`}</h1>
+        <h1 class="signin__title">{who ? `PIN: ${staffLabel(who)}` : `Кто работает? Терминал «${terminal.name}»`}</h1>
         {!who ? (
           <>
             {users === null && !error ? <p class="muted">Загружаем сотрудников…</p> : null}
             <ul class="staff">
               {(users ?? []).map((u) => (
                 <li key={u.user_id}>
-                  <button type="button" class="staff__btn" onClick={() => setWho(u)}>
+                  <button type="button" class="staff__btn" disabled={u.pin_set === false} onClick={() => setWho(u)}>
                     <Icon name="user" />
                     <span>
-                      <span class="staff__name">{u.name}</span>
-                      <span class="staff__role">{ROLE_LABEL[u.role] ?? ''}</span>
+                      <span class="staff__name">{staffLabel(u)}</span>
+                      <span class="staff__role">
+                        {ROLE_LABEL[u.role] ?? ''}
+                        {u.pin_set === false ? ' · PIN не задан: войдите через мессенджер и задайте его в «Ещё»' : ''}
+                      </span>
                     </span>
                   </button>
                 </li>
@@ -114,9 +124,11 @@ export function Pin() {
                 <span key={i} class={`pin__dot${i < pin.length ? ' pin__dot--on' : ''}`} />
               ))}
             </div>
-            {error === 'pin_wrong' ? (
+            {error === 'pin_wrong' || error === 'pin_locked' ? (
               <p class="field__error" role="alert">
-                PIN не подошёл. После 5 ошибок подряд PIN блокируется на 15 минут.
+                {error === 'pin_wrong'
+                  ? 'PIN не подошёл. После 5 ошибок подряд PIN блокируется на 15 минут.'
+                  : 'PIN заблокирован на 15 минут после 5 ошибок. Войдите через мессенджер или подождите.'}
               </p>
             ) : (
               <ErrorNote error={error} />

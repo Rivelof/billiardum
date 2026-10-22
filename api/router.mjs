@@ -13,7 +13,8 @@
 //   clubFromBody — клуб берётся из body.club_id;
 //   enabled   — (config) => boolean: маршрут не регистрируется, если false (вход для разработки в проде);
 //   findClub  — async (db, req) => boolean: для 'staff' без клуба в запросе, когда у пользователя
-//               несколько подходящих клубов, — есть ли объект в клубе из контекста.
+//               несколько подходящих клубов, — есть ли объект в клубе из контекста;
+//   queryAuth — async (app, token, query) => principal|null: вход по ?token= (одноразовый токен SSE).
 //
 // Обработчик: async handler(ctx, req) → { status?, json?, headers?, body?, stream? }.
 //   ctx = { ...общий контекст сервера, db, user, club, roles, principal, log, idempotencyKey,
@@ -239,6 +240,10 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
       for (const [k, v] of url.searchParams) if (!(k in query)) query[k] = v;
 
       if (token) principal = await resolve(token);
+      // Токен в адресе — только у маршрутов с queryAuth (одноразовый токен SSE, §14).
+      if (!principal && !token && typeof route.queryAuth === 'function' && typeof query.token === 'string') {
+        principal = (await route.queryAuth(app, query.token, query)) ?? null;
+      }
       const isUser = principal && (principal.kind === 'session' || principal.kind === 'pin');
       const isTerminal = principal && principal.kind === 'terminal';
       if (route.auth === 'guest' || route.auth === 'staff') {

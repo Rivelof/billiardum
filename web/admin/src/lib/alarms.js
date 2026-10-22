@@ -5,6 +5,20 @@ const LEVEL_ORDER = { critical: 0, important: 1, info: 2 };
 
 const TEXT = {
   bypass_detected: ['Свет горит без оплаты', 'Ток в лампе при выключенном реле: свет включили в обход системы. Проверьте стол.'],
+  service_light: ['Включён сервисный свет', 'Ручное действие: сотрудник включил свет без игры с причиной. Подробности — в журнале.'],
+  cmd_no_ack: ['Стол не отвечает на команды', 'Контроллер на связи, но не подтверждает команды. Проверьте контроллер; если повторится — сообщите в поддержку.'],
+  payment_conflict: ['Оплата пришла на занятый стол', 'Деньги гостю возвращаются автоматически. Проверьте журнал.'],
+  refund_mismatch: ['Возврат не сходится', 'Возврат в ЮKassa не совпал с запросом. Проверьте журнал.'],
+  events_dropped: ['Контроллер потерял часть событий', 'Пока стол был без связи, часть событий не сохранилась. Проверьте журнал за это время.'],
+  ota_failed: ['Прошивка не обновилась', 'Контроллер остался на прежней версии и работает. Повторите обновление позже.'],
+  device_topic_mismatch: ['Контроллер прислал чужие данные', 'Данные пришли не из своего клуба. Сообщите в поддержку платформы.'],
+  device_seq_gap: ['Счётчик команд разошёлся', 'Сервер выровнял счётчик команд стола. Если повторится — проверьте контроллер.'],
+  light_without_session: ['Свет горит без игры', 'Контроллер сообщил, что свет включён, а оплаченной игры на столе нет. Проверьте стол.'],
+  relay_fault: ['Реле не отвечает', 'Контроллер не может переключить свет. Проверьте контроллер и проводку.'],
+  payment_unapplied: ['Оплата не применилась', 'Деньги пришли, а игра не продлилась или не началась. Сервер вернёт деньги — проверьте журнал.'],
+  payment_mismatch: ['Оплата не сходится', 'Сумма или статус платежа в ЮKassa не совпали с нашими. Проверьте журнал.'],
+  unlimited_overrun: ['Игра без лимита вышла за заморозку', 'Сыграно больше, чем заморожено на карте гостя. Проверьте журнал.'],
+  offline_resume_denied: ['Стол не продолжил игру после сбоя', 'Контроллер перезагрузился без связи второй раз и выключил свет.'],
   lamp_fault: ['Лампа не горит во время игры', 'Реле включено, а ток лампы нулевой. Проверьте лампу, гостю может понадобиться другой стол.'],
   device_offline: ['Стол без связи во время игры', 'Контроллер не отвечает больше 2 минут. Игра доиграется по таймеру стола; проверьте питание и Wi-Fi.'],
   offline: ['Стол без связи во время игры', 'Контроллер не отвечает больше 2 минут. Игра доиграется по таймеру стола; проверьте питание и Wi-Fi.'],
@@ -16,18 +30,25 @@ const TEXT = {
   manual_action: ['Ручное действие персонала', 'Сотрудник выполнил действие с причиной. Подробности — в журнале.'],
 };
 
+/** Момент тревоги: последний раз поднята (last_raised_at), иначе raised_at / created_at. */
+export function alarmTime(alarm) {
+  return alarm.last_raised_at ?? alarm.raised_at ?? alarm.created_at ?? null;
+}
+
 /**
- * @param {{ type: string, level?: string, resource_number?: number, data?: object, created_at?: string }} alarm
- * @returns {{ title: string, text: string, level: string, levelWord: string, table: string | null }}
+ * @param {{ type: string, level?: string, resource_number?: number, data?: object, text?: string, count?: number }} alarm
+ * @returns {{ title: string, text: string, level: string, levelWord: string, table: string | null, repeats: number }}
  */
 export function alarmView(alarm) {
-  const [title, text] = TEXT[alarm.type] ?? ['Тревога', `Тип: ${alarm.type}. Подробности — в журнале.`];
+  // Неизвестный нам тип — текст сервера (alarms.text), иначе код мелко
+  const [title, text] = TEXT[alarm.type] ?? [alarm.text || 'Тревога', alarm.text ? 'Подробности — в журнале.' : `Тип: ${alarm.type}. Подробности — в журнале.`];
   const level = LEVEL_WORD[alarm.level] ? alarm.level : 'important';
   const number = alarm.resource_number ?? alarm.data?.resource_number;
-  return { title, text, level, levelWord: LEVEL_WORD[level], table: number ? `Стол ${number}` : null };
+  const repeats = Number.isInteger(alarm.count) && alarm.count > 1 ? alarm.count : 0;
+  return { title, text, level, levelWord: LEVEL_WORD[level], table: number ? `Стол ${number}` : null, repeats };
 }
 
 /** Сначала критичные, затем новые. */
 export function sortAlarms(list) {
-  return [...list].sort((a, b) => (LEVEL_ORDER[a.level] ?? 1) - (LEVEL_ORDER[b.level] ?? 1) || String(b.created_at).localeCompare(String(a.created_at)));
+  return [...list].sort((a, b) => (LEVEL_ORDER[a.level] ?? 1) - (LEVEL_ORDER[b.level] ?? 1) || String(alarmTime(b)).localeCompare(String(alarmTime(a))));
 }

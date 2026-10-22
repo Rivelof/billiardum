@@ -2,7 +2,6 @@
 // и проверкой цепочки, тревоги, подписка Web Push, QR-наклейки.
 
 import { ack, alarmJson } from '../../server/alarms/index.mjs';
-import { maskPhone } from '../../server/auth/index.mjs';
 import { HttpError } from '../../server/http/errors.mjs';
 import { endpointAllowed } from '../../server/notify/webpush.mjs';
 import { stickersPdf } from '../../server/qr/stickers.mjs';
@@ -10,7 +9,6 @@ import { isUuid } from '../../server/lib/store.mjs';
 
 const OWNER = ['owner'];
 const MANAGER_UP = ['owner', 'manager'];
-const ACTION_FILTER = /^[a-z][a-z0-9_.]{0,99}$/;
 const PAGE = 50;
 const MAX_PAGE = 200;
 const METHODS = ['sbp', 'card', 'cash', 'card_terminal'];
@@ -81,13 +79,34 @@ async function now(ctx) {
   };
 }
 
+const ACTION_ITEM = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*(\.\*|\*)?$/;
+
+/**
+ * Фильтр action (§14): список через запятую, «*» в конце — префикс: service.*,manual.*,payment.refunded.
+ * Возвращает { exact: [], prefixes: [] } (префиксы — шаблоны LIKE).
+ */
+export function parseActionFilter(text) {
+  if (text === undefined) return null;
+  if (typeof text !== 'string' || text.length > 500) throw new HttpError(400, 'bad_request');
+  const items = text.split(',').map((x) => x.trim()).filter(Boolean);
+  if (items.length === 0 || items.length > 20) throw new HttpError(400, 'bad_request');
+  const exact = [];
+  const prefixes = [];
+  for (const item of items) {
+    if (!ACTION_ITEM.test(item) || item.length > 100) throw new HttpError(400, 'bad_request');
+    if (item.endsWith('*')) prefixes.push(`${item.slice(0, -1).replace(/[\\%_]/g, '\\$&')}%`);
+    else exact.push(item);
+  }
+  return { exact, prefixes };
+}
+
 async function audit(ctx, req) {
   const q = req.query;
   const from = parseTime(q.from);
   const to = parseTime(q.to);
   if (q.actor !== undefined && !isUuid(q.actor)) throw new HttpError(400, 'bad_request');
   if (q.resource !== undefined && !isUuid(q.resource)) throw new HttpError(400, 'bad_request');
-  if (q.action !== undefined && !ACTION_FILTER.test(q.action)) throw new HttpError(400, 'bad_request');
+  const actions = parseActionFilter(q.action);
   let cursor = null;
   if (q.cursor !== undefined) {
     if (!/^[1-9][0-9]{0,15}$/.test(q.cursor)) throw new HttpError(400, 'bad_request');
@@ -98,25 +117,30 @@ async function audit(ctx, req) {
     limit = Number(q.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE) throw new HttpError(400, 'bad_request');
   }
-  // action: точное имя или префикс с точкой на конце («session.»).
-  const action = q.action ?? null;
-  const prefix = action?.endsWith('.') ? `${action.replace(/[\\%_]/g, '\\$&')}%` : null;
+  // Стол записи: объект-ресурс, data.resource_id или стол устройства (команды контроллеру).
+  // Имя исполнителя — только у участников клуба (гостей журнал не называет).
   const { rows } = await ctx.db.query(
     `select a.seq, a.created_at, a.actor_type, a.actor_id, a.action, a.object_type, a.object_id, a.reason, a.data, a.hash,
-            m.role as actor_role, u.phone as actor_phone
+            m.role as actor_role, u.name as actor_name, r.id as resource_id, r.number as resource_number
        from bl.audit_log a
        left join bl.club_members m on m.club_id = a.club_id and m.user_id = a.actor_id
        left join bl.users u on u.id = m.user_id
+       left join bl.devices d on a.object_type = 'device' and d.id = a.object_id
+       left join bl.resources r on r.id = coalesce(
+              case when a.object_type = 'resource' then a.object_id end,
+              case when a.data->>'resource_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                   then (a.data->>'resource_id')::uuid end,
+              d.resource_id)
       where a.club_id = $1
         and ($2::bigint is null or a.seq < $2)
         and ($3::timestamptz is null or a.created_at >= $3)
         and ($4::timestamptz is null or a.created_at < $4)
         and ($5::uuid is null or a.actor_id = $5)
-        and ($6::text is null or (case when $7::text is null then a.action = $6 else a.action like $7 end))
-        and ($8::uuid is null or a.object_id = $8 or a.data->>'resource_id' = $8::text)
+        and ($6::boolean or a.action = any($7::text[]) or a.action like any($8::text[]))
+        and ($9::uuid is null or r.id = $9)
       order by a.seq desc
-      limit $9`,
-    [ctx.club, cursor, from, to, q.actor ?? null, action, prefix, q.resource ?? null, limit + 1],
+      limit $10`,
+    [ctx.club, cursor, from, to, q.actor ?? null, actions === null, actions?.exact ?? [], actions?.prefixes ?? [], q.resource ?? null, limit + 1],
   );
   const more = rows.length > limit;
   const items = rows.slice(0, limit).map((r) => ({
@@ -124,10 +148,13 @@ async function audit(ctx, req) {
     created_at: iso(r.created_at),
     actor_type: r.actor_type,
     actor_id: r.actor_id,
-    actor: r.actor_role ? { role: r.actor_role, phone_masked: maskPhone(r.actor_phone) } : null,
+    actor_name: r.actor_name ?? null,
+    actor_role: r.actor_role ?? null,
     action: r.action,
     object_type: r.object_type,
     object_id: r.object_id,
+    resource_id: r.resource_id ?? null,
+    resource_number: r.resource_number ?? null,
     reason: r.reason,
     data: r.data,
     hash: r.hash,

@@ -8,6 +8,7 @@ import { phaseOf, premarkNotified, unplayedMs } from '../sessions/kit.mjs';
 import { buzzerFlag, graceMs, inQuietHours, serviceMaxMinutes, warnMs } from '../sessions/settings.mjs';
 import { LightError, errorResponse } from '../sessions/errors.mjs';
 import { createScheduler } from '../scheduler.mjs';
+import { summarizeReceipts } from '../sessions/service.mjs';
 import { toHttpError } from '../http/errors.mjs';
 
 const YEKB = 'Asia/Yekaterinburg';
@@ -75,13 +76,25 @@ describe('фазы сессии и сигналы', () => {
   });
   it('пройденные пороги не шлются задним числом', () => {
     assert.deepEqual(premarkNotified({}, at(60), now), {});
-    assert.deepEqual(premarkNotified({}, at(5), now), { t10: at(5).toISOString() });
-    assert.deepEqual(premarkNotified({ t0: 'x' }, at(1), now), { t0: 'x', t10: at(1).toISOString(), t1: at(1).toISOString() });
+    assert.deepEqual(premarkNotified({}, at(7), now), { t10: at(7).toISOString() });
+    assert.deepEqual(premarkNotified({}, at(5), now), { t10: at(5).toISOString(), u5: at(5).toISOString() });
+    assert.deepEqual(premarkNotified({ t0: 'x' }, at(1), now), { t0: 'x', t10: at(1).toISOString(), u5: at(1).toISOString(), t1: at(1).toISOString() });
   });
   it('недоигранное время — от подтверждённого контроллером конца', () => {
     assert.equal(unplayedMs({ paid_until: at(40), device_paid_until: at(10), started_at: now }), 30 * 60_000);
     assert.equal(unplayedMs({ paid_until: at(40), device_paid_until: null, started_at: now }), 40 * 60_000);
     assert.equal(unplayedMs({ paid_until: at(40), device_paid_until: at(41), started_at: now }), 0);
+  });
+});
+
+describe('итог чеков сессии', () => {
+  it('failed → failed; pending/receipt_pending → pending; все succeeded → succeeded; иначе none', () => {
+    assert.equal(summarizeReceipts(['succeeded', 'failed', 'pending']), 'failed');
+    assert.equal(summarizeReceipts(['succeeded', 'receipt_pending']), 'pending');
+    assert.equal(summarizeReceipts(['succeeded', 'pending']), 'pending');
+    assert.equal(summarizeReceipts(['succeeded', 'succeeded', 'canceled']), 'succeeded');
+    assert.equal(summarizeReceipts(['succeeded', 'none']), 'none');
+    assert.equal(summarizeReceipts([]), 'none');
   });
 });
 

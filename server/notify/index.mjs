@@ -32,14 +32,29 @@ export function sanitizeText(text) {
   return maskPhones(text).slice(0, MAX_TEXT);
 }
 
-/** data без вложенных объектов и длинных строк — только идентификаторы, числа, короткие коды. */
-function cleanData(data) {
+function cleanValue(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'boolean' || v === null) return v;
+  if (typeof v === 'string' && v.length <= 200) return UUID.test(v) ? v : maskPhones(v);
+  return undefined;
+}
+
+/**
+ * data без вложенных объектов и длинных строк — идентификаторы, числа, короткие коды
+ * и массивы из них (до 20 элементов, например actions: ['extend', 'stop']).
+ */
+export function cleanData(data) {
   const out = {};
   for (const [k, v] of Object.entries(data ?? {})) {
     if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) continue;
-    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
-    else if (typeof v === 'boolean' || v === null) out[k] = v;
-    else if (typeof v === 'string' && v.length <= 200) out[k] = UUID.test(v) ? v : maskPhones(v);
+    if (Array.isArray(v)) {
+      if (v.length > 20) continue;
+      const items = v.map(cleanValue);
+      if (items.every((x) => x !== undefined)) out[k] = items;
+      continue;
+    }
+    const c = cleanValue(v);
+    if (c !== undefined) out[k] = c;
   }
   return out;
 }
@@ -78,6 +93,14 @@ export async function sendToClubStaff(db, clubId, roles, msg) {
   const ids = [];
   for (const r of rows) ids.push((await send(db, r.user_id, msg)).id);
   return { ids };
+}
+
+/** Заголовок push-уведомления по виду. */
+export function pushTitle(kind) {
+  if (kind === 'alarm') return 'Тревога в клубе';
+  if (kind.startsWith('session.')) return 'Игра';
+  if (kind.startsWith('reception')) return 'Ресепшн';
+  return 'Бильярдум';
 }
 
 /** Порядок каналов: основной (если доступен), затем max → telegram → webpush. */
@@ -122,7 +145,13 @@ export function createNotifier({ config, log, telegram = null, clock = { now: ()
     },
     async webpush(n, _route, db, subs) {
       if (!vapid) return { status: 'skipped', code: 'not_configured' };
-      const payload = { kind: n.kind, text: n.text, tag: n.kind, url: typeof n.data?.url === 'string' && n.data.url.startsWith('/') ? n.data.url : undefined };
+      // §14: тело Web Push — {title, body, url, tag}, без персональных данных (№53).
+      const payload = {
+        title: pushTitle(n.kind),
+        body: n.text,
+        tag: n.kind,
+        url: typeof n.data?.url === 'string' && n.data.url.startsWith('/') && !n.data.url.startsWith('//') ? n.data.url : undefined,
+      };
       let sent = 0;
       let last = 'no_subscription';
       for (const s of subs) {

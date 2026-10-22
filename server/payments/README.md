@@ -29,15 +29,15 @@
 
 | Метод и путь | Кто | Суть |
 |---|---|---|
-| `GET /api/t/{code}` | без входа, 30 в минуту с IP (`rateLimit` роутера) | клуб, стол, статус (light), цены сейчас и дальше, `options` (`unlimited` — если у клуба есть СБП или карта), `my_session_id` |
+| `GET /api/t/{code}` | без входа, 120 в минуту с IP (`rateLimit` роутера, §14: гости клуба за общим NAT; от перебора защищает длина кода) | клуб, стол, статус (light), цены сейчас и дальше, `options` (`unlimited` — если у клуба есть СБП или карта), `my_session_id` |
 | `POST /api/quotes` | гость, `requires: phone, consent` | `{quote_id, amount_kopecks, minutes, valid_until, breakdown}`; `start` — `holdPending` на 3 минуты (второй гость — `409 table_pending`); `extend` — от `paid_until`, любой участник (`getSessionForExtend`); `minutes: null` — дополнительно `unlimited: {hold_minutes, hold_amount_kopecks, sbp_block_minutes, sbp_block_amount_kopecks}` |
 | `POST /api/quotes/{id}/pay` | гость, `idempotent` | `sbp`, `card` → `{payment_id, status, confirmation: {type: "redirect", url}}`; `reception` → `{reception_request_id, status: "waiting_reception"}` |
 | `GET /api/payments/{id}` | плательщик | `{payment_id, status, session_id}`; платёж дольше 10 с в `pending` сверяется по API ЮKassa |
 | `POST /api/webhooks/yookassa/{club_id}` | ЮKassa, `actor: system` | см. ниже |
 | `GET /api/clubs/{club}/reception/requests` | ресепшн и выше | `[{id, resource_number, minutes, amount_kopecks, created_at, expires_at, guest_masked_phone}]` |
 | `POST /api/reception/requests/{id}/accept` | ресепшн и выше, `idempotent` | `{method: cash \| card_terminal, received_kopecks?}` → `{payment_id, change_kopecks, session_id}` |
-| `POST /api/reception/requests/{id}/decline` | ресепшн и выше | `{reason_code}` → `{ok: true}` |
-| `GET /api/reception/requests/{id}` | гость, автор заявки | дополнение к контракту (просил frontend): `{id, status, minutes, amount_kopecks, expires_at, payment_id, session_id}` |
+| `POST /api/reception/requests/{id}/decline` | ресепшн и выше | `{reason_code}` — `guest_left`, `guest_cancelled`, `payment_failed`, `table_problem`, `other` (иное — `bad_request`, пусто — `reason_required`) → `{ok: true}` |
+| `GET /api/reception/requests/{id}` | гость, автор заявки | `{id, status, minutes, amount_kopecks, expires_at, payment_id, session_id, reason_code}` (`reason_code` — у отклонённой, иначе `null`) |
 
 Ошибки — коды словаря §3 и `no_tariff` (`409`, нет тарифа на это время — дополнение к словарю). Ошибка модуля под роутером бросается (`status`, `code`): роутер откатывает транзакцию целиком, в том числе ключ идемпотентности, — повтор после сбоя ЮKassa выполняется заново.
 
@@ -57,6 +57,7 @@
 ### Списание «Без лимита» и возвраты
 
 - Подписка outbox `session.closed` (`money.capture`): заморозки сессии (`session_payments` light или `payments.session_id`) списываются на `amountForActual(started_at, min(ended_at, paid_until))` с чеком на фактическую сумму; остаток размораживается ЮKassa; лишние заморозки отменяются; уже списанное учитывается (идемпотентно). Журнал `payment.captured`. Не хватило заморозок — тревога `unlimited_overrun`.
+- `server/payments/api.mjs` — `receiptStatus(db, { paymentIds })` для чека сессии (light, §14): `{ [paymentId]: pending | succeeded | receipt_pending | failed | canceled | none }` — действующий чек продажи (отменённый чек заморозки не в счёт), платежи чужого клуба — `none`.
 - `server/payments/api.mjs` — `refund(db, { paymentId, amountKopecks, reason, key? })` для light: ЮKassa `POST /v3/refunds` с чеком возврата; незаписанная заморозка — отмена или списание за вычетом; наличные и терминал — возврат `manual` и задание на чек возврата ККТ. Не больше оплаченного, идемпотентно по ключу. Журнал `payment.refunded` с причиной, outbox `payment.refunded`, уведомление владельцу (инвариант 8).
 
 ## Ресепшн (`server/reception/`)

@@ -49,7 +49,9 @@ export async function loadClub(db, clubId) {
 
 const SESSION_COLS = `s.id, s.club_id, s.resource_id, s.status, s.source, s.payer_user_id, s.unlimited,
   s.started_at, s.paid_until, s.warn_ms, s.grace_ms, s.device_paid_until, s.interrupted_at, s.unplayed_ms,
-  s.ended_at, s.close_reason, s.notified, s.created_at, s.updated_at, r.number as resource_number`;
+  s.ended_at, s.close_reason, s.notified, s.created_at, s.updated_at, r.number as resource_number,
+  r.type as resource_type, r.title as resource_title, c.timezone as club_timezone`;
+const SESSION_FROM = `bl.sessions s join bl.resources r on r.id = s.resource_id left join bl.clubs c on c.id = s.club_id`;
 
 function mapSession(row) {
   if (!row) return null;
@@ -59,7 +61,7 @@ function mapSession(row) {
 export async function loadSession(db, sessionId, { lock = false } = {}) {
   if (!isUuid(sessionId)) return null;
   const { rows } = await db.query(
-    `select ${SESSION_COLS} from bl.sessions s join bl.resources r on r.id = s.resource_id
+    `select ${SESSION_COLS} from ${SESSION_FROM}
       where s.id = $1 ${lock ? 'for update of s' : ''}`,
     [sessionId],
   );
@@ -68,7 +70,7 @@ export async function loadSession(db, sessionId, { lock = false } = {}) {
 
 export async function openSessionOn(db, resourceId, { lock = false } = {}) {
   const { rows } = await db.query(
-    `select ${SESSION_COLS} from bl.sessions s join bl.resources r on r.id = s.resource_id
+    `select ${SESSION_COLS} from ${SESSION_FROM}
       where s.resource_id = $1 and s.status = any($2::text[]) ${lock ? 'for update of s' : ''}`,
     [resourceId, OPEN_STATUSES],
   );

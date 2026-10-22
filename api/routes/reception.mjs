@@ -1,8 +1,9 @@
 // Ресепшн (контракт M1 §5, backend-money).
 //   GET  /api/clubs/{club}/reception/requests       — ресепшн и выше: заявки, которые ждут
 //   POST /api/reception/requests/{id}/accept        — ресепшн и выше, Idempotency-Key: {method, received_kopecks?}
-//   POST /api/reception/requests/{id}/decline       — ресепшн и выше: {reason_code}
-//   GET  /api/reception/requests/{id}               — гость, автор заявки: статус (дополнение к контракту)
+//   POST /api/reception/requests/{id}/decline       — ресепшн и выше: {reason_code} (guest_left, guest_cancelled,
+//                                                     payment_failed, table_problem, other)
+//   GET  /api/reception/requests/{id}               — гость, автор заявки: статус, у отклонённой — reason_code
 // Роли проверяет и сам маршрут: клуб заявки находится по её id.
 
 import { acceptRequest, declineRequest, guestRequestStatus, listRequests, STAFF_ROLES } from '../../server/reception/index.mjs';

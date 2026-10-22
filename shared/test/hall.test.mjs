@@ -13,6 +13,8 @@ test('вид стола по типу ресурса', () => {
   assert.equal(typeLabel('billiard_pool'), 'Пул, 9 футов');
   assert.equal(typeLabel('billiard_snooker'), 'Снукер, 12 футов');
   assert.equal(typeLabel('billiard_pool', 'VIP-пул'), 'VIP-пул');
+  assert.equal(typeLabel('billiard_pyramid', 'Стол 2'), 'Русская пирамида, 12 футов', 'название «Стол N» не повторяем');
+  assert.equal(tableState({ status: 'fault' }).word, 'Неисправность');
 });
 
 test('рисунок стола: настоящие пропорции, без style и внешних ссылок (CSP), поворот', () => {

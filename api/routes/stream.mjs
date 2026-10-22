@@ -1,4 +1,5 @@
-// Реальное время (decisions №50, контракт M1 §7): GET /api/stream?club={club} или ?session={id}.
+// Реальное время (decisions №50, контракт M1 §7, §14): GET /api/stream?club={club} или ?session={id};
+// мини-приложениям — одноразовый токен POST /api/stream/token и GET /api/stream?...&token=.
 // Поток Server-Sent Events: события hall, session, reception_request, alarm.
 // Канал клуба — персоналу клуба (ресепшн и выше); канал сессии — участнику или персоналу
 // клуба сессии. Свой канал user:{id} подключается всегда. Раз в минуту поток проверяет,
@@ -6,6 +7,7 @@
 
 import { HttpError } from '../../server/http/errors.mjs';
 import { hub } from '../../server/http/sse.mjs';
+import { streamTarget, streamTokens as defaultTokens } from '../../server/http/stream-tokens.mjs';
 import { isUuid, withContext } from '../../server/lib/store.mjs';
 
 const CLUB_ROLES = ['owner', 'manager', 'reception'];
@@ -59,4 +61,24 @@ async function stream(ctx, req) {
   };
 }
 
-export const routes = [{ method: 'GET', path: '/api/stream', auth: 'guest', rateLimit: { max: 60, windowMs: 60_000 }, handler: stream }];
+/** POST /api/stream/token {club} | {session} → {token, expires_at}: одноразовый, 60 с (§14). */
+async function issueToken(ctx, req) {
+  const target = streamTarget(req.body);
+  if (!target) throw new HttpError(400, 'bad_request');
+  const issued = (ctx.streamTokens ?? defaultTokens).issue(ctx.principal, target);
+  if (!issued) throw new HttpError(429, 'rate_limited');
+  return { status: 200, json: { token: issued.token, expires_at: issued.expiresAt.toISOString() } };
+}
+
+export const routes = [
+  {
+    method: 'GET',
+    path: '/api/stream',
+    auth: 'guest',
+    rateLimit: { max: 60, windowMs: 60_000 },
+    // ?token= — одноразовый токен из POST /api/stream/token для того же канала.
+    queryAuth: async (app, token, query) => (app.streamTokens ?? defaultTokens).consume(token, streamTarget(query)),
+    handler: stream,
+  },
+  { method: 'POST', path: '/api/stream/token', auth: 'guest', rateLimit: { max: 60, windowMs: 60_000 }, handler: issueToken },
+];

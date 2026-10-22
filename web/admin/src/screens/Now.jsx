@@ -106,7 +106,11 @@ export function Now({ ctx }) {
                   </div>
                 ))}
               </dl>
-              {updatedAt ? <p class="small">Обновлено в {formatTime(updatedAt, timeZone)}, по данным оплат с начала суток клуба.</p> : null}
+              {updatedAt ? (
+                <p class="small">
+                  {data.day_started_at ? `С ${formatTime(data.day_started_at, timeZone)} — начала рабочих суток клуба. ` : ''}Обновлено в {formatTime(updatedAt, timeZone)}.
+                </p>
+              ) : null}
             </div>
           ) : null}
           {data && total === 0 ? <p class="hint">Сегодня оплат ещё не было. Первая появится здесь сразу после оплаты гостя.</p> : null}

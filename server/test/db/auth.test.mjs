@@ -83,10 +83,13 @@ describe('вход для разработки и сессия', () => {
     assert.equal(me.status, 200);
     assert.deepEqual(me.json.clubs, []);
     assert.equal(me.json.user.consent.accepted, false);
+    assert.equal(me.json.user.consent_version, null, '§14: null без согласия');
+    assert.equal(me.json.user.name, null);
     assert.equal((await t.request('POST', '/api/auth/consent', { token, body: { version: 'old' } })).status, 400);
     assert.deepEqual((await t.request('POST', '/api/auth/consent', { token, body: { version: '2026-10-21' } })).json, { ok: true });
     me = await t.request('GET', '/api/me', { token });
     assert.equal(me.json.user.consent.accepted, true);
+    assert.equal(me.json.user.consent_version, '2026-10-21');
     const out = await t.request('POST', '/api/auth/logout', { token });
     assert.deepEqual(out.json, { ok: true });
     assert.match(out.headers.getSetCookie()[0], /bl_session=; Path=\/api; Max-Age=0/);
@@ -96,13 +99,29 @@ describe('вход для разработки и сессия', () => {
   it('персонал при входе получает клубы с ролью и запись auth.staff_login в журнале клуба', async () => {
     const { token } = await t.login('+70000000003');
     const me = await t.request('GET', '/api/me', { token });
-    assert.deepEqual(me.json.clubs, [{ club_id: CLUB_A, role: 'manager', name: 'Тестовый клуб' }]);
+    assert.deepEqual(me.json.clubs, [{ club_id: CLUB_A, role: 'manager', name: 'Тестовый клуб', timezone: 'Asia/Yekaterinburg' }]);
+    assert.equal(me.json.user.name, 'Управляющий (тест)');
+    assert.equal(me.json.user.phone_masked, '+7000***0003');
     const { rows } = await t.admin.query("select actor_id, data from bl.audit_log where club_id = $1 and action = 'auth.staff_login' and actor_id = $2", [
       CLUB_A,
       MANAGER_A,
     ]);
     assert.ok(rows.length >= 1);
     assert.deepEqual(rows.at(-1).data, { via: 'dev' });
+  });
+
+  it('PATCH /api/me: своё имя и канал уведомлений; неверные значения — 400', async () => {
+    const { token, user } = await t.login('+79990000006');
+    const res = await t.request('PATCH', '/api/me', { token, body: { name: '  Ольга  ', notify_channel: 'webpush' } });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.user.name, 'Ольга');
+    assert.equal(res.json.user.notify_channel, 'webpush');
+    for (const body of [{}, { name: '' }, { name: 'x'.repeat(101) }, { name: 'a\u0007b' }, { notify_channel: 'sms' }]) {
+      assert.equal((await t.request('PATCH', '/api/me', { token, body })).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await t.request('PATCH', '/api/me', { token, body: { name: null } })).json.user.name, null);
+    const row = (await t.admin.query('select phone from bl.users where id = $1', [user.id])).rows[0];
+    assert.equal(row.phone, '+79990000006', 'телефон не меняется');
   });
 
   it('без токена — 401, чужая роль — 403, ошибки только кодом', async () => {
@@ -280,7 +299,7 @@ describe('терминал ресепшена и PIN', () => {
     const info = await t.request('GET', '/api/staff/terminal', { token: terminalToken });
     assert.equal(info.status, 200);
     const rec = info.json.staff.find((s) => s.user_id === RECEPTION_A);
-    assert.deepEqual(rec, { user_id: RECEPTION_A, role: 'reception', phone_masked: '+7000***0004', pin_set: true });
+    assert.deepEqual(rec, { user_id: RECEPTION_A, name: 'Ресепшн (тест)', role: 'reception', phone_masked: '+7000***0004', pin_set: true });
     assert.equal((await t.request('GET', '/api/me', { token: terminalToken })).status, 401);
     assert.equal((await t.request('POST', '/api/staff/pin', { token: receptionToken, body: { user_id: RECEPTION_A, pin: '4821' } })).status, 401);
   });

@@ -132,6 +132,25 @@ describe('тревоги', () => {
     assert.equal((await t.admin.query("select count(*)::int as n from bl.alarms where type = 'lamp_fault'")).rows[0].n, 0);
   });
 
+  it('ручное действие уведомляет при каждом подъёме, даже при открытой тревоге; уровень по умолчанию (№66)', async () => {
+    const first = await inClub((db) => raise(db, CLUB_A, { type: 'service_light', resourceId: RESOURCE_1, text: 'Стол 1: сервисный свет на 10 минут' }));
+    const second = await inClub((db) => raise(db, CLUB_A, { type: 'service_light', resourceId: RESOURCE_1, text: 'Стол 1: сервисный свет на 20 минут' }));
+    assert.deepEqual([first.created, second.created, second.notified, second.count], [true, false, true, 2]);
+    const notes = await t.admin.query("select text, level from bl.notifications where data->>'alarm_id' = $1 and user_id = $2 order by created_at", [first.id, OWNER_A]);
+    assert.deepEqual(
+      notes.rows.map((n) => n.text),
+      ['Стол 1: сервисный свет на 10 минут', 'Стол 1: сервисный свет на 20 минут'],
+    );
+    assert.equal(notes.rows[0].level, 'critical', 'ручное действие — critical по умолчанию');
+    const relay = await inClub((db) => raise(db, CLUB_A, { type: 'relay_fault', resourceId: RESOURCE_1 }));
+    assert.equal((await t.admin.query('select level from bl.alarms where id = $1', [relay.id])).rows[0].level, 'critical');
+    const replay = await inClub((db) => raise(db, CLUB_A, { type: 'replayed_seq', resourceId: RESOURCE_1 }));
+    const r = (await t.admin.query('select level from bl.alarms where id = $1', [replay.id])).rows[0];
+    assert.equal(r.level, 'important');
+    const again = await inClub((db) => raise(db, CLUB_A, { type: 'replayed_seq', resourceId: RESOURCE_1 }));
+    assert.equal(again.notified, false, 'не ручная тревога: повтор без уведомления');
+  });
+
   it('raise вне контекста клуба тревоги — ошибка', async () => {
     await assert.rejects(withContext(t.pool, { clubId: null, actorType: 'system' }, (db) => raise(db, CLUB_A, { type: 'x', level: 'info' })));
   });
@@ -196,7 +215,9 @@ describe('уведомления: цепочка каналов и Web Push', ()
     assert.equal(h['content-encoding'], 'aes128gcm');
     assert.match(h.authorization, /^vapid t=[^,]+, k=/);
     const body = JSON.parse(decryptPayload(pushes[0].opts.body, { uaPrivateKey: ua.getPrivateKey(), auth: authSecret }).toString('utf8'));
-    assert.equal(body.text, n.text);
+    assert.deepEqual(Object.keys(body).sort(), ['body', 'tag', 'title']);
+    assert.equal(body.body, n.text);
+    assert.equal(body.title, 'Игра');
     assert.ok(!JSON.stringify(body).includes('+7'), 'в теле push нет телефона');
     // Повтор доставки не дублирует.
     await withContext(t.pool, { clubId: null, actorType: 'system' }, (db) => notifier.deliver({ notification_id: id }, { db }));
@@ -281,13 +302,30 @@ describe('маршруты владельца', () => {
       seqs,
       [...seqs].sort((a, b) => b - a),
     );
-    const alarms = await t.request('GET', `/api/clubs/${CLUB_A}/audit?action=alarm.`, { token: owner.token });
+    const alarms = await t.request('GET', `/api/clubs/${CLUB_A}/audit?action=alarm.*`, { token: owner.token });
     assert.ok(alarms.json.items.length >= 2 && alarms.json.items.every((i) => i.action.startsWith('alarm.')));
+    // Список через запятую: префиксы и точные имена (§14).
+    const mixed = await t.request('GET', `/api/clubs/${CLUB_A}/audit?action=${encodeURIComponent('manual.*,alarm.ack,test.one')}&limit=200`, { token: owner.token });
+    const kinds = new Set(mixed.json.items.map((i) => i.action));
+    assert.deepEqual([...kinds].sort(), ['alarm.ack', 'manual.extend_free', 'test.one']);
     const byActor = await t.request('GET', `/api/clubs/${CLUB_A}/audit?actor=${MANAGER_A}`, { token: owner.token });
     assert.ok(byActor.json.items.every((i) => i.actor_id === MANAGER_A));
-    assert.deepEqual(byActor.json.items[0].actor, { role: 'manager', phone_masked: '+7000***0003' });
-    const byTable = await t.request('GET', `/api/clubs/${CLUB_A}/audit?resource=${RESOURCE_1}`, { token: owner.token });
-    assert.ok(byTable.json.items.length >= 1);
+    assert.equal(byActor.json.items[0].actor_name, 'Управляющий (тест)');
+    assert.equal(byActor.json.items[0].actor_type, 'user');
+    for (const k of ['actor_type', 'actor_id', 'actor_name', 'resource_number', 'reason', 'hash']) assert.ok(k in byActor.json.items[0], k);
+    // Стол записи: объект-ресурс, data.resource_id и стол устройства (команды контроллеру).
+    await inClub((db) =>
+      appendAudit(db, { action: 'device.cmd', objectType: 'device', objectId: 'd1000000-0000-4000-8000-000000000001', data: { seq: 1, type: 'ping' }, actorType: 'system' }),
+    );
+    const byTable = await t.request('GET', `/api/clubs/${CLUB_A}/audit?resource=${RESOURCE_1}&limit=200`, { token: owner.token });
+    assert.ok(byTable.json.items.length >= 3);
+    assert.ok(byTable.json.items.every((i) => i.resource_number === 1 && i.resource_id === RESOURCE_1));
+    assert.ok(byTable.json.items.some((i) => i.action === 'device.cmd'), 'команда устройства стола 1');
+    assert.ok(byTable.json.items.some((i) => i.action === 'test.one'), 'объект — ресурс');
+    assert.ok(byTable.json.items.some((i) => i.action === 'alarm.raised'), 'data.resource_id');
+    const system = (await t.request('GET', `/api/clubs/${CLUB_A}/audit?action=test.two`, { token: owner.token })).json.items[0];
+    assert.deepEqual([system.actor_name, system.resource_number], [null, null]);
+    assert.equal((await t.request('GET', `/api/clubs/${CLUB_A}/audit?action=a.*b`, { token: owner.token })).status, 400);
     const page1 = await t.request('GET', `/api/clubs/${CLUB_A}/audit?limit=2`, { token: owner.token });
     assert.equal(page1.json.items.length, 2);
     const page2 = await t.request('GET', `/api/clubs/${CLUB_A}/audit?limit=2&cursor=${page1.json.next_cursor}`, { token: owner.token });
@@ -364,6 +402,38 @@ describe('SSE: права на каналы', () => {
     assert.equal(staff.status, 200);
     staff.close();
     assert.equal((await openStream(`/api/stream?session=${randomUUID()}`, t.payer.token)).status, 404);
+  });
+
+  it('одноразовый токен SSE (§14): без cookie и Bearer, один раз, только свой канал', async () => {
+    const issue = await t.request('POST', '/api/stream/token', { token: t.payer.token, body: { session: sessionId } });
+    assert.equal(issue.status, 200);
+    assert.match(issue.json.token, /^[A-Za-z0-9_-]{43}$/);
+    const ttl = new Date(issue.json.expires_at).getTime() - Date.now();
+    assert.ok(ttl > 50_000 && ttl <= 60_000, `срок ${ttl}`);
+    const open = (path) => fetch(`${t.base}${path}`).then(async (res) => ({ res, status: res.status }));
+    // Чужой канал с этим токеном — 401 (токен сгорает).
+    const wrong = await open(`/api/stream?session=${randomUUID()}&token=${issue.json.token}`);
+    assert.equal(wrong.status, 401);
+    const issue2 = await t.request('POST', '/api/stream/token', { token: t.payer.token, body: { session: sessionId } });
+    const ok = await open(`/api/stream?session=${sessionId}&token=${issue2.json.token}`);
+    assert.equal(ok.status, 200);
+    const reader = ok.res.body.getReader();
+    const first = Buffer.from((await reader.read()).value).toString('utf8');
+    assert.match(first, /event: ready/);
+    await reader.cancel();
+    const reuse = await open(`/api/stream?session=${sessionId}&token=${issue2.json.token}`);
+    assert.equal(reuse.status, 401, 'повторно — нет');
+    // Токен на клуб: гостю права не даёт.
+    const clubTok = await t.request('POST', '/api/stream/token', { token: t.payer.token, body: { club: CLUB_A } });
+    assert.equal((await open(`/api/stream?club=${CLUB_A}&token=${clubTok.json.token}`)).status, 403);
+    // Персоналу — даёт.
+    const staffTok = await t.request('POST', '/api/stream/token', { token: manager.token, body: { club: CLUB_A } });
+    const staff = await open(`/api/stream?club=${CLUB_A}&token=${staffTok.json.token}`);
+    assert.equal(staff.status, 200);
+    await staff.res.body.cancel();
+    assert.equal((await t.request('POST', '/api/stream/token', { token: manager.token, body: { club: CLUB_A, session: sessionId } })).status, 400);
+    assert.equal((await t.request('POST', '/api/stream/token', { body: { club: CLUB_A }, origin: null })).status, 401);
+    assert.equal((await open(`/api/stream?club=${CLUB_A}&token=${'A'.repeat(43)}`)).status, 401);
   });
 
   it('после закрытия клиента хаб забывает подписчика', async () => {

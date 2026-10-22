@@ -212,6 +212,8 @@ export function Reception({ ctx }) {
 
       <AcceptDialog
         request={accepting}
+        hall={hall}
+        refreshHall={loadHall}
         onClose={() => setAccepting(null)}
         onDone={() => {
           loadRequests();

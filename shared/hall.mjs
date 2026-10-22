@@ -35,7 +35,8 @@ export function tableKind(type) {
  * @param {string | undefined} [title] resource.title из API, например 'Пирамида 12 футов'
  */
 export function typeLabel(type, title) {
-  if (title) return title;
+  // Название вида «Стол 2» ничего не добавляет к номеру — тогда подпись по типу
+  if (title && !/^стол\s*№?\s*\d+$/i.test(title.trim())) return title;
   if (/snooker/i.test(type ?? '')) return TYPE_LABEL.snooker;
   return TYPE_LABEL[tableKind(type)];
 }
@@ -180,8 +181,12 @@ export function tableState(item, options = {}) {
     return { tone: 'play', lit: true, word: session.paid_until ? `До ${fmt(session.paid_until)}` : 'Идёт игра' };
   }
   switch (item.status) {
+    case 'fault':
+      return { tone: 'offline', lit: false, word: 'Неисправность', spoken: 'неисправность контроллера' };
     case 'busy':
     case 'active':
+    case 'ending':
+    case 'grace':
       return { tone: 'play', lit: true, word: until ? `До ${fmt(until)}` : 'Идёт игра' };
     case 'pending':
       return { tone: 'pending', lit: false, word: 'Оплата', spoken: 'гость оплачивает' };

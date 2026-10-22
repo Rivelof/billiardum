@@ -52,3 +52,22 @@ test('сертификат брокера, который скоро истеч�
   assert.deepEqual(ensureDevCerts({ dir, log: quiet, now: soon }), { changed: true, caChanged: false });
   assert.equal(brokerCertProblem(read('ca.crt'), read('mqtt.crt'), soon), null);
 });
+
+test('DEV_LAN_HOST попадает в SAN: перевыпуск тем же CA, повторно — без изменений', () => {
+  const caBefore = read('ca.crt');
+  const before = read('mqtt.crt');
+  assert.deepEqual(ensureDevCerts({ dir, log: quiet, extraHosts: ['192.168.1.10'] }), { changed: true, caChanged: false });
+  assert.equal(read('ca.crt'), caBefore);
+  const cert = new X509Certificate(read('mqtt.crt'));
+  assert.notEqual(read('mqtt.crt'), before);
+  assert.equal(cert.subjectAltName, 'DNS:localhost, DNS:mosquitto, IP Address:127.0.0.1, IP Address:192.168.1.10');
+  assert.ok(cert.verify(new X509Certificate(caBefore).publicKey));
+  assert.deepEqual(ensureDevCerts({ dir, log: quiet, extraHosts: ['192.168.1.10'] }), { changed: false, caChanged: false });
+  // Пустой DEV_LAN_HOST или прежний набор имён — сертификат не трогается.
+  assert.deepEqual(ensureDevCerts({ dir, log: quiet, extraHosts: [''] }), { changed: false, caChanged: false });
+
+  assert.deepEqual(ensureDevCerts({ dir, log: quiet, extraHosts: ['MyMac.local'] }), { changed: true, caChanged: false });
+  assert.ok(new X509Certificate(read('mqtt.crt')).checkHost('mymac.local'));
+  assert.throws(() => ensureDevCerts({ dir, log: quiet, extraHosts: ['fe80::1'] }), /DEV_LAN_HOST/);
+  assert.throws(() => ensureDevCerts({ dir, log: quiet, extraHosts: ['bad host'] }), /DEV_LAN_HOST/);
+});

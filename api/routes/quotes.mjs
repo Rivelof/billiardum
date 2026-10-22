@@ -1,5 +1,5 @@
 // Стол и котировка (контракт M1 §5, backend-money).
-//   GET  /api/t/{code}        — без входа, не больше 30 запросов в минуту с IP (decisions №47)
+//   GET  /api/t/{code}        — без входа, не больше 120 запросов в минуту с IP (§14, №61)
 //   POST /api/quotes          — гость: котировка на 3 минуты, start ставит столу pending
 //   POST /api/quotes/{id}/pay — гость, Idempotency-Key: sbp, card (ЮKassa) или reception
 
@@ -12,8 +12,9 @@ export const routes = [
     method: 'GET',
     path: '/api/t/{code}',
     auth: 'none',
-    // Перебор кодов столов (decisions №47): 30 запросов в минуту с IP, считает роутер.
-    rateLimit: { max: 30, windowMs: 60_000 },
+    // 120 запросов в минуту с IP (§14, №61): гости клуба выходят через общий NAT;
+    // от перебора защищает длина кода (50 бит, №47). Считает роутер.
+    rateLimit: { max: 120, windowMs: 60_000 },
     handler: moneyRoute(({ db, deps, info }) => tableByCode(db, deps, { code: info.params.code, userId: info.userId })),
   },
   {

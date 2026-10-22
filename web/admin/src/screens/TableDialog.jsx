@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { formatDuration, formatTime } from '@billiardum/shared/format';
-import { SERVICE_REASONS } from '@billiardum/shared/reasons';
+import { SERVICE_REASONS, reasonLabel } from '@billiardum/shared/reasons';
 import { tableState, typeLabel } from '@billiardum/shared/hall';
 import { Dialog } from '../components/Dialog.jsx';
 import { Icon } from '../components/Icon.jsx';
@@ -71,6 +71,18 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
                 <dd class="mono">{formatDuration(Date.parse(s.paid_until) - Date.now())}</dd>
               </div>
             ) : null}
+          </dl>
+        ) : null}
+
+        {item.status === 'service' ? (
+          <dl class="facts">
+            <div>
+              <dt>Сервисный свет</dt>
+              <dd>
+                {item.until ? `до ${fmt(item.until)}` : 'включён'}
+                {item.hold?.reason_code ? `, ${reasonLabel(SERVICE_REASONS, item.hold.reason_code).toLowerCase()}` : ''}
+              </dd>
+            </div>
           </dl>
         ) : null}
 

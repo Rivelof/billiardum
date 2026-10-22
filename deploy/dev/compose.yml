@@ -110,6 +110,14 @@ services:
       SECRETS_ENC_KEY: ${SECRETS_ENC_KEY}
       # M1 §11. Вход для разработки и ускоренное время — только не в production (§2.3).
       PUBLIC_HOST: ${PUBLIC_HOST:-localhost:8443}
+      # Второй разрешённый Origin (телефон в локальной сети, README); только не в production.
+      DEV_LAN_HOST: ${DEV_LAN_HOST:-}
+      # X-Forwarded-For принимается только с этих адресов: частные сети Docker, где Caddy.
+      # Запросы на 127.0.0.1:3000 с хоста тоже приходят из сети Docker — это разработка.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      # Адрес брокера для контроллеров (ответ POST /api/devices/claim); пусто —
+      # сервер берёт mqtts://{хост PUBLIC_HOST}:8883.
+      MQTT_PUBLIC_URL: ${MQTT_PUBLIC_URL:-}
       ALLOW_DEV_LOGIN: ${ALLOW_DEV_LOGIN:-}
       DEV_ALLOW_ANY_MINUTES: ${DEV_ALLOW_ANY_MINUTES:-}
       YOOKASSA_API_URL: ${YOOKASSA_API_URL:-http://yookassa-emu:8090/v3}

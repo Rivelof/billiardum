@@ -31,7 +31,41 @@ export const ALARM_TEXTS = {
   payment_mismatch: 'Платёж ЮKassa не совпал с заказом: проверьте оплату',
   refund_mismatch: 'Возврат ЮKassa не совпал с запросом: проверьте возврат',
   unlimited_overrun: 'Игра «Без лимита» дороже замороженной суммы',
+  relay_fault: 'Реле не переключилось: проверьте контроллер стола',
+  replayed_seq: 'Контроллер отклонил повтор старой команды',
+  events_dropped: 'Контроллер потерял часть событий без связи',
+  ota_failed: 'Обновление прошивки контроллера не установилось',
+  offline_resume_denied: 'Контроллер не вернул игру после перезагрузки без связи',
+  state_mismatch: 'Состояние стола не совпадает с сервером',
+  light_without_session: 'Свет включён без оплаченной игры',
+  payment_unapplied: 'Оплата получена, но игра не запущена: проверьте стол',
 };
+
+/**
+ * Уровни по умолчанию (PRODUCT §8, decisions №66): если вызывающий не передал level.
+ * Ручные действия — critical и уведомляют владельца всегда (№66, инвариант 8).
+ */
+export const ALARM_LEVELS = {
+  bypass_detected: 'critical',
+  device_offline: 'critical',
+  bad_sig: 'critical',
+  relay_fault: 'critical',
+  state_mismatch: 'critical',
+  light_without_session: 'critical',
+  payment_unapplied: 'critical',
+  outbox_failed: 'critical',
+  service_light: 'critical',
+  manual_action: 'critical',
+  lamp_fault: 'important',
+  replayed_seq: 'important',
+  events_dropped: 'important',
+  ota_failed: 'important',
+  offline_resume_denied: 'important',
+  receipt_pending: 'important',
+};
+
+/** Типы ручных действий персонала: уведомление владельцу при каждом подъёме. */
+export const MANUAL_TYPES = new Set(['service_light', 'manual_action']);
 
 export function alarmText(type, tableNumber) {
   const text = ALARM_TEXTS[type] ?? `Тревога: ${type}`;
@@ -60,12 +94,22 @@ export function alarmJson(row) {
 /**
  * Поднять тревогу.
  * @param {import('pg').ClientBase} db транзакция в контексте клуба clubId
- * @returns {Promise<{ id: string, created: boolean, count: number }>}
+ * @param {string} clubId
+ * @param {{ type: string, level?: 'critical'|'important'|'info', resourceId?: string|null, data?: object,
+ *           manual?: boolean, text?: string }} alarm
+ *   level — по умолчанию из ALARM_LEVELS (иначе important); manual — ручное действие персонала
+ *   (по умолчанию для service_light и manual_action): владелец и управляющий получают уведомление
+ *   при каждом вызове, даже если тревога этого типа по столу уже открыта; text — текст уведомления
+ *   вместо стандартного (без персональных данных: телефоны вырезаются).
+ * @returns {Promise<{ id: string, created: boolean, count: number, notified: boolean }>}
  */
-export async function raise(db, clubId, { type, level, resourceId = null, data = {} }) {
+export async function raise(db, clubId, { type, level, resourceId = null, data = {}, manual, text = null }) {
   if (typeof clubId !== 'string' || !UUID.test(clubId)) throw new Error('alarms.raise: clubId');
   if (typeof type !== 'string' || !TYPE.test(type)) throw new Error('alarms.raise: type');
+  level ??= ALARM_LEVELS[type] ?? 'important';
   if (!LEVELS.includes(level)) throw new Error('alarms.raise: level');
+  if (text !== null && (typeof text !== 'string' || text.trim() === '')) throw new Error('alarms.raise: text');
+  const isManual = manual ?? MANUAL_TYPES.has(type);
   if (resourceId !== null && !UUID.test(resourceId)) throw new Error('alarms.raise: resourceId');
   if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new Error('alarms.raise: data');
   const ctxClub = (await db.query('select bl.ctx_club_id() as club_id')).rows[0].club_id;
@@ -93,16 +137,20 @@ export async function raise(db, clubId, { type, level, resourceId = null, data =
       actorId: null,
       data: { alarm_id: alarm.id, type, level, ...(resourceId ? { resource_id: resourceId } : {}) },
     });
+  }
+  // Новая тревога — уведомление; повтор открытой — только счётчик, кроме ручных действий.
+  const notified = alarm.created || isManual;
+  if (notified) {
     await sendToClubStaff(db, clubId, NOTIFY_ROLES, {
       kind: 'alarm',
       level,
-      text: alarmText(type, alarm.resource_number),
+      text: text ?? alarmText(type, alarm.resource_number),
       data: { alarm_id: alarm.id, type, url: '/club/' },
     });
   }
   const json = alarmJson(alarm);
   await afterCommit(db, () => publish(`club:${clubId}`, 'alarm', json));
-  return { id: alarm.id, created: alarm.created, count: alarm.count };
+  return { id: alarm.id, created: alarm.created, count: alarm.count, notified };
 }
 
 /** Подтвердить тревогу (владелец, управляющий). Контекст — клуб тревоги. */

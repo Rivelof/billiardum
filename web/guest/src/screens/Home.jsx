@@ -6,7 +6,8 @@ import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { useNow } from '../components/hooks.js';
 import { api } from '../lib/api.js';
-import { auth, logout } from '../lib/auth.js';
+import { auth } from '../lib/auth.js';
+import { SignedInAs } from '../components/SignedInAs.jsx';
 import { useStore } from '../lib/store.js';
 import { BASE } from '../lib/env.js';
 import { linkHandler } from '../lib/router.js';
@@ -17,7 +18,7 @@ const PHASE_WORD = { play: 'осталось', warn: 'меньше 5 минут'
 
 /** Главная приложения: текущие игры или подсказка «Отсканируйте QR-код на столе». */
 export function Home() {
-  const { status, user } = useStore(auth);
+  const { status } = useStore(auth);
   const [sessions, setSessions] = useState(null);
   const [error, setError] = useState(null);
   const now = useNow(0, Boolean(sessions?.length));
@@ -80,11 +81,7 @@ export function Home() {
           <a href={`${BASE}privacy`} onClick={linkHandler}>
             Политика обработки персональных данных
           </a>
-          {status === 'user' ? (
-            <button type="button" class="btn btn--link" onClick={() => logout().catch(() => {})}>
-              Выйти{user?.phone_masked ? ` (${user.phone_masked})` : ''}
-            </button>
-          ) : null}
+          {status === 'user' ? <SignedInAs always /> : null}
         </footer>
       </main>
     </div>

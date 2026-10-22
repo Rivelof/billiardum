@@ -6,6 +6,8 @@
 // bl.device_commands в той же транзакции и уходят после коммита (queries.queueCommand).
 
 import { createHash } from 'node:crypto';
+import { formatMoney, formatTime } from '@billiardum/shared/format';
+import { afterCommit } from '../lib/store.mjs';
 import { normalizeCode } from './codes.mjs';
 import { fail, LightError } from './errors.mjs';
 import { createKit, minutesText, phaseOf, playEnd, premarkNotified, UNPLAYED_THRESHOLD_MS, unplayedMs } from './kit.mjs';
@@ -39,13 +41,18 @@ export const MAX_FREE_EXTEND_MINUTES = 240;
 export const MAX_IDENTIFY_SECONDS = 600;
 export const MAX_PARTICIPANTS = 20;
 export const UNLIMITED_DEFAULT_MINUTES = 120;
+/** «Без лимита»: за сколько до extend_limit_until просить подтвердить продолжение (decisions №69). */
+export const UNLIMITED_CONFIRM_MS = 5 * 60_000;
+/** Срок выбора гостя после interrupted (decisions №65). */
+export const INTERRUPTED_DECIDE_MS = 24 * 3600_000;
+/** Коды причины сервисного света (контракт §14). */
+export const SERVICE_REASONS = Object.freeze(['cleaning', 'repair', 'training', 'other']);
 export const ROLES = Object.freeze({
   staff: ['owner', 'manager', 'reception', 'installer'],
   reception: ['owner', 'manager', 'reception'],
   manager: ['owner', 'manager'],
   installer: ['owner', 'installer'],
 });
-const REASON_CODE = /^[a-z0-9_]{1,32}$/;
 const MINUTE = 60_000;
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
@@ -571,6 +578,52 @@ export function createLightService(opts) {
     return out;
   }
 
+  /**
+   * Возврат за неотыгранное время прерванной сессии (выбор гостя или автоматически через 24 часа,
+   * decisions №65). Фиксированное время — доли последних платежей; «Без лимита» — закрытие по
+   * концу света, money спишет фактическое по session.closed. Порог — больше 60 с.
+   */
+  async function refundInterrupted(db, s, t, { actorType, actorId = null, auto = false }) {
+    let refundTotal = 0;
+    let endedAt = t;
+    const unplayed = s.unplayed_ms ?? 0;
+    if (s.unlimited) {
+      endedAt = playEnd(s);
+    } else if (unplayed > UNPLAYED_THRESHOLD_MS) {
+      for (const r of await refundShares(db, s, unplayed)) {
+        await deps.payments.refund(db, { paymentId: r.paymentId, amountKopecks: r.amountKopecks, reason: auto ? 'interrupted_auto' : 'interrupted' });
+        await db.query('update bl.session_payments set refunded_kopecks = refunded_kopecks + $2 where payment_id = $1', [r.paymentId, r.amountKopecks]);
+        refundTotal += r.amountKopecks;
+      }
+    }
+    await db.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'refunded', updated_at = $3 where id = $1", [s.id, endedAt, t]);
+    await audit(db, {
+      action: 'session.resolve',
+      objectType: 'session',
+      objectId: s.id,
+      actorType,
+      actorId,
+      data: { session_id: s.id, choice: 'refund', auto, paid_until: iso(s.paid_until), unplayed_ms: unplayed, refund_kopecks: refundTotal },
+    });
+    await emit(db, 'session.closed', sessionEvent(s, { started_at: iso(s.started_at), ended_at: iso(endedAt), unlimited: s.unlimited, reason: 'refunded', refund_kopecks: refundTotal }));
+    if (auto) {
+      await notifyParticipants(
+        db,
+        s,
+        {
+          kind: 'session.refunded',
+          text: refundTotal > 0
+            ? `Стол ${s.resource_number}: вернули ${formatMoney(refundTotal)} за неотыгранное время`
+            : `Стол ${s.resource_number}: игра закрыта, неотыгранное время пересчитано`,
+          data: { action: 'receipt', refund_kopecks: refundTotal },
+        },
+        { payerOnly: true },
+      );
+    }
+    log.info('session_refunded', { session_id: s.id, refund_kopecks: refundTotal, auto });
+    return refundTotal;
+  }
+
   /** Выбор после interrupted (T6): continue — оплаченный остаток с этого момента; refund — возврат. */
   async function resolve(db, { sessionId, userId, choice }) {
     if (choice !== 'continue' && choice !== 'refund') fail('bad_request', 'choice');
@@ -608,32 +661,7 @@ export function createLightService(opts) {
       await emit(db, 'session.started', sessionEvent({ ...s, paid_until: paidUntil }, { resumed: true }));
       await command(db, s, { type: 'session.start', body: { session_id: s.id }, cause: 'guest' });
     } else {
-      let refundTotal = 0;
-      let endedAt = t;
-      if (s.unlimited) {
-        // «Без лимита»: money спишет фактическое время по session.closed (started_at … ended_at).
-        endedAt = playEnd(s);
-      } else {
-        for (const r of await refundShares(db, s, s.unplayed_ms)) {
-          await deps.payments.refund(db, { paymentId: r.paymentId, amountKopecks: r.amountKopecks, reason: 'interrupted' });
-          await db.query('update bl.session_payments set refunded_kopecks = refunded_kopecks + $2 where payment_id = $1', [r.paymentId, r.amountKopecks]);
-          refundTotal += r.amountKopecks;
-        }
-      }
-      await db.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'refunded', updated_at = $3 where id = $1", [
-        s.id,
-        endedAt,
-        t,
-      ]);
-      await audit(db, {
-        action: 'session.resolve',
-        objectType: 'session',
-        objectId: s.id,
-        actorType: 'user',
-        actorId: userId,
-        data: { session_id: s.id, choice, paid_until: iso(s.paid_until), unplayed_ms: s.unplayed_ms, refund_kopecks: refundTotal },
-      });
-      await emit(db, 'session.closed', sessionEvent(s, { started_at: iso(s.started_at), ended_at: iso(endedAt), unlimited: s.unlimited, reason: 'refunded', refund_kopecks: refundTotal }));
+      await refundInterrupted(db, s, t, { actorType: 'user', actorId: userId });
     }
     await changed(db, s);
     return view(db, await loadSession(db, s.id), userId);
@@ -698,10 +726,13 @@ export function createLightService(opts) {
       refunded_kopecks: Number(r.refunded_kopecks),
       at: iso(r.created_at),
     }));
-    let receiptStatus = 'unknown';
+    // Чеки 54-ФЗ — у money (receiptStatus): статус по каждому платежу и один итог для экрана.
+    let byPayment = {};
     if (typeof deps.payments.receiptStatus === 'function' && rows.length > 0) {
-      receiptStatus = await deps.payments.receiptStatus(db, { paymentIds: rows.map((r) => r.payment_id) });
+      byPayment = (await deps.payments.receiptStatus(db, { paymentIds: rows.map((r) => r.payment_id) })) ?? {};
     }
+    for (const p of payments) p.receipt_status = byPayment[p.payment_id] ?? 'none';
+    const receiptStatus = summarizeReceipts(payments.map((p) => p.receipt_status));
     return {
       lines,
       total_kopecks: payments.reduce((sum, p) => sum + p.amount_kopecks - p.refunded_kopecks, 0),
@@ -756,7 +787,8 @@ export function createLightService(opts) {
   /** Сервисный свет — ручное действие: reason_code и reason_text обязательны, предел минут клуба. */
   async function serviceStart(db, { resourceId, userId, minutes, reasonCode, reasonText }) {
     const text = cleanText(reasonText);
-    if (typeof reasonCode !== 'string' || !REASON_CODE.test(reasonCode) || !text) fail('reason_required');
+    if (typeof reasonCode !== 'string' || reasonCode === '' || !text) fail('reason_required');
+    if (!SERVICE_REASONS.includes(reasonCode)) fail('bad_request', 'reason_code');
     if (!Number.isSafeInteger(minutes) || minutes < 1) fail('bad_request', 'minutes');
     const clubId = await enterResource(db, resourceId);
     await requireRole(db, clubId, userId, ROLES.reception);
@@ -882,6 +914,15 @@ export function createLightService(opts) {
    */
   async function tick(db, sessionId) {
     const s = await loadSession(db, sessionId, { lock: true });
+    if (s?.status === 'interrupted') {
+      // Выбор гостя ждёт 24 часа, затем — автоматический возврат (decisions №65).
+      const t = now();
+      const due = new Date(s.interrupted_at).getTime() + INTERRUPTED_DECIDE_MS;
+      if (t.getTime() < due) return new Date(due);
+      await refundInterrupted(db, s, t, { actorType: 'system', auto: true });
+      await changed(db, s);
+      return null;
+    }
     if (!s || !isOpen(s)) return null;
     const t = now();
     const T = t.getTime();
@@ -901,6 +942,20 @@ export function createLightService(opts) {
         sends.push({ kind: 'session.t10', text: `Стол ${s.resource_number}: осталось ${minutesText(left)}`, data: { action: 'extend', remaining_ms: P - T } });
       }
     }
+    // «Без лимита» (decisions №69): за 5 минут до extend_limit_until (= paid_until) — подтвердить
+    // продолжение (новая заморозка или блок СБП). Без подтверждения — обычные сигналы конца игры.
+    if (s.unlimited && T >= P - UNLIMITED_CONFIRM_MS && notified.u5 !== key) {
+      notified.u5 = key;
+      if (T < P) {
+        const until = formatTime(s.paid_until, s.club_timezone ?? 'UTC');
+        sends.push({
+          kind: 'session.unlimited_confirm',
+          text: `Стол ${s.resource_number}: заморозка заканчивается в ${until}. Подтвердите продолжение игры`,
+          data: { action: 'extend', kind: 'extend', minutes: null, unlimited: true, extend_limit_until: key },
+        });
+        await afterCommit(db, () => deps.sse.publish(`session:${s.id}`, 'unlimited_confirm', { session_id: s.id, extend_limit_until: key, action: 'extend', minutes: null }));
+      }
+    }
     if (T >= P - MINUTE && notified.t1 !== key) {
       notified.t1 = key;
       if (T < P) sends.push({ kind: 'session.t1', text: `Стол ${s.resource_number}: осталась минута`, data: { action: 'extend', remaining_ms: P - T } });
@@ -916,7 +971,7 @@ export function createLightService(opts) {
       if (status !== s.status) await changed(db, s);
     }
     for (const msg of sends) await notifyParticipants(db, s, msg);
-    const next = [P - 10 * MINUTE, P - s.warn_ms[0], P - MINUTE, P, P + G].filter((x) => x > T);
+    const next = [P - 10 * MINUTE, P - UNLIMITED_CONFIRM_MS, P - s.warn_ms[0], P - MINUTE, P, P + G].filter((x) => x > T);
     return new Date(Math.min(...next));
   }
 
@@ -959,6 +1014,18 @@ export function createLightService(opts) {
     hallItem,
     tick,
   };
+}
+
+/**
+ * Итог чеков сессии: есть failed → failed; есть pending или receipt_pending → pending;
+ * все succeeded (отменённые не в счёт) → succeeded; иначе none.
+ */
+export function summarizeReceipts(statuses) {
+  const list = statuses.filter((x) => x !== 'canceled');
+  if (list.includes('failed')) return 'failed';
+  if (list.includes('pending') || list.includes('receipt_pending')) return 'pending';
+  if (list.length > 0 && list.every((x) => x === 'succeeded')) return 'succeeded';
+  return 'none';
 }
 
 /** sha256 кода привязки, привязанный к устройству (в базе только хеш). */

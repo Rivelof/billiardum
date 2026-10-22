@@ -2,9 +2,11 @@
 // миграциями и сидом, модуль sessions (init) с подделками MQTT, outbox-доставки, SSE и денег,
 // поддельные часы и таймеры (ускоренное время), поддельные контроллеры по протоколу v1.
 //
-// Переменные (без них тесты пропускаются; .env не читается — рабочую базу тесты не трогают):
-//   LIGHT_TEST_DB_URL        — суперпользователь (supabase_admin) на тестовом сервере Postgres
-//   LIGHT_TEST_APP_PASSWORD  — пароль роли app_api этого сервера (её задаёт db:migrate)
+// Переменные (без них тесты пропускаются; .env не читается):
+//   DATABASE_ADMIN_URL       — суперпользователь (supabase_admin), как у test:db core и CI;
+//                              LIGHT_TEST_DB_URL — то же, но только для этих тестов (главнее)
+//   LIGHT_TEST_APP_PASSWORD  — необязательно: вход app_api по паролю; без него пул работает
+//                              под app_api (роль задаётся при подключении: те же права и RLS)
 
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -15,11 +17,12 @@ import { createLogger } from '../../lib/log.mjs';
 import { verifyCommand } from '../../lib/protocol.mjs';
 import { withContext } from '../../lib/store.mjs';
 import { deviceKeyContext, encryptSecret } from '../../lib/secrets.mjs';
+import { receiptStatus } from '../../payments/api.mjs';
 import { init, stop } from '../../sessions/index.mjs';
 
-export const ADMIN_URL = process.env.LIGHT_TEST_DB_URL ?? '';
+export const ADMIN_URL = process.env.LIGHT_TEST_DB_URL || process.env.DATABASE_ADMIN_URL || '';
 export const APP_PASSWORD = process.env.LIGHT_TEST_APP_PASSWORD ?? '';
-export const SKIP = !ADMIN_URL || !APP_PASSWORD ? 'нужны LIGHT_TEST_DB_URL и LIGHT_TEST_APP_PASSWORD (тестовый Postgres)' : false;
+export const SKIP = !ADMIN_URL ? 'нужен DATABASE_ADMIN_URL (или LIGHT_TEST_DB_URL): тестовый Postgres' : false;
 
 export const CLUB = 'c1000000-0000-4000-8000-000000000001';
 export const CLUB_B = 'c2000000-0000-4000-8000-000000000002';
@@ -51,20 +54,24 @@ function withDb(url, name, { user, password } = {}) {
 /** Временная база: все миграции, сид, ключи устройств, гости, второй клуб. */
 export async function createTestDb() {
   const name = `light_t_${process.pid}_${randomBytes(3).toString('hex')}`;
-  const root = new pg.Client({ connectionString: ADMIN_URL });
-  await root.connect();
-  try {
-    await root.query(`create database ${name} template template1`);
-  } finally {
-    await root.end();
-  }
   const adminUrl = withDb(ADMIN_URL, name);
-  // Миграция 0001 меняет роли кластера: параллельные файлы тестов ждут друг друга
-  // (рекомендательная блокировка в базе подключения, общая для процессов).
+  // CREATE DATABASE и миграция 0001 (роли кластера) — по очереди для параллельных файлов
+  // тестов (рекомендательная блокировка в базе подключения, общая для процессов).
   const lock = new pg.Client({ connectionString: ADMIN_URL });
   await lock.connect();
   try {
     await lock.query("select pg_advisory_lock(hashtextextended('bl.light_test_migrate', 0))");
+    // Фоновые процессы образа (timescaledb) ненадолго подключаются к template1:
+    // CREATE DATABASE тогда отвечает 55006 — повторяем.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await lock.query(`create database ${name} template template1`);
+        break;
+      } catch (err) {
+        if (err.code !== '55006' || attempt >= 10) throw err;
+        await sleep(500);
+      }
+    }
     await migrate({ connectionString: adminUrl, quiet: true });
     await seed({ connectionString: adminUrl, quiet: true });
   } finally {
@@ -72,7 +79,9 @@ export async function createTestDb() {
   }
   const admin = new pg.Pool({ connectionString: adminUrl, max: 5 });
   admin.on('error', () => {});
-  const app = new pg.Pool({ connectionString: withDb(ADMIN_URL, name, { user: 'app_api', password: APP_PASSWORD }), max: 20 });
+  const app = APP_PASSWORD
+    ? new pg.Pool({ connectionString: withDb(ADMIN_URL, name, { user: 'app_api', password: APP_PASSWORD }), max: 20 })
+    : new pg.Pool({ connectionString: adminUrl, max: 20, options: '-c role=app_api' }); // роль с первого запроса
   app.on('error', () => {});
   const encKey = randomBytes(32);
   const keys = new Map();
@@ -131,6 +140,16 @@ export class FakeTime {
       return id;
     };
     this.clearInterval = (id) => this.queue.delete(id);
+  }
+
+  /**
+   * Прыжок времени (сутки и больше): периодические таймеры сработают один раз после прыжка,
+   * разовые — по очереди. Так 24 часа проходят без тысяч промежуточных state и обходов.
+   */
+  async jump(ms, settle = async () => {}) {
+    this.t += ms;
+    for (const x of this.queue.values()) if (x.every && x.at < this.t) x.at = this.t;
+    await this.advance(0, settle);
   }
 
   /** Сдвинуть время, по очереди исполняя наступившие таймеры; settle — дождаться работы. */
@@ -387,7 +406,8 @@ export async function startLight(t, { devices = [1, 2, 3, 4], connect = true, ti
   const client = new FakeMqtt();
   const sse = { events: [], publish(channel, event, data) { this.events.push({ channel, event, data }); } };
   const refunds = [];
-  const paymentsApi = { async refund(_db, x) { refunds.push(x); return { ok: true }; } };
+  // Возврат — подделка (ЮKassa нет); статусы чеков — настоящая функция money по bl.receipts.
+  const paymentsApi = { async refund(_db, x) { refunds.push(x); return { ok: true }; }, receiptStatus };
   const dynsecCalls = [];
   const dynsec = {
     async ensureRole(rolename, acls) { dynsecCalls.push({ op: 'role', rolename, acls }); },
@@ -448,6 +468,11 @@ export async function startLight(t, { devices = [1, 2, 3, 4], connect = true, ti
       await sleep(30);
       await settle();
     },
+    async jump(ms) {
+      await time.jump(ms, settle);
+      await sleep(30);
+      await settle();
+    },
     /** Транзакция как у маршрута: app_api, контекст пользователя (и клуба). */
     asUser(userId, fn, { clubId = null } = {}) {
       return withContext(t.app, { clubId, userId, actorType: 'user' }, fn);
@@ -487,7 +512,7 @@ export async function makePayment(t, { kind = 'start', resource = 1, user = GUES
       ['cash', 'card_terminal'].includes(method) ? null : `yk-${randomUUID()}`,
       randomUUID(),
       amount,
-      unlimited ? null : minutes,
+      minutes,
       unlimited,
       !(unlimited && method === 'card'),
       at,
@@ -501,7 +526,7 @@ export async function makePayment(t, { kind = 'start', resource = 1, user = GUES
     session_id: sessionId,
     resource_id: RES(resource),
     user_id: user,
-    minutes: unlimited ? null : minutes,
+    minutes: minutes,
     unlimited,
     amount_kopecks: amount,
     method,

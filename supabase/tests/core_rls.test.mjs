@@ -115,9 +115,12 @@ describe('пользователь платформы', () => {
     });
   });
 
-  it('меняет у себя только канал уведомлений; телефон и id мессенджеров — нет', async () => {
+  it('меняет у себя только имя и канал уведомлений; телефон и id мессенджеров — нет', async () => {
     await asRole(db.pool, 'app_api', { userId: GUEST, actorType: 'user' }, async (c) => {
       assert.equal(await tryQuery(c, "update bl.users set notify_channel = 'webpush' where id = $1", [GUEST]), null);
+      assert.equal(await tryQuery(c, "update bl.users set name = 'Гость' where id = $1", [GUEST]), null);
+      assert.equal((await tryQuery(c, "update bl.users set name = ' пробел' where id = $1", [GUEST]))?.code, '23514');
+      assert.equal((await c.query("update bl.users set name = 'Чужой' where id = $1", [GUEST2])).rowCount, 0);
       assert.equal((await tryQuery(c, "update bl.users set phone = '+79990000099' where id = $1", [GUEST]))?.code, '42501');
       assert.equal((await tryQuery(c, 'update bl.users set telegram_user_id = 5 where id = $1', [GUEST]))?.code, '42501');
       const other = await c.query("update bl.users set notify_channel = 'max' where id = $1", [GUEST2]);

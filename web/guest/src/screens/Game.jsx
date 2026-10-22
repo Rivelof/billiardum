@@ -48,7 +48,11 @@ export function GameScreen({ id }) {
   useEffect(() => {
     load();
     const stream = streamSession(id, {
-      onEvent: (_name, data) => (data && data.id === id ? apply(data) : load()),
+      // В событии SSE сервер не знает, кто смотрит (is_payer: false) — берём своё из GET и перечитываем
+      onEvent: (_name, data) => {
+        if (data && data.id === id) setSession((prev) => ({ ...prev, ...data, is_payer: prev?.is_payer ?? data.is_payer }));
+        load();
+      },
       onOpen: load,
       onState: setLive,
     });

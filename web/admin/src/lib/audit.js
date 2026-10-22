@@ -1,6 +1,6 @@
 import { formatMoney, formatTime, formatDate } from '@billiardum/shared/format';
 import { DECLINE_REASONS, SERVICE_REASONS, reasonLabel } from '@billiardum/shared/reasons';
-import { METHOD_LABEL, minutesWords } from './words.js';
+import { METHOD_LABEL, ROLE_LABEL, minutesWords } from './words.js';
 
 /** Действия журнала M1 (контракт §8) словами. */
 export const ACTION_LABEL = {
@@ -45,13 +45,50 @@ export const ACTION_GROUPS = [
 
 const ACTOR = { guest: 'Гость', system: 'Система', device: 'Контроллер' };
 
+/** Значение фильтра → шаблоны: 'service.*,manual.*' → ['service.*', 'manual.*']. */
+export function actionPatterns(value) {
+  return String(value ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Подходит ли действие под фильтр (`*` в конце — префикс). Для фильтрации на клиенте. */
+export function matchesAction(value, action) {
+  const pats = actionPatterns(value);
+  if (!pats.length) return true;
+  return pats.some((p) => (p.endsWith('*') ? String(action).startsWith(p.slice(0, -1)) : action === p));
+}
+
 /**
- * Запись журнала для экрана. Поля сервера, которых нет в контракте явно, читаются бережно:
- * actor_name, resource_number (запрошены у backend-core), иначе — тип исполнителя.
+ * Параметр action для сервера старого вида (одно имя или префикс с точкой: «session.»).
+ * Несколько шаблонов так не выразить — null, фильтруем на клиенте.
+ */
+export function legacyActionParam(value) {
+  const pats = actionPatterns(value);
+  if (pats.length !== 1) return pats.length ? null : undefined;
+  return pats[0].endsWith('*') ? pats[0].slice(0, -1) : pats[0];
+}
+
+/** Исполнитель словами: имя, иначе роль и маска телефона (actor: {role, phone_masked}), иначе тип. */
+export function actorLabel(raw) {
+  if (raw.actor_name) return raw.actor_name;
+  if (raw.actor?.name) return raw.actor.name;
+  const role = raw.actor_role ?? raw.actor?.role;
+  if (role) return `${ROLE_LABEL[role] ?? 'Сотрудник'}${raw.actor?.phone_masked ? `, ${raw.actor.phone_masked}` : ''}`;
+  const t = raw.actor_type ?? raw.actor?.type;
+  if (t === 'user' || t === 'staff') return 'Сотрудник';
+  return ACTOR[t] ?? 'Система';
+}
+
+/**
+ * Запись журнала для экрана. Поля §14 (actor_name, resource_number) читаются, если есть;
+ * иначе стол — по data.resource_id или object_id через карту столов зала, исполнитель — роль и маска телефона.
  * @param {object} raw
  * @param {string} timeZone
+ * @param {{ tables?: Map<string, number> }} [ctx] resource_id → номер стола
  */
-export function auditView(raw, timeZone) {
+export function auditView(raw, timeZone, ctx = {}) {
   const data = raw.data && typeof raw.data === 'object' ? raw.data : {};
   const at = raw.created_at ?? raw.at;
   const details = [];
@@ -63,9 +100,15 @@ export function auditView(raw, timeZone) {
   if (data.type && raw.action?.startsWith('device.')) details.push(String(data.type));
   if (data.paid_until) details.push(`до ${formatTime(data.paid_until, timeZone)}`);
 
-  const actorType = raw.actor_type ?? raw.actor?.type;
-  const actorName = raw.actor_name ?? raw.actor?.name ?? ACTOR[actorType] ?? (actorType === 'staff' ? 'Сотрудник' : 'Система');
-  const number = raw.resource_number ?? data.resource_number ?? null;
+  const actorName = actorLabel(raw);
+  const tables = ctx.tables ?? new Map();
+  const number =
+    raw.resource_number ??
+    data.resource_number ??
+    tables.get(raw.resource_id) ??
+    tables.get(data.resource_id) ??
+    (raw.object_type === 'resource' ? tables.get(raw.object_id) : undefined) ??
+    null;
   return {
     id: raw.id ?? `${raw.seq}`,
     seq: raw.seq ?? null,

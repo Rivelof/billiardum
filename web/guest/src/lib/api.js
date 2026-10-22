@@ -4,8 +4,9 @@ import { session } from './store.js';
 /**
  * Вызовы API гостя по контракту M1 (§4–§7). Транспорт подменяется заглушкой в режиме VITE_MOCK.
  *
- * Вход: в PWA — cookie bl_session (сервер ставит её сам), в мини-приложениях — Authorization: Bearer
- * (токен хранится в sessionStorage вкладки, решение вынести в отчёт frontend M1).
+ * Вход: в PWA — cookie bl_session (Path=/api, сервер ставит её на всех входах, §14), токен из ответа не храним.
+ * В мини-приложениях cookie в WebView ненадёжны — там Authorization: Bearer (токен в sessionStorage вкладки),
+ * а для SSE — одноразовый токен потока (POST /api/stream/token, §14).
  */
 
 const BEARER_KEY = 'bl-bearer';
@@ -25,12 +26,35 @@ export function configureApi({ fetch, EventSource, onUnauthorized } = {}) {
  * @param {{ onEvent: (name: string, data: unknown) => void, onOpen?: () => void, onState?: (s: string) => void }} handlers
  */
 export function streamSession(id, handlers) {
-  return openStream(api.streamUrl(id), { ...handlers, events: ['session'], EventSource: EventSourceImpl });
+  const opts = { ...handlers, events: ['session'], EventSource: EventSourceImpl };
+  if (!hasBearer()) return openStream(api.streamUrl(id), opts);
+  // Мини-приложение: EventSource не передаёт Bearer — одноразовый токен потока на 60 с
+  let inner = null;
+  let closed = false;
+  api
+    .streamToken({ session: id })
+    .then((t) => t?.token)
+    .catch(() => null)
+    .then((token) => {
+      if (closed) return;
+      const url = token ? `${api.streamUrl(id)}&token=${encodeURIComponent(token)}` : api.streamUrl(id);
+      inner = openStream(url, opts);
+    });
+  return {
+    close() {
+      closed = true;
+      inner?.close();
+    },
+  };
 }
 
 /** Токен для мини-приложений, где cookie в WebView ненадёжны. */
 export function setBearer(token) {
   session.set(BEARER_KEY, token || null);
+}
+
+export function hasBearer() {
+  return Boolean(session.get(BEARER_KEY));
 }
 
 // Ключ идемпотентности живёт, пока не пришёл ответ: повтор после обрыва связи не создаёт второй платёж
@@ -63,7 +87,7 @@ export const api = {
     return res;
   },
   payment: (id) => client.get(`/payments/${encodeURIComponent(id)}`),
-  // Нет в контракте M1: статус заявки на ресепшен для гостя (принята, отклонена, сгорела). Запрошено у backend-money.
+  // Статус заявки на ресепшен для гостя (решение №56): waiting | accepted | declined | expired
   receptionRequest: (id) => client.get(`/reception/requests/${encodeURIComponent(id)}`),
 
   currentSessions: () => client.get('/sessions/current'),
@@ -73,9 +97,10 @@ export const api = {
   resolve: (id, choice) => client.post(`/sessions/${encodeURIComponent(id)}/resolve`, { choice }),
   receipt: (id) => client.get(`/sessions/${encodeURIComponent(id)}/receipt`),
 
-  // Нет в контракте M1: открытый ключ VAPID для подписки. Запрошено у backend-core.
-  pushKey: () => client.get('/push/key'),
-  pushSubscribe: (subscription) => client.post('/push/subscribe', { subscription }),
+  // §14: открытый ключ VAPID; подписка — PushSubscription.toJSON() как есть
+  pushKey: () => client.get('/push/vapid-public-key'),
+  pushSubscribe: (subscription) => client.post('/push/subscribe', subscription),
+  streamToken: (query) => client.post('/stream/token', query),
 
   streamUrl: (sessionId) => client.url('/stream', { session: sessionId }),
 };

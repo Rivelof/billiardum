@@ -99,7 +99,9 @@ export async function init(ctx) {
       const s = await loadSession(db, sessionId);
       if (!s) return null;
       const { rows } = await db.query('select ordinal from bl.session_participants where session_id = $1 order by ordinal', [s.id]);
-      return sessionView(s, { now: clock.now(), participants: rows });
+      // Только общие поля: is_payer зависит от зрителя, клиент берёт его из GET /api/sessions/{id}.
+      const { is_payer: _viewerOnly, ...common } = sessionView(s, { now: clock.now(), participants: rows });
+      return common;
     });
     if (view) deps.sse.publish(`session:${sessionId}`, 'session', view);
   }

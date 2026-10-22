@@ -2,12 +2,10 @@
 // контроллера tools/device-sim (в процессе) + outbox core на настоящей базе, реальное время.
 // Метрика: от payments.confirmed_at до ack session.start (light_latency), p95 < 1 с.
 //
-// Переменные (без них тест пропускается), кроме LIGHT_TEST_DB_URL и LIGHT_TEST_APP_PASSWORD:
-//   LIGHT_IT_MQTT_URL       mqtts://localhost:<порт> тестового брокера
-//   LIGHT_IT_CA_FILE        CA брокера
-//   LIGHT_IT_ADMIN_USER     администратор Dynamic Security
-//   LIGHT_IT_ADMIN_PASSWORD
-//   LIGHT_IT_SESSIONS       сколько оплат для p95 (по умолчанию 20)
+// Брокер: LIGHT_IT=1 — тест сам поднимает контейнер bl-light-it-* (broker.mjs, нужны docker
+// и openssl) и удаляет его; либо готовый отдельный брокер (не общий брокер стека!):
+//   LIGHT_IT_MQTT_URL, LIGHT_IT_CA_FILE, LIGHT_IT_ADMIN_USER, LIGHT_IT_ADMIN_PASSWORD
+// LIGHT_IT_SESSIONS — сколько оплат для p95 (по умолчанию 20). База — как у остальных (harness).
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -22,14 +20,19 @@ import { createOutbox } from '../../outbox.mjs';
 import { init, stop } from '../../sessions/index.mjs';
 import { SimDevice } from '../../../tools/device-sim/lib/device.mjs';
 import { createLogger as createSimLogger } from '../../../tools/device-sim/lib/log.mjs';
+import { canStartBroker, startBroker } from './broker.mjs';
 import { CLUB, createTestDb, DEV, GUEST, makePayment, RES, SKIP, sleep } from './harness.mjs';
 
-const URL_ = process.env.LIGHT_IT_MQTT_URL;
-const CA = process.env.LIGHT_IT_CA_FILE;
-const ADMIN = process.env.LIGHT_IT_ADMIN_USER;
-const ADMIN_PW = process.env.LIGHT_IT_ADMIN_PASSWORD;
+const GIVEN = Boolean(process.env.LIGHT_IT_MQTT_URL && process.env.LIGHT_IT_CA_FILE && process.env.LIGHT_IT_ADMIN_USER && process.env.LIGHT_IT_ADMIN_PASSWORD);
 const N = Number(process.env.LIGHT_IT_SESSIONS || 20);
-const skip = SKIP || (!URL_ || !CA || !ADMIN || !ADMIN_PW ? 'нужны LIGHT_IT_MQTT_URL, LIGHT_IT_CA_FILE, LIGHT_IT_ADMIN_USER, LIGHT_IT_ADMIN_PASSWORD' : false);
+const skip =
+  SKIP ||
+  (GIVEN || (process.env.LIGHT_IT === '1' && canStartBroker()) ? false : 'нужен LIGHT_IT=1 (docker и openssl) или LIGHT_IT_MQTT_URL, LIGHT_IT_CA_FILE, LIGHT_IT_ADMIN_USER, LIGHT_IT_ADMIN_PASSWORD');
+let URL_ = process.env.LIGHT_IT_MQTT_URL;
+let CA = process.env.LIGHT_IT_CA_FILE;
+let ADMIN = process.env.LIGHT_IT_ADMIN_USER;
+let ADMIN_PW = process.env.LIGHT_IT_ADMIN_PASSWORD;
+let broker = null;
 
 function pct(list, p) {
   const s = [...list].sort((a, b) => a - b);
@@ -48,7 +51,7 @@ describe('мост + брокер + симулятор (реальное вре�
   const simLines = [];
   const log = createLogger({ level: 'debug', write: (l) => lines.push(l) });
   const logs = (msg) => lines.map((l) => JSON.parse(l)).filter((l) => l.msg === msg);
-  const ca = CA ? readFileSync(CA) : null;
+  let ca = null;
   const serverPassword = randomBytes(18).toString('base64url');
 
   async function until(fn, what, timeoutMs = 10_000) {
@@ -86,6 +89,11 @@ describe('мост + брокер + симулятор (реальное вре�
   const snap = (n) => sims.get(n).status().state;
 
   before(async () => {
+    if (!GIVEN) {
+      broker = await startBroker();
+      ({ url: URL_, caFile: CA, adminUser: ADMIN, adminPassword: ADMIN_PW } = broker);
+    }
+    ca = readFileSync(CA);
     t = await createTestDb();
     // Короткие сигналы, чтобы полный цикл прошёл за минуту: ending за 20 с, льгота 5 с.
     await t.q(`update bl.clubs set settings = settings || '{"warn_ms":[20000,10000],"grace_ms":5000}'::jsonb where id = $1`, [CLUB]);
@@ -127,6 +135,7 @@ describe('мост + брокер + симулятор (реальное вре�
     await new Promise((r) => (client ? client.end(false, {}, r) : r()));
     await admin?.endAsync().catch(() => {});
     await t?.drop();
+    broker?.stop();
   });
 
   it(`оплата → свет: ${N} оплат, light_latency p95 < 1 с; остановка плательщиком гасит свет`, async () => {

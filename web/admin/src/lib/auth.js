@@ -1,18 +1,20 @@
-import { api, setStaffBearer, getTerminal } from './api.js';
+import { api } from './api.js';
 import { createStore, session } from './store.js';
 
 /**
  * Вход персонала: телефон через бота (как у гостя), на общем терминале — быстрая смена по PIN (PRODUCT §2, §11).
- * status: 'loading' | 'anon' | 'user'; clubs: [{ club_id, role, name?, timezone? }]
+ * Сессия — cookie bl_session (§14), токены из ответов не храним.
+ * status: 'loading' | 'anon' | 'user'; user: { id, phone_masked, name? }; clubs: [{ club_id, role, name?, timezone? }];
+ * principal: 'session' | 'pin' | 'terminal' (GET /api/me → session.kind)
  */
-export const auth = createStore({ status: 'loading', user: null, clubs: [] });
+export const auth = createStore({ status: 'loading', user: null, clubs: [], principal: null });
 
 const NONCE_KEY = 'bl-staff-bot-link';
 
 export async function loadMe() {
   try {
     const me = await api.me();
-    auth.set({ status: 'user', user: me?.user ?? null, clubs: Array.isArray(me?.clubs) ? me.clubs : [] });
+    auth.set({ status: 'user', user: me?.user ?? null, clubs: Array.isArray(me?.clubs) ? me.clubs : [], principal: me?.session?.kind ?? null });
     return me;
   } catch (err) {
     auth.set({ status: 'anon', user: null, clubs: [] });
@@ -29,8 +31,7 @@ export function normalizePhone(input) {
 }
 
 export async function devLogin(phone) {
-  const res = await api.devLogin(phone);
-  if (res?.token && getTerminal()) setStaffBearer(res.token);
+  await api.devLogin(phone);
   return loadMe();
 }
 
@@ -57,7 +58,6 @@ export async function checkBotLink(nonce) {
   const res = await api.botLinkStatus(nonce);
   if (res.status === 'done') {
     session.set(NONCE_KEY, null);
-    if (res.token && getTerminal()) setStaffBearer(res.token);
     await loadMe();
   }
   if (res.status === 'expired') session.set(NONCE_KEY, null);
@@ -66,8 +66,7 @@ export async function checkBotLink(nonce) {
 
 /** Быстрая смена сотрудника по PIN на зарегистрированном терминале. */
 export async function pinSwitch(userId, pin) {
-  const res = await api.pin(userId, pin);
-  setStaffBearer(res.token);
+  await api.pin(userId, pin); // сервер ставит cookie сотрудника, прежний на терминале выходит
   return loadMe();
 }
 
@@ -75,8 +74,7 @@ export async function logout() {
   try {
     await api.logout();
   } finally {
-    setStaffBearer(null);
-    auth.set({ status: 'anon', user: null, clubs: [] });
+    auth.set({ status: 'anon', user: null, clubs: [], principal: null });
   }
 }
 
@@ -87,4 +85,10 @@ export const can = {
   manage: (role) => ['manager', 'owner'].includes(role),
   extendFree: (role) => ['manager', 'owner'].includes(role),
   verify: (role) => role === 'owner',
+  // Контроллеры (контракт §6): привязка — владелец и монтажник, «Подсветить» — и управляющий
+  devices: (role) => ['owner', 'manager', 'installer'].includes(role),
+  bind: (role) => ['owner', 'installer'].includes(role),
+  identify: (role) => ['owner', 'manager', 'installer'].includes(role),
+  terminal: (role) => ['owner', 'manager'].includes(role),
+  setPin: (role) => ['owner', 'manager', 'reception'].includes(role),
 };

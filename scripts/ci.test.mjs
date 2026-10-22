@@ -26,3 +26,15 @@ test('действия GitHub закреплены по коммиту', () => {
   assert.ok(uses.length > 0);
   for (const u of uses) assert.match(u, /@[0-9a-f]{40}$/, u);
 });
+
+test('test:db: база из окружения главнее .env, LIGHT_IT=1 по умолчанию, LIGHT_IT_* из .env не берутся', async () => {
+  const { dbTestEnv } = await import('./ci-test-db.mjs');
+  const file = { DATABASE_ADMIN_URL: 'postgres://file', DATABASE_URL: 'postgres://app', LIGHT_IT_MQTT_URL: 'mqtts://dev:8883' };
+  const env = dbTestEnv({ DATABASE_ADMIN_URL: 'postgres://env' }, file);
+  assert.equal(env.DATABASE_ADMIN_URL, 'postgres://env');
+  assert.equal(env.DATABASE_URL, 'postgres://app');
+  assert.equal(env.LIGHT_IT, '1');
+  assert.equal(env.LIGHT_IT_MQTT_URL, undefined);
+  assert.equal(dbTestEnv({ DATABASE_ADMIN_URL: 'x', LIGHT_IT: '0' }, {}).LIGHT_IT, '0');
+  assert.throws(() => dbTestEnv({}, {}), /DATABASE_ADMIN_URL/);
+});

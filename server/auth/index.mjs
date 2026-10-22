@@ -94,7 +94,7 @@ export function clearSessionCookie() {
  */
 export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VERSION } = {}) {
   const { rows } = await db.query(
-    `select u.id, u.phone, u.notify_channel, u.telegram_user_id is not null as telegram, u.max_user_id is not null as max,
+    `select u.id, u.phone, u.name, u.notify_channel, u.telegram_user_id is not null as telegram, u.max_user_id is not null as max,
             exists (select 1 from bl.consents c where c.user_id = u.id and c.version = $2) as consent
        from bl.users u where u.id = $1`,
     [userId, consentVersion],
@@ -103,8 +103,11 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
   if (!u) return null;
   return {
     id: u.id,
+    name: u.name,
     phone_masked: maskPhone(u.phone),
     needs_phone: u.phone === null,
+    // §14: принятая текущая версия согласия или null; требуемая версия — consent.version.
+    consent_version: u.consent ? consentVersion : null,
     consent: { version: consentVersion, accepted: u.consent },
     notify_channel: u.notify_channel,
     channels: { telegram: u.telegram, max: u.max },
@@ -114,7 +117,7 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
 /** Членства пользователя во всех клубах (личный контекст: app.club_id пуст). */
 export async function myMemberships(db, userId) {
   const { rows } = await db.query(
-    `select m.club_id, m.role, c.name as club_name
+    `select m.club_id, m.role, c.name as club_name, c.timezone
        from bl.club_members m
        left join bl.clubs c on c.id = m.club_id
       where m.user_id = $1 and m.active

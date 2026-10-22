@@ -37,7 +37,7 @@ describe('маршруты light через роутер core', { skip: SKIP }, 
     base = `http://127.0.0.1:${server.address().port}`;
   });
   after(async () => {
-    await new Promise((r) => server?.close(r));
+    if (server) await new Promise((r) => server.close(r));
     await h?.stop();
     await t?.drop();
   });

@@ -9,6 +9,7 @@ const CONTRACT = [
   'table_service', 'quote_expired', 'quote_used', 'payment_failed', 'payment_pending', 'session_not_active', 'not_payer',
   'reason_required', 'limit_exceeded', 'consent_required', 'phone_required', 'idempotency_conflict',
   'no_tariff', // дополнение backend-money
+  'phone_conflict', 'not_configured', 'internal', 'method_not_allowed', // №63–64
 ];
 
 test('у каждого кода контракта есть текст: что случилось и что делать', () => {

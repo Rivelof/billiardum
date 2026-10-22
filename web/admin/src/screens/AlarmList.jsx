@@ -1,9 +1,9 @@
 import { useState } from 'preact/hooks';
-import { formatTime } from '@billiardum/shared/format';
+import { formatTime, plural } from '@billiardum/shared/format';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
-import { alarmView, sortAlarms } from '../lib/alarms.js';
+import { alarmTime, alarmView, sortAlarms } from '../lib/alarms.js';
 
 /** Открытые тревоги: уровень словом, что случилось и что делать, «Принято». */
 export function AlarmList({ alarms, timeZone, onAck, emptyText = 'Тревог нет. Всё под контролем.' }) {
@@ -46,7 +46,8 @@ export function AlarmList({ alarms, timeZone, onAck, emptyText = 'Тревог �
                   {v.levelWord}
                 </span>
                 {v.table ? <span class="alarm__table">{v.table}</span> : null}
-                {a.created_at ? <span class="alarm__time mono">{formatTime(a.created_at, timeZone)}</span> : null}
+                {alarmTime(a) ? <span class="alarm__time mono">{formatTime(alarmTime(a), timeZone)}</span> : null}
+                {v.repeats ? <span>{v.repeats} {plural(v.repeats, ['раз', 'раза', 'раз'])} подряд</span> : null}
               </p>
               <p class="alarm__title">{v.title}</p>
               <p class="alarm__text">{v.text}</p>

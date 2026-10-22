@@ -21,7 +21,8 @@ export function sessionView(s, { now, userId = null, participants = [] }) {
   else if (s.status === 'interrupted') remaining = s.unplayed_ms ?? 0;
   return {
     id: s.id,
-    resource: { id: s.resource_id, number: s.resource_number },
+    club: { id: s.club_id, timezone: s.club_timezone ?? null },
+    resource: { id: s.resource_id, number: s.resource_number, type: s.resource_type ?? null, title: s.resource_title ?? null },
     status: s.status,
     started_at: iso(s.started_at),
     paid_until: iso(s.paid_until),

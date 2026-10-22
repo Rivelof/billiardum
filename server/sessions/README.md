@@ -28,7 +28,7 @@
 
 `active` → `ending` (≤ `warn_ms[0]`) → `grace` (`paid_until` прошёл) → `closed` в `paid_until + grace_ms`. Продление: `paid_until += minutes`, из `grace` тоже; подтверждение пришло после закрытия по времени — игра продолжается с момента подтверждения, если стол свободен, иначе возврат. Уведомления участникам через `notify.send`: `session.t10` («Продлить»), `session.t1`, `session.t0`, `session.closed`; пройденный при покупке порог не шлётся.
 
-`interrupted` — контроллер подтвердил свет до `device_paid_until`, а оплачено больше чем на 60 с: так бывает, если продление оплачено без связи и связь не вернулась до локального конца (T6). Ставится при возвращении контроллера (по `device_paid_until + grace_ms`), по событию `offline_session_finished` или планировщиком в момент закрытия. Свет сам не возвращается; плательщику уведомление `session.interrupted`. `resolve`: `continue` — `paid_until = now + неотыгранное`, `session.start`; `refund` — возврат долей с последних платежей (`payments.refund`), «Без лимита» — закрытие по `device_paid_until` (money спишет фактическое). `interrupted` стол не держит.
+`interrupted` — контроллер подтвердил свет до `device_paid_until`, а оплачено больше чем на 60 с: так бывает, если продление оплачено без связи и связь не вернулась до локального конца (T6). Ставится при возвращении контроллера (по `device_paid_until + grace_ms`), по событию `offline_session_finished` или планировщиком в момент закрытия. Свет сам не возвращается; плательщику уведомление `session.interrupted`. Выбор ждёт 24 часа (decisions №65), затем планировщик сам возвращает деньги за неотыгранное (больше 60 с; журнал `session.resolve` с `auto: true`, уведомление `session.refunded`). `resolve`: `continue` — `paid_until = now + неотыгранное`, `session.start`; `refund` — возврат долей с последних платежей (`payments.refund`), «Без лимита» — закрытие по `device_paid_until` (money спишет фактическое). `interrupted` стол не держит.
 
 `cancelled` — все платежи сессии возвращены (outbox `payment.refunded`, сверка по `bl.refunds`): свет гаснет `session.stop`.
 
@@ -36,9 +36,11 @@
 
 Идёт сессия: контроллер её ведёт → `session.resume` (остаток по `paid_until`); не ведёт, но по подтверждённому остатку ещё должен гореть (перезагрузка, T7) → `session.resume`; уже доиграл сам → `interrupted` или `session.resume` с остатком льготы. Контроллер ведёт сессию, которой нет в базе → `session.stop` (`not_paid`). Иначе `service.start` (остаток), `service.stop`, `state.pending`/`state.reserved` (остаток удержания), `state.free`. Команды, поставленные пока устройство было офлайн, помечаются `superseded`.
 
-## Тревоги (`alarms.raise`, уровни PRODUCT §8)
+Объект `session` (контракт §14): `club: {id, timezone}`, `resource: {id, number, type, title}`. Чек сессии: `receipt_status` — итог по `receiptStatus` money (есть `failed` → `failed`; есть `pending`/`receipt_pending` → `pending`; все `succeeded` → `succeeded`; иначе `none`), у каждого платежа — свой `receipt_status`. Сервисный свет: `reason_code` — `cleaning`, `repair`, `training`, `other` (другой — `bad_request`), `reason_text` обязателен.
 
-`bypass_detected`, `relay_fault`, `bad_sig`, `light_without_session`, `device_offline` (офлайн во время сессии > 120 с), `service_light`, `manual_action` — `critical`; `lamp_fault`, `replayed_seq`, `events_dropped`, `ota_failed`, `cmd_no_ack`, `state_mismatch` (state ≠ база > 10 с), `payment_conflict` — `important`; `offline_resume_denied` — `info`. Ручные действия (`service_light`, `manual_action`): если такая тревога по столу уже открыта, владельцу уходит отдельное уведомление (инвариант 8).
+## Тревоги (`alarms.raise`, уровни PRODUCT §8 и decisions №66)
+
+`bypass_detected`, `relay_fault`, `bad_sig`, `light_without_session`, `state_mismatch` (state ≠ база > 10 с), `device_offline` (офлайн во время сессии > 120 с), `service_light`, `manual_action`, `payment_unapplied` — `critical`; `lamp_fault`, `replayed_seq`, `events_dropped`, `ota_failed`, `offline_resume_denied`, `cmd_no_ack`, `payment_conflict` — `important`. Ручные действия владельцу уведомляет core всегда (`raise`, manual), со своим текстом light.
 
 ## Журнал
 
@@ -56,11 +58,12 @@
 
 ```sh
 npm test -w @billiardum/server            # без базы: test/bridge-light.test.mjs, test/light-unit.test.mjs (+ M0 и соседи)
-# на Postgres (образ supabase/postgres; временные базы, рабочую не трогают):
-LIGHT_TEST_DB_URL=postgres://supabase_admin:…@127.0.0.1:55435/postgres LIGHT_TEST_APP_PASSWORD=… \
-  node --test "server/test/light/*.test.mjs"
-# плюс брокер Mosquitto с TLS и Dynamic Security и симулятор tools/device-sim (it-sim):
-LIGHT_IT_MQTT_URL=mqtts://localhost:28884 LIGHT_IT_CA_FILE=… LIGHT_IT_ADMIN_USER=bl-admin LIGHT_IT_ADMIN_PASSWORD=… …
+# на Postgres (как test:db core: DATABASE_ADMIN_URL, временные базы light_t_*, пул под app_api через SET ROLE);
+# LIGHT_IT=1 — it-sim сам поднимает брокер bl-light-it-* (docker и openssl) и удаляет его:
+DATABASE_ADMIN_URL=postgres://supabase_admin:…@127.0.0.1:54322/postgres LIGHT_IT=1 \
+  node --test --test-concurrency=1 "server/test/light/*.test.mjs"
 ```
+
+Переменные: `DATABASE_ADMIN_URL` (или `LIGHT_TEST_DB_URL` — главнее), необязательно `LIGHT_TEST_APP_PASSWORD` (вход `app_api` по паролю вместо `SET ROLE`); для it-sim — `LIGHT_IT=1` или готовый отдельный брокер `LIGHT_IT_MQTT_URL`, `LIGHT_IT_CA_FILE`, `LIGHT_IT_ADMIN_USER`, `LIGHT_IT_ADMIN_PASSWORD` (общий брокер стека нельзя: тест создаёт свои учётки). `.env` тесты не читают; без `DATABASE_ADMIN_URL` пропускаются.
 
 `test/light/harness.mjs` — временная база со всеми миграциями и сидом, поддельные часы и таймеры (ускоренное время), поддельный контроллер по протоколу v1, доставка outbox вручную. `it-sim.test.mjs` — реальное время, outbox core, брокер и симулятор; `LIGHT_IT_SESSIONS` — число оплат для p95.

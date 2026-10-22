@@ -337,7 +337,8 @@ async function main() {
   if (emu) profileArgs = ['--profile', EMU_PROFILE];
   else log(`нет ${EMU_ENTRY} (зона backend-money) — эмулятор ЮKassa не запускаю, /pay/ ответит 502`);
 
-  const { changed } = ensureDevCerts({ log: makeLogger('certs') });
+  // DEV_LAN_HOST — в SAN брокера (контроллер в локальной сети); нет имени — перевыпуск тем же CA.
+  const { changed } = ensureDevCerts({ log: makeLogger('certs'), extraHosts: [readEnvFile(ENV_FILE).DEV_LAN_HOST] });
   const brokerWasRunning = capture('docker', dc('ps', '-q', '--status', 'running', 'mosquitto')).stdout.trim() !== '';
 
   log('поднимаю db и mosquitto');

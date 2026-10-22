@@ -13,7 +13,7 @@ import { minutesShort } from '../lib/words.js';
  * карта — через банковский терминал клуба, ресепшн подтверждает «Оплата прошла».
  * После принятия сервер включает свет и ставит чек ККТ в очередь (receipt_pending до моста ККТ в M2).
  */
-export function AcceptDialog({ request, onClose, onDone }) {
+export function AcceptDialog({ request, onClose, onDone, hall, refreshHall }) {
   const open = Boolean(request);
   const [method, setMethod] = useState('cash');
   const [received, setReceived] = useState('');
@@ -21,6 +21,19 @@ export function AcceptDialog({ request, onClose, onDone }) {
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
   const inputRef = useRef(null);
+
+  // Сессию сервер создаёт асинхронно (accept отвечает session_id: null) — ждём стол в зале по SSE и опросу
+  const table = request && Array.isArray(hall) ? hall.find((h) => h.resource.id === request.resource_id || h.resource.number === request.resource_number) : null;
+  const lit = Boolean(result && (result.session_id || table?.session));
+  useEffect(() => {
+    if (!result || lit) return undefined;
+    const started = Date.now();
+    const t = setInterval(() => {
+      if (Date.now() - started > 30000) clearInterval(t);
+      refreshHall?.();
+    }, 1500);
+    return () => clearInterval(t);
+  }, [result, lit]);
 
   useEffect(() => {
     if (open) {
@@ -70,9 +83,11 @@ export function AcceptDialog({ request, onClose, onDone }) {
               <p class="change__value display">{formatMoney(result.change_kopecks ?? 0)}</p>
             </div>
           ) : null}
-          <p class="lead accept-done__light">
+          <p class="lead accept-done__light" aria-live="polite">
             <Icon name="lamp" />
-            Свет на столе {request.resource_number} включается. Чек ставим в очередь кассы.
+            {lit
+              ? `Свет на столе ${request.resource_number} включён. Чек ставим в очередь кассы.`
+              : `Включаем свет на столе ${request.resource_number}… Чек ставим в очередь кассы.`}
           </p>
           <button type="button" class="btn btn--primary btn--block btn--lg" onClick={onClose}>
             Готово

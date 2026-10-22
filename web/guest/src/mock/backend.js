@@ -255,7 +255,8 @@ export function createBackend(storage) {
         session_id: status === 'busy' ? table.session_id ?? 'b7e1d2c3-0000-4000-8000-0000000000aa' : null,
       });
     }],
-    ['GET', /^\/api\/me$/, () => needUser() ?? ok({ user: state.user, clubs: [] })],
+    // Как у core (§14): consent {version, accepted}
+    ['GET', /^\/api\/me$/, () => needUser() ?? ok({ user: { ...state.user, consent: { version: 'draft-2026-10', accepted: Boolean(state.user.consent_version) } }, clubs: [] })],
     ['POST', /^\/api\/auth\/dev$/, (_m, body) => {
       if (!/^\+7\d{10}$/.test(body?.phone ?? '')) return err(400, 'bad_request');
       state.user = { ...USER, phone_masked: `+7 *** ***-${body.phone.slice(-4, -2)}-${body.phone.slice(-2)}`, consent_version: null };
@@ -418,7 +419,7 @@ export function createBackend(storage) {
       const total = lines.reduce((a, l) => a + l.amount_kopecks, 0);
       return ok({ lines, total_kopecks: total, payments: s.payments.map((p) => ({ method: p.method, amount_kopecks: p.amount_kopecks, payment_id: p.payment_id })), receipt_status: s.payments.some((p) => p.method === 'cash') ? 'receipt_pending' : 'sent' });
     }],
-    ['GET', /^\/api\/push\/key$/, () => ok({ public_key: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U' })],
+    ['GET', /^\/api\/push\/vapid-public-key$/, () => ok({ public_key: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U' })],
     ['POST', /^\/api\/push\/subscribe$/, () => ok({ ok: true })],
   ];
 

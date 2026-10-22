@@ -8,6 +8,7 @@ import { useNow } from '../components/hooks.js';
 import { SignIn } from './SignIn.jsx';
 import { Consent } from './Consent.jsx';
 import { Pay } from './Pay.jsx';
+import { SignedInAs } from '../components/SignedInAs.jsx';
 import { api } from '../lib/api.js';
 import { auth, needsConsent } from '../lib/auth.js';
 import { useStore } from '../lib/store.js';
@@ -186,6 +187,7 @@ export function TableScreen({ code, search }) {
           <NotFree table={table} error={error} busy={busy} onReload={load} onJoin={() => proceed('join')} />
         ) : null}
         {step === 'signin' ? (authStatus === 'user' ? <AutoProceed run={() => proceed()} /> : <SignIn />) : null}
+        {step === 'consent' || step === 'pay' ? <SignedInAs /> : null}
         {step === 'consent' ? <Consent onDone={() => proceed()} /> : null}
         {step === 'pay' && quote ? (
           <Pay

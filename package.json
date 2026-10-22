@@ -18,7 +18,7 @@
     "dev": "node scripts/dev.mjs",
     "down": "node scripts/dev-down.mjs",
     "test": "node --test \"scripts/*.test.mjs\" && npm run test --workspaces --if-present",
-    "test:db": "npm run test:db -w @billiardum/db",
+    "test:db": "node scripts/ci-test-db.mjs",
     "lint": "eslint .",
     "ci": "node scripts/ci.mjs",
     "db:migrate": "npm run migrate -w @billiardum/db",

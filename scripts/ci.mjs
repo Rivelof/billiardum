@@ -6,8 +6,10 @@
 //   --config  docker compose config, caddy validate, mosquitto --test-config (в контейнерах)
 //   --web     сборка web/guest и web/admin, бюджет JS гостя (npm run size -w web/guest)
 //   --fw      нативные тесты прошивки: CMake + g++ (firmware/test/native), ctest
-//   --db      чистый Postgres (supabase/postgres) в отдельном контейнере на свободном
-//             порту → роли в supautils.reserved_roles → db:migrate → db:seed → test:db
+//   --db      чистый Postgres (supabase/postgres) в отдельном контейнере на свободном порту →
+//             роли в supautils.reserved_roles → db:migrate → db:seed → тесты на базе
+//             (scripts/ci-test-db.mjs: @billiardum/db, @billiardum/server, server/test/light
+//             с LIGHT_IT=1 — интеграция light + свой брокер + симулятор; нужен openssl)
 //   --pio     pio run -e esp32dev и pio test -e native (нужен PlatformIO, см. PIO_VERSION);
 //             в CI — отдельная задача, в «всё» не входит
 //
@@ -23,6 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { dbTestEnv, lightItProblem, runDbTests } from './ci-test-db.mjs';
 import {
   capture,
   checkDocker,
@@ -54,7 +57,7 @@ const FW_NATIVE_DIR = join('firmware', 'test', 'native');
 export const STAGES = ['base', 'config', 'web', 'fw', 'db', 'pio'];
 const DEFAULT_STAGES = ['base', 'config', 'web', 'fw', 'db'];
 
-let container = null;
+const containers = new Set();
 let interrupted = false;
 
 /** Пропуск шага: в лог и, в GitHub Actions, в сводку задачи. */
@@ -75,11 +78,34 @@ export function parseCiArgs(args) {
   return picked.length > 0 ? STAGES.filter((s) => picked.includes(s)) : DEFAULT_STAGES;
 }
 
-function removeContainer() {
-  if (!container) return;
-  capture('docker', ['rm', '-f', '-v', container]);
-  log(`контейнер ${container} удалён`);
-  container = null;
+function removeContainers() {
+  for (const name of containers) {
+    capture('docker', ['rm', '-f', '-v', name]);
+    log(`контейнер ${name} удалён`);
+  }
+  containers.clear();
+}
+
+/** Ждёт healthy у контейнера с --health-cmd; при сбое печатает его лог. */
+async function waitHealthy(name, what) {
+  const started = Date.now();
+  for (;;) {
+    if (interrupted) fail('прервано');
+    const s = capture('docker', ['inspect', '-f', '{{.State.Status}} {{.State.Health.Status}}', name]).stdout.trim();
+    if (s === 'running healthy') break;
+    if (!s.startsWith('running') || Date.now() - started > READY_TIMEOUT_MS) {
+      await run('docker', ['logs', '--tail', '40', name]);
+      fail(`${what} не поднялся (${s || 'нет контейнера'})`);
+    }
+    await sleep(1000);
+  }
+  return Math.round((Date.now() - started) / 1000);
+}
+
+function hostPort(name, port) {
+  const p = capture('docker', ['port', name, `${port}/tcp`]).stdout.trim().split('\n')[0].split(':').at(-1);
+  if (!/^\d+$/.test(p)) fail(`не удалось узнать порт ${port} контейнера ${name}`);
+  return p;
 }
 
 async function startPostgres() {
@@ -100,23 +126,11 @@ async function startPostgres() {
     { env: { ...process.env, POSTGRES_PASSWORD: password } },
   );
   if (r.code !== 0) fail(`не удалось запустить Postgres: ${r.stderr.trim()}`);
-  container = name;
+  containers.add(name);
   log(`Postgres ${POSTGRES_IMAGE}: контейнер ${name}`);
-
-  const started = Date.now();
-  for (;;) {
-    if (interrupted) fail('прервано');
-    const s = capture('docker', ['inspect', '-f', '{{.State.Status}} {{.State.Health.Status}}', name]).stdout.trim();
-    if (s === 'running healthy') break;
-    if (!s.startsWith('running') || Date.now() - started > READY_TIMEOUT_MS) {
-      await run('docker', ['logs', '--tail', '40', name]);
-      fail(`Postgres не поднялся (${s || 'нет контейнера'})`);
-    }
-    await sleep(1000);
-  }
-  const port = capture('docker', ['port', name, '5432/tcp']).stdout.trim().split('\n')[0].split(':').at(-1);
-  if (!/^\d+$/.test(port)) fail('не удалось узнать порт Postgres');
-  log(`Postgres готов за ${Math.round((Date.now() - started) / 1000)} с, порт ${port}`);
+  const secs = await waitHealthy(name, 'Postgres');
+  const port = hostPort(name, 5432);
+  log(`Postgres готов за ${secs} с, порт ${port}`);
   await runChecked('docker', ['exec', '-i', '-u', 'postgres', name, 'sh', '-s'], { stdinFile: RESERVED_ROLES_SCRIPT }, 'reserved-roles.sh');
   return { port, password };
 }
@@ -223,21 +237,30 @@ async function stagePio() {
 }
 
 async function stageDb() {
+  // CI честный: it-sim не должен молча пропуститься из-за нехватки openssl.
+  const problem = lightItProblem();
+  if (problem) fail(`интеграции light нужен свой брокер: ${problem}. Linux: apt install openssl; macOS: есть в системе.`);
   try {
     const { port, password } = await startPostgres();
     const appPassword = randomBytes(24).toString('hex');
-    const env = {
-      ...process.env,
-      DATABASE_ADMIN_URL: `postgres://supabase_admin:${password}@127.0.0.1:${port}/postgres`,
-      DB_APP_PASSWORD: appPassword,
-      DATABASE_URL: `postgres://app_api:${appPassword}@127.0.0.1:${port}/postgres`,
-    };
-    for (const script of ['db:migrate', 'db:seed', 'test:db']) {
+    // Окружение целиком задаётся здесь: .env разработки не читается (dbTestEnv получает {}).
+    const env = dbTestEnv(
+      {
+        ...process.env,
+        DATABASE_ADMIN_URL: `postgres://supabase_admin:${password}@127.0.0.1:${port}/postgres`,
+        DB_APP_PASSWORD: appPassword,
+        DATABASE_URL: `postgres://app_api:${appPassword}@127.0.0.1:${port}/postgres`,
+        LIGHT_IT: '1',
+      },
+      {},
+    );
+    for (const script of ['db:migrate', 'db:seed']) {
       log(script);
       await runNpm(['run', script], { env });
     }
+    await runDbTests(env, { strict: true });
   } finally {
-    removeContainer();
+    removeContainers();
   }
 }
 
@@ -248,7 +271,7 @@ async function main() {
   process.on('SIGINT', () => {
     interrupted = true;
   });
-  process.on('exit', removeContainer);
+  process.on('exit', removeContainers);
 
   const stages = parseCiArgs(process.argv.slice(2));
   if (stages.some((s) => NEEDS_DOCKER.has(s))) checkDocker();

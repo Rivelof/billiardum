@@ -7,7 +7,7 @@ PWA по адресу `/app/` (Vite + Preact, JS ESM, без UI-библиоте
 ```sh
 npm run dev:mock -w web/guest     # заглушка API, без сервера: http://127.0.0.1:5173/app/
 npm run dev -w web/guest          # настоящий API: прокси /api → BL_API_URL (по умолчанию http://127.0.0.1:3000)
-npm run build -w web/guest        # dist/ для Caddy (/app/* → web/guest/dist)
+npm run build -w web/guest        # dist/ для Caddy (/app/* → web/guest/dist); стенд разработки: VITE_DEV_LOGIN=1 — форма входа по телефону
 npm run size -w web/guest         # сборка + бюджет < 200 КБ JS gzip на первую загрузку, нет заглушки и внешних адресов
 npm test -w web/guest             # node --test: логика таймера, слова, вход, адреса, маршруты, заглушка
 ```
@@ -33,8 +33,9 @@ npm test -w web/guest             # node --test: логика таймера, с
 - `src/lib/` — логика без JSX (проверяется `node --test`): `game.js` (состояние таймера по `paid_until`, `grace_until`, поправка часов по `remaining_ms`), `words.js` (склонения через `plural`), `auth.js` (вход через бота, вход разработки, согласие), `api.js` (вызовы контракта поверх `@billiardum/shared/api`), `platform.js`, `urls.js`, `routes.js`.
 - `src/screens/`, `src/components/` — экраны на Preact. Рисунок стола и статусы — `@billiardum/shared/hall`, тексты ошибок — `@billiardum/shared/errors`.
 - Живые обновления — SSE `GET /api/stream?session=…` (событие `session`), при разрыве переподключение и перечитывание сессии, запасной опрос раз в 30 с.
-- Вход: «Войти через MAX/Telegram» → `POST /api/auth/bot-link` → ссылка на бота → опрос `GET /api/auth/bot-link/{nonce}`. В PWA сессия — cookie `bl_session`; токен из ответа хранится в `sessionStorage` вкладки и уходит как `Bearer` (мини-приложения). Мини-приложение Telegram: `init_data` из `#tgWebAppData` адреса, без внешнего скрипта (CSP). В разработке — вход по телефону (`POST /api/auth/dev`), в сборке без `VITE_DEV_LOGIN=1` формы нет.
+- Вход: «Войти через MAX/Telegram» → `POST /api/auth/bot-link` → ссылка на бота → опрос `GET /api/auth/bot-link/{nonce}`. В PWA сессия — только cookie `bl_session` (`Path=/api`, §14), токены из ответов не храним; после входа — «Вы вошли как … Не вы? Выйти». Мини-приложение Telegram: `init_data` из `#tgWebAppData`, без внешнего скрипта (CSP); там `Bearer` в `sessionStorage` и одноразовый токен потока `POST /api/stream/token`. Согласие — версия из `GET /api/me` → `user.consent.version`. В разработке — вход по телефону (`POST /api/auth/dev`), в сборке без `VITE_DEV_LOGIN=1` формы нет.
 - Оплата: ключ `Idempotency-Key` живёт до ответа (повтор после обрыва не создаёт второй платёж); переход только на https-адрес `confirmation.url`.
+- Web Push: ключ `GET /api/push/vapid-public-key`, подписка — `PushSubscription.toJSON()` в `POST /api/push/subscribe`.
 - PWA: `public/manifest.webmanifest`, значки (SVG и PNG, без эмодзи), `src/sw.js` → `dist/sw.js` (плагин `scripts/sw-plugin.mjs` подставляет список файлов оболочки). Кэшируется только статика, `/api/`, `/t/`, `/pay/` — никогда. Push: тело `{title, body, url, tag}` без персональных данных (№53).
 - CSP `default-src 'self'`: без встроенных скриптов и атрибутов `style` в HTML; тема до первой отрисовки — `public/theme-init.js`.
 

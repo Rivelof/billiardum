@@ -10,6 +10,7 @@ import { appendAudit } from '../lib/audit.mjs';
 import { withContext } from '../lib/store.mjs';
 import { createTelegramBot } from '../lib/telegram-bot.mjs';
 import { hub as defaultHub } from './sse.mjs';
+import { streamTokens as defaultStreamTokens } from './stream-tokens.mjs';
 import { createHttpHandler } from './server.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 
@@ -64,6 +65,7 @@ export async function createApp({
     alarms,
     notify,
     sse,
+    streamTokens: defaultStreamTokens,
     audit: { appendAudit },
     telegram: bot,
     bridge: null,

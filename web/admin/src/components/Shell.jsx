@@ -18,6 +18,8 @@ export function navItems(role, club) {
     items.push({ key: 'journal', href: `${c}journal`, icon: 'journal', label: 'Журнал' });
     items.push({ key: 'alarms', href: `${c}alarms`, icon: 'bell', label: 'Тревоги' });
   }
+  // На телефоне у владельца и управляющего шестой пункт не помещается — «Контроллеры» там в «Ещё»
+  if (can.devices(role)) items.push({ key: 'devices', href: `${c}devices`, icon: 'chip', label: 'Контроллеры', wideOnly: can.manage(role) });
   items.push({ key: 'more', href: `${c}more`, icon: 'more', label: 'Ещё' });
   return items;
 }
@@ -69,7 +71,7 @@ export function Shell({ club, role, active, title, user, timeZone, alarmsCount =
       {items.length > 1 ? (
         <nav class="nav" aria-label="Разделы">
           {items.map((it) => (
-            <a key={it.key} class="nav__item" href={it.href} onClick={linkHandler} aria-current={active === it.key ? 'page' : undefined}>
+            <a key={it.key} class={`nav__item${it.wideOnly ? ' nav__item--wide' : ''}`} href={it.href} onClick={linkHandler} aria-current={active === it.key ? 'page' : undefined}>
               <span class="nav__icon">
                 <Icon name={it.icon} />
                 {it.key === 'alarms' && alarmsCount ? (

@@ -1,6 +1,8 @@
-// Денежный API для light (контракт M1 §13): возврат за interrupted и аварийный.
+// Денежный API для light (контракт M1 §13, §14): возврат за interrupted и аварийный, статус чеков.
 //
 //   refund(db, { paymentId, amountKopecks, reason, key? }) → { refund_id, status, amount_kopecks }
+//   receiptStatus(db, { paymentIds }) → { [paymentId]: 'pending' | 'succeeded' | 'receipt_pending'
+//                                           | 'failed' | 'canceled' | 'none' }
 //
 // * db — транзакция вызывающего с контекстом клуба платежа.
 // * Идемпотентно: ключ (key или хеш платежа, суммы и причины) хранится в bl.refunds
@@ -32,6 +34,36 @@ async function rt() {
   if (runtime) return runtime;
   const deps = await resolveDeps({});
   return { deps, config: moneyConfig(undefined) };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const MAX_RECEIPT_IDS = 200;
+
+/**
+ * Статус чека продажи по каждому платежу (чек сессии, light). db — транзакция с контекстом
+ * клуба: чужие платежи RLS не покажет (для них — 'none').
+ * Действующий чек — последний чек продажи, кроме отменённых (у заморозки чек на сумму
+ * заморозки отменяется и заменяется чеком на фактическую сумму); все отменены — 'canceled';
+ * чека нет — 'none'. Чеки возвратов сюда не входят.
+ * @param {import('pg').ClientBase} db
+ * @param {{ paymentIds: string[] }} args
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function receiptStatus(db, { paymentIds } = {}) {
+  if (!Array.isArray(paymentIds)) throw new MoneyError('bad_request', 'paymentIds');
+  const ids = [...new Set(paymentIds.filter((id) => typeof id === 'string' && UUID.test(id)))];
+  if (ids.length > MAX_RECEIPT_IDS) throw new MoneyError('bad_request', 'paymentIds: слишком много');
+  const out = Object.fromEntries(ids.map((id) => [id, 'none']));
+  if (ids.length === 0) return out;
+  const { rows } = await db.query(
+    `select distinct on (payment_id) payment_id, status
+       from bl.receipts
+      where payment_id = any($1::uuid[]) and kind = 'sale'
+      order by payment_id, (status = 'canceled'), created_at desc, id desc`,
+    [ids],
+  );
+  for (const r of rows) out[r.payment_id] = r.status;
+  return out;
 }
 
 function refundKey({ paymentId, amountKopecks, reason, key }) {

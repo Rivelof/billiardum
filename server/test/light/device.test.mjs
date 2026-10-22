@@ -164,6 +164,35 @@ describe('контроллер и сессии', { skip: SKIP }, () => {
     await h.until(() => c.received.at(-1).type === 'state.free', 'state.free');
   });
 
+  it('№65: гость не выбрал за 24 часа — автоматический возврат за неотыгранное, уведомление; таймер переживает перезапуск', async () => {
+    const sid = await start(4, GUEST(1), 10);
+    const c = h.ctl.get(4);
+    await h.advance(3 * MIN);
+    await c.disconnect();
+    const pay = await makePayment(t, { kind: 'extend', resource: 4, user: GUEST(1), sessionId: sid, minutes: 20, amount: 30_000, at: h.time.now() });
+    await h.outbox.deliver('payment.confirmed', pay);
+    await h.advance(30 * MIN); // оплачено до +30 мин, льгота 2 мин — закрытие как interrupted
+    assert.equal((await session(sid)).status, 'interrupted');
+    const open = await t.q('select session_id from bl.light_open_sessions()');
+    assert.ok(open.rows.some((r) => r.session_id === sid), 'планировщик найдёт прерванную после перезапуска');
+    assert.ok(h.st.scheduler.dueAt(sid), 'срок выбора взведён');
+    await h.jump(24 * 60 * MIN - 30 * MIN);
+    assert.equal((await session(sid)).status, 'interrupted', 'до 24 часов ждём выбора');
+    await h.jump(31 * MIN);
+    await h.until(async () => (await session(sid)).status === 'closed', 'автовозврат');
+    const s = await session(sid);
+    assert.equal(s.close_reason, 'refunded');
+    assert.deepEqual(h.refunds.filter((r) => r.paymentId === pay.payment_id), [{ paymentId: pay.payment_id, amountKopecks: 30_000, reason: 'interrupted_auto' }]);
+    const a = await t.q("select actor_type, data from bl.audit_log where action = 'session.resolve' and object_id = $1", [sid]);
+    assert.equal(a.rows[0].actor_type, 'system');
+    assert.equal(a.rows[0].data.auto, true);
+    const n = await t.q("select user_id, text from bl.notifications where kind = 'session.refunded'");
+    assert.equal(n.rows[0].user_id, GUEST(1));
+    assert.match(n.rows[0].text, /^Стол 4: вернули 300\s₽ за неотыгранное время$/);
+    await c.connect();
+    await h.until(() => c.received.at(-1).type === 'state.free', 'state.free');
+  });
+
   it('T7: перезагрузка посреди игры — session.resume, остаток верный, событие boot в журнале', async () => {
     const sid = await start(1, GUEST(1), 30);
     const c = h.ctl.get(1);

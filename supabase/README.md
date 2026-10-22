@@ -40,7 +40,7 @@ Postgres из образа `supabase/postgres` (decisions №11). Клиенты
 | `notifications` (0102) | уведомления: получатель, клуб, текст без ПДн, статус, попытки по каналам |
 | `alarms` (0102) | тревоги клуба: тип, уровень, стол, `open`/`acked`, счётчик повторов (одна открытая тревога типа на стол) |
 
-Таблицы денег (0200–0201) описаны в `server/payments/README.md`, сессий и устройств (0300–0390) — у модуля light (`server/sessions`).
+Таблицы денег (0200–0201) описаны в `server/payments/README.md`, сессий и устройств (0300–0330) — в разделе «Сессии и устройства (light)» ниже и в `server/sessions/README.md`. Имя пользователя `users.name` (0105) — для персонала: `GET /api/me`, терминал ресепшена, журнал; задаёт сам пользователь (`PATCH /api/me`).
 
 Ресурс и устройство, тариф и ресурс связаны составными ключами `(club_id, id)`: строка не сошлётся на стол другого клуба.
 
@@ -100,7 +100,13 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl.notify_route(user_id uuid)` (0103) | `bl_definer` | `notify_channel`, `telegram_user_id`, `max_user_id` — без телефона | доставка уведомлений |
 | `bl.user_brief(user_id uuid)` (0103) | `bl_definer` | `phone_masked`, `has_phone` | персонал клуба видит гостя только маской; без контекста клуба — только себя |
 
-`bl_definer` видит у `users`, `auth_tokens`, `staff_terminals`, `consents` только столбцы, нужные этим функциям. Функции light (`resource_by_code`, `resource_club`, `session_club`, `light_open_sessions`, `device_bind_window`) и money (`money_object_club`, `money_due`) описаны в README модулей. Других функций `SECURITY DEFINER` в `bl` нет: список закреплён тестом `isolation` — новая функция добавляется в него вместе с миграцией.
+| `bl.resource_by_code(code text)` (0300, light) | `bl_definer` | `(resource_id, club_id)` активного стола по коду | `/api/t/{code}` до того, как известен клуб |
+| `bl.resource_club(resource_id uuid) → uuid` (0300, light) | `bl_definer` | клуб стола или `NULL` | маршруты `/api/resources/{id}/…` до проверки ролей |
+| `bl.session_club(session_id uuid) → uuid` (0310, light) | `bl_definer` | клуб сессии или `NULL` | маршруты сессий и `GET /api/stream?session=` до проверки прав |
+| `bl.light_open_sessions()` (0310, 0330, light) | `bl_definer` | `(session_id, club_id)` идущих и прерванных (`interrupted`) сессий всех клубов | планировщик восстанавливает таймеры после перезапуска |
+| `bl.device_bind_window(device_id uuid, now timestamptz)` (0320, light) | `bl_definer` | `(window_id, club_id)` открытого окна привязки | `POST /api/devices/claim` от контроллера без входа |
+
+`bl_definer` видит только столбцы, нужные этим функциям: у `users`, `auth_tokens`, `staff_terminals`, `consents` (core); `resources(id, club_id, code, active)`, `sessions(id, club_id, status)`, `device_bind_windows(id, club_id, device_id, until, claimed_at, closed_at, created_at)` (light); у денег — свои (`money_object_club`, `money_due`, `server/payments/README.md`). Других функций `SECURITY DEFINER` в `bl` нет: список закреплён тестом `isolation` — новая функция добавляется в него вместе с миграцией.
 
 ## Журнал `audit_log`
 
@@ -157,6 +163,23 @@ alter event trigger bl_audit_guard_drop enable always;
 ### Сид модулей (`seed.d/`)
 
 `0100_core.sql` — персонал тестового клуба: управляющий `+70000000003` (`a1…03`, `b1…03`) и ресепшн `+70000000004` (`a1…04`, `b1…04`); `+70000000002` занят вторым клубом тестов изоляции. PIN задаёт `npm run provision:dev` (`DEV_STAFF_PIN`, по умолчанию `1234`): хеш зависит от `SECRETS_ENC_KEY`. Вход — `POST /api/auth/dev` или через бота. `0200_money.sql`, `0300_light.sql` — модулей money и light.
+
+## Сессии и устройства (light)
+
+Миграции `0300`–`0330` (backend-light, контракт M1 §6, §13). Все таблицы с `club_id`: `ENABLE` + `FORCE ROW LEVEL SECURITY`, политики `app_api` по `bl.ctx_club_id()`.
+
+| Таблица, столбец | Суть |
+|---|---|
+| `resources.code` (0300) | код стола для QR: 10 символов Crockford Base32 (50 бит, decisions №47), глобально уникален, по умолчанию `bl.gen_resource_code()`; в сиде — `TEST000001`…`TEST000008` |
+| `sessions` (0310) | сессия стола: `active → ending → grace → closed`, `interrupted`, `cancelled`; `payer_user_id`, `started_at`, `paid_until` (единственный источник оплаченного времени), `device_paid_until`, `unplayed_ms`, `warn_ms`, `grace_ms`, `notified`; одна идущая сессия на стол (частичный уникальный индекс) |
+| `session_participants` (0310) | участники: `payer` или `player`, порядковый номер «Игрок N» |
+| `session_payments` (0310) | связь платежа и сессии, обработка `payment.confirmed` один раз по `payment_id`; `outcome` `applied` или `refunded` |
+| `resource_holds` (0310) | удержание стола: `pending` (3 минуты за гостем), `reserved`, `service` (с причиной) |
+| `device_commands` (0320) | команды контроллеру: `seq`, тип, тело, статус, попытки, причина (`payment`, `guest`, `staff`, …) |
+| `device_events` (0320) | события контроллера, один раз по `(device_id, boot, n)` |
+| `device_bind_windows` (0320) | окно привязки контроллера к столу на 30 минут: хеш кода с наклейки (decisions №67), 5 неверных попыток закрывают окно |
+
+Гость дополнительно видит свои сессии и своё участие в любом клубе (`session_participants.user_id = app.user_id`) — для `GET /api/sessions/current`. Срок выбора после `interrupted` — 24 часа (0330, decisions №65). Внешние ключи на платежи — `0390_money_fks.sql`.
 
 ## Деньги
 

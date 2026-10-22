@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import { createECDH, createPublicKey, verify } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { decryptPayload, encryptPayload, endpointAllowed, loadVapid, sendPush, vapidJwt } from '../notify/webpush.mjs';
-import { channelChain, maskPhones } from '../notify/index.mjs';
+import { channelChain, cleanData, maskPhones, pushTitle } from '../notify/index.mjs';
+import { createStreamTokens, streamTarget } from '../http/stream-tokens.mjs';
 
 // RFC 8291, приложение A.
 const RFC = {
@@ -126,5 +127,37 @@ describe('адреса подписок и цепочка каналов', () =>
     assert.equal(maskPhones('Звонок +7 (999) 123-45-67 в 21:30'), 'Звонок *** в 21:30');
     assert.equal(maskPhones('Карта 2200 1234 5678 9012'), 'Карта ***');
     assert.equal(maskPhones('21.10.2026, 2026-10-21, 1 490 ₽'), '21.10.2026, 2026-10-21, 1 490 ₽');
+  });
+});
+
+describe('данные уведомления и одноразовые токены SSE', () => {
+  it('data: массивы коротких значений сохраняются, вложенные объекты и длинные массивы — нет, телефоны — ***', () => {
+    assert.deepEqual(cleanData({ actions: ['extend', 'stop'], n: 3, nested: { a: 1 }, big: Array(21).fill(1), phone: '+79991234567', Bad: 1 }), {
+      actions: ['extend', 'stop'],
+      n: 3,
+      phone: '***',
+    });
+    assert.equal(pushTitle('alarm'), 'Тревога в клубе');
+    assert.equal(pushTitle('session.t10'), 'Игра');
+  });
+
+  it('токен SSE: 60 с, один раз, только свой канал', () => {
+    let now = 1_000_000;
+    const store = createStreamTokens({ now: () => now });
+    const club = 'c1000000-0000-4000-8000-000000000001';
+    const p = { userId: 'a1000000-0000-4000-8000-000000000001', tokenId: 't', kind: 'session' };
+    const a = store.issue(p, streamTarget({ club }));
+    assert.equal(a.expiresAt.getTime(), now + 60_000);
+    assert.equal(store.consume(a.token, streamTarget({ session: club })), null, 'другой канал');
+    const b = store.issue(p, streamTarget({ club }));
+    assert.equal(store.consume(b.token, streamTarget({ club })).userId, p.userId);
+    assert.equal(store.consume(b.token, streamTarget({ club })), null, 'второй раз');
+    const c = store.issue(p, streamTarget({ club }));
+    now += 60_001;
+    assert.equal(store.consume(c.token, streamTarget({ club })), null, 'истёк');
+    assert.equal(streamTarget({ club, session: club }), null);
+    assert.equal(streamTarget({ club: 'x' }), null);
+    for (let i = 0; i < 20; i += 1) store.issue(p, streamTarget({ club }));
+    assert.equal(store.issue(p, streamTarget({ club })), null, 'не больше 20 на пользователя');
   });
 });

@@ -79,9 +79,20 @@ describe('гость и персонал', { skip: SKIP }, () => {
     assert.equal(await code(() => h.asUser(GUEST(2), (db) => svc.getSession(db, { sessionId: sid, userId: GUEST(2) }))), 'not_found');
     const staff = await h.asUser(RECEPTION, (db) => svc.getSession(db, { sessionId: sid, userId: RECEPTION }));
     assert.equal(staff.is_payer, false);
-    const receipt = await h.asUser(GUEST(3), (db) => svc.receipt(db, { sessionId: sid, userId: GUEST(3) }));
+    let receipt = await h.asUser(GUEST(3), (db) => svc.receipt(db, { sessionId: sid, userId: GUEST(3) }));
     assert.equal(receipt.total_kopecks, 80_000);
     assert.equal(receipt.lines[0].title, 'Стол 3, 30 минут');
+    assert.equal(receipt.receipt_status, 'none', 'чека ещё нет');
+    const pid = receipt.payments[0].payment_id;
+    await t.q(`insert into bl.receipts (club_id, payment_id, kind, channel, status, amount_kopecks, items) values ($1, $2, 'sale', 'yookassa', 'pending', 80000, '[]')`, [CLUB, pid]);
+    receipt = await h.asUser(GUEST(3), (db) => svc.receipt(db, { sessionId: sid, userId: GUEST(3) }));
+    assert.equal(receipt.receipt_status, 'pending');
+    assert.equal(receipt.payments[0].receipt_status, 'pending');
+    await t.q("update bl.receipts set status = 'succeeded' where payment_id = $1", [pid]);
+    receipt = await h.asUser(GUEST(3), (db) => svc.receipt(db, { sessionId: sid, userId: GUEST(3) }));
+    assert.equal(receipt.receipt_status, 'succeeded');
+    assert.deepEqual(list[0].club, { id: CLUB, timezone: 'Asia/Yekaterinburg' });
+    assert.deepEqual(list[0].resource, { id: RES(3), number: 3, type: 'billiard_pyramid', title: 'Стол 3' });
     await h.asUser(GUEST(3), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(3) }));
   });
 
@@ -185,10 +196,10 @@ describe('гость и персонал', { skip: SKIP }, () => {
     const run = (user, body) => h.asUser(user, (db) => svc.serviceStart(db, { resourceId: RES(3), userId: user, ...body }), { clubId: CLUB });
     assert.equal(await code(() => run(RECEPTION, { minutes: 10, reasonCode: 'cleaning' })), 'reason_required');
     assert.equal(await code(() => run(RECEPTION, { minutes: 10, reasonText: 'Уборка' })), 'reason_required');
-    assert.equal(await code(() => run(RECEPTION, { minutes: 10, reasonCode: 'Bad Code', reasonText: 'x' })), 'reason_required');
+    assert.equal(await code(() => run(RECEPTION, { minutes: 10, reasonCode: 'party', reasonText: 'x' })), 'bad_request', 'коды — cleaning, repair, training, other');
     assert.equal(await code(() => run(RECEPTION, { minutes: 10, reasonCode: 'cleaning', reasonText: '   ' })), 'reason_required');
     assert.equal(await code(() => run(RECEPTION, { minutes: 31, reasonCode: 'cleaning', reasonText: 'Уборка' })), 'limit_exceeded');
-    assert.equal(await code(() => h.asUser(GUEST(1), (db) => svc.serviceStart(db, { resourceId: RES(3), userId: GUEST(1), minutes: 5, reasonCode: 'x', reasonText: 'y' }))), 'forbidden');
+    assert.equal(await code(() => h.asUser(GUEST(1), (db) => svc.serviceStart(db, { resourceId: RES(3), userId: GUEST(1), minutes: 5, reasonCode: 'cleaning', reasonText: 'y' }))), 'forbidden');
     assert.equal((await t.q("select count(*)::int as n from bl.audit_log where action = 'service.start'")).rows[0].n, 0, 'без причины — ни журнала, ни света');
     const res = await run(RECEPTION, { minutes: 10, reasonCode: 'cleaning', reasonText: 'Уборка стола после игры' });
     assert.equal(res.ok, true);

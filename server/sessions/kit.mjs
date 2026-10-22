@@ -27,6 +27,7 @@ export function premarkNotified(notified, paidUntil, now) {
   const key = iso(paidUntil);
   const left = new Date(paidUntil).getTime() - now.getTime();
   if (left <= 10 * 60_000) out.t10 = key;
+  if (left <= 5 * 60_000) out.u5 = key;
   if (left <= 60_000) out.t1 = key;
   return out;
 }
@@ -58,22 +59,17 @@ export function createKit({ deps, log, clock, getBridge = () => null }) {
     await deps.outbox.enqueue(db, topic, payload);
   }
 
-  async function alarm(db, clubId, { type, level, resourceId = null, data = {} }) {
+  async function alarm(db, clubId, { type, level, resourceId = null, data = {}, text = null }) {
     log.warn('alarm', { club_id: clubId, type, level, resource_id: resourceId });
-    return deps.alarms.raise(db, clubId, { type, level, resourceId, data });
+    return deps.alarms.raise(db, clubId, { type, level, resourceId, data, ...(text ? { text } : {}) });
   }
 
   /**
-   * Ручное действие персонала (инвариант 8): тревога critical и уведомление владельцу сразу.
-   * Если тревога того же типа по столу уже открыта, core только увеличивает счётчик без
-   * уведомления — тогда владельцу пишем напрямую: каждое ручное действие доходит до него.
+   * Ручное действие персонала (инвариант 8, decisions №66): тревога critical; владельца core
+   * уведомляет в alarms.raise всегда, даже при открытой тревоге того же типа (manual).
    */
-  async function manualAction(db, clubId, { type, resourceId = null, data = {}, text }) {
-    const res = await alarm(db, clubId, { type, level: 'critical', resourceId, data });
-    if (res && res.created === false && typeof deps.notify.sendToClubStaff === 'function') {
-      await deps.notify.sendToClubStaff(db, clubId, ['owner'], { kind: 'alarm', level: 'critical', text, data: { type, url: '/club/' } });
-    }
-    return res;
+  async function manualAction(db, clubId, { type, resourceId = null, data = {}, text = null }) {
+    return alarm(db, clubId, { type, level: 'critical', resourceId, data, text });
   }
 
   /** Уведомление гостям сессии (без персональных данных: номер стола и время, decisions №53). */

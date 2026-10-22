@@ -24,8 +24,8 @@ function freshState(scenario, t) {
     status,
     session: null,
     until: null,
-    device: { online: true, rssi: -55 - n * 2, fw: '1.0.0', caps: ['relay', 'led', 'buzzer', 'current'] },
     ...extra,
+    device: { id: `d1000000-0000-4000-8000-00000000000${n}`, online: true, rssi: -55 - n * 2, fw: '1.0.0', caps: ['relay', 'led', 'buzzer', 'current'], ...extra.device },
   });
   const session = (n, startMin, leftMin, over = {}) => ({
     id: `s-${n}-${uuid().slice(0, 8)}`,
@@ -160,9 +160,22 @@ export function createBackend(storage, now = () => Date.now()) {
       return ok({ ok: true });
     }],
     ['POST', /^\/api\/staff\/terminal$/, (_m, b) => (me() && ['owner', 'manager'].includes(me().role) && b.club_id === CLUB_ID ? ok({ terminal_token: `term-${uuid()}` }) : err(403, 'forbidden'))],
-    ['GET', /^\/api\/staff\/terminal\/users$/, () => ok([STAFF.reception, STAFF.reception2, STAFF.manager].map((u) => ({ user_id: u.id, name: u.name, role: u.role })))],
+    // Как у core (§14): GET /api/staff/terminal → [{ user_id, name, role, phone_masked, pin_set }]
+    ['GET', /^\/api\/staff\/terminal$/, () => ok([STAFF.reception, STAFF.reception2, STAFF.manager].map((u) => ({ user_id: u.id, name: u.name, role: u.role, phone_masked: u.phone_masked, pin_set: true })))],
+    ['PUT', /^\/api\/staff\/pin$/, (_m, b) => (/^\d{4,6}$/.test(b.pin ?? '') ? ok({ ok: true }) : err(400, 'bad_request'))],
+    ['PATCH', /^\/api\/me$/, (_m, b) => {
+      if (!me()) return err(401, 'unauthorized');
+      if (typeof b.name === 'string') state.user.name = b.name.slice(0, 60);
+      return ok({ user: me() });
+    }],
+    ['POST', /^\/api\/resources\/([^/]+)\/identify$/, (m) => (table(m[1]) ? ok({ ok: true }) : err(404, 'not_found'))],
+    ['POST', /^\/api\/clubs\/([^/]+)\/devices\/bind$/, (_m, b) => {
+      if (!['owner', 'installer'].includes(me()?.role)) return err(403, 'forbidden');
+      if (!/^[0-9a-f-]{36}$/.test(b.device_id ?? '') || !/^[A-Za-z0-9-]{6,64}$/.test(b.claim_code ?? '')) return err(400, 'bad_request');
+      return ok({ bind_until: new Date(now() + 30 * MIN).toISOString() });
+    }],
     ['POST', /^\/api\/staff\/pin$/, (_m, b) => {
-      if (b.pin !== '1234') return err(403, 'forbidden');
+      if (b.pin !== '1234') return err(401, 'unauthorized');
       const u = Object.values(STAFF).find((x) => x.id === b.user_id);
       if (!u) return err(404, 'not_found');
       state.user = { ...u };

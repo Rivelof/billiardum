@@ -16,7 +16,8 @@ import { confirmedPayload, insertReceipt, sessionIdOf } from '../payments/record
 import { loadPaymentSettings } from '../payments/settings.mjs';
 
 export const STAFF_ROLES = Object.freeze(['reception', 'manager', 'owner']);
-const REASON_CODE = /^[a-z][a-z0-9_]{0,49}$/;
+/** Коды отклонения заявки (контракт §14). */
+export const DECLINE_REASONS = Object.freeze(['guest_left', 'guest_cancelled', 'payment_failed', 'table_problem', 'other']);
 
 /** Ответ гостю на «Оплачу на ресепшене». */
 export function receptionResponse(r) {
@@ -195,7 +196,7 @@ export async function declineRequest(db, deps, info) {
   await requireStaff(db, info, clubId, STAFF_ROLES);
   const reasonCode = info.body?.reason_code;
   if (reasonCode === undefined || reasonCode === null || reasonCode === '') throw new MoneyError('reason_required');
-  if (typeof reasonCode !== 'string' || !REASON_CODE.test(reasonCode)) throw new MoneyError('bad_request', 'reason_code');
+  if (typeof reasonCode !== 'string' || !DECLINE_REASONS.includes(reasonCode)) throw new MoneyError('bad_request', 'reason_code');
   const r = await lockRequest(db, id);
   if (!r) throw new MoneyError('not_found', 'request');
   if (r.status === 'declined' && r.decline_reason_code === reasonCode) return { ok: true };
@@ -266,5 +267,6 @@ export async function guestRequestStatus(db, deps, info) {
     expires_at: new Date(r.expires_at).toISOString(),
     payment_id: r.payment_id ?? null,
     session_id: sessionId,
+    reason_code: status === 'declined' ? r.decline_reason_code : null,
   };
 }

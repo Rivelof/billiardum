@@ -12,7 +12,7 @@ export const DEVICE_END_SLACK_MS = 5_000;
 const RUNNING_MODES = new Set(['active', 'ending', 'grace']);
 const SESSION_CMDS = new Set(['session.start', 'session.resume', 'session.extend']);
 
-/** Уровни тревог событий контроллера (PRODUCT §8: свет в обход — критично, сразу). */
+/** Уровни тревог событий контроллера (PRODUCT §8, decisions №66). */
 export const EVENT_ALARMS = Object.freeze({
   bypass_detected: { type: 'bypass_detected', level: 'critical' },
   relay_fault: { type: 'relay_fault', level: 'critical' },
@@ -21,7 +21,7 @@ export const EVENT_ALARMS = Object.freeze({
   replayed_seq: { type: 'replayed_seq', level: 'important' },
   events_dropped: { type: 'events_dropped', level: 'important' },
   ota_failed: { type: 'ota_failed', level: 'important' },
-  offline_resume_denied: { type: 'offline_resume_denied', level: 'info' },
+  offline_resume_denied: { type: 'offline_resume_denied', level: 'important' },
 });
 
 /** Безопасная копия data события для тревоги: только числа, булевы и короткие коды. */
@@ -232,7 +232,7 @@ export function createDeviceLogic({ kit, log, withContext, pool }) {
       });
       await alarm(db, clubId, {
         type: lightWithoutSession ? 'light_without_session' : 'state_mismatch',
-        level: lightWithoutSession ? 'critical' : 'important',
+        level: 'critical', // decisions №66: state_mismatch и light_without_session — критично
         resourceId: device?.resource_id ?? null,
         data: { device_id: deviceId, mode: state.mode, relay: state.relay },
       });

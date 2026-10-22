@@ -5,12 +5,18 @@
 //   node scripts/dev-certs.mjs        — создать, если файлов нет
 //
 // Файлы: deploy/dev/certs/ca.crt, ca.key, mqtt.crt, mqtt.key (в git не попадают).
-// Готовые файлы не перегенерируются. Если пропал только сертификат брокера,
-// он выпускается заново тем же CA. Чтобы сменить всё, удалите deploy/dev/certs/.
+// Готовые файлы не перегенерируются. Если пропал только сертификат брокера, он истекает
+// или в нём нет нужного имени, он выпускается заново тем же CA (контроллеры, которые
+// доверяют CA, продолжают работать). Чтобы сменить всё, удалите deploy/dev/certs/.
+//
+// DEV_LAN_HOST (.env или окружение) — IP или имя машины в локальной сети: добавляется
+// в SAN, чтобы настоящий контроллер в той же сети подключался по mqtts://{DEV_LAN_HOST}:8883.
 
 import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign, X509Certificate } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { dirname, join, relative, resolve } from 'node:path';
+import { parseEnv } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const CERTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'dev', 'certs');
@@ -158,8 +164,30 @@ function writeFile(path, content, mode) {
   writeFileSync(path, content, { mode });
 }
 
+/**
+ * Имена сертификата брокера: постоянные и дополнительные (DEV_LAN_HOST).
+ * Дополнительное имя — IPv4 или имя хоста; другое отвергается.
+ */
+export function brokerNames(extraHosts = []) {
+  const dns = [...BROKER_DNS];
+  const ips = [...BROKER_IPS];
+  for (const raw of extraHosts) {
+    const host = String(raw ?? '').trim();
+    if (!host) continue;
+    if (isIP(host) === 4) {
+      if (!ips.includes(host)) ips.push(host);
+    } else if (/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(host)) {
+      const h = host.toLowerCase();
+      if (!dns.includes(h)) dns.push(h);
+    } else {
+      throw new Error(`DEV_LAN_HOST: «${host}» — не IPv4 и не имя хоста`);
+    }
+  }
+  return { dns, ips };
+}
+
 /** Проверка сертификата брокера: подписан CA, не истекает, нужные SAN. Возвращает текст проблемы или null. */
-export function brokerCertProblem(caPem, brokerPem, now = new Date()) {
+export function brokerCertProblem(caPem, brokerPem, now = new Date(), { dns = BROKER_DNS, ips = BROKER_IPS } = {}) {
   let ca;
   let cert;
   try {
@@ -171,16 +199,17 @@ export function brokerCertProblem(caPem, brokerPem, now = new Date()) {
   if (!cert.checkIssued(ca) || !cert.verify(ca.publicKey)) return 'сертификат брокера выпущен другим CA';
   if (new Date(ca.validTo).getTime() < now.getTime()) return 'истёк срок CA';
   if (new Date(cert.validTo).getTime() - now.getTime() < RENEW_BEFORE_DAYS * DAY_MS) return 'сертификат брокера истекает';
-  for (const host of BROKER_DNS) if (!cert.checkHost(host)) return `в сертификате брокера нет имени ${host}`;
-  for (const ip of BROKER_IPS) if (!cert.checkIP(ip)) return `в сертификате брокера нет адреса ${ip}`;
+  for (const host of dns) if (!cert.checkHost(host)) return `в сертификате брокера нет имени ${host}`;
+  for (const ip of ips) if (!cert.checkIP(ip)) return `в сертификате брокера нет адреса ${ip}`;
   return null;
 }
 
 /**
- * Создаёт недостающие dev-сертификаты.
+ * Создаёт недостающие dev-сертификаты. extraHosts — дополнительные имена брокера (DEV_LAN_HOST).
  * @returns {{changed: boolean, caChanged: boolean}}
  */
-export function ensureDevCerts({ dir = CERTS_DIR, log = (m) => console.log(`[certs] ${m}`), now = new Date() } = {}) {
+export function ensureDevCerts({ dir = CERTS_DIR, log = (m) => console.log(`[certs] ${m}`), now = new Date(), extraHosts = [] } = {}) {
+  const names = brokerNames(extraHosts);
   const p = {
     caCrt: join(dir, 'ca.crt'),
     caKey: join(dir, 'ca.key'),
@@ -215,7 +244,7 @@ export function ensureDevCerts({ dir = CERTS_DIR, log = (m) => console.log(`[cer
   }
 
   const haveBroker = existsSync(p.crt) && existsSync(p.key);
-  const problem = haveBroker && !caChanged ? brokerCertProblem(caCert, readFileSync(p.crt, 'utf8'), now) : 'нет файлов';
+  const problem = haveBroker && !caChanged ? brokerCertProblem(caCert, readFileSync(p.crt, 'utf8'), now, names) : 'нет файлов';
   if (!problem) return { changed: false, caChanged: false };
   if (haveBroker && !caChanged && problem === 'истёк срок CA') {
     throw new Error('Истёк срок dev CA. Удалите deploy/dev/certs/ и запустите снова.');
@@ -230,19 +259,26 @@ export function ensureDevCerts({ dir = CERTS_DIR, log = (m) => console.log(`[cer
     issuerPublicKey: new X509Certificate(caCert).publicKey,
     days: BROKER_DAYS,
     isCa: false,
-    dns: BROKER_DNS,
-    ips: BROKER_IPS,
+    dns: names.dns,
+    ips: names.ips,
     now,
   });
-  const check = brokerCertProblem(caCert, brokerPem, now);
+  const check = brokerCertProblem(caCert, brokerPem, now, names);
   if (check) throw new Error(`Не удалось выпустить сертификат брокера: ${check}. Удалите deploy/dev/certs/ и запустите снова.`);
   writeFile(p.key, pair.privateKey.export({ type: 'pkcs8', format: 'pem' }), 0o600);
   writeFile(p.crt, brokerPem, 0o644);
-  log(`выпущен сертификат брокера (2 года, ${[...BROKER_DNS, ...BROKER_IPS].join(', ')})${haveBroker ? `: старый — ${problem}` : ''}`);
+  log(`выпущен сертификат брокера (2 года, ${[...names.dns, ...names.ips].join(', ')})${haveBroker ? `: старый — ${problem}` : ''}`);
   return { changed: true, caChanged };
 }
 
+/** DEV_LAN_HOST из окружения или .env в корне репозитория (для запуска скрипта вручную). */
+function devLanHost() {
+  if (process.env.DEV_LAN_HOST) return process.env.DEV_LAN_HOST;
+  const envFile = resolve(dirname(fileURLToPath(import.meta.url)), '..', '.env');
+  return existsSync(envFile) ? (parseEnv(readFileSync(envFile, 'utf8')).DEV_LAN_HOST ?? '') : '';
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const { changed } = ensureDevCerts();
+  const { changed } = ensureDevCerts({ extraHosts: [devLanHost()] });
   if (!changed) console.log(`[certs] сертификаты уже есть: ${relative(process.cwd(), CERTS_DIR)}`);
 }

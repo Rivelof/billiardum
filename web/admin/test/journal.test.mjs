@@ -93,3 +93,21 @@ test('звук заявки синтезируется, без файлов', ()
     assert.ok(f > 200 && f < 4000 && d >= 0 && dur > 0 && dur < 2 && vol > 0 && vol <= 0.5);
   }
 });
+
+test('журнал на живом API: исполнитель по роли, стол по resource_id, фильтр старого вида', async () => {
+  const { auditView: view, actorLabel, legacyActionParam, matchesAction } = await import('../src/lib/audit.js');
+  const tables = new Map([['r-5', 5]]);
+  const v = view({ seq: 1, created_at: '2026-10-21T16:00:00Z', action: 'service.start', actor_type: 'user', actor_id: 'u', actor_role: 'reception', resource_id: 'r-5', data: {} }, TZ, { tables });
+  assert.equal(v.actor, 'Ресепшн');
+  assert.equal(v.table, 'Стол 5');
+  assert.equal(actorLabel({ actor: { role: 'owner', phone_masked: '+7000***0001' } }), 'Владелец, +7000***0001');
+  assert.equal(actorLabel({ actor_name: 'Анна К.', actor_role: 'reception' }), 'Анна К.');
+  assert.equal(actorLabel({ actor_type: 'guest' }), 'Гость');
+  assert.equal(view({ action: 'payment.succeeded', created_at: '2026-10-21T16:00:00Z', data: { resource_id: 'r-5' } }, TZ, { tables }).table, 'Стол 5');
+  assert.equal(legacyActionParam('session.*'), 'session.');
+  assert.equal(legacyActionParam('service.*,manual.*'), null);
+  assert.equal(legacyActionParam(''), undefined);
+  assert.equal(matchesAction('service.*,payment.refunded', 'service.stop'), true);
+  assert.equal(matchesAction('service.*,payment.refunded', 'payment.succeeded'), false);
+  assert.equal(matchesAction('', 'anything'), true);
+});

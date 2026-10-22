@@ -20,29 +20,9 @@ concurrency:
 
 jobs:
   ci:
-    name: lint, test, конфиги, миграции, test:db
+    name: lint, test, конфиги, миграции, тесты на базе и брокере
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-
-    services:
-      db:
-        image: supabase/postgres:15.8.1.085
-        env:
-          # Одноразовая база внутри раннера, только данные сида: пароль не секрет.
-          POSTGRES_PASSWORD: ci-throwaway-pg
-        ports:
-          - 54322:5432
-        options: >-
-          --health-cmd "pg_isready -U supabase_admin -d postgres -h 127.0.0.1"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 90
-
-    env:
-      DATABASE_ADMIN_URL: postgres://supabase_admin:ci-throwaway-pg@localhost:54322/postgres
-      DB_APP_PASSWORD: ci-throwaway-app
-      DATABASE_URL: postgres://app_api:ci-throwaway-app@localhost:54322/postgres
-
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,24 +34,27 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run lint
-      - run: npm test
 
-      # Интеграционный тест симулятора поднимает свой брокер в Docker.
-      - name: Образ брокера для test:it
-        run: docker pull eclipse-mosquitto:2.1.2-alpine
-      - run: npm run test:it -w tools/device-sim
+      # Образы заранее: время скачивания не попадает в ожидание готовности контейнеров.
+      - name: Образы Postgres, брокера и Caddy
+        run: |
+          docker pull supabase/postgres:15.8.1.085
+          docker pull eclipse-mosquitto:2.1.2-alpine
+          docker pull caddy:2.11.7-alpine
+
+      # lint, npm test, test:it симулятора (свой брокер в Docker).
+      - name: lint, test, test:it симулятора
+        run: node scripts/ci.mjs --base
 
       # docker compose config, caddy validate, mosquitto --test-config — образами из compose.yml.
       - name: Конфиги окружения разработки
         run: node scripts/ci.mjs --config
 
-      # Наши роли — в supautils.reserved_roles (pentester L1), до миграций.
-      - name: Роли базы в supautils.reserved_roles
-        run: docker exec -i -u postgres ${{ job.services.db.id }} sh -s < deploy/postgres/reserved-roles.sh
-      - run: npm run db:migrate
-      - run: npm run db:seed
-      - run: npm run test:db
+      # Одноразовый Postgres → роли в supautils.reserved_roles → db:migrate → db:seed →
+      # test:db @billiardum/db и @billiardum/server → server/test/light с LIGHT_IT=1:
+      # интеграция light + свой брокер (TLS, Dynamic Security) + симулятор, p95 до ack.
+      - name: Миграции, сид, тесты на базе и брокере
+        run: node scripts/ci.mjs --db
 
   web:
     name: сборка web/guest и web/admin, бюджет JS гостя

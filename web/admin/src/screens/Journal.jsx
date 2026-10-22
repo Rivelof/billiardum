@@ -5,7 +5,7 @@ import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { can } from '../lib/auth.js';
-import { ACTION_GROUPS, auditView, groupByDate } from '../lib/audit.js';
+import { ACTION_GROUPS, actorLabel, auditView, groupByDate, legacyActionParam, matchesAction } from '../lib/audit.js';
 import { periodRange } from '../lib/zone.js';
 
 const PERIODS = [
@@ -43,19 +43,38 @@ export function Journal({ ctx }) {
   }, [clubId]);
 
   const query = useMemo(() => ({ ...periodRange(period, Date.now(), timeZone), action: group, resource, actor }), [period, group, resource, actor, timeZone]);
+  const [legacy, setLegacy] = useState(false); // сервер принимает только одно действие или префикс «x.»
+
+  const fetchPage = useCallback(
+    async (after) => {
+      if (!legacy) {
+        try {
+          return { res: await api.audit(clubId, { ...query, cursor: after }), clientFilter: false };
+        } catch (err) {
+          if (err?.code !== 'bad_request' || !query.action) throw err;
+          setLegacy(true);
+        }
+      }
+      const param = legacyActionParam(query.action);
+      const res = await api.audit(clubId, { ...query, action: param ?? undefined, cursor: after });
+      return { res, clientFilter: param === null };
+    },
+    [clubId, query, legacy],
+  );
 
   const load = useCallback(
     async (after) => {
       setBusy(true);
       setError(null);
       try {
-        const res = await api.audit(clubId, { ...query, cursor: after });
-        const list = Array.isArray(res?.items) ? res.items : [];
+        const { res, clientFilter } = await fetchPage(after);
+        const all = Array.isArray(res?.items) ? res.items : [];
+        const list = clientFilter ? all.filter((it) => matchesAction(query.action, it.action)) : all;
         setItems((prev) => (after ? [...(prev ?? []), ...list] : list));
         setCursor(res?.next_cursor ?? null);
         setActors((prev) => {
           const next = new Map(prev);
-          for (const it of list) if (it.actor_id && (it.actor_name ?? it.actor?.name)) next.set(it.actor_id, it.actor_name ?? it.actor?.name);
+          for (const it of all) if (it.actor_id && (it.actor_name || it.actor_role || it.actor?.name || it.actor?.role)) next.set(it.actor_id, actorLabel(it));
           return next;
         });
       } catch (err) {
@@ -64,12 +83,12 @@ export function Journal({ ctx }) {
         setBusy(false);
       }
     },
-    [clubId, query],
+    [fetchPage, query.action],
   );
 
   useEffect(() => {
     load(null);
-  }, [load]);
+  }, [query]);
 
   const runVerify = async () => {
     setVerifying(true);
@@ -83,7 +102,8 @@ export function Journal({ ctx }) {
     }
   };
 
-  const views = (items ?? []).map((it) => auditView(it, timeZone));
+  const tableMap = useMemo(() => new Map(tables.map((t) => [t.id, t.number])), [tables]);
+  const views = (items ?? []).map((it) => auditView(it, timeZone, { tables: tableMap }));
   const groups = groupByDate(views);
 
   return (

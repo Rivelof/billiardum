@@ -15,6 +15,7 @@
     "test:db": "node --test --test-concurrency=1 \"test/db/*.test.mjs\""
   },
   "dependencies": {
+    "@billiardum/shared": "0.1.0",
     "mqtt": "5.16.1",
     "pg": "8.23.1",
     "uqr": "0.1.3"

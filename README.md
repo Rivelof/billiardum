@@ -57,9 +57,18 @@ npm run dev -- --watch-web
 
 Caddy ставит заголовки безопасности: CSP без внешних источников (скрипты, стили, шрифты, картинки и запросы — только со своего хоста), `X-Content-Type-Options`, `Referrer-Policy: same-origin`, `Permissions-Policy`. HSTS — только не для `localhost` и `127.0.0.1`. Приложение гостя разрешено показывать во фрейме только веб-версиям Telegram и MAX (мини-приложения), программу клуба — никому. `index.html` и `sw.js` браузер перепроверяет при каждом открытии, ассеты с хешем в имени кэшируются на год. Подробности — в [`deploy/dev/Caddyfile`](deploy/dev/Caddyfile).
 
-### Вход для разработки
+### Столы и вход для разработки
 
-С `ALLOW_DEV_LOGIN=1` (по умолчанию в `.env` разработки) работает вход по телефону без бота: в приложении гостя — кнопка входа по телефону, в API — `POST /api/auth/dev` с `{"phone":"+79990000001"}`, ответ `{token, user}`. Токен передаётся в `Authorization: Bearer …` или ставится cookie. При `NODE_ENV=production` маршрута нет вовсе.
+В сиде клуб в Екатеринбурге и 8 столов с кодами `TEST000001` … `TEST000008` (стол N — `TEST00000N`). Стол открывается так же, как по QR-наклейке: `https://localhost:8443/t/TEST000004` → `/app/t/TEST000004`. Наклейки с QR — в программе клуба (владелец) или `GET /api/clubs/{club}/qr-stickers.pdf`.
+
+С `ALLOW_DEV_LOGIN=1` (по умолчанию в `.env` разработки) работает вход по телефону без бота: в приложении гостя и в программе клуба — кнопка входа по телефону (`npm run dev` собирает их с `VITE_DEV_LOGIN=1`), в API — `POST /api/auth/dev` с `{"phone":"…"}`, ответ `{token, user}`. Токен передаётся в `Authorization: Bearer …` или ставится cookie. При `NODE_ENV=production` маршрута нет вовсе.
+
+| Телефон | Кто |
+|---|---|
+| `+70000000001` | владелец тестового клуба |
+| `+70000000003` | управляющий |
+| `+70000000004` | ресепшн |
+| любой другой, например `+79990000001` | новый гость (согласие на обработку данных — при первой оплате) |
 
 ```sh
 curl -sk https://localhost:8443/api/auth/dev -H 'Content-Type: application/json' -d '{"phone":"+79990000001"}'
@@ -73,15 +82,18 @@ curl -sk https://localhost:8443/api/auth/dev -H 'Content-Type: application/json'
 
 ### Оплата на эмуляторе ЮKassa
 
-Сеть разработки закрыта от `api.yookassa.ru`, поэтому сервер ходит в эмулятор `tools/yookassa-emu/` (`YOOKASSA_API_URL=http://yookassa-emu:8090/v3`). Эмулятор доступен только внутри Docker Compose; браузер открывает его страницу оплаты через Caddy: `https://localhost:8443/pay/{id}`. Кнопка «Оплатить» отправляет вебхук на `http://server:3000/api/webhooks/yookassa/{club_id}`. Магазин эмулятора (`YOOKASSA_EMU_SHOP_ID`, `YOOKASSA_EMU_SECRET`) создаётся в `.env`, `npm run provision:dev` записывает его в настройки тестового клуба. Пока пакета эмулятора нет, сервис не запускается (профиль Compose `yookassa-emu`), а `/pay/` отвечает 502.
+Сеть разработки закрыта от `api.yookassa.ru`, поэтому сервер ходит в эмулятор `tools/yookassa-emu/` (`YOOKASSA_API_URL=http://yookassa-emu:8090/v3`). Эмулятор доступен только внутри Docker Compose; браузер открывает его страницу оплаты через Caddy: `https://localhost:8443/pay/{id}`. Кнопка «Оплатить» отправляет вебхук на `http://server:3000/api/webhooks/yookassa/{club_id}`. Магазин эмулятора (`YOOKASSA_EMU_SHOP_ID`, `YOOKASSA_EMU_SECRET`) создаётся в `.env`, `npm run provision:dev` записывает его в настройки тестового клуба. Сервис в профиле Compose `yookassa-emu`: `npm run dev` включает его, когда есть `tools/yookassa-emu/index.mjs`, иначе `/pay/` отвечает 502.
 
-Управление эмулятором для тестов (`/__emu/…`: подтвердить или отменить платёж, повторить вебхук) наружу не опубликовано — только изнутри контейнера:
+Подтвердить оплату:
+- в браузере — кнопка «Оплатить» на `https://localhost:8443/pay/{id}`, куда приложение переводит после «Оплатить»;
+- без браузера (тесты) — управлением эмулятора `/__emu/…`. Оно наружу не опубликовано, только изнутри контейнера; `{id}` — платёж ЮKassa из `confirmation.url` (`…/pay/{id}`) ответа `POST /api/quotes/{id}/pay` или из списка `GET /__emu/payments`:
 
 ```sh
-docker compose -p billiardum exec yookassa-emu wget -qO- --post-data= http://127.0.0.1:8090/__emu/payments/<id>/succeed
+docker compose -p billiardum exec yookassa-emu wget -qO- --post-data='' http://127.0.0.1:8090/__emu/payments/{id}/succeed
+docker compose -p billiardum exec yookassa-emu wget -qO- http://127.0.0.1:8090/__emu/payments     # все платежи
 ```
 
-Список команд — в README эмулятора (`tools/yookassa-emu/`).
+Отказ — `…/cancel`, повтор вебхука — `…/webhook?repeat=N`. Остальные команды — в README эмулятора (`tools/yookassa-emu/`).
 
 ### Симулятор контроллеров
 
@@ -135,10 +147,12 @@ npm run down -- --volumes    # остановить и стереть данны
 ```sh
 npm test            # юнит-тесты всех пакетов, без базы и брокера
 npm run lint        # ESLint по всему репозиторию
-npm run test:db     # тесты базы на поднятом Postgres (после npm run dev)
+npm run test:db     # тесты на Postgres окружения npm run dev (базы временные, рабочую не трогают)
 npm run ci          # как в CI: всё ниже, кроме --pio
-npm run ci -- --db  # только этап базы из CI
+npm run ci -- --db  # только этап базы из CI: свой Postgres
 ```
+
+`npm run test:db` (`scripts/ci-test-db.mjs`) гоняет `test:db` пакетов `@billiardum/db` и `@billiardum/server` и тесты light: `LIGHT_IT=1 node --test --test-concurrency=1 "server/test/light/*.test.mjs"`. База — `DATABASE_ADMIN_URL` из окружения или `.env`. Интеграция light + брокер + симулятор (`it-sim`, p95 до `ack`) сама поднимает и удаляет свой брокер `bl-light-it-*` (нужны Docker и `openssl`); брокер `npm run dev` она не трогает. Без неё — `LIGHT_IT=0 npm run test:db`.
 
 | Этап `npm run ci -- …` | Что проверяет |
 |---|---|
@@ -146,12 +160,12 @@ npm run ci -- --db  # только этап базы из CI
 | `--config` | `docker compose config`, `caddy validate`, `mosquitto --test-config` — образами из `compose.yml` |
 | `--web` | сборка `web/guest` и `web/admin`, бюджет JS гостя: `npm run size -w web/guest` (≤ 200 КБ gzip) |
 | `--fw` | нативные тесты логики прошивки: CMake + g++ по `firmware/test/native`, `ctest` |
-| `--db` | миграции, сид и `test:db` на одноразовом Postgres |
+| `--db` | одноразовый Postgres: миграции, сид, `npm run test:db` целиком, включая интеграцию light со своим брокером (нужен `openssl`) |
 | `--pio` | `pio run -e esp32dev` и `pio test -e native`; нужен PlatformIO 6.1.19 и доступ к реестру PlatformIO, по умолчанию не входит |
 
 Пакеты, которых ещё нет, пропускаются с сообщением. Для `--fw` нужны CMake 3.20+ и компилятор C++.
 
-`npm run ci` поднимает отдельный одноразовый Postgres на свободном порту и удаляет его в конце; окружение `npm run dev` не трогает. В GitHub то же делает [`.github/workflows/ci.yml`](.github/workflows/ci.yml): задачи `ci`, `web`, `firmware-native` и `firmware-pio` (PlatformIO ставится на раннере, версия закреплена). CI работает только с синтетическими данными сида.
+`npm run ci` поднимает одноразовые Postgres и брокеры на свободных портах и удаляет их в конце; окружение `npm run dev` не трогает. В GitHub то же делает [`.github/workflows/ci.yml`](.github/workflows/ci.yml) теми же `node scripts/ci.mjs --…`: задачи `ci` (`--base`, `--config`, `--db`), `web` (`--web`), `firmware-native` (`--fw`) и `firmware-pio` (`--pio`, PlatformIO ставится на раннере, версия закреплена). Локально `npm run ci` покрывает всё, кроме `--pio`: реестр PlatformIO в среде разработки закрыт, `--pio` запускается отдельно там, где он доступен. CI работает только с синтетическими данными сида.
 
 ## Другие команды
 

@@ -10,14 +10,9 @@ import { linkHandler } from '../lib/router.js';
 import { isIos, isStandalone } from '../lib/platform.js';
 import { local } from '../lib/store.js';
 import { minutesWords, tableName } from '../lib/words.js';
+import { receiptState, refundLines, RECEIPT_TEXT } from '../lib/receipt.js';
 
 const METHOD = { sbp: 'СБП', card: 'Картой онлайн', cash: 'Наличными на ресепшене', card_terminal: 'Картой на ресепшене' };
-const RECEIPT_STATUS = {
-  sent: 'Чек по 54‑ФЗ отправлен на ваш номер.',
-  done: 'Чек по 54‑ФЗ отправлен на ваш номер.',
-  pending: 'Чек по 54‑ФЗ формируется и придёт на ваш номер.',
-  receipt_pending: 'Чек по 54‑ФЗ пробивается на кассе клуба.',
-};
 
 /** Чек сессии: строки и суммы моноширинным по правому краю (DESIGN §4), способы оплаты, статус фискального чека. */
 export function ReceiptScreen({ id }) {
@@ -41,7 +36,7 @@ export function ReceiptScreen({ id }) {
   }, [id]);
 
   const tz = clubTimeZone(session?.club?.timezone);
-  const lines = Array.isArray(receipt?.lines) ? receipt.lines : [];
+  const lines = [...(Array.isArray(receipt?.lines) ? receipt.lines : []), ...refundLines(receipt?.payments)];
   const payments = Array.isArray(receipt?.payments) ? receipt.payments : [];
 
   return (
@@ -89,7 +84,7 @@ export function ReceiptScreen({ id }) {
             ) : null}
             <p class="ticket__status">
               <Icon name="receipt" />
-              {RECEIPT_STATUS[receipt.receipt_status] ?? 'Чек по 54‑ФЗ придёт на ваш номер.'}
+              {RECEIPT_TEXT[receiptState(receipt.receipt_status)]}
             </p>
           </section>
         ) : !error ? (

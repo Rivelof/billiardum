@@ -11,6 +11,8 @@ import { Now } from './screens/Now.jsx';
 import { Journal } from './screens/Journal.jsx';
 import { Alarms } from './screens/Alarms.jsx';
 import { More } from './screens/More.jsx';
+import { Devices } from './screens/Devices.jsx';
+import { setClub } from './lib/api.js';
 import { Icon } from './components/Icon.jsx';
 
 const ROUTES = [
@@ -25,12 +27,13 @@ const SCREENS = {
   now: { allow: can.manage, render: (ctx) => <Now ctx={ctx} />, title: 'Сейчас' },
   journal: { allow: can.manage, render: (ctx) => <Journal ctx={ctx} />, title: 'Журнал' },
   alarms: { allow: can.manage, render: (ctx) => <Alarms ctx={ctx} />, title: 'Тревоги' },
+  devices: { allow: can.devices, render: (ctx) => <Devices ctx={ctx} />, title: 'Контроллеры' },
   more: { allow: () => true, render: (ctx) => <More ctx={ctx} />, title: 'Ещё' },
 };
 
 /** Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — очередь заявок. */
 export function homeFor(membership) {
-  const screen = can.manage(membership.role) ? 'now' : can.reception(membership.role) ? 'reception' : 'more';
+  const screen = can.manage(membership.role) ? 'now' : can.reception(membership.role) ? 'reception' : can.devices(membership.role) ? 'devices' : 'more';
   return `${BASE}c/${encodeURIComponent(membership.club_id)}/${screen}`;
 }
 
@@ -77,6 +80,7 @@ export function App() {
     const screen = SCREENS[params.screen];
     if (!membership || !screen) return <Redirect to={BASE} />;
     if (!screen.allow(membership.role)) return <Redirect to={homeFor(membership)} />;
+    setClub(membership.club_id); // X-Club-Id для маршрутов без {club} (§14)
     const ctx = {
       club: membership,
       role: membership.role,

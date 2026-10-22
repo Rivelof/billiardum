@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizePhone, needsConsent } from '../src/lib/auth.js';
+import { normalizePhone, needsConsent, consentVersion } from '../src/lib/auth.js';
 import { telegramInitData, base64UrlToBytes, isIos } from '../src/lib/platform.js';
 import { safeRedirectUrl, safeAppPath } from '../src/lib/urls.js';
 import { matchRoute } from '../src/lib/router.js';
@@ -14,7 +14,14 @@ test('телефон для входа разработки', () => {
   assert.equal(normalizePhone(''), null);
 });
 
-test('согласие: нужно только при явном consent_version: null', () => {
+test('согласие по GET /api/me: user.consent {version, accepted}', () => {
+  assert.equal(needsConsent({ id: 1, consent: { version: '2026-10-21', accepted: false } }), true);
+  assert.equal(needsConsent({ id: 1, consent: { version: '2026-10-21', accepted: true } }), false);
+  assert.equal(consentVersion({ consent: { version: '2026-10-21', accepted: false } }), '2026-10-21');
+  assert.equal(consentVersion(null), 'draft-2026-10');
+});
+
+test('согласие (старое поле): нужно только при явном consent_version: null', () => {
   assert.equal(needsConsent({ id: 1, consent_version: null }), true);
   assert.equal(needsConsent({ id: 1, consent_version: 'v1' }), false);
   assert.equal(needsConsent({ id: 1 }), false, 'поля нет — узнаем по consent_required');

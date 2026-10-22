@@ -2,15 +2,16 @@ import { api, setBearer } from './api.js';
 import { createStore, session } from './store.js';
 import { telegramInitData } from './platform.js';
 
-/** Версия текста согласия. Текст готовит юрист (docs/legal/consent.md); до него — черновая версия. */
+/** Запасная версия согласия; настоящая приходит с сервера в GET /api/me → user.consent.version (§14). */
 export const CONSENT_VERSION = 'draft-2026-10';
 
 /**
  * Состояние входа:
  *  status: 'loading' | 'anon' | 'user'
- *  user: { id, nick?, phone_masked?, consent_version? } — consent_version: null значит согласия нет
+ *  user: { id, phone_masked, needs_phone, consent: { version, accepted } } (GET /api/me, §14)
+ *  justSignedIn: true после входа через бота — показываем «Вы вошли как … Не вы? Выйти»
  */
-export const auth = createStore({ status: 'loading', user: null });
+export const auth = createStore({ status: 'loading', user: null, justSignedIn: false });
 
 const NONCE_KEY = 'bl-bot-link';
 
@@ -30,16 +31,24 @@ export async function loadMe() {
 }
 
 /**
- * Согласие нужно, если сервер явно говорит, что его нет (consent_version: null).
- * Если поля нет вовсе — узнаем по ошибке consent_required при оплате.
+ * Согласие нужно, если сервер явно говорит, что его нет: user.consent.accepted === false
+ * (или старое поле consent_version: null). Если полей нет — узнаем по ошибке consent_required при оплате.
  */
 export function needsConsent(user) {
-  return Boolean(user) && 'consent_version' in user && !user.consent_version;
+  if (!user) return false;
+  if (user.consent && typeof user.consent === 'object') return user.consent.accepted === false;
+  return 'consent_version' in user && !user.consent_version;
+}
+
+/** Версия текста согласия, которую ждёт сервер. */
+export function consentVersion(user) {
+  return user?.consent?.version ?? user?.consent_version ?? CONSENT_VERSION;
 }
 
 export async function giveConsent() {
-  await api.consent(CONSENT_VERSION);
-  auth.set((s) => ({ user: s.user ? { ...s.user, consent_version: CONSENT_VERSION } : s.user }));
+  const version = consentVersion(auth.get().user);
+  await api.consent(version);
+  auth.set((s) => ({ user: s.user ? { ...s.user, consent: { version, accepted: true }, consent_version: version } : s.user }));
 }
 
 /**
@@ -55,9 +64,10 @@ export function normalizePhone(input) {
 
 /** Вход для разработки по телефону (POST /api/auth/dev). */
 export async function devLogin(phone) {
-  const res = await api.devLogin(phone);
-  if (res?.token) setBearer(res.token);
-  return loadMe();
+  await api.devLogin(phone); // cookie bl_session ставит сервер
+  const user = await loadMe();
+  auth.set({ justSignedIn: true });
+  return user;
 }
 
 /** Начать вход через бота: ссылка открывает MAX или Telegram, бот просит «Поделиться контактом». */
@@ -89,9 +99,9 @@ export async function checkBotLink(nonce) {
   const res = await api.botLinkStatus(nonce);
   if (res.status === 'done') {
     session.set(NONCE_KEY, null);
-    // PWA получает cookie от сервера; токен в теле сохраняем на случай WebView без cookie
-    if (res.token) setBearer(res.token);
+    // PWA получает cookie bl_session от сервера (§14); токен из тела не храним
     await loadMe();
+    auth.set({ justSignedIn: true });
     return 'done';
   }
   if (res.status === 'expired') session.set(NONCE_KEY, null);

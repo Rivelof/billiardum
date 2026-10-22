@@ -12,6 +12,7 @@ import { MoneyError, fromNeighbor, checkNeighborResult } from '../errors.mjs';
 import { payPlan, returnUrl } from '../pay.mjs';
 import { provisionPayments } from '../provision-dev.mjs';
 import { parseQuoteRequest } from '../quotes.mjs';
+import { DECLINE_REASONS } from '../../reception/index.mjs';
 import { itemDescription, receiptPhone, yookassaReceipt } from '../receipt.mjs';
 import { stableUuid } from '../records.mjs';
 import { clientFor, yookassaSecretContext, encryptShopSecret } from '../settings.mjs';
@@ -211,6 +212,10 @@ describe('котировка и план оплаты', () => {
     assert.equal(a, stableUuid('bl.payment/q/sbp'));
     assert.notEqual(a, stableUuid('bl.payment/q/card'));
     assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it('коды отклонения заявки ресепшена — строго по §14', () => {
+    assert.deepEqual([...DECLINE_REASONS], ['guest_left', 'guest_cancelled', 'payment_failed', 'table_problem', 'other']);
   });
 
   it('ошибки light переводятся в коды словаря', () => {

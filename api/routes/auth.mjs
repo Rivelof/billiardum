@@ -144,7 +144,7 @@ async function me(ctx) {
   const userId = ctx.user.id;
   await setContext(ctx.db, { clubId: null });
   const user = await userJson(ctx.db, userId, { consentVersion: ctx.config.consentVersion });
-  let clubs = (await myMemberships(ctx.db, userId)).map((m) => ({ club_id: m.club_id, role: m.role, name: m.club_name }));
+  let clubs = (await myMemberships(ctx.db, userId)).map((m) => ({ club_id: m.club_id, role: m.role, name: m.club_name, timezone: m.timezone }));
   // Токен PIN действует только в клубе терминала.
   if (ctx.principal.kind === 'pin') clubs = clubs.filter((c) => c.club_id === ctx.principal.clubId);
   return {
@@ -155,6 +155,32 @@ async function me(ctx) {
       session: { kind: ctx.principal.kind, terminal_id: ctx.principal.terminalId ?? null, expires_at: new Date(ctx.principal.expiresAt).toISOString() },
     },
   };
+}
+
+const NAME_RE = /^[^\p{Cc}]{1,100}$/u;
+
+/** PATCH /api/me {name?, notify_channel?} — своё имя (для персонала) и основной канал уведомлений. */
+async function updateMe(ctx, req) {
+  const { name, notify_channel: channel } = req.body;
+  if (name === undefined && channel === undefined) throw new HttpError(400, 'bad_request');
+  const sets = [];
+  const params = [ctx.user.id];
+  if (name !== undefined) {
+    const v = name === null ? null : typeof name === 'string' ? name.trim() : undefined;
+    if (v === undefined || (v !== null && !NAME_RE.test(v)) || v === '') throw new HttpError(400, 'bad_request');
+    params.push(v);
+    sets.push(`name = $${params.length}`);
+  }
+  if (channel !== undefined) {
+    if (channel !== null && !['max', 'telegram', 'webpush'].includes(channel)) throw new HttpError(400, 'bad_request');
+    params.push(channel);
+    sets.push(`notify_channel = $${params.length}`);
+  }
+  params.push(ctx.clock.now());
+  sets.push(`updated_at = $${params.length}`);
+  await setContext(ctx.db, { clubId: null });
+  await ctx.db.query(`update bl.users set ${sets.join(', ')} where id = $1`, params);
+  return { status: 200, json: { user: await userJson(ctx.db, ctx.user.id, { consentVersion: ctx.config.consentVersion }) } };
 }
 
 async function registerTerminal(ctx, req) {
@@ -184,7 +210,7 @@ async function registerTerminal(ctx, req) {
 async function terminalInfo(ctx) {
   const t = await ctx.db.query('select id, club_id, name from bl.staff_terminals where id = $1', [ctx.principal.terminalId]);
   const { rows } = await ctx.db.query(
-    `select m.user_id, m.role, m.pin_hash is not null as pin_set, u.phone
+    `select m.user_id, m.role, m.pin_hash is not null as pin_set, u.phone, u.name
        from bl.club_members m join bl.users u on u.id = m.user_id
       where m.club_id = $1 and m.active and m.role = any($2::text[])
       order by m.role, m.user_id`,
@@ -194,7 +220,7 @@ async function terminalInfo(ctx) {
     status: 200,
     json: {
       terminal: { id: t.rows[0].id, club_id: t.rows[0].club_id, name: t.rows[0].name },
-      staff: rows.map((r) => ({ user_id: r.user_id, role: r.role, phone_masked: maskPhone(r.phone), pin_set: r.pin_set })),
+      staff: rows.map((r) => ({ user_id: r.user_id, name: r.name, role: r.role, phone_masked: maskPhone(r.phone), pin_set: r.pin_set })),
     },
   };
 }
@@ -290,6 +316,7 @@ export const routes = [
   { method: 'POST', path: '/api/auth/consent', auth: 'guest', handler: consent },
   { method: 'POST', path: '/api/auth/logout', auth: 'any', handler: logout },
   { method: 'GET', path: '/api/me', auth: 'guest', handler: me },
+  { method: 'PATCH', path: '/api/me', auth: 'guest', rateLimit: { max: 30, windowMs: MINUTE }, handler: updateMe },
   { method: 'POST', path: '/api/staff/terminal', auth: 'staff', roles: ['owner', 'manager'], clubFromBody: true, handler: registerTerminal },
   { method: 'GET', path: '/api/staff/terminal', auth: 'terminal', handler: terminalInfo },
   { method: 'POST', path: '/api/staff/pin', auth: 'terminal', rateLimit: { max: 20, windowMs: MINUTE }, handler: pinSwitch },

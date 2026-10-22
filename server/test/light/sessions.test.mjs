@@ -54,6 +54,13 @@ describe('сессии: оплата → свет → продление → л�
     assert.equal(dc.rows[0].status, 'acked');
     const ob = await t.q("select topic from bl.outbox where topic like 'session.%' order by id");
     assert.deepEqual(ob.rows.map((r) => r.topic), ['session.started']);
+    // SSE session — только общие поля, без зависящего от зрителя is_payer.
+    await h.until(() => h.sse.events.some((e) => e.channel === `session:${sessionId}` && e.event === 'session'), 'SSE session');
+    for (const e of h.sse.events.filter((x) => x.channel === `session:${sessionId}` && x.event === 'session')) {
+      assert.ok(!('is_payer' in e.data), 'is_payer не уходит в SSE');
+      assert.equal(e.data.id, sessionId);
+      assert.equal(e.data.club.timezone, 'Asia/Yekaterinburg');
+    }
     const sp = await t.q('select session_id from bl.payments where id = $1', [pay.payment_id]);
     assert.equal(sp.rows[0].session_id, sessionId, 'платёж связан с сессией');
   });
@@ -171,5 +178,54 @@ describe('перезапуск сервера: таймеры и свет вос
     await h.advance(12 * MIN);
     const s = await t.q('select status from bl.sessions where id = $1', [sid]);
     assert.equal(s.rows[0].status, 'closed');
+  });
+});
+
+describe('«Без лимита»: подтверждение продолжения за 5 минут до extend_limit_until (№69)', { skip: SKIP }, () => {
+  let t;
+  let h;
+  before(async () => {
+    t = await createTestDb();
+    h = await startLight(t, { devices: [1] });
+  });
+  after(async () => {
+    await h?.stop();
+    await t?.drop();
+  });
+
+  it('T−5: session.unlimited_confirm с действием extend/minutes null и SSE; подтвердил — снова через 5 минут до нового предела; не подтвердил — обычный конец', async () => {
+    const pay = await makePayment(t, { resource: 1, minutes: 30, unlimited: true, method: 'card', amount: 40_000, at: h.time.now() });
+    const { session_id: sid } = await h.outbox.deliver('payment.confirmed', pay);
+    await h.until(() => h.ctl.get(1).lit, 'свет');
+    const view = await h.asUser(GUEST(1), (db) => h.st.service.getSession(db, { sessionId: sid, userId: GUEST(1) }));
+    assert.equal(view.unlimited, true);
+    assert.equal(view.extend_limit_until, view.paid_until);
+    const confirms = async () => (await t.q("select text, data from bl.notifications where kind = 'session.unlimited_confirm' order by created_at")).rows;
+    await h.advance(24 * MIN + 59_000);
+    assert.equal((await confirms()).length, 0, 'до T−5 — нет');
+    await h.advance(2_000);
+    const c1 = await confirms();
+    assert.equal(c1.length, 1);
+    // 12:30 UTC — 17:30 в Екатеринбурге.
+    assert.equal(c1[0].text, 'Стол 1: заморозка заканчивается в 17:30. Подтвердите продолжение игры');
+    assert.equal(c1[0].data.action, 'extend');
+    assert.equal(c1[0].data.kind, 'extend');
+    assert.equal(c1[0].data.minutes, null);
+    const ev = h.sse.events.filter((e) => e.channel === `session:${sid}` && e.event === 'unlimited_confirm');
+    assert.equal(ev.length, 1);
+    assert.equal(ev[0].data.extend_limit_until, view.paid_until);
+    // Гость подтвердил: новая заморозка на 30 минут — предел сдвинулся, сигнал повторится.
+    const ext = await makePayment(t, { kind: 'extend', resource: 1, sessionId: sid, minutes: 30, unlimited: true, method: 'card', amount: 40_000, at: h.time.now() });
+    await h.outbox.deliver('payment.confirmed', ext);
+    await h.advance(30 * MIN);
+    assert.equal((await confirms()).length, 2);
+    assert.match((await confirms())[1].text, /заканчивается в 18:00/);
+    // Не подтвердил: обычные сигналы и закрытие по extend_limit_until.
+    await h.advance(5 * MIN + 2 * MIN + 1_000);
+    const s = await t.q('select status, close_reason from bl.sessions where id = $1', [sid]);
+    assert.deepEqual([s.rows[0].status, s.rows[0].close_reason], ['closed', 'expired']);
+    const kinds = (await t.q("select kind from bl.notifications where kind like 'session.%' order by created_at")).rows.map((r) => r.kind);
+    assert.deepEqual(kinds, ['session.t10', 'session.unlimited_confirm', 'session.t10', 'session.unlimited_confirm', 'session.t1', 'session.t0', 'session.closed']);
+    assert.ok(!h.ctl.get(1).lit);
   });
 });
