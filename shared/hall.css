@@ -1,0 +1,39 @@
+/*
+ * Бильярдум — рисунок стола из hall.mjs (tableSvg). Только токены --hall-* и --lamp: зал всегда тёмный.
+ * Свет — переменная --lit на любом предке: 0 — стол тёмный, 1 — лампа горит. Переход 0,6 с (DESIGN §6),
+ * при prefers-reduced-motion мгновенно (длительность из tokens.css).
+ */
+
+@property --lit {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+.ta {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.ta-rail { fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 24%), var(--hall-rail)); }
+.ta-cloth { fill: color-mix(in oklab, var(--hall-cloth-on) calc(var(--lit) * 100%), var(--hall-cloth-off)); }
+.ta-stop { stop-color: color-mix(in oklab, var(--lamp) 40%, var(--hall-text)); }
+.ta-spot { opacity: var(--lit); }
+.ta-cushion { fill: none; stroke: var(--hall-bg); stroke-opacity: 0.35; stroke-width: 50; }
+.ta-pockets { fill: var(--hall-bg); }
+.ta-diamonds { fill: var(--hall-text-2); opacity: 0.6; }
+.ta-bar { fill: var(--hall-line); stroke: var(--hall-bg); stroke-width: 24; }
+.ta-lamps { fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 100%), var(--hall-bg)); }
+
+/* Элемент, который держит свет: transition переменной --lit, чтобы лампа загоралась плавно */
+.lit-host {
+  transition: --lit var(--lamp-duration) var(--lamp-easing);
+}
+.lit-host[data-lit="true"] { --lit: 1; }
+.lit-host[data-lit="dim"] { --lit: 0.4; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lit-host { transition: none; }
+}

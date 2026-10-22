@@ -1,0 +1,23 @@
+{
+  "name": "Повтор команды и replayed_seq",
+  "description": "§3.2: точный повтор получает сохранённый ack без исполнения; тот же seq с другим id и меньший seq — replayed_seq; повтор старого session.extend не продлевает (T8); событие replayed_seq не чаще раза в 10 с, пропущенные — в data.suppressed.",
+  "steps": [
+    { "cmd": "ping", "label": "p1" },
+    { "resend": "p1", "ack_same": true },
+    { "cmd": "ping", "seq": 1, "ack": "replayed_seq" },
+    { "cmd": "session.start", "seq": 2, "label": "s2", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000018", "remaining_ms": 600000, "buzzer": true } },
+    { "cmd": "session.extend", "seq": 3, "label": "e3", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000018", "remaining_ms": 1200000, "buzzer": true } },
+    { "cmd": "session.extend", "seq": 2, "body": { "session_id": "0192f3c0-0000-7000-8000-000000000018", "remaining_ms": 7200000, "buzzer": true }, "ack": "replayed_seq" },
+    { "resend": "s2", "ack": "replayed_seq" },
+    { "expect": { "mode": "active", "remaining_ms": 1200000, "last_seq": 3 } },
+    { "advance_ms": 10000 },
+    { "resend": "e3", "ack_same": true },
+    { "expect": { "remaining_ms": 1190000, "last_seq": 3 } },
+    { "cmd": "ping", "seq": 3, "ack": "replayed_seq" },
+    { "cmd": "ping" },
+    { "expect": { "last_seq": 4, "remaining_ms": 1190000 } },
+    { "events": ["boot",
+      { "type": "replayed_seq", "n": 2, "data": { "cmd_id": "00000000-0000-4000-8000-000000000002", "seq": 1 } },
+      { "type": "replayed_seq", "n": 3, "at_uptime_ms": 10000, "data": { "cmd_id": "00000000-0000-4000-8000-000000000006", "seq": 3, "suppressed": 2 } }] }
+  ]
+}

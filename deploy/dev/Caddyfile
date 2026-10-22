@@ -1,17 +1,159 @@
-# Caddy для разработки «Бильярдума» (deploy/dev, контракт M0 §2).
-# https://localhost:8443 (на хосте) → контейнер caddy:443 → server:3000.
-# Сертификат выпускает внутренний CA Caddy (tls internal); его корень лежит
-# в томе caddy-data: /data/caddy/pki/authorities/local/root.crt.
+# Caddy для разработки «Бильярдума» (deploy/dev; контракты M0 §2 и M1 §11).
+# https://localhost:8443 на хосте → контейнер caddy:443:
+#
+#   /api/*, /t/*, /health → server:3000 (SSE /api/stream — без буферизации)
+#   /app/*                → web/guest/dist, приложение гостя (SPA)
+#   /club/*               → web/admin/dist, программа клуба (SPA)
+#   /pay/*                → yookassa-emu:8090, страница оплаты эмулятора ЮKassa
+#   /                     → /app/
+#
+# dist собирает `npm run dev` на хосте (scripts/dev.mjs): у Vite нативный esbuild под
+# платформу хоста, в Linux-контейнере на macOS и Windows он не запустится. Caddy только
+# читает web/ из репозитория (том /srv/web, только чтение).
+#
+# Сертификат выпускает внутренний CA Caddy (tls internal); его корень лежит в томе
+# caddy-data: /data/caddy/pki/authorities/local/root.crt.
+#
+# DEV_LAN_HOST — второй адрес сайта, чтобы открыть приложение с телефона в локальной
+# сети (IP или имя машины, README). Compose передаёт 127.0.0.1, если в .env пусто.
 
 {
 	skip_install_trust
 	auto_https disable_redirects
+	# Браузер не шлёт SNI, когда сайт открыт по IP: тогда — сертификат второго адреса.
+	default_sni {$DEV_LAN_HOST:127.0.0.1}
 	servers {
 		protocols h1 h2
 	}
 }
 
-https://localhost {
+# Заголовки безопасности для всех ответов. defer: применяются последними, поверх
+# заголовков сервера и эмулятора.
+#
+# Referrer-Policy same-origin: чужие сайты не видят путей с кодом стола и id сессии,
+# а свои POST сохраняют заголовок Origin, по которому сервер проверяет запросы с cookie
+# (при no-referrer браузер шлёт Origin: null и проверка сломалась бы).
+#
+# HSTS — только не для localhost и 127.0.0.1: иначе браузер навсегда переводит на https
+# любой локальный порт разработчика. Для IP браузеры HSTS и так игнорируют.
+(security) {
+	header {
+		defer
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), browsing-topics=()"
+		-Server
+	}
+	@hsts not host localhost 127.0.0.1
+	header @hsts Strict-Transport-Security "max-age=31536000"
+}
+
+# CSP приложений: всё только со своего хоста (decisions №22), без inline-скриптов и стилей.
+# data: — только для картинок (мелкие SVG Vite встраивает как data:).
+# Аргумент — frame-ancestors (кто может показывать страницу во фрейме).
+(csp) {
+	header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; media-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors {args[0]}"
+}
+
+# Статическая сборка Vite с откатом на index.html для маршрутов SPA.
+# Аргументы: название приложения и папка пакета (для подсказки, если сборки нет).
+(spa) {
+	encode zstd gzip
+
+	@nobuild not file /index.html
+	handle @nobuild {
+		header Cache-Control "no-store"
+		respond "{args[0]}: нет сборки ({args[1]}/dist/index.html). Соберите: npm run dev или npm run build -w {args[1]}." 503
+	}
+
+	# Ассеты Vite с хешем в имени не меняются — кэш на год.
+	handle /assets/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# Путь с расширением — только настоящий файл (иначе 404, а не index.html).
+	# index.html, sw.js, манифест и прочее без хеша — с проверкой при каждом открытии.
+	@file path_regexp \.[A-Za-z0-9]+$
+	handle @file {
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	# Остальное — маршруты приложения (/app/t/{code} и т. п.): index.html.
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# Ответы сервера: JSON, SSE, PDF наклеек. Сервер может задать свои Cache-Control и CSP,
+# иначе — эти (? — только если заголовка нет). Тело запроса — не больше 1 МБ.
+(api) {
+	header {
+		?Cache-Control "no-store"
+		?Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+	}
+	request_body {
+		max_size 1MB
+	}
+}
+
+https://localhost, https://{$DEV_LAN_HOST:127.0.0.1} {
 	tls internal
-	reverse_proxy server:3000
+	import security
+
+	# redir <путь> <куда> <код>: первый аргумент — точный путь.
+	redir / /app/ 302
+	redir /app /app/ 308
+	redir /club /club/ 308
+
+	# Поток событий (SSE): каждое событие уходит клиенту сразу.
+	handle /api/stream* {
+		import api
+		reverse_proxy server:3000 {
+			flush_interval -1
+		}
+	}
+
+	# API, короткие ссылки со стикеров (/t/{code} → сервер перенаправит на /app/t/{code})
+	# и проверка живости.
+	@server path /api/* /t/* /health
+	handle @server {
+		import api
+		reverse_proxy server:3000
+	}
+
+	# Эмулятор ЮKassa: страница подтверждения оплаты /pay/{id} на том же хосте, что и
+	# приложение. Только разработка. Свои CSP и Cache-Control эмулятора главнее (?).
+	# Если сервис yookassa-emu не запущен (пакета ещё нет) — 502.
+	handle /pay/* {
+		header {
+			?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+			?Cache-Control "no-store"
+		}
+		reverse_proxy yookassa-emu:8090
+	}
+
+	# Приложение гостя. Во фрейме его показывают только веб-версии мессенджеров:
+	# мини-приложения Telegram (web.telegram.org) и MAX (web.max.ru). В мобильных и
+	# настольных клиентах мини-приложение открывается в WebView, без фрейма.
+	handle_path /app/* {
+		root * /srv/web/guest/dist
+		import csp "'self' https://web.telegram.org https://web.max.ru"
+		import spa "Приложение гостя" "web/guest"
+	}
+
+	# Программа клуба: никогда не во фрейме (защита от кликджекинга на кнопках персонала).
+	handle_path /club/* {
+		root * /srv/web/admin/dist
+		import csp "'none'"
+		import spa "Программа клуба" "web/admin"
+	}
+
+	handle {
+		header Cache-Control "no-store"
+		respond "Не найдено" 404
+	}
 }

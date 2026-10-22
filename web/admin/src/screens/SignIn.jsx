@@ -1,0 +1,153 @@
+import { useEffect, useState } from 'preact/hooks';
+import { Icon } from '../components/Icon.jsx';
+import { ErrorNote } from '../components/ErrorNote.jsx';
+import { DEV_LOGIN, BASE } from '../lib/env.js';
+import { getTerminal } from '../lib/api.js';
+import { startBotLink, pendingBotLink, checkBotLink, cancelBotLink, devLogin, normalizePhone } from '../lib/auth.js';
+import { linkHandler } from '../lib/router.js';
+
+const NAME = { max: 'MAX', telegram: 'Telegram' };
+
+/** Вход персонала: телефон через бота MAX или Telegram, в разработке — по номеру; на терминале — смена по PIN. */
+export function SignIn() {
+  const [link, setLink] = useState(() => pendingBotLink());
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const terminal = getTerminal();
+
+  useEffect(() => {
+    if (!link) return undefined;
+    let stopped = false;
+    let timer;
+    const poll = async () => {
+      try {
+        const status = await checkBotLink(link.nonce);
+        if (stopped || status === 'done') return;
+        if (status === 'expired') {
+          setLink(null);
+          return;
+        }
+      } catch (err) {
+        if (!stopped) setError(err);
+      }
+      if (!stopped) timer = setTimeout(poll, 2000);
+    };
+    timer = setTimeout(poll, 1500);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [link?.nonce]);
+
+  const start = async (channel) => {
+    setBusy(channel);
+    setError(null);
+    try {
+      setLink(await startBotLink(channel));
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div class="signin" data-theme="dark">
+      <div class="signin__card">
+        <p class="signin__brand display">Бильярдум</p>
+        <h1 class="signin__title">Вход для персонала клуба</h1>
+        {link ? (
+          <div class="form">
+            <p class="lead">Откройте бота в {NAME[link.channel]}, нажмите «Поделиться контактом» и вернитесь сюда.</p>
+            <a class="btn btn--primary btn--block btn--lg" href={link.deep_link} target="_blank" rel="noopener noreferrer">
+              Открыть {NAME[link.channel]}
+              <Icon name="external" />
+            </a>
+            <p class="muted" role="status">
+              Ждём подтверждения…
+            </p>
+            <button
+              type="button"
+              class="btn btn--link"
+              onClick={() => {
+                cancelBotLink();
+                setLink(null);
+              }}
+            >
+              Выбрать другой мессенджер
+            </button>
+          </div>
+        ) : (
+          <div class="form">
+            <p class="hint">Войдите по номеру телефона, который владелец клуба добавил в персонал. Подтверждение — в мессенджере, без кодов.</p>
+            <button type="button" class="btn btn--primary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => start('max')}>
+              {busy === 'max' ? 'Открываем MAX…' : 'Войти через MAX'}
+            </button>
+            <button type="button" class="btn btn--secondary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => start('telegram')}>
+              {busy === 'telegram' ? 'Открываем Telegram…' : 'Войти через Telegram'}
+            </button>
+            {terminal ? (
+              <a class="btn btn--quiet btn--block btn--lg" href={`${BASE}pin`} onClick={linkHandler}>
+                <Icon name="key" />
+                Быстрая смена по PIN
+              </a>
+            ) : null}
+          </div>
+        )}
+        <ErrorNote error={error} />
+        {DEV_LOGIN ? <DevLogin /> : null}
+      </div>
+    </div>
+  );
+}
+
+function DevLogin() {
+  const [phone, setPhone] = useState('');
+  const [invalid, setInvalid] = useState(false);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    const p = normalizePhone(phone);
+    setInvalid(!p);
+    if (!p) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await devLogin(p);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form class="devlogin form" onSubmit={submit} noValidate>
+      <p class="devlogin__tag">Только для разработки</p>
+      <div class="field">
+        <label class="field__label" for="dev-phone">
+          Телефон сотрудника
+        </label>
+        <input
+          id="dev-phone"
+          class="field__input"
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
+          placeholder="+7 900 000-00-00"
+          value={phone}
+          aria-invalid={invalid ? 'true' : undefined}
+          aria-describedby="dev-phone-hint"
+          onInput={(e) => setPhone(e.currentTarget.value)}
+        />
+        <p class={invalid ? 'field__error' : 'field__hint'} id="dev-phone-hint">
+          {invalid ? 'Введите российский номер: +7 и 10 цифр.' : 'POST /api/auth/dev, в проде его нет.'}
+        </p>
+      </div>
+      <button type="submit" class="btn btn--quiet btn--block" disabled={busy}>
+        {busy ? 'Входим…' : 'Войти по номеру'}
+      </button>
+      <ErrorNote error={error} />
+    </form>
+  );
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Интеграционный тест симулятора с настоящим брокером (контракт M0 §10).
-// Поднимает свой контейнер bl-sim-mqtt (eclipse-mosquitto:2.1.2-alpine, decisions №40; порт 18883) с временным
+// Интеграционный тест симулятора с настоящим брокером (контракты M0 §10, M1 §9).
+// Поднимает свой контейнер bl-fw-mqtt (eclipse-mosquitto:2.1.2-alpine, decisions №40; порт 18884) с временным
 // конфигом: вход по паролю, ACL как у Dynamic Security (устройство — только свои топики),
 // TLS с одноразовым CA, если на хосте есть openssl (иначе mqtt:// и предупреждение).
 // Запускает test/integration.test.mjs и удаляет контейнер.
@@ -13,13 +13,14 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const NAME = 'bl-sim-mqtt';
+const NAME = process.env.SIM_IT_CONTAINER || 'bl-fw-mqtt';
 const IMAGE = 'eclipse-mosquitto:2.1.2-alpine';
-const PORT = 18883;
+const PORT = Number(process.env.SIM_IT_PORT || 18884);
 const OBSERVER = 'bl-sim-it';
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -50,6 +51,17 @@ function makeCerts(dir) {
   sh('openssl', ['x509', '-req', '-in', p('server.csr'), '-CA', p('ca.crt'), '-CAkey', p('ca.key'), '-CAcreateserial',
     '-days', '2', '-sha256', '-extfile', p('ext.cnf'), '-out', p('server.crt')], 'сертификат брокера');
   rmSync(p('ca.key'));
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
 }
 
 async function waitForBroker() {
@@ -139,6 +151,7 @@ async function main() {
         SIM_IT_DEVICES_FILE: devicesFile,
         SIM_IT_OBSERVER_USER: OBSERVER,
         SIM_IT_OBSERVER_PASSWORD: observerPassword,
+        SIM_IT_CONTROL_PORT: String(await freePort()),
       },
     });
     code = await new Promise((resolve) => child.on('exit', (c) => resolve(c ?? 1)));

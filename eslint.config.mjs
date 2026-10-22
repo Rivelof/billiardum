@@ -1,6 +1,7 @@
 // ESLint (flat config) для всего репозитория: Node 22, ESM.
 // web/ и shared/ работают в браузере — им только браузерные глобалы;
-// их тесты и служебные скрипты идут в Node.
+// их тесты и служебные скрипты идут в Node. JSX (*.jsx, Preact) разбирается,
+// ссылки на компоненты в JSX ESLint 10 учитывает сам (no-unused-vars).
 
 import js from '@eslint/js';
 import globals from 'globals';
@@ -25,7 +26,7 @@ export default [
   },
   js.configs.recommended,
   {
-    files: ['**/*.{js,mjs,cjs}'],
+    files: ['**/*.{js,mjs,cjs,jsx}'],
     languageOptions: {
       // Синтаксис, который понимает Node 22 (в том числе import ... with { type: 'json' }).
       ecmaVersion: 2025,
@@ -38,12 +39,16 @@ export default [
     },
   },
   {
+    files: ['**/*.jsx'],
+    languageOptions: { sourceType: 'module', parserOptions: { ecmaFeatures: { jsx: true } } },
+  },
+  {
     files: ['**/*.{js,mjs,cjs}'],
     ignores: BROWSER,
     languageOptions: { globals: { ...globals.node } },
   },
   {
-    files: BROWSER.map((dir) => `${dir}/*.{js,mjs}`),
+    files: BROWSER.map((dir) => `${dir}/*.{js,mjs,jsx}`),
     languageOptions: { globals: { ...globals.browser } },
   },
   {

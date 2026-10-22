@@ -2,15 +2,22 @@
   "name": "@billiardum/shared",
   "version": "0.1.0",
   "private": true,
-  "description": "Бильярдум: токены дизайна, локальные шрифты, склонения и форматы ru-RU",
+  "description": "Бильярдум: токены дизайна, шрифты, базовые стили, склонения и форматы ru-RU, клиент API, тексты ошибок, зал",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "exports": {
     "./format": "./format.mjs",
+    "./api": "./api.mjs",
+    "./errors": "./errors.mjs",
+    "./hall": "./hall.mjs",
+    "./icons": "./icons.mjs",
+    "./reasons": "./reasons.mjs",
     "./tokens.css": "./tokens.css",
     "./fonts.css": "./fonts.css",
+    "./hall.css": "./hall.css",
+    "./ui.css": "./ui.css",
     "./package.json": "./package.json"
   },
   "sideEffects": [

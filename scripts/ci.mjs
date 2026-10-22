@@ -1,24 +1,41 @@
-// `npm run ci`: то же, что .github/workflows/ci.yml, локально (контракт M0 §9).
-// lint → test → test:it симулятора (свой брокер в Docker) → чистый Postgres
-// (supabase/postgres) в отдельном контейнере на свободном порту → роли в
-// supautils.reserved_roles (deploy/postgres/reserved-roles.sh) → db:migrate →
-// db:seed → test:db → контейнер удаляется.
+// `npm run ci`: то же, что .github/workflows/ci.yml, локально (контракты M0 §9 и M1 §11).
 // Только синтетические данные сида (decisions №21). .env не читается.
 //
-//   npm run ci             — всё
-//   npm run ci -- --db     — только этап базы (чистый Postgres, migrate, seed, test:db)
+// Этапы:
+//   --base    lint → test → test:it симулятора (свой брокер в Docker)
+//   --config  docker compose config, caddy validate, mosquitto --test-config (в контейнерах)
+//   --web     сборка web/guest и web/admin, бюджет JS гостя (npm run size -w web/guest)
+//   --fw      нативные тесты прошивки: CMake + g++ (firmware/test/native), ctest
+//   --db      чистый Postgres (supabase/postgres) в отдельном контейнере на свободном
+//             порту → роли в supautils.reserved_roles → db:migrate → db:seed → test:db
+//   --pio     pio run -e esp32dev и pio test -e native (нужен PlatformIO, см. PIO_VERSION);
+//             в CI — отдельная задача, в «всё» не входит
+//
+//   npm run ci                  — base, config, web, fw, db
+//   npm run ci -- --web --fw    — только эти этапы
+//
+// Пакеты, которых ещё нет (web/*, firmware/), пропускаются с сообщением; в GitHub — с
+// пометкой ::notice в сводке. Пакет есть, а нужного скрипта или инструмента нет — ошибка.
 
 import { randomBytes } from 'node:crypto';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   capture,
   checkDocker,
+  composeArgs,
+  EMU_PROFILE,
+  ENV_EXAMPLE,
   fail,
   isMain,
   makeLogger,
+  packageScript,
   POSTGRES_IMAGE,
   RESERVED_ROLES_SCRIPT,
+  ROOT,
   run,
   runChecked,
   runMain,
@@ -28,8 +45,35 @@ import {
 const log = makeLogger('ci');
 const READY_TIMEOUT_MS = 180_000;
 
+/** Версия PlatformIO для `--pio` и задачи CI firmware-pio (закреплена). */
+export const PIO_VERSION = '6.1.19';
+const CADDY_IMAGE = 'caddy:2.11.7-alpine';
+const MOSQUITTO_IMAGE = 'eclipse-mosquitto:2.1.2-alpine';
+const FW_NATIVE_DIR = join('firmware', 'test', 'native');
+
+export const STAGES = ['base', 'config', 'web', 'fw', 'db', 'pio'];
+const DEFAULT_STAGES = ['base', 'config', 'web', 'fw', 'db'];
+
 let container = null;
 let interrupted = false;
+
+/** Пропуск шага: в лог и, в GitHub Actions, в сводку задачи. */
+function notice(message) {
+  log(`пропуск: ${message}`);
+  if (process.env.GITHUB_ACTIONS === 'true') console.log(`::notice title=CI: шаг пропущен::${message}`);
+}
+
+export function parseCiArgs(args) {
+  const picked = [];
+  for (const a of args) {
+    const stage = a.replace(/^--/, '');
+    if (!a.startsWith('--') || !STAGES.includes(stage)) {
+      fail(`неизвестный параметр ${a}. Этапы: ${STAGES.map((s) => `--${s}`).join(' ')}; без параметров — ${DEFAULT_STAGES.join(', ')}.`);
+    }
+    if (!picked.includes(stage)) picked.push(stage);
+  }
+  return picked.length > 0 ? STAGES.filter((s) => picked.includes(s)) : DEFAULT_STAGES;
+}
 
 function removeContainer() {
   if (!container) return;
@@ -77,26 +121,108 @@ async function startPostgres() {
   return { port, password };
 }
 
-async function main() {
-  process.on('SIGINT', () => {
-    interrupted = true;
-  });
-  process.on('exit', removeContainer);
+async function stageBase() {
+  log('lint');
+  await runNpm(['run', 'lint']);
+  log('test');
+  await runNpm(['test']);
+  log('test:it симулятора');
+  await runNpm(['run', 'test:it', '-w', 'tools/device-sim']);
+}
 
-  const args = process.argv.slice(2);
-  if (args.some((a) => a !== '--db')) fail(`неизвестные параметры: ${args.join(' ')}. Есть только --db.`);
-  const dbOnly = args.includes('--db');
+/** Конфиги окружения разработки: Compose, Caddy, Mosquitto — их же образами. */
+async function stageConfig() {
+  log('docker compose config (с профилем эмулятора, переменные из .env.example)');
+  await runChecked('docker', composeArgs(ENV_EXAMPLE, '--profile', EMU_PROFILE, 'config', '--quiet'), {}, 'docker compose config');
 
-  checkDocker();
-  if (!dbOnly) {
-    log('lint');
-    await runNpm(['run', 'lint']);
-    log('test');
-    await runNpm(['test']);
-    log('test:it симулятора');
-    await runNpm(['run', 'test:it', '-w', 'tools/device-sim']);
+  log(`caddy validate (${CADDY_IMAGE})`);
+  const caddyfile = join(ROOT, 'deploy', 'dev', 'Caddyfile');
+  await runChecked(
+    'docker',
+    ['run', '--rm', '-e', 'DEV_LAN_HOST=192.168.1.10', '-v', `${caddyfile}:/etc/caddy/Caddyfile:ro`, CADDY_IMAGE,
+      'caddy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'],
+    {},
+    'caddy validate',
+  );
+
+  log(`mosquitto --test-config (${MOSQUITTO_IMAGE})`);
+  const conf = join(ROOT, 'deploy', 'dev', 'mosquitto', 'mosquitto.conf');
+  await runChecked(
+    'docker',
+    ['run', '--rm', '-v', `${conf}:/mosquitto/config/mosquitto.conf:ro`, MOSQUITTO_IMAGE,
+      'mosquitto', '-c', '/mosquitto/config/mosquitto.conf', '--test-config'],
+    {},
+    'mosquitto --test-config',
+  );
+}
+
+/** Сборка обоих приложений и бюджет JS гостя (< 200 КБ gzip, PRODUCT §20). */
+async function stageWeb() {
+  for (const dir of ['web/guest', 'web/admin']) {
+    const r = packageScript(dir, 'build');
+    if (!r.ok && !existsSync(join(ROOT, dir, 'package.json'))) {
+      notice(`${dir}: пакета ещё нет, сборка пропущена`);
+      continue;
+    }
+    if (!r.ok) fail(`${dir}: ${r.reason}`);
+    log(`сборка ${dir}`);
+    await runNpm(['run', 'build', '-w', dir], { env: buildEnv() });
+    if (dir === 'web/guest') {
+      const size = packageScript(dir, 'size');
+      if (!size.ok) fail(`${dir}: ${size.reason} — бюджет JS гостя (200 КБ gzip) не проверить`);
+      log('бюджет JS гостя: npm run size -w web/guest');
+      await runNpm(['run', 'size', '-w', dir], { env: buildEnv() });
+    }
   }
+}
 
+function buildEnv() {
+  const env = { ...process.env };
+  delete env.NODE_ENV; // vite build при NODE_ENV=development собрал бы отладочную версию
+  return env;
+}
+
+function need(tool, args, hint) {
+  const r = capture(tool, args);
+  if (r.error?.code === 'ENOENT' || r.code !== 0) fail(`${tool} не найден. ${hint}`);
+  return r.stdout.split('\n')[0].trim();
+}
+
+/** Нативные тесты логики прошивки: CMake + g++ в отдельной папке сборки, ctest. */
+async function stageFirmwareNative() {
+  if (!existsSync(join(ROOT, FW_NATIVE_DIR, 'CMakeLists.txt'))) {
+    notice(`${FW_NATIVE_DIR.replaceAll('\\', '/')}/CMakeLists.txt ещё нет, нативные тесты прошивки пропущены`);
+    return;
+  }
+  const hint = 'Нужны CMake 3.20+ и компилятор C++ (Linux: apt install cmake g++; macOS: brew install cmake). Без этапа: npm run ci -- --base --config --web --db';
+  log(`${need('cmake', ['--version'], hint)}; ${need('c++', ['--version'], hint)}`);
+  const build = mkdtempSync(join(tmpdir(), 'bl-fw-native-'));
+  try {
+    await runChecked('cmake', ['-S', join(ROOT, FW_NATIVE_DIR), '-B', build, '-DCMAKE_BUILD_TYPE=Debug'], {}, 'cmake configure');
+    await runChecked('cmake', ['--build', build, '--parallel'], {}, 'cmake --build');
+    // --no-tests=error: CMakeLists без add_test не должен «проходить» молча.
+    await runChecked('ctest', ['--test-dir', build, '--output-on-failure', '--no-tests=error'], {}, 'ctest');
+  } finally {
+    rmSync(build, { recursive: true, force: true });
+  }
+}
+
+/** Сборка прошивки под ESP32 и тесты PlatformIO (реестр PlatformIO нужен в сети). */
+async function stagePio() {
+  if (!existsSync(join(ROOT, 'firmware', 'platformio.ini'))) {
+    notice('firmware/platformio.ini ещё нет, pio run и pio test пропущены');
+    return;
+  }
+  const version = need('pio', ['--version'], `Установите PlatformIO ${PIO_VERSION}: python3 -m pip install platformio==${PIO_VERSION}`);
+  if (!version.includes(PIO_VERSION)) log(`внимание: ${version}, в CI закреплена ${PIO_VERSION}`);
+  const dir = join(ROOT, 'firmware');
+  log('pio run -e esp32dev');
+  await runChecked('pio', ['run', '-d', dir, '-e', 'esp32dev'], {}, 'pio run -e esp32dev');
+  log('pio test -e native');
+  await runChecked('pio', ['test', '-d', dir, '-e', 'native'], {}, 'pio test -e native');
+}
+
+async function stageDb() {
   try {
     const { port, password } = await startPostgres();
     const appPassword = randomBytes(24).toString('hex');
@@ -113,7 +239,25 @@ async function main() {
   } finally {
     removeContainer();
   }
-  log('всё зелёное');
+}
+
+const RUNNERS = { base: stageBase, config: stageConfig, web: stageWeb, fw: stageFirmwareNative, db: stageDb, pio: stagePio };
+const NEEDS_DOCKER = new Set(['base', 'config', 'db']);
+
+async function main() {
+  process.on('SIGINT', () => {
+    interrupted = true;
+  });
+  process.on('exit', removeContainer);
+
+  const stages = parseCiArgs(process.argv.slice(2));
+  if (stages.some((s) => NEEDS_DOCKER.has(s))) checkDocker();
+  for (const stage of stages) {
+    log(`этап ${stage}`);
+    await RUNNERS[stage]();
+  }
+  if (!stages.includes('pio')) log(`pio run и pio test — отдельно: npm run ci -- --pio (PlatformIO ${PIO_VERSION}), в GitHub — задача firmware-pio`);
+  log(`всё зелёное: ${stages.join(', ')}`);
   return 0;
 }
 

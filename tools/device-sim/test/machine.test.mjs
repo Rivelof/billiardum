@@ -1,12 +1,13 @@
 // Конечный автомат без MQTT: загрузка, state, периодичность, ping, identify, тело команд,
 // события (boot_id, буфер 64, events_dropped, ограничение частоты, NVS только без связи).
+// Сессии, сигналы и правило 4 — в общих сценариях (scenarios.test.mjs) и machine-m1.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CAPS, REJECT_EVENT_INTERVAL_MS, SIM_FW, STATE_PERIOD_MS, TableMachine } from '../lib/machine.mjs';
 import { FakeClock } from '../lib/clock.mjs';
 import { EVENT_RING_CAPACITY, EventRing, MemoryNvs, NVS_KEYS } from '../lib/nvs.mjs';
 import { BODY_SPECS, validateBody } from '../lib/body.mjs';
-import { COMMAND_TYPES, EXECUTED_IN_M0, LEDS, MODE_OUTPUTS, MODES, TRANSITIONS } from '../lib/modes.mjs';
+import { COMMAND_TYPES, LEDS, MODE_OUTPUTS, MODES, TRANSITIONS } from '../lib/modes.mjs';
 import { makeCommand, signed, TEST_KEY_B64 } from './helpers/sign.mjs';
 
 const STATE_KEYS = [
@@ -176,18 +177,21 @@ test('identify: неверное тело — bad_body, seq принят и от
   noLed.machine.stop();
 });
 
-test('верные тела типов до M1 — unknown_type; стол остаётся free со светом выключенным', () => {
-  const { send, machine, out } = rig();
-  const notYet = COMMAND_TYPES.filter((t) => !EXECUTED_IN_M0.has(t));
-  assert.equal(notYet.length, 11);
-  for (const type of notYet) {
+test('все типы §3.3 исполняются из free: extend и stop без сессии — wrong_session', () => {
+  const expected = {
+    'session.extend': 'wrong_session',
+    'session.stop': 'wrong_session',
+  };
+  for (const type of COMMAND_TYPES) {
+    const { send, machine } = rig();
     assert.ok(validateBody(type, VALID_BODIES[type]).ok, type);
     const ack = send(type, VALID_BODIES[type]);
-    assert.deepEqual([ack.ok, ack.error], [false, 'unknown_type'], type);
+    assert.equal(ack.ok ? 'ok' : ack.error, expected[type] ?? 'ok', type);
+    machine.stop();
   }
+  const { send, machine } = rig();
   assert.deepEqual([send('no.such.type', { anything: [1] }).error], ['unknown_type']);
   assert.equal(machine.mode, 'free');
-  assert.ok(out.states.every((s) => s.relay === false));
   machine.stop();
 });
 
@@ -209,6 +213,13 @@ test('bad_body: нет поля, не тот тип значения, вне д�
     ['session.extend', { session_id: SESSION, buzzer: true }, 'remaining_ms'],
     ['session.stop', { session_id: SESSION }, 'reason_code'],
     ['session.stop', { session_id: SESSION, reason_code: '' }, 'reason_code'],
+    ['session.stop', { session_id: SESSION, reason_code: 'Guest' }, 'reason_code'],
+    ['session.stop', { session_id: SESSION, reason_code: 'a'.repeat(33) }, 'reason_code'],
+    ['service.start', { duration_ms: 1, reason_code: 'a b' }, 'reason_code'],
+    ['service.start', { duration_ms: 86_400_001, reason_code: 'cleaning' }, 'duration_ms'],
+    ['identify', { duration_ms: 0 }, 'duration_ms'],
+    ['config.set', { current_confirm_ms: 600_001 }, 'current_confirm_ms'],
+    ['config.set', { grace_blink_s: 3601 }, 'grace_blink_s'],
     ['service.start', { reason_code: 'cleaning' }, 'duration_ms'],
     ['state.pending', { until_ms: -1 }, 'until_ms'],
     ['state.reserved', {}, 'until_ms'],
@@ -227,6 +238,8 @@ test('bad_body: нет поля, не тот тип значения, вне д�
     ...VALID_BODIES['session.start'], warn_ms: [300_000, 60_000], grace_ms: 120_000,
   });
   assert.deepEqual(validateBody('config.set', {}).body, {});
+  assert.equal(validateBody('session.stop', { session_id: SESSION, reason_code: 'a'.repeat(32) }).ok, true);
+  assert.equal(validateBody('service.start', { duration_ms: 1, reason_code: 'z_9' }).ok, true);
 
   const { send, machine } = rig();
   const ack = send('session.start', { session_id: SESSION, remaining_ms: 0, buzzer: true });
@@ -296,7 +309,7 @@ test('NVS: при связи доставленные события в NVS не
   machine.handleCommand(Buffer.from(signed(makeCommand({ seq: 1 })))); // replayed_seq без связи
   assert.ok(nvs.writes > offline, 'недоставленное событие записано');
   assert.deepEqual(machine.outbox().map((e) => e.type), ['replayed_seq']);
-  // Буфер переживает новую загрузку на том же NVS (M1: перезагрузка).
+  // Буфер переживает новую загрузку на том же NVS (перезагрузка).
   machine.stop();
   const again = new TableMachine({ deviceKey: Buffer.from(TEST_KEY_B64, 'base64'), clock: new FakeClock(), nvs });
   again.start();

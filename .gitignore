@@ -28,3 +28,7 @@ dist/
 # Системные файлы
 .DS_Store
 Thumbs.db
+
+# Корень CA Caddy, скачанный для телефона (README)
+/root.crt
+/caddy-root.crt

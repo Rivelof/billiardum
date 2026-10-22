@@ -1,0 +1,19 @@
+{
+  "name": "Стоп сессии",
+  "description": "session.stop гасит свет сразу; чужая или уже закрытая сессия — wrong_session.",
+  "steps": [
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000007", "remaining_ms": 60000, "buzzer": true }, "ack": "wrong_session" },
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000007", "remaining_ms": 600000, "buzzer": true } },
+    { "advance_ms": 1000 },
+    { "cmd": "session.stop", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000099", "reason_code": "guest_finished" }, "ack": "wrong_session" },
+    { "expect": { "mode": "active", "relay": true, "remaining_ms": 599000 } },
+    { "cmd": "session.stop", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000007", "reason_code": "guest_finished" } },
+    { "expect": { "mode": "free", "relay": false, "lamp": false, "led": "green_dim", "session_id": null, "remaining_ms": null, "buzzer": false, "nvs_session": null, "last_seq": 4 } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000007", "remaining_ms": 60000, "buzzer": true }, "ack": "wrong_session" },
+    { "cmd": "session.stop", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000007", "reason_code": "guest_finished" }, "ack": "wrong_session" },
+    { "expect": { "mode": "free", "relay": false } },
+    { "advance_ms": 600000 },
+    { "expect": { "mode": "free", "signals": { "warn": 0, "grace": 0 } } },
+    { "events": ["boot"] }
+  ]
+}

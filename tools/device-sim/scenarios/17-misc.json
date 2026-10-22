@@ -1,0 +1,31 @@
+{
+  "name": "identify, config.set в NVS, ota.start",
+  "description": "identify мигает индикатором и не трогает свет; config.set переживает перезагрузку и меняет период мигания в льготу; ota.start только в free, второй — busy_ota, команда сессии прерывает обновление (ota_failed: aborted).",
+  "steps": [
+    { "cmd": "identify", "body": { "duration_ms": 5000 } },
+    { "expect": { "mode": "free", "led": "identify", "relay": false } },
+    { "advance_ms": 4999 },
+    { "expect": { "led": "identify" } },
+    { "advance_ms": 1 },
+    { "expect": { "led": "green_dim" } },
+    { "cmd": "config.set", "body": { "led_brightness": 10, "grace_blink_s": 5 } },
+    { "reboot": { "reset_reason": "sw" } },
+    { "expect": { "boot": 2, "last_seq": 2, "config": { "led_brightness": 10, "grace_blink_s": 5, "grace_dim": 30, "current_on_ma": 50, "current_confirm_ms": 10000 } } },
+    { "cmd": "ping" },
+    { "cmd": "ota.start", "body": { "url": "https://billiardum.ru/fw/1.0.4.bin", "version": "1.0.4", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "image_sig": "MEUCIQ" } },
+    { "cmd": "ota.start", "body": { "url": "https://billiardum.ru/fw/1.0.4.bin", "version": "1.0.4", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "image_sig": "MEUCIQ" }, "ack": "busy_ota" },
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000022", "remaining_ms": 1000, "warn_ms": [500, 200], "grace_ms": 12000, "buzzer": true } },
+    { "cmd": "ota.start", "body": { "url": "https://billiardum.ru/fw/1.0.4.bin", "version": "1.0.4", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "image_sig": "MEUCIQ" }, "ack": "busy_ota" },
+    { "cmd": "identify", "body": { "duration_ms": 300 } },
+    { "expect": { "mode": "active", "led": "identify", "relay": true } },
+    { "advance_ms": 300 },
+    { "expect": { "led": "off" } },
+    { "advance_ms": 700 },
+    { "expect": { "mode": "grace", "signals": { "warn": 1, "blink2": 1, "grace": 1, "grace_blink": 1 } } },
+    { "advance_ms": 11999 },
+    { "expect": { "mode": "grace", "signals": { "grace_blink": 3 } } },
+    { "advance_ms": 1 },
+    { "expect": { "mode": "free" } },
+    { "events": ["boot", { "type": "boot", "data": { "reset_reason": "sw" } }, { "type": "ota_failed", "data": { "version": "1.0.4", "error": "aborted" } }] }
+  ]
+}

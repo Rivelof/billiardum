@@ -16,6 +16,9 @@ export const DEVICES_FILE = join(ROOT, 'deploy', 'dev', 'devices.json');
 export const POSTGRES_IMAGE = 'supabase/postgres:15.8.1.085';
 /** Наши роли в supautils.reserved_roles; выполняется внутри контейнера базы. */
 export const RESERVED_ROLES_SCRIPT = join(ROOT, 'deploy', 'postgres', 'reserved-roles.sh');
+/** Эмулятор ЮKassa: сервис Compose в своём профиле, стартует, только когда есть пакет. */
+export const EMU_PROFILE = 'yookassa-emu';
+export const EMU_ENTRY = 'tools/yookassa-emu/index.mjs';
 
 /** Ошибка, понятная человеку: печатается без стека. */
 export class UserError extends Error {}

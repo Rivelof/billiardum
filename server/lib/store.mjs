@@ -2,30 +2,44 @@
 // (set_config(..., true) действует до конца транзакции), RLS отсекает чужое.
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const ACTOR_TYPES = ['user', 'system', 'device', 'support'];
+
+/** Действия после коммита транзакции withContext: клиент → список функций. */
+const afterCommitHooks = new WeakMap();
+
+function checkUuid(value, name) {
+  if (value !== null && !UUID.test(value)) throw new Error(`${name} не UUID`);
+}
 
 /**
  * Транзакция с контекстом запроса (контракт M0 §5).
+ * После коммита выполняет функции, отложенные через afterCommit(client, fn) — например,
+ * публикацию в SSE или в MQTT: событие уходит только о том, что уже записано.
+ * Ошибка такой функции пишется в лог (onHookError), результат транзакции не меняет.
  * @template T
  * @param {import('pg').Pool} pool
  * @param {{ clubId: string|null, userId?: string|null, actorType: 'user'|'system'|'device'|'support' }} ctx
  * @param {(client: import('pg').PoolClient) => Promise<T>} fn
+ * @param {{ onHookError?: (err: Error) => void }} [options]
  * @returns {Promise<T>}
  */
-export async function withContext(pool, { clubId, userId = null, actorType }, fn) {
-  if (clubId !== null && !UUID.test(clubId)) throw new Error('clubId не UUID');
-  if (userId !== null && !UUID.test(userId)) throw new Error('userId не UUID');
-  if (!['user', 'system', 'device', 'support'].includes(actorType)) throw new Error('неизвестный actorType');
+export async function withContext(pool, { clubId, userId = null, actorType }, fn, { onHookError } = {}) {
+  checkUuid(clubId, 'clubId');
+  checkUuid(userId, 'userId');
+  if (!ACTOR_TYPES.includes(actorType)) throw new Error('неизвестный actorType');
   const client = await pool.connect();
   let broken = null;
+  const hooks = [];
+  let result;
   try {
     await client.query('begin');
+    afterCommitHooks.set(client, hooks);
     await client.query(
       "select set_config('app.club_id', $1, true), set_config('app.user_id', $2, true), set_config('app.actor_type', $3, true)",
       [clubId ?? '', userId ?? '', actorType],
     );
-    const result = await fn(client);
+    result = await fn(client);
     await client.query('commit');
-    return result;
   } catch (err) {
     try {
       await client.query('rollback');
@@ -34,8 +48,51 @@ export async function withContext(pool, { clubId, userId = null, actorType }, fn
     }
     throw err;
   } finally {
+    afterCommitHooks.delete(client);
     client.release(broken ?? undefined);
   }
+  for (const hook of hooks) {
+    try {
+      await hook();
+    } catch (err) {
+      if (onHookError) onHookError(err);
+      else process.stderr.write(`${JSON.stringify({ t: new Date().toISOString(), level: 'error', msg: 'after_commit_failed', error: err.message })}\n`);
+    }
+  }
+  return result;
+}
+
+/**
+ * Отложить fn до коммита транзакции withContext, в которой работает client.
+ * Вне такой транзакции (клиент без хуков) fn выполняется сразу.
+ */
+export async function afterCommit(client, fn) {
+  const hooks = client ? afterCommitHooks.get(client) : undefined;
+  if (hooks) hooks.push(fn);
+  else await fn();
+}
+
+/**
+ * Сменить контекст внутри текущей транзакции (SET LOCAL через set_config(..., true)).
+ * Передаются только меняемые поля: { clubId } — клуб, { userId } — пользователь.
+ */
+export async function setContext(client, { clubId, userId, actorType } = {}) {
+  if (clubId !== undefined) {
+    checkUuid(clubId, 'clubId');
+    await client.query("select set_config('app.club_id', $1, true)", [clubId ?? '']);
+  }
+  if (userId !== undefined) {
+    checkUuid(userId, 'userId');
+    await client.query("select set_config('app.user_id', $1, true)", [userId ?? '']);
+  }
+  if (actorType !== undefined) {
+    if (!ACTOR_TYPES.includes(actorType)) throw new Error('неизвестный actorType');
+    await client.query("select set_config('app.actor_type', $1, true)", [actorType]);
+  }
+}
+
+export function isUuid(value) {
+  return typeof value === 'string' && UUID.test(value);
 }
 
 /** Команда не отправляется: транзакция откатывается, seq и журнал не тратятся. */

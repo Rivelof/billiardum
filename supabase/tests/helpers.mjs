@@ -35,7 +35,17 @@ export async function createTestDatabase({ withSeed = true } = {}) {
   const root = new pg.Client({ connectionString: adminUrl() });
   await root.connect();
   try {
-    await root.query(`create database ${name} template template1`);
+    // CREATE DATABASE … TEMPLATE отказывает (55006), пока к template1 подключён кто-то ещё —
+    // например, соседний файл тестов создаёт свою базу в тот же момент. Повтор с паузой.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await root.query(`create database ${name} template template1`);
+        break;
+      } catch (err) {
+        if (err.code !== '55006' || attempt >= 20) throw err;
+        await new Promise((r) => setTimeout(r, 100 + Math.floor(Math.random() * 200)));
+      }
+    }
   } finally {
     await root.end();
   }

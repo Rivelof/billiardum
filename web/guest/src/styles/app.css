@@ -1,0 +1,445 @@
+/*
+ * Приложение гостя. Сцена «Свет над столом»: тёмный зал сверху (всегда тёмный, data-theme="dark"),
+ * под ним бумага с выбором и действиями. Главные кнопки внизу, под большой палец.
+ */
+
+.wrap {
+  width: 100%;
+  max-width: 560px;
+  margin-inline: auto;
+  padding-inline: max(var(--gutter), env(safe-area-inset-left)) max(var(--gutter), env(safe-area-inset-right));
+}
+
+.screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- шапка ---------- */
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  max-width: 560px;
+  margin-inline: auto;
+  min-height: 56px;
+  padding: max(4px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 4px max(var(--gutter), env(safe-area-inset-left));
+}
+.top__back { margin-left: -10px; }
+.top__brand {
+  font-size: var(--fs-20);
+  color: inherit;
+  text-decoration: none;
+  margin-right: auto;
+  padding-block: 6px;
+}
+.top__brand:hover { color: inherit; }
+.top__extra { display: flex; align-items: center; gap: 4px; }
+
+.screen--paper .top { border-bottom: 1px solid var(--line); max-width: none; }
+
+/* ---------- сцена: зал, стол, лампа ---------- */
+
+.stage {
+  position: relative;
+  background: var(--hall-bg);
+  color: var(--hall-text);
+  overflow: hidden;
+  isolation: isolate;
+}
+.stage::after {
+  /* полоса состояния снизу: янтарь — меньше 5 минут, красный — льгота (вместе со словом в таймере) */
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 4px;
+  background: transparent;
+}
+.stage--warn::after { background: var(--lamp); }
+.stage--grace::after { background: var(--ball-red); }
+
+.stage__body {
+  width: 100%;
+  max-width: 560px;
+  margin-inline: auto;
+  padding: 8px max(var(--gutter), env(safe-area-inset-right)) 28px max(var(--gutter), env(safe-area-inset-left));
+  display: grid;
+  gap: 20px;
+}
+
+.stage__art {
+  width: min(100%, 420px);
+  justify-self: center;
+  margin-top: 8px;
+}
+
+.stage__text { display: grid; gap: 8px; justify-items: start; }
+.stage__kicker { font-size: var(--fs-15); color: var(--hall-text-2); font-weight: 500; }
+.stage__live { color: var(--lamp); }
+.stage__title { font-size: var(--fs-44); color: var(--hall-text); }
+.stage__title:is(h1):not(:only-child) { margin-bottom: 0; }
+.stage__sub { color: var(--hall-text-2); font-size: var(--fs-15); display: grid; gap: 2px; }
+.stage__club { color: var(--hall-text-2); }
+.stage__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  width: 100%;
+}
+.stage__text { justify-items: stretch; }
+.stage__text > * { justify-self: start; }
+.stage__text > .stage__row { justify-self: stretch; }
+
+/* Цена в сцене: «900 ₽/ч до 06:00, потом 500 ₽/ч» */
+.stage__price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hall-line);
+  width: 100%;
+}
+.stage__price-value { color: var(--hall-text); white-space: nowrap; }
+.stage__price-value .display { font-size: var(--fs-32); line-height: 1; }
+.stage__price-unit { font-size: var(--fs-17); font-weight: 600; }
+.stage__price-when { color: var(--hall-text-2); font-size: var(--fs-15); }
+
+/* Экран стола: стол поменьше, чтобы цена и выбор времени помещались в первый экран */
+.stage--table .stage__body { gap: 14px; padding-bottom: 22px; }
+.stage--table .stage__art { width: min(100%, 280px); }
+
+/* Длинные заголовки сцены (ожидание, главная) — на ступень меньше */
+.stage__title:not(:first-child),
+.stage__kicker + .stage__title,
+.stage__title--md { font-size: var(--fs-32); }
+
+/* Компактная сцена на шагах входа и оплаты: стол слева, номер справа */
+.stage--compact .stage__body {
+  grid-template-columns: 112px 1fr;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 20px;
+}
+.stage--compact .stage__art { width: 112px; margin-top: 0; }
+.stage--compact .stage__title { font-size: var(--fs-32); }
+
+/* Стол с лампой: тёплое пятно на полу под горящей лампой */
+.table-art { position: relative; }
+.table-art__glow {
+  position: absolute;
+  inset: -34% -14%;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(closest-side,
+    color-mix(in oklab, var(--lamp) 36%, transparent),
+    color-mix(in oklab, var(--lamp) 12%, transparent) 62%,
+    transparent);
+  opacity: var(--lit);
+  pointer-events: none;
+}
+.table-art__svg { position: relative; }
+
+/* ---------- таймер игры: полэкрана, моноширинный ---------- */
+
+.screen--game .stage { min-height: 58vh; min-height: 58dvh; display: flex; flex-direction: column; }
+.screen--game .stage__body { flex: 1; align-content: space-between; }
+
+.timer { display: grid; gap: 2px; justify-items: start; }
+.timer__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-17);
+  font-weight: 600;
+  color: var(--hall-text);
+}
+.timer__value {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: var(--fs-64);
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--hall-text);
+}
+.timer__note { font-size: var(--fs-15); color: var(--hall-text-2); }
+
+.timer--warn .timer__label,
+.timer--warn .timer__value { color: var(--lamp); }
+.timer--warn .timer__note { color: var(--hall-text); }
+.timer--grace .timer__label,
+.timer--grace .timer__value { color: var(--ball-red); }
+.timer--grace .timer__note { color: var(--hall-text); }
+
+/* ---------- содержимое ---------- */
+
+.content {
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 20px;
+  padding-top: 24px;
+  padding-bottom: max(24px, env(safe-area-inset-bottom));
+}
+.content--game { padding-bottom: 190px; } /* место под нижней панелью «Продлить» и «Закончить» */
+
+.page-title { font-size: var(--fs-32); }
+.lead { font-size: var(--fs-17); line-height: 1.5; }
+.stack { display: grid; gap: 10px; }
+
+.step { display: grid; gap: 18px; }
+.step__title { font-family: var(--font-display); font-weight: 400; font-size: var(--fs-24); line-height: var(--lh-heading); }
+.step__label { font-size: var(--fs-17); font-weight: 600; margin-bottom: 10px; }
+
+.hint--icon { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; }
+.hint--icon .icon { color: var(--ink-3); margin-top: 1px; }
+
+.choice--grid { grid-template-columns: 1fr 1fr; }
+.choice--grid .choice__box { min-height: 76px; }
+.choice__box--row {
+  grid-template-columns: 24px 1fr;
+  align-items: center;
+  gap: 14px;
+}
+.choice__box--row > span { display: grid; gap: 2px; }
+
+.actionbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: grid;
+  gap: 10px;
+  margin-inline: calc(-1 * var(--gutter));
+  padding: 12px var(--gutter) max(12px, env(safe-area-inset-bottom));
+  background: linear-gradient(to bottom, color-mix(in oklab, var(--paper) 0%, transparent), var(--paper) 18px);
+}
+.dialog .actionbar { position: static; margin: 0; padding: 0; background: none; }
+.actionbar--fixed {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 12px max(var(--gutter), env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
+  background: var(--paper);
+  box-shadow: 0 -1px 0 var(--line), 0 -10px 24px rgb(5 8 14 / 0.08);
+}
+.actionbar--fixed > * { width: 100%; max-width: 528px; margin-inline: auto; }
+.actionbar__note { text-align: center; }
+
+/* Оплата */
+.pay__sum { display: grid; gap: 4px; }
+.pay__what { font-size: var(--fs-17); font-weight: 600; color: var(--ink-2); }
+.pay__amount { font-size: var(--fs-64); line-height: 1; }
+.pay__amount .rub { font-size: var(--fs-44); }
+.pay__breakdown { margin-top: -6px; }
+
+.quote-timer {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  font-size: var(--fs-15);
+}
+.quote-timer .icon { color: var(--ink-2); }
+.quote-timer--over { background: var(--card); box-shadow: inset 0 0 0 1.5px var(--ball-red); }
+.quote-timer--over .icon { color: var(--ball-red); }
+
+/* Стол не свободен */
+.notice { display: grid; gap: 8px; }
+.notice__title { font-family: var(--font-display); font-weight: 400; font-size: var(--fs-24); line-height: var(--lh-heading); }
+.notice__text { color: var(--ink-2); }
+.join { display: grid; gap: 12px; padding-top: 20px; border-top: 1px solid var(--line); }
+.join .step__label { margin: 0; }
+
+/* Ожидание */
+.waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--fs-15);
+  color: var(--ink-2);
+}
+.waiting__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--lamp);
+  flex: none;
+  animation: bl-breathe 1.6s ease-in-out infinite;
+}
+@keyframes bl-breathe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .waiting__dot { animation: none; }
+}
+
+.say {
+  display: grid;
+  gap: 6px;
+  padding: 18px 18px 20px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.say__label { font-size: var(--fs-15); color: var(--ink-2); }
+.say__phrase { font-family: var(--font-display); font-size: var(--fs-24); line-height: var(--lh-heading); }
+.say__sum { font-size: var(--fs-17); }
+
+/* Инструкция по шагам — это настоящая последовательность, поэтому номера */
+.howto { display: grid; gap: 10px; counter-reset: step; }
+.howto > li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+.howto > li::before {
+  content: counter(step);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--cloth-tint);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: var(--fs-15);
+  transform: translateY(2px);
+}
+.howto--small { margin-top: 8px; gap: 6px; }
+.howto--small > li { grid-template-columns: 24px 1fr; gap: 8px; }
+.howto--small > li::before { width: 22px; height: 22px; font-size: var(--fs-13); }
+.howto--steps b { font-weight: 600; }
+
+/* Кто за столом */
+.players { display: grid; gap: 4px; }
+.players__list { display: flex; flex-wrap: wrap; gap: 8px; }
+.players__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 14px 6px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font-weight: 500;
+}
+.players__item .icon { width: 20px; height: 20px; color: var(--ink-2); }
+.players__tag { font-size: var(--fs-13); color: var(--ink-2); }
+.players .hint { margin-top: 8px; }
+
+/* Главная: текущие игры */
+.games { display: grid; gap: 10px; }
+.games__item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink);
+  text-decoration: none;
+}
+.games__item:hover { color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--cloth); }
+.games__item .icon { grid-row: 1 / 3; grid-column: 2; color: var(--ink-2); }
+.games__table { font-size: var(--fs-24); }
+.games__state { color: var(--ink-2); font-size: var(--fs-15); }
+
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-top: 20px;
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-15);
+}
+
+/* Чек */
+.ticket {
+  display: grid;
+  gap: 8px;
+  padding: 8px 18px 18px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.receipt--pay { padding-top: 6px; border-top: 1px solid var(--line); }
+.receipt--pay .receipt__row { color: var(--ink-2); }
+.ticket__status {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 10px;
+  font-size: var(--fs-15);
+  color: var(--ink-2);
+  padding-top: 8px;
+}
+
+.empty { display: grid; gap: 10px; }
+
+.devlogin {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  margin-top: 4px;
+  border-radius: var(--radius-md);
+  border: 1.5px dashed var(--line-strong);
+}
+.devlogin__tag { font-size: var(--fs-13); font-weight: 600; color: var(--ink-2); }
+
+/* ---------- ширина ---------- */
+
+@media (min-width: 640px) {
+  .stage__body { padding-top: 16px; padding-bottom: 36px; }
+  .stage__title { font-size: var(--fs-64); }
+  .stage__title:not(:first-child),
+  .stage__kicker + .stage__title,
+  .stage__title--md { font-size: var(--fs-44); }
+  .stage--compact .stage__title { font-size: var(--fs-44); }
+  .screen--game .stage__body { padding-bottom: 40px; }
+}
+
+@media (min-width: 900px) {
+  /* Ноутбук: зал слева, действия справа — как свет над столом и ресепшн рядом */
+  .screen:not(.screen--paper) {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .screen:not(.screen--paper) > .stage {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--hall-line);
+  }
+  .screen:not(.screen--paper) > .stage .stage__art { width: min(100%, 420px); }
+  .screen:not(.screen--paper) > .stage--compact .stage__body { grid-template-columns: 1fr; }
+  .screen:not(.screen--paper) > .stage--compact .stage__art { width: min(100%, 320px); }
+  .screen:not(.screen--paper) > .stage .stage__body { flex: 1; align-content: center; }
+  .screen:not(.screen--paper) > .content { padding-top: 72px; max-width: 520px; }
+  .actionbar--fixed { left: auto; width: calc(100% / 2.15); }
+  .screen--game .content--game { padding-bottom: 220px; }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "bl-drivers",
+  "version": "1.0.0",
+  "description": "Драйверы платы контроллера стола: реле, индикатор WS2812, пищалка, датчик тока (RMS по АЦП), диммер (ШИМ).",
+  "license": "UNLICENSED",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "dependencies": [{ "name": "bl-logic" }],
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src"
+  }
+}

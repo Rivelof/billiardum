@@ -109,7 +109,9 @@ test('флаги: --tables, --fault, --caps, --help, SIM_FAULTS', () => {
     argv: ['--tables', '1,3', '--fault=slow-ack', '--caps', 'relay,led,dimmer'],
   });
   assert.deepEqual(cfg.devices.map((d) => d.table), [1, 3]);
-  assert.deepEqual(cfg.faults, [{ name: 'net-drop', table: 2 }, { name: 'slow-ack', table: null }]);
+  assert.deepEqual(cfg.faults, [{ name: 'net-drop', table: 2, ms: null }, { name: 'slow-ack', table: null, ms: null }]);
+  assert.equal(cfg.controlPort, null);
+  assert.equal(cfg.nvsDir, null);
   assert.deepEqual(cfg.caps, ['relay', 'led', 'dimmer']);
   assert.deepEqual(loadConfig({ env: {}, argv: ['--help'] }), { help: true });
   assert.throws(() => parseArgs(['--what']), /неизвестный аргумент/);
@@ -126,6 +128,26 @@ test('режимы сбоя: разбор и флаги стола', () => {
   assert.ok(!t1.has('lamp-fault') && t1.has('reboot') && t1.has('replay-old'));
   assert.throws(() => parseFaults(['bypass@x']));
   assert.throws(() => parseFaults(['bypass@1@2']));
+  assert.deepEqual(parseFaults(['slow-ack@2:4000', 'net-drop:15000', 'bypass@3']), [
+    { name: 'slow-ack', table: 2, ms: 4000 }, { name: 'net-drop', table: null, ms: 15000 }, { name: 'bypass', table: 3, ms: null },
+  ]);
+  assert.throws(() => parseFaults(['slow-ack:-1']));
+  assert.throws(() => parseFaults(['slow-ack:1.5']));
+  assert.throws(() => parseFaults(['slow-ack:86400001']));
+  assert.deepEqual(new FaultFlags(parseFaults(['slow-ack:1000', 'slow-ack@4:2000']), 4).list, [{ name: 'slow-ack', ms: 2000 }]);
+});
+
+test('SIM_CONTROL_PORT, SIM_CONTROL_HOST, SIM_NVS_DIR; управление недоступно в production', () => {
+  const file = writeDevices('control', base([device(1)]));
+  const cfg = loadConfig({ env: { SIM_DEVICES_FILE: file, SIM_CONTROL_PORT: '18080', SIM_NVS_DIR: dir }, argv: [] });
+  assert.equal(cfg.controlPort, 18080);
+  assert.equal(cfg.controlHost, '127.0.0.1');
+  assert.equal(cfg.nvsDir, dir);
+  assert.equal(loadConfig({ env: { SIM_DEVICES_FILE: file, SIM_CONTROL_PORT: '1', SIM_CONTROL_HOST: '0.0.0.0' }, argv: [] }).controlHost, '0.0.0.0');
+  for (const bad of ['0', '65536', 'abc', '80x']) {
+    assert.throws(() => loadConfig({ env: { SIM_DEVICES_FILE: file, SIM_CONTROL_PORT: bad }, argv: [] }), /SIM_CONTROL_PORT/, bad);
+  }
+  assert.throws(() => loadConfig({ env: { SIM_DEVICES_FILE: file, SIM_CONTROL_PORT: '18080', NODE_ENV: 'production' }, argv: [] }), /production/);
 });
 
 test('лог: строки JSON с t, level, msg; уровень отсекает; URL без логина и пароля', () => {

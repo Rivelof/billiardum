@@ -1,4 +1,4 @@
-// Мост MQTT (контракт M0 §6, docs/protocol.md v1 §2, §6) — единственный, кто публикует в cmd.
+// Мост MQTT (контракт M1 §6, docs/protocol.md v1 §2, §6) — единственный, кто публикует в cmd.
 //
 // * Подписка на bl/v1/+/+/{state,status,event,ack}, clean session. Устройство и его клуб —
 //   по device_id из базы (bl.device_club); club_id из топика не доверяем: расхождение —
@@ -8,7 +8,16 @@
 //   журнал в одной транзакции, публикация после коммита, повтор с тем же id и seq каждые 3 с
 //   до 5 раз, затем тревога cmd_no_ack и отказ от команды. Пока устройство офлайн, повторов
 //   и тревоги cmd_no_ack нет; недоставленные команды не пересылаются (кроме config.set).
-// * После возвращения онлайн и после boot — актуальное состояние стола (actualState; в M0 — ping).
+// * M1: команды бизнес-логики лежат в bl.device_commands (queued); мост забирает их по
+//   wake(deviceId) после коммита (LISTEN bl_light) и перед отправкой зовёт prepare — тело
+//   (remaining_ms по paid_until и т. п.) считается в момент отправки, в той же транзакции,
+//   что seq и журнал.
+// * После возвращения онлайн и после boot — актуальное состояние стола (actualState):
+//   session.resume с остатком по paid_until, service.start, state.pending/state.reserved
+//   или state.free. Команды, поставленные до возвращения, помечаются superseded.
+// * События — в журнал один раз по (device_id, boot_id, n); новые события — в hooks.onEvent.
+// * Сверка state.mode с базой: расхождение дольше 10 с — hooks.onMismatch (журнал, тревога).
+// * Офлайн во время сессии дольше 120 с — hooks.onOfflineAlarm (decisions №16).
 // * seq = greatest(devices.last_seq, state.last_seq) + 1; подъём по state — журнал
 //   device.seq_sync; разрыв больше 1 000 000 — тревога без подъёма.
 // * Логи — JSON без персональных данных: devices_online, cmd_ack и др.
@@ -28,6 +37,10 @@ export const SWEEP_EVERY_MS = 5_000;
 export const UNKNOWN_RECHECK_MS = 60_000;
 export const TOUCH_EVERY_MS = 60_000;
 export const SEQ_GAP_LIMIT = 1_000_000;
+/** Расхождение state.mode с базой дольше этого — тревога (protocol §6). */
+export const MISMATCH_ALARM_MS = 10_000;
+/** Офлайн во время сессии дольше этого — тревога critical (decisions №16). */
+export const OFFLINE_ALARM_MS = 120_000;
 /** boot сразу после выхода онлайн — та же загрузка: актуальное состояние уже отправлено. */
 export const BOOT_SYNC_WINDOW_MS = 10_000;
 /** Предел входящих сообщений: state и event — 4096 байт (§2); ack и status не больше. */
@@ -35,9 +48,11 @@ export const MAX_INCOMING_BYTES = Math.max(MAX_STATE_BYTES, MAX_EVENT_BYTES);
 export const SUBSCRIPTIONS = ['state', 'status', 'event', 'ack'].map((kind) => `bl/v1/+/+/${kind}`);
 /** Команды, которые после офлайна или перезагрузки досылаются; остальные заменяет актуальное состояние. */
 export const RESEND_AFTER_RECONNECT = new Set(['config.set']);
+export const DEVICE_MODES = new Set(['free', 'pending', 'reserved', 'active', 'ending', 'grace', 'service', 'fault']);
 
 const CODE = /^[a-z][a-z0-9_.]{0,39}$/;
 const BOOT_ID = /^[0-9a-f]{8}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const KNOWN_CAPS = new Set(['relay', 'led', 'buzzer', 'current', 'dimmer']);
 
 function parseJsonObject(payload) {
@@ -52,8 +67,21 @@ function parseJsonObject(payload) {
 const code = (value) => (typeof value === 'string' && CODE.test(value) ? value : null);
 const safeInt = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
 
-/** Актуальное состояние стола в M0: сессий ещё нет, симулятор M0 исполняет ping. В M1 —
- * session.resume, service.start, state.pending/reserved или state.free (protocol §6). */
+/** Только проверенные поля state: устройство аутентифицировано, но данным не доверяем. */
+export function sanitizeState(state) {
+  return {
+    mode: DEVICE_MODES.has(state.mode) ? state.mode : null,
+    session_id: typeof state.session_id === 'string' && UUID.test(state.session_id) ? state.session_id : null,
+    relay: state.relay === true,
+    remaining_ms: safeInt(state.remaining_ms),
+    rssi: Number.isSafeInteger(state.rssi) && state.rssi >= -150 && state.rssi <= 0 ? state.rssi : null,
+    boot: safeInt(state.boot),
+    uptime_s: safeInt(state.uptime_s),
+    state_seq: safeInt(state.state_seq),
+  };
+}
+
+/** Актуальное состояние стола без модуля сессий (M0): ping. В M1 его даёт sessions (actualState). */
 export async function defaultActualState() {
   return { type: 'ping', body: {} };
 }
@@ -61,6 +89,16 @@ export async function defaultActualState() {
 /**
  * Мост без сетевых зависимостей: клиент MQTT, хранилище и таймеры передаются снаружи
  * (в тестах — подделки).
+ *
+ * hooks (все необязательны, ошибки ловятся и пишутся в лог):
+ *   prepare(client, { clubId, deviceId, type, body, sessionId, deviceState }) → { type, body } | null
+ *       — внутри транзакции выделения seq (store.allocateCommand); null — команда устарела.
+ *   onAck({ clubId, deviceId, entry, ack, ok, at }) → { resync?: boolean }
+ *   onEvent({ clubId, deviceId, ev, at }) — только новые события (после записи в журнал).
+ *   expected({ clubId, deviceId }) → { modes: string[], sessionId: string|null, lightAllowed: boolean } | null
+ *   onMismatch({ clubId, deviceId, expected, state, sinceMs })
+ *   onOfflineAlarm({ clubId, deviceId, offlineMs }) → true, если тревога поднята (была сессия)
+ *   onNoAck({ clubId, deviceId, entry })
  */
 export function createBridge({
   client,
@@ -70,12 +108,15 @@ export function createBridge({
   now = Date.now,
   timers = globalThis,
   actualState = defaultActualState,
+  hooks = {},
   offlineAfterMs = OFFLINE_AFTER_MS,
   retryMs = RETRY_MS,
   maxRetries = MAX_RETRIES,
   reportEveryMs = REPORT_EVERY_MS,
   sweepEveryMs = SWEEP_EVERY_MS,
   seqGapLimit = SEQ_GAP_LIMIT,
+  mismatchAlarmMs = MISMATCH_ALARM_MS,
+  offlineAlarmMs = OFFLINE_ALARM_MS,
 }) {
   /** @type {Map<string, any>} */
   const devices = new Map();
@@ -108,6 +149,17 @@ export function createBridge({
     }
   }
 
+  async function hook(name, args) {
+    const fn = hooks[name];
+    if (typeof fn !== 'function') return undefined;
+    try {
+      return await fn(args);
+    } catch (err) {
+      log.error('bridge_hook_failed', { hook: name, device_id: args.deviceId, error: err.message });
+      return undefined;
+    }
+  }
+
   function record(deviceId) {
     let d = devices.get(deviceId);
     if (!d) {
@@ -117,17 +169,22 @@ export function createBridge({
         resolvedAt: 0,
         status: null,
         lastStateAt: null,
+        lastState: null,
         online: false,
         onlineAt: null,
+        offlineAt: null,
+        offlineAlarmed: false,
         lastSyncAt: null,
         reportedLastSeq: null,
         seqGapAlarmed: null,
         fw: null,
         caps: null,
         touchedAt: 0,
+        mismatchSince: null,
+        mismatchAlarmed: false,
         queue: Promise.resolve(),
         inflight: null, // единственная неподтверждённая команда
-        outbox: [], // ждут своей очереди: { type, body } | { sync: true } | { resend: entry }
+        outbox: [], // ждут своей очереди: { type, body, rowId? } | { sync: true, reason } | { resend: entry }
         unknownLogged: false,
         mismatchLogged: new Set(),
       };
@@ -136,9 +193,10 @@ export function createBridge({
     return d;
   }
 
-  /** Работа в очереди сообщений устройства (из таймеров). */
-  function kick(d) {
-    d.queue = d.queue.then(() => pump(d)).catch((err) => log.error('device_queue_failed', { device_id: d.id, error: err.message }));
+  /** Работа в очереди сообщений устройства (из таймеров и внешних вызовов). */
+  function kick(d, work = () => pump(d)) {
+    d.queue = d.queue.then(work).catch((err) => log.error('device_queue_failed', { device_id: d.id, error: err.message }));
+    return d.queue;
   }
 
   async function ensureKnown(d, topicClubId) {
@@ -174,6 +232,15 @@ export function createBridge({
     return true;
   }
 
+  async function mark(d, entry, status, extra = {}) {
+    if (typeof store.markCommand !== 'function') return;
+    try {
+      await store.markCommand({ clubId: d.clubId, cmdId: entry.cmdId, status, attempts: entry.retries + 1, ...extra });
+    } catch (err) {
+      log.error('db_error', { op: 'mark_command', device_id: d.id, error: err.message });
+    }
+  }
+
   // Команды ------------------------------------------------------------------------
 
   function publish(entry) {
@@ -191,9 +258,13 @@ export function createBridge({
       if (stopped || d.inflight !== entry || !d.online) return;
       if (entry.retries >= maxRetries) {
         d.inflight = null;
-        // Тревога «контроллер не отвечает» и отказ от команды (protocol §6). Уведомление — M1.
+        // Тревога «контроллер не отвечает» и отказ от команды (protocol §6).
         log.error('cmd_no_ack', { ...cmdFields(entry), attempts: entry.retries + 1, alarm: 'controller_not_responding' });
-        kick(d);
+        kick(d, async () => {
+          await mark(d, entry, 'no_ack');
+          await hook('onNoAck', { clubId: d.clubId, deviceId: d.id, entry });
+          await pump(d);
+        });
         return;
       }
       entry.retries += 1;
@@ -206,29 +277,37 @@ export function createBridge({
   function send(d, entry) {
     d.inflight = entry;
     entry.retries = 0;
+    entry.sentAt = now();
     publish(entry);
     scheduleRetry(d, entry);
   }
 
   /** seq и журнал в базе, подпись, затем публикация. null — команда не ушла. */
-  async function allocateAndSend(d, type, body, sync = false) {
-    const cmdId = randomUUID();
+  async function allocateAndSend(d, item, sync = false) {
+    const cmdId = item.rowId ?? randomUUID();
     let result;
     try {
       result = await store.allocateCommand({
         clubId: d.clubId,
         deviceId: d.id,
         cmdId,
-        type,
+        rowId: item.rowId ?? null,
+        type: item.type,
+        body: item.body,
+        sessionId: item.sessionId ?? null,
+        paymentId: item.paymentId ?? null,
+        cause: item.cause ?? (sync ? 'sync' : 'system'),
         stateLastSeq: d.reportedLastSeq,
         seqGapLimit,
-        build: ({ seq, keyEnc }) => {
+        deviceState: d.lastState,
+        prepare: hooks.prepare,
+        build: ({ seq, keyEnc, type = item.type, body = item.body }) => {
           const key = decryptSecret(keyEnc, encKey, deviceKeyContext(d.id));
           return buildCommand({ id: cmdId, seq, type, body, issuedAt: Math.floor(now() / 1000) }, key).payload;
         },
       });
     } catch (err) {
-      log.error('cmd_failed', { device_id: d.id, type, error: err.message });
+      log.error('cmd_failed', { device_id: d.id, type: item.type, error: err.message });
       return null;
     }
     if (result.seqGap && d.seqGapAlarmed !== result.seqGap.state_seq) {
@@ -236,7 +315,8 @@ export function createBridge({
       log.error('device_seq_gap', { device_id: d.id, db_seq: result.seqGap.db_seq, state_seq: result.seqGap.state_seq, alarm: 'seq_gap' });
     }
     if (result.status !== 'ok') {
-      log.warn('cmd_skipped', { device_id: d.id, type, reason: result.status });
+      if (result.status === 'cancelled' || result.status === 'stale') log.debug('cmd_skipped', { device_id: d.id, type: item.type, reason: result.status });
+      else log.warn('cmd_skipped', { device_id: d.id, type: item.type, reason: result.status });
       return null;
     }
     if (result.seqSync) log.warn('device_seq_sync', { device_id: d.id, from: result.seqSync.from, to: result.seqSync.to });
@@ -244,12 +324,16 @@ export function createBridge({
       cmdId,
       deviceId: d.id,
       seq: result.seq,
-      type,
+      type: result.type ?? item.type,
+      body: result.body ?? item.body,
+      sessionId: item.sessionId ?? result.body?.session_id ?? null,
+      paymentId: item.paymentId ?? null,
       topic: deviceTopic(d.clubId, d.id, 'cmd'),
       payload: result.payload,
       sync,
       retries: 0,
       timer: null,
+      sentAt: null,
     };
     log.debug('cmd_sent', cmdFields(entry));
     send(d, entry);
@@ -265,45 +349,66 @@ export function createBridge({
         send(d, next.resend);
         return;
       }
-      let type = next.type;
-      let body = next.body;
+      let item = next;
       if (next.sync) {
         d.lastSyncAt = now();
         try {
-          ({ type, body } = await actualState({ deviceId: d.id, clubId: d.clubId }));
+          item = await actualState({ deviceId: d.id, clubId: d.clubId, reason: next.reason ?? 'sync', deviceState: d.lastState });
         } catch (err) {
           log.error('actual_state_failed', { device_id: d.id, error: err.message });
           continue;
         }
+        if (!item) continue;
       }
-      await allocateAndSend(d, type, body, Boolean(next.sync));
+      await allocateAndSend(d, item, Boolean(next.sync));
     }
   }
 
   /** Актуальное состояние стола — первым в очередь, не чаще одного раза. */
-  function queueActualState(d) {
+  function queueActualState(d, reason) {
     if (d.inflight?.sync || d.outbox.some((x) => x.sync)) return;
-    d.outbox.unshift({ sync: true });
+    d.outbox.unshift({ sync: true, reason });
   }
 
   /**
    * Связь прервалась или устройство перезагрузилось: неподтверждённая команда больше
    * не повторяется, недоставленные команды не пересылаются (кроме RESEND_AFTER_RECONNECT).
    */
-  function dropUndelivered(d, reason) {
+  async function dropUndelivered(d, reason) {
     const keep = [];
     const entry = d.inflight;
     if (entry) {
       timers.clearTimeout(entry.timer);
       d.inflight = null;
       if (RESEND_AFTER_RECONNECT.has(entry.type)) keep.push({ resend: entry });
-      else log.info('cmd_abandoned', { ...cmdFields(entry), reason });
+      else {
+        log.info('cmd_abandoned', { ...cmdFields(entry), reason });
+        await mark(d, entry, 'abandoned');
+      }
     }
     for (const x of d.outbox) {
       if (x.resend || RESEND_AFTER_RECONNECT.has(x.type)) keep.push(x);
       else if (!x.sync) log.info('cmd_dropped', { device_id: d.id, type: x.type, reason });
     }
     d.outbox = keep;
+  }
+
+  /** Команды из bl.device_commands (queued) — в очередь устройства по порядку. */
+  async function loadQueued(d) {
+    if (typeof store.loadQueued !== 'function' || !d.clubId) return;
+    let rows;
+    try {
+      rows = await store.loadQueued({ clubId: d.clubId, deviceId: d.id });
+    } catch (err) {
+      log.error('db_error', { op: 'load_queued', device_id: d.id, error: err.message });
+      return;
+    }
+    const known = new Set(d.outbox.filter((x) => x.rowId).map((x) => x.rowId));
+    if (d.inflight) known.add(d.inflight.cmdId);
+    for (const r of rows) {
+      if (known.has(r.id)) continue;
+      d.outbox.push({ rowId: r.id, type: r.type, body: r.body, sessionId: r.session_id, paymentId: r.payment_id, cause: r.cause });
+    }
   }
 
   // Онлайн и офлайн ------------------------------------------------------------------
@@ -313,16 +418,81 @@ export function createBridge({
     if (shouldBeOnline && !d.online) {
       d.online = true;
       d.onlineAt = now();
+      d.offlineAt = null;
+      d.offlineAlarmed = false;
       log.info('device_online', { device_id: d.id });
       report();
-      queueActualState(d);
+      // Поставленные до возвращения команды заменяет актуальное состояние (protocol §6).
+      if (typeof store.supersedeQueued === 'function') {
+        try {
+          const n = await store.supersedeQueued({ clubId: d.clubId, deviceId: d.id });
+          if (n > 0) log.info('cmd_superseded', { device_id: d.id, count: n });
+        } catch (err) {
+          log.error('db_error', { op: 'supersede_queued', device_id: d.id, error: err.message });
+        }
+      }
+      d.outbox = d.outbox.filter((x) => x.resend || RESEND_AFTER_RECONNECT.has(x.type));
+      queueActualState(d, 'online');
       await pump(d);
     } else if (!shouldBeOnline && d.online) {
       d.online = false;
-      dropUndelivered(d, 'offline');
+      d.offlineAt = now();
+      d.offlineAlarmed = false;
+      d.mismatchSince = null;
+      await dropUndelivered(d, 'offline');
       log.info('device_offline', { device_id: d.id, reason });
       report();
+    } else if (!shouldBeOnline && d.offlineAt === null && d.status === 'offline') {
+      d.offlineAt = now(); // офлайн с момента, как узнали (например, после перезапуска сервера)
     }
+  }
+
+  // Сверка state с базой --------------------------------------------------------------
+
+  function matches(expected, st) {
+    if (!expected || !st.mode) return true;
+    if (st.mode === 'fault') return false;
+    if (!expected.modes.includes(st.mode)) return false;
+    if (expected.sessionId && ['active', 'ending', 'grace'].includes(st.mode) && st.session_id !== expected.sessionId) return false;
+    if (!expected.lightAllowed && st.relay) return false;
+    return true;
+  }
+
+  async function reconcile(d) {
+    if (!hooks.expected || !d.online || !d.lastState || d.inflight || d.outbox.length > 0) {
+      d.mismatchSince = null;
+      return;
+    }
+    const expected = await hook('expected', { clubId: d.clubId, deviceId: d.id });
+    if (!expected) return;
+    if (matches(expected, d.lastState)) {
+      if (d.mismatchSince !== null) log.info('device_state_match', { device_id: d.id });
+      d.mismatchSince = null;
+      d.mismatchAlarmed = false;
+      return;
+    }
+    if (d.mismatchSince === null) {
+      d.mismatchSince = now();
+      log.info('device_state_mismatch_start', { device_id: d.id, mode: d.lastState.mode });
+      return;
+    }
+    const sinceMs = now() - d.mismatchSince;
+    if (sinceMs >= mismatchAlarmMs && !d.mismatchAlarmed) {
+      d.mismatchAlarmed = true;
+      log.error('device_state_mismatch', { device_id: d.id, mode: d.lastState.mode, relay: d.lastState.relay, expected: expected.modes, alarm: 'state_mismatch' });
+      await hook('onMismatch', { clubId: d.clubId, deviceId: d.id, expected, state: d.lastState, sinceMs });
+      queueActualState(d, 'mismatch');
+      await pump(d);
+    }
+  }
+
+  async function checkOffline(d) {
+    if (d.online || d.offlineAt === null || d.offlineAlarmed || !d.clubId) return;
+    const offlineMs = now() - d.offlineAt;
+    if (offlineMs < offlineAlarmMs) return;
+    d.offlineAlarmed = true; // один раз за эпизод офлайна
+    const raised = await hook('onOfflineAlarm', { clubId: d.clubId, deviceId: d.id, offlineMs });
+    if (raised) log.error('device_offline_alarm', { device_id: d.id, offline_ms: offlineMs, alarm: 'device_offline_in_session' });
   }
 
   // Входящие ---------------------------------------------------------------------------
@@ -336,8 +506,8 @@ export function createBridge({
     const entry = d.inflight;
     // cmd_id: null — контроллер не разобрал команду (bad_format, §4). Неподтверждённая команда
     // на устройство одна, значит, ответ — на неё; повтор тех же байт ничего не изменит.
-    const matches = entry && (ack.cmd_id === null ? ack.ok !== true : ack.cmd_id === entry.cmdId);
-    if (!matches) {
+    const matched = entry && (ack.cmd_id === null ? ack.ok !== true : ack.cmd_id === entry.cmdId);
+    if (!matched) {
       if (ack.cmd_id === null) log.warn('ack_unmatched', { device_id: d.id, error: code(ack.error) ?? 'unknown' });
       else log.debug('ack_unmatched', { device_id: d.id });
       return;
@@ -346,9 +516,13 @@ export function createBridge({
     d.inflight = null;
     if (ack.cmd_id !== null && ack.seq !== entry.seq) log.warn('ack_seq_mismatch', cmdFields(entry));
     const ok = ack.ok === true;
+    const error = ok ? null : (code(ack.error) ?? 'unknown');
     const fields = { ...cmdFields(entry), ok };
     if (ok) log.info('cmd_ack', fields);
-    else log.warn('cmd_ack', { ...fields, error: code(ack.error) ?? 'unknown' });
+    else log.warn('cmd_ack', { ...fields, error });
+    await mark(d, entry, ok ? 'acked' : 'failed', { error, ackedAt: new Date(now()) });
+    const res = await hook('onAck', { clubId: d.clubId, deviceId: d.id, entry, ack, ok, at: new Date(now()) });
+    if (res?.resync) queueActualState(d, 'ack');
     await pump(d);
   }
 
@@ -359,6 +533,7 @@ export function createBridge({
       return;
     }
     d.lastStateAt = now();
+    d.lastState = sanitizeState(state);
     const lastSeq = safeInt(state.last_seq);
     if (lastSeq !== null) d.reportedLastSeq = lastSeq;
     const fw = typeof state.fw === 'string' && /^[0-9A-Za-z.+_-]{1,50}$/.test(state.fw) ? state.fw : null;
@@ -375,6 +550,7 @@ export function createBridge({
       }
     }
     await evaluate(d, 'state');
+    await reconcile(d);
   }
 
   async function handleEvent(d, payload) {
@@ -384,27 +560,49 @@ export function createBridge({
       return;
     }
     const type = code(ev.type) ?? 'unknown';
-    // Журнал событий по (device_id, boot_id, n) — M1 (protocol §4, decisions №33, №37).
-    log.info('device_event', {
-      device_id: d.id,
+    const bootId = typeof ev.boot_id === 'string' && BOOT_ID.test(ev.boot_id) ? ev.boot_id : null;
+    const n = safeInt(ev.n);
+    log.info('device_event', { device_id: d.id, type, boot: safeInt(ev.boot), boot_id: bootId, n });
+    const clean = {
       type,
       boot: safeInt(ev.boot),
-      boot_id: typeof ev.boot_id === 'string' && BOOT_ID.test(ev.boot_id) ? ev.boot_id : null,
-      n: safeInt(ev.n),
-    });
+      boot_id: bootId,
+      n,
+      at_uptime_ms: safeInt(ev.at_uptime_ms),
+      data: ev.data !== null && typeof ev.data === 'object' && !Array.isArray(ev.data) ? ev.data : {},
+    };
+    // Журнал один раз по (device_id, boot_id, n) (protocol §4, decisions №33, №37).
+    if (typeof store.recordEvent === 'function') {
+      if (bootId === null || n === null || n < 1 || type === 'unknown') {
+        log.warn('event_unrecorded', { device_id: d.id, type });
+        return;
+      }
+      let fresh;
+      try {
+        fresh = await store.recordEvent({ clubId: d.clubId, deviceId: d.id, ev: clean, at: new Date(now()) });
+      } catch (err) {
+        log.error('db_error', { op: 'record_event', device_id: d.id, error: err.message });
+        return;
+      }
+      if (!fresh) {
+        log.debug('device_event_duplicate', { device_id: d.id, type, boot_id: bootId, n });
+        return;
+      }
+    }
     if (type === 'boot') {
       // Контроллер перезагрузился и ждёт актуальное состояние (§5, правило 4): старые
       // команды не досылаются. Если boot пришёл сразу после выхода онлайн, состояние
       // для этой загрузки уже отправлено.
-      const fresh = d.online && d.lastSyncAt !== null && d.lastSyncAt >= d.onlineAt && now() - d.onlineAt <= BOOT_SYNC_WINDOW_MS;
-      if (!fresh) {
-        dropUndelivered(d, 'boot');
+      const recent = d.online && d.lastSyncAt !== null && d.lastSyncAt >= d.onlineAt && now() - d.onlineAt <= BOOT_SYNC_WINDOW_MS;
+      if (!recent) {
+        await dropUndelivered(d, 'boot');
         if (d.online) {
-          queueActualState(d);
+          queueActualState(d, 'boot');
           await pump(d);
         }
       }
     }
+    await hook('onEvent', { clubId: d.clubId, deviceId: d.id, ev: clean, at: new Date(now()) });
   }
 
   async function handle(d, topic, payload) {
@@ -455,7 +653,16 @@ export function createBridge({
 
   function sweep() {
     for (const d of devices.values()) {
-      if (d.online) d.queue = d.queue.then(() => evaluate(d, 'no_state')).catch(() => {});
+      if (d.online) {
+        d.queue = d.queue
+          .then(async () => {
+            await evaluate(d, 'no_state');
+            if (d.online && d.mismatchSince !== null) await reconcile(d);
+          })
+          .catch(() => {});
+      } else if (d.offlineAt !== null && !d.offlineAlarmed) {
+        d.queue = d.queue.then(() => checkOffline(d)).catch(() => {});
+      }
     }
   }
 
@@ -509,7 +716,7 @@ export function createBridge({
     },
     onMessage,
     /**
-     * Команда устройству (для M1: сессии, сервисный свет). Офлайн-устройству команда
+     * Команда устройству в обход bl.device_commands (M0, отладка). Офлайн-устройству команда
      * не ставится (кроме RESEND_AFTER_RECONNECT): после возвращения уйдёт актуальное состояние.
      * @returns {Promise<'queued' | 'offline' | 'unknown_device'>}
      */
@@ -518,8 +725,63 @@ export function createBridge({
       if (!d || !d.clubId) return Promise.resolve('unknown_device');
       if (!d.online && !RESEND_AFTER_RECONNECT.has(type)) return Promise.resolve('offline');
       d.outbox.push({ type, body });
-      kick(d);
-      return d.queue.then(() => 'queued');
+      return kick(d).then(() => 'queued');
+    },
+    /**
+     * Сигнал после коммита: в bl.device_commands есть команды для устройства. Онлайн —
+     * забрать и отправить; офлайн — оставить (после возвращения их заменит актуальное состояние).
+     */
+    wake(deviceId) {
+      const d = devices.get(deviceId);
+      if (!d || !d.clubId || !d.online) return Promise.resolve(false);
+      return kick(d, async () => {
+        await loadQueued(d);
+        await pump(d);
+      }).then(() => true);
+    },
+    /** Перепроверить все онлайн-устройства (после восстановления LISTEN). */
+    wakeAll() {
+      return Promise.all([...devices.keys()].map((id) => this.wake(id)));
+    },
+    /** Сверка состояния стола по требованию (после изменения в базе). */
+    resync(deviceId, reason = 'request') {
+      const d = devices.get(deviceId);
+      if (!d || !d.clubId || !d.online) return Promise.resolve(false);
+      return kick(d, async () => {
+        queueActualState(d, reason);
+        await pump(d);
+      }).then(() => true);
+    },
+    /** Перечитать клуб устройства (после привязки). */
+    forget(deviceId) {
+      const d = devices.get(deviceId);
+      if (!d) return;
+      d.clubId = undefined;
+      d.unknownLogged = false;
+      d.mismatchLogged.clear();
+    },
+    /** Что мост знает об устройстве: онлайн, rssi, прошивка, возможности, режим. */
+    deviceInfo(deviceId) {
+      const d = devices.get(deviceId);
+      if (!d) return null;
+      return {
+        online: d.online,
+        rssi: d.lastState?.rssi ?? null,
+        fw: d.fw,
+        caps: d.caps,
+        mode: d.lastState?.mode ?? null,
+        relay: d.lastState?.relay ?? null,
+        session_id: d.lastState?.session_id ?? null,
+        offline_since: d.offlineAt === null ? null : new Date(d.offlineAt),
+      };
+    },
+    /** Дождаться, пока очереди всех устройств опустеют (тесты). */
+    async idle() {
+      for (let i = 0; i < 5; i += 1) {
+        const queues = [...devices.values()].map((d) => d.queue);
+        await Promise.allSettled(queues);
+        if ([...devices.values()].every((d, j) => d.queue === queues[j])) return;
+      }
     },
     stats() {
       let pending = 0;

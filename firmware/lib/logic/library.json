@@ -1,0 +1,13 @@
+{
+  "name": "bl-logic",
+  "version": "1.0.0",
+  "description": "Логика контроллера стола Бильярдума: протокол v1, автомат §5, сигналы, правило 4, события. Чистый C++17, тестируется нативно.",
+  "license": "UNLICENSED",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src",
+    "flags": ["-std=gnu++17"]
+  }
+}

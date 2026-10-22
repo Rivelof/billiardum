@@ -7,6 +7,12 @@
 | `tokens.css` | цвета `docs/DESIGN.md` §2 (светлая, тёмная, зал), шрифтовые стеки и шкала §3, скругления и сетка §5, длительность лампы §6 |
 | `fonts.css`, `fonts/` | Dela Gothic One, Geologica 300–700 (вариативный), JetBrains Mono 500 и 700; WOFF2, кириллица и латиница; лицензии `fonts/OFL-*.txt` |
 | `format.mjs` | `plural`, `formatMoney`, `formatTime`, `formatDate`, `formatDuration` |
+| `ui.css` | базовые стили интерфейса: сброс, кнопки, поля, флажок, плитки выбора, бейджи, сообщения, диалог (лист снизу на телефоне), чек |
+| `hall.mjs`, `hall.css` | зал: `tableSvg` (стол сверху, пирамида и пул в настоящих пропорциях, лампа через `--lit`), `planLayout` (расстановка на плане), `tableState` (статус словом), `tableKind`, `typeLabel` |
+| `api.mjs` | клиент API по контракту: `createClient` (JSON, cookie, `Bearer`, `Idempotency-Key`), `ApiError` с кодом, `openStream` (SSE с переподключением), `newIdempotencyKey` |
+| `errors.mjs` | тексты ошибок API для людей: `errorMessage(err, { audience: 'guest' \| 'staff', busyUntil })` → что случилось и что делать |
+| `reasons.mjs` | коды причин ручных действий: отклонение заявки, сервисный свет |
+| `icons.mjs` | значки: линейные пути 24×24, толщина 1,75 |
 | `styleguide.html` | образец: палитра обеих тем с живым контрастом, шрифты, кнопки, статусы, таймер, план зала из 8 столов |
 | `test/` | `node --test`: форматы, токены против DESIGN.md, контраст WCAG, шрифты и отсутствие внешних ресурсов |
 
@@ -25,8 +31,14 @@ HTML (статика со своего сервера, decisions №22):
 ```js
 import '@billiardum/shared/fonts.css';
 import '@billiardum/shared/tokens.css';
+import '@billiardum/shared/ui.css';     // базовые стили web/guest и web/admin
+import '@billiardum/shared/hall.css';   // рисунок стола
 import { plural, formatMoney } from '@billiardum/shared/format';
+import { createClient } from '@billiardum/shared/api';
+import { errorMessage } from '@billiardum/shared/errors';
 ```
+
+`api.mjs`, `errors.mjs`, `hall.mjs` без зависимостей и без фреймворка: рисунок стола — строка SVG на классах `hall.css` (без атрибутов `style`, поэтому работает при CSP `style-src 'self'`).
 
 Базовые стили страницы пакет не задаёт. Минимум:
 

@@ -1,0 +1,32 @@
+{
+  "name": "Сервисный свет",
+  "description": "service.start — свет и фиолетовый индикатор на время; повторный service.start задаёт новое время; service.stop; во время сессии — wrong_session (T11).",
+  "steps": [
+    { "cmd": "service.start", "body": { "duration_ms": 900000, "reason_code": "cleaning" } },
+    { "expect": { "mode": "service", "relay": true, "lamp": true, "dim": 100, "led": "purple", "remaining_ms": 900000, "session_id": null, "buzzer": false, "current_ma": 400, "nvs_session": null } },
+    { "advance_ms": 100000 },
+    { "expect": { "mode": "service", "remaining_ms": 800000 } },
+    { "cmd": "service.start", "body": { "duration_ms": 60000, "reason_code": "cleaning" } },
+    { "expect": { "mode": "service", "remaining_ms": 60000 } },
+    { "cmd": "state.pending", "body": { "until_ms": 180000 }, "ack": "wrong_session" },
+    { "advance_ms": 59999 },
+    { "expect": { "mode": "service", "remaining_ms": 1 } },
+    { "advance_ms": 1 },
+    { "expect": { "mode": "free", "relay": false, "led": "green_dim", "remaining_ms": null } },
+    { "cmd": "service.start", "body": { "duration_ms": 300000, "reason_code": "repair" } },
+    { "expect": { "mode": "service", "relay": true } },
+    { "cmd": "service.stop" },
+    { "expect": { "mode": "free", "relay": false } },
+    { "cmd": "service.stop" },
+    { "expect": { "mode": "free" } },
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000015", "remaining_ms": 600000, "buzzer": true } },
+    { "cmd": "service.start", "body": { "duration_ms": 300000, "reason_code": "repair" }, "ack": "wrong_session" },
+    { "cmd": "state.reserved", "body": { "until_ms": 900000 }, "ack": "wrong_session" },
+    { "cmd": "state.pending", "body": { "until_ms": 180000 }, "ack": "wrong_session" },
+    { "cmd": "service.stop" },
+    { "expect": { "mode": "active", "relay": true, "remaining_ms": 600000 } },
+    { "cmd": "state.free" },
+    { "expect": { "mode": "free", "relay": false, "nvs_session": null } },
+    { "events": ["boot"] }
+  ]
+}

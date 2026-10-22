@@ -1,0 +1,13 @@
+# Таблица разделов контроллера стола, флеш 4 МБ (protocol.md §1, §5 правило 3, §8).
+# Два раздела приложения — для OTA с откатом; bl_state — состояние протокола (64 КБ);
+# bl_keys — ключи (device_key, пароль MQTT, Wi-Fi), шифруется ключами из nvs_keys,
+# когда включено шифрование флеша (README, «Безопасность»).
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x1C0000,
+app1,       app,  ota_1,    0x1D0000, 0x1C0000,
+bl_state,   data, nvs,      0x390000, 0x10000,
+bl_keys,    data, nvs,      0x3A0000, 0x6000,
+nvs_keys,   data, nvs_keys, 0x3A6000, 0x1000,   encrypted
+coredump,   data, coredump, 0x3A7000, 0x10000,

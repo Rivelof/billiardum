@@ -1,0 +1,20 @@
+{
+  "name": "Перезагрузка, сервер ответил session.resume",
+  "description": "Правило 4: свет выключен до ответа сервера, остаток в окне 30 с не идёт; session.resume продолжает игру с остатком сервера, offline_resumes = 0 (T7).",
+  "steps": [
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000009", "remaining_ms": 600000, "buzzer": true } },
+    { "advance_ms": 130000 },
+    { "expect": { "mode": "active", "remaining_ms": 470000, "nvs_session": { "remaining_ms": 480000, "offline_resumes": 0 } } },
+    { "reboot": { "reset_reason": "panic" } },
+    { "expect": { "mode": "free", "relay": false, "lamp": false, "boot": 2, "session_id": null, "remaining_ms": null, "last_seq": 1,
+      "nvs_session": { "session_id": "0192f3c0-0000-7000-8000-000000000009", "remaining_ms": 480000, "offline_resumes": 0 } } },
+    { "advance_ms": 5000 },
+    { "expect": { "mode": "free", "relay": false } },
+    { "cmd": "session.resume", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000009", "remaining_ms": 465000, "buzzer": true } },
+    { "expect": { "mode": "active", "relay": true, "remaining_ms": 465000, "last_seq": 2,
+      "nvs_session": { "remaining_ms": 465000, "offline_resumes": 0 } } },
+    { "advance_ms": 30000 },
+    { "expect": { "mode": "active", "remaining_ms": 435000 } },
+    { "events": [ { "type": "boot", "boot": 1, "n": 1 }, { "type": "boot", "boot": 2, "n": 1, "data": { "reset_reason": "panic" } } ] }
+  ]
+}

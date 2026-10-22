@@ -1,0 +1,25 @@
+{
+  "name": "Продление из ending: сигналы взводятся заново",
+  "description": "session.extend выше порога возвращает active и взводит сигналы; в той же фазе сигнал не повторяется; ниже порога — сигнал текущей фазы сразу; чужая сессия — wrong_session.",
+  "steps": [
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000003", "remaining_ms": 400000, "buzzer": true } },
+    { "advance_ms": 100000 },
+    { "expect": { "mode": "ending", "remaining_ms": 300000, "signals": { "warn": 1, "beep": 2 } } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000003", "remaining_ms": 1000000, "buzzer": true } },
+    { "expect": { "mode": "active", "led": "off", "remaining_ms": 1000000, "signals": { "warn": 1 },
+      "nvs_session": { "remaining_ms": 1000000, "offline_resumes": 0 } } },
+    { "advance_ms": 700000 },
+    { "expect": { "mode": "ending", "remaining_ms": 300000, "signals": { "warn": 2, "beep": 4 } } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000003", "remaining_ms": 200000, "buzzer": false } },
+    { "expect": { "mode": "ending", "buzzer": false, "remaining_ms": 200000, "signals": { "warn": 2, "beep": 4, "blink2": 0 } } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000003", "remaining_ms": 30000, "buzzer": false } },
+    { "expect": { "mode": "ending", "lamp": false, "remaining_ms": 30000, "signals": { "warn": 2, "blink2": 1 } } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000099", "remaining_ms": 9000000, "buzzer": true }, "ack": "wrong_session" },
+    { "expect": { "remaining_ms": 30000, "session_id": "0192f3c0-0000-7000-8000-000000000003" } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000003", "remaining_ms": 600000, "buzzer": true } },
+    { "expect": { "mode": "active", "led": "off", "remaining_ms": 600000 } },
+    { "advance_ms": 300000 },
+    { "expect": { "mode": "ending", "signals": { "warn": 3, "beep": 6, "blink2": 1 } } },
+    { "events": ["boot"] }
+  ]
+}

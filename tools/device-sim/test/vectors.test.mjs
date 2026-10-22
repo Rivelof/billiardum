@@ -48,10 +48,10 @@ for (const vec of vectors) {
     assert.equal(acks.length, 1);
     const [ack] = acks;
     if (vec.expect === 'ok') {
-      // Подпись и формат верны; в M0 исполняются только ping и identify.
+      // Подпись и формат верны; на свежем контроллере без сессии extend и stop — wrong_session.
       const type = JSON.parse(vec.raw).type;
-      if (['ping', 'identify'].includes(type)) assert.deepEqual([ack.ok, ack.error], [true, null]);
-      else assert.deepEqual([ack.ok, ack.error], [false, 'unknown_type']);
+      const want = ['session.extend', 'session.stop'].includes(type) ? 'wrong_session' : 'ok';
+      assert.equal(ack.ok ? 'ok' : ack.error, want, type);
     } else {
       assert.deepEqual([ack.ok, ack.error], [false, vec.expect]);
     }

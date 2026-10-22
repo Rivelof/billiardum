@@ -1,10 +1,13 @@
-# Окружение разработки «Бильярдума» (контракт M0 §2).
+# Окружение разработки «Бильярдума» (контракты M0 §2 и M1 §11).
 # Запускать через `npm run dev` (scripts/dev.mjs): он создаёт .env и сертификаты,
-# применяет миграции, сид и провижининг до старта server и device-sim.
+# применяет миграции, сид и провижининг до старта server и device-sim и собирает
+# фронтенд на хосте до старта caddy.
 # Остановка: `npm run down`, со стиранием данных: `npm run down -- --volumes`.
 #
 # Контейнеры с Node не ставят пакеты: репозиторий монтируется только для чтения
-# вместе с node_modules хоста (pg и mqtt — чистый JS).
+# вместе с node_modules хоста (pg и mqtt — чистый JS). Фронтенд (Vite, нативный
+# esbuild под платформу хоста) в контейнерах не собирается: web/*/dist собирает
+# npm run dev на хосте, caddy только читает их.
 #
 # Образы закреплены по версиям (decisions №40). В базу входят только
 # supabase_admin (DATABASE_ADMIN_URL) и app_api (DATABASE_URL), decisions №39.
@@ -94,7 +97,7 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     environment:
-      NODE_ENV: development
+      NODE_ENV: ${NODE_ENV:-development}
       PORT: "3000"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgres://app_api:${DB_APP_PASSWORD}@db:5432/postgres
@@ -105,6 +108,19 @@ services:
       MQTT_SERVER_USER: ${MQTT_SERVER_USER}
       MQTT_SERVER_PASSWORD: ${MQTT_SERVER_PASSWORD}
       SECRETS_ENC_KEY: ${SECRETS_ENC_KEY}
+      # M1 §11. Вход для разработки и ускоренное время — только не в production (§2.3).
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost:8443}
+      ALLOW_DEV_LOGIN: ${ALLOW_DEV_LOGIN:-}
+      DEV_ALLOW_ANY_MINUTES: ${DEV_ALLOW_ANY_MINUTES:-}
+      YOOKASSA_API_URL: ${YOOKASSA_API_URL:-http://yookassa-emu:8090/v3}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy
@@ -126,23 +142,76 @@ services:
   device-sim:
     <<: *node-service
     command: ["node", "tools/device-sim/index.mjs"]
+    ports:
+      # HTTP-управление симулятором (режимы сбоя, перезагрузка, метрики) — только
+      # с этой машины. В контейнере слушает все интерфейсы, иначе проброс не дойдёт.
+      - "127.0.0.1:18080:18080"
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       MQTT_URL: mqtts://mosquitto:8883
       MQTT_CA_FILE: /repo/deploy/dev/certs/ca.crt
       SIM_DEVICES_FILE: /repo/deploy/dev/devices.json
+      SIM_CONTROL_PORT: "18080"
+      SIM_CONTROL_HOST: 0.0.0.0
+      # NVS контроллеров (seq, повторы, недоставленные события) переживает перезапуск
+      # контейнера; стирается вместе с остальными данными: npm run down -- --volumes.
+      SIM_NVS_DIR: /var/lib/device-sim
+    volumes:
+      - ../..:/repo:ro
+      - device-sim-nvs:/var/lib/device-sim
     depends_on:
       mosquitto:
         condition: service_healthy
       server:
         condition: service_healthy
 
+  # Эмулятор ЮKassa (контракт M1 §5, пакет backend-money). Порт 8090 только внутри
+  # сети Compose: сервер ходит в API (YOOKASSA_API_URL), браузер открывает страницу
+  # оплаты через Caddy (https://{PUBLIC_HOST}/pay/{id}).
+  # Профиль: пока нет tools/yookassa-emu/index.mjs, сервис не стартует; npm run dev
+  # включает его сам, когда пакет появится (scripts/dev.mjs).
+  yookassa-emu:
+    <<: *node-service
+    profiles: [yookassa-emu]
+    command: ["node", "tools/yookassa-emu/index.mjs"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      YOOKASSA_EMU_PORT: "8090"
+      # Все интерфейсы контейнера: иначе server и caddy из сети Compose не достучатся.
+      YOOKASSA_EMU_HOST: 0.0.0.0
+      # Магазин, который принимает эмулятор (Basic shopId:secretKey).
+      YOOKASSA_EMU_SHOP_ID: ${YOOKASSA_EMU_SHOP_ID}
+      YOOKASSA_EMU_SECRET: ${YOOKASSA_EMU_SECRET}
+      # Куда слать вебхук; {club_id} — из metadata.club_id платежа.
+      YOOKASSA_EMU_WEBHOOK_URL: http://server:3000/api/webhooks/yookassa/{club_id}
+      # Внешний адрес эмулятора: confirmation_url = {этот адрес}/pay/{id}, через Caddy.
+      YOOKASSA_EMU_PUBLIC_URL: https://${PUBLIC_HOST:-localhost:8443}
+      # Управление для тестов /__emu/* наружу не опубликовано (ни порт, ни Caddy):
+      # docker compose -p billiardum exec yookassa-emu wget -qO- --post-data= http://127.0.0.1:8090/__emu/…
+    healthcheck:
+      # Порт принимает соединения (любой HTTP-сервер эмулятора).
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('node:net').connect(8090, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
   caddy:
     image: caddy:2.11.7-alpine
     ports:
       - "8443:443"
+    environment:
+      # Второй адрес сайта для телефона в локальной сети (README); пусто — 127.0.0.1.
+      DEV_LAN_HOST: ${DEV_LAN_HOST:-127.0.0.1}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Сборки web/guest/dist и web/admin/dist (собирает npm run dev на хосте).
+      - ../../web:/srv/web:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
@@ -160,5 +229,6 @@ volumes:
   db-data:
   db-config:
   mosquitto-data:
+  device-sim-nvs:
   caddy-data:
   caddy-config:

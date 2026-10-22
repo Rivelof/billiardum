@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeBase64Strict, isUuid } from './command.mjs';
-import { FAULTS, FAULTS_IMPLEMENTED_IN, parseFaults } from './faults.mjs';
+import { FAULTS, parseFaults } from './faults.mjs';
 import { DEFAULT_CAPS } from './machine.mjs';
 import { LEVELS } from './log.mjs';
 
@@ -23,12 +23,14 @@ export class ConfigError extends Error {
 
 export const USAGE = `Симулятор контроллера стола (tools/device-sim)
 
-  node index.mjs [--fault <режим>[@<стол>]]... [--tables 1,2,...] [--caps relay,led,...] [--help]
+  node index.mjs [--fault <режим>[@<стол>][:<мс>]]... [--tables 1,2,...] [--caps relay,led,...] [--help]
 
 Переменные: SIM_DEVICES_FILE (по умолчанию ${DEFAULT_DEVICES_FILE}), MQTT_URL, MQTT_CA_FILE,
-LOG_LEVEL (debug|info|warn|error), SIM_FAULTS, SIM_TABLES, SIM_CAPS — то же, что флаги.
+LOG_LEVEL (debug|info|warn|error), SIM_FAULTS, SIM_TABLES, SIM_CAPS — то же, что флаги;
+SIM_NVS_DIR — NVS в файлах (перезапуск процесса = перезагрузка контроллера);
+SIM_CONTROL_PORT — HTTP-управление для тестов (только разработка), SIM_CONTROL_HOST (по умолчанию 127.0.0.1).
 
-Режимы сбоя (--fault, до ${FAULTS_IMPLEMENTED_IN} только флаги — симулятор пишет sim_fault_not_implemented):
+Режимы сбоя (--fault; на ходу — POST /sim/tables/{стол}/fault):
 ${Object.entries(FAULTS).map(([name, text]) => `  ${name.padEnd(11)} ${text}`).join('\n')}`;
 
 /**
@@ -181,8 +183,22 @@ export function loadConfig(options = {}) {
   const selected = only ? devices.filter((d) => only.has(d.table)) : devices;
   if (selected.length === 0) throw new ConfigError('после фильтра --tables/SIM_TABLES не осталось столов');
 
+  let controlPort = null;
+  if (env.SIM_CONTROL_PORT) {
+    if (!/^[1-9][0-9]{0,4}$/.test(env.SIM_CONTROL_PORT) || Number(env.SIM_CONTROL_PORT) > 65535) {
+      throw new ConfigError('SIM_CONTROL_PORT — порт 1…65535');
+    }
+    if (env.NODE_ENV === 'production') throw new ConfigError('SIM_CONTROL_PORT недоступен при NODE_ENV=production');
+    controlPort = Number(env.SIM_CONTROL_PORT);
+  }
+  const controlHost = env.SIM_CONTROL_HOST || '127.0.0.1';
+  const nvsDir = env.SIM_NVS_DIR ? resolveExisting(env.SIM_NVS_DIR, [base]) : null;
+
   return {
     help: false,
+    controlPort,
+    controlHost,
+    nvsDir,
     devicesFile,
     mqttUrl,
     tls,

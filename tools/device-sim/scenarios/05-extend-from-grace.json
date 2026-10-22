@@ -1,0 +1,33 @@
+{
+  "name": "Продление из льготы",
+  "description": "session.extend в grace возвращает свет без мигания; продление сразу ниже warn_ms[1] даёт двойное мигание; повторная льгота доигрывается до free.",
+  "steps": [
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000006", "remaining_ms": 60000, "warn_ms": [30000, 10000], "grace_ms": 120000, "buzzer": true } },
+    { "advance_ms": 30000 },
+    { "expect": { "mode": "ending", "signals": { "warn": 1, "beep": 2 } } },
+    { "advance_ms": 20000 },
+    { "expect": { "mode": "ending", "lamp": false, "signals": { "blink2": 1 } } },
+    { "advance_ms": 10000 },
+    { "expect": { "mode": "grace", "lamp": false, "signals": { "grace": 1, "grace_blink": 1 } } },
+    { "advance_ms": 20000 },
+    { "expect": { "mode": "grace", "lamp": true, "signals": { "grace_blink": 2 } } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000006", "remaining_ms": 120000, "buzzer": true } },
+    { "expect": { "mode": "active", "led": "off", "lamp": true, "dim": 100, "remaining_ms": 120000, "nvs_session": { "remaining_ms": 120000 } } },
+    { "advance_ms": 15000 },
+    { "expect": { "mode": "active", "lamp": true, "signals": { "grace_blink": 2 } } },
+    { "advance_ms": 75000 },
+    { "expect": { "mode": "ending", "remaining_ms": 30000, "signals": { "warn": 2, "beep": 4 } } },
+    { "advance_ms": 30000 },
+    { "expect": { "mode": "grace", "signals": { "blink2": 2, "grace": 2, "grace_blink": 3 } } },
+    { "cmd": "session.extend", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000006", "remaining_ms": 5000, "buzzer": true } },
+    { "expect": { "mode": "ending", "led": "yellow_blink", "lamp": false, "remaining_ms": 5000, "signals": { "blink2": 3, "grace_blink": 3 } } },
+    { "advance_ms": 5000 },
+    { "expect": { "mode": "grace", "lamp": false, "signals": { "grace": 3, "grace_blink": 4 } } },
+    { "advance_ms": 119999 },
+    { "expect": { "mode": "grace", "signals": { "grace_blink": 11 } } },
+    { "advance_ms": 1 },
+    { "expect": { "mode": "free", "relay": false, "nvs_session": null,
+      "signals": { "warn": 2, "beep": 4, "blink2": 3, "grace": 3, "grace_blink": 11 } } },
+    { "events": ["boot"] }
+  ]
+}

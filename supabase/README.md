@@ -7,7 +7,7 @@ Postgres из образа `supabase/postgres` (decisions №11). Клиенты
 | Команда (из корня) | Что делает | Переменные |
 |---|---|---|
 | `npm run db:migrate` | применяет `migrations/NNNN_name.sql` по порядку, каждую в своей транзакции; учёт в `bl.schema_migrations` (версия, имя, sha256); изменённая после применения миграция — ошибка; задаёт пароль `app_api` | `DATABASE_ADMIN_URL`, `DB_APP_PASSWORD` |
-| `npm run db:seed` | `seed.sql`: синтетический клуб, повторный запуск ничего не дублирует; при `NODE_ENV=production` отказ | `DATABASE_ADMIN_URL` |
+| `npm run db:seed` | `seed.sql`, затем `seed.d/*.sql` по порядку имён (`0100_core`, `0200_money`, `0300_light`) — всё в одной транзакции; повторный запуск ничего не дублирует; при `NODE_ENV=production` отказ | `DATABASE_ADMIN_URL` |
 | `npm run db:reset` | снимает защиту журнала, стирает схемы `bl` и `bl_guard`, затем migrate и seed; при `NODE_ENV=production` отказ | `DATABASE_ADMIN_URL`, `DB_APP_PASSWORD` |
 | `npm run test:db` | тесты базы на поднятом Postgres (ниже) | `DATABASE_ADMIN_URL`, по желанию `DATABASE_URL` |
 | `npm test -w @billiardum/db` | юнит-тесты без базы (SCRAM, учёт миграций) | — |
@@ -22,14 +22,25 @@ Postgres из образа `supabase/postgres` (decisions №11). Клиенты
 
 | Таблица | Суть |
 |---|---|
-| `users` | `id`, `phone` (E.164), `created_at` — персонал и владельцы (гости — M1) |
+| `users` | пользователь платформы (гость и персонал), не привязан к клубу: `phone` (E.164, необязателен до «Поделиться контактом», уникален при наличии), `telegram_user_id`, `max_user_id`, `notify_channel`, `phone_verified_at`, `merged_into` (учётка мессенджера влита в учётку с тем же телефоном) |
 | `clubs` | `name`, `city`, `timezone` (IANA, проверяется), `settings jsonb` |
-| `club_members` | `club_id`, `user_id`, `role` (`owner`, `manager`, `reception`, `installer`), `pin_hash`, `active` |
+| `club_members` | `club_id`, `user_id`, `role` (`owner`, `manager`, `reception`, `installer`), `pin_hash` (`scrypt$N$r$p$соль$хеш`), `pin_failed_count`, `pin_locked_until`, `pin_set_at`, `active` |
 | `resources` | стол: `type` (`billiard_pyramid`, `billiard_pool`, `billiard_snooker`), `number`, `title`, план зала `plan_x`, `plan_y` (центр стола в сантиметрах от левого верхнего угла зала), `plan_rotation` (градусы) |
 | `devices` | `id` = device_id = логин MQTT, `resource_id` (уникально), `device_key_enc` (AES-256-GCM в приложении), `last_seq`, `fw`, `caps`, `last_seen_at` |
 | `tariff_rules` | `resource_type` или `resource_id`, `days` (ISO 1–7), `start_local`–`end_local` (местное время клуба; конец ≤ начала — через полночь), `price_per_hour` (копейки), `step_minutes`, `min_minutes`, `priority` |
 | `audit_log` | журнал, см. ниже |
 | `schema_migrations` | учёт миграций (у `app_api` прав нет) |
+| `consents` (0100) | согласие на обработку ПДн: `user_id`, `version`, `accepted_at` |
+| `staff_terminals` (0100) | терминал ресепшена клуба: sha256 токена, срок, отзыв |
+| `auth_tokens` (0100) | токены входа: только sha256, `kind` `session` или `pin` (клуб и терминал), срок, отзыв |
+| `bot_link_nonces` (0100) | вход в PWA через бота: sha256 nonce и секрета браузера, `pending → linked → done → consumed`, 10 минут |
+| `outbox`, `outbox_done` (0101) | события модулей и отметки подписчиков (контракт M1 §2.2); триггер вставки — `NOTIFY bl_outbox` |
+| `idempotency_keys` (0101) | ответы на запросы с `Idempotency-Key`: `(user_id, key, route)`, 24 часа |
+| `push_subscriptions` (0102) | подписки Web Push пользователя (`endpoint`, `p256dh`, `auth`) |
+| `notifications` (0102) | уведомления: получатель, клуб, текст без ПДн, статус, попытки по каналам |
+| `alarms` (0102) | тревоги клуба: тип, уровень, стол, `open`/`acked`, счётчик повторов (одна открытая тревога типа на стол) |
+
+Таблицы денег (0200–0201) описаны в `server/payments/README.md`, сессий и устройств (0300–0390) — у модуля light (`server/sessions`).
 
 Ресурс и устройство, тариф и ресурс связаны составными ключами `(club_id, id)`: строка не сошлётся на стол другого клуба.
 
@@ -42,9 +53,19 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 ```
 
 `actor_type`: `user`, `system`, `device`, `support`. Пустое значение — контекста нет; неверный UUID — ошибка запроса.
-На всех таблицах `ENABLE` и `FORCE ROW LEVEL SECURITY`. Политики `TO app_api`: строка видна и пишется, только если `club_id = app.club_id` (для `clubs` — `id`). Без контекста `app_api` не видит ни одной строки. `users` видны сам себе (`app.user_id`) и участникам клуба из контекста.
+На всех таблицах `ENABLE` и `FORCE ROW LEVEL SECURITY`. Политики `TO app_api`: строка видна и пишется, только если `club_id = app.club_id` (для `clubs` — `id`). Без контекста `app_api` не видит ни одной строки.
 
-Права `app_api`: `SELECT` всех таблиц кроме `schema_migrations`; `INSERT`/`UPDATE` — `club_members`, `resources`, `tariff_rules`; `UPDATE` у `clubs`; у `devices` — `INSERT` и `UPDATE` только столбцов `resource_id`, `serial`, `device_key_enc`, `last_seq`, `fw`, `caps`, `last_seen_at`; журнал — только `SELECT`, `INSERT`. `DELETE` и `TRUNCATE` нет ни на что.
+Три вида контекста (M1):
+
+- **клуб** — `app.club_id` задан: данные этого клуба;
+- **личный** — `app.club_id` пуст, `app.user_id` задан: свои строки пользователя (`users`, свои членства `club_members` и клубы, где он участник, `consents`, `auth_tokens`, `push_subscriptions`, свои `notifications`, `idempotency_keys`). Свои членства и клубы видны **только** в личном контексте: в контексте клуба A строка членства в клубе B не появится даже у её хозяина (забытый `WHERE club_id` не даст роль из чужого клуба);
+- **платформа** — `bl.ctx_is_platform()`: `actor_type = system`, клуба и пользователя нет. Так работают обработчик outbox, доставка уведомлений, вебхук бота и вход через бота: `outbox` (все события), `bot_link_nonces`, `push_subscriptions` и `notifications` (для доставки), `idempotency_keys` (уборка просроченных, 0104). Анонимные HTTP-запросы идут с `actor_type = user` и платформой не являются.
+
+### Пользователи платформы и персонал
+
+Пользователь не привязан к клубу. `users`: свою строку видит сам; участников клуба из контекста видит персонал этого клуба (политика M0, нужна для списка сотрудников и журнала); **гостей** персонал не видит вовсе — только через узкие функции с маской телефона (`bl.user_brief` → `+7999***4567`, модули — например, заявки ресепшена). Пользователь меняет у себя только `notify_channel`; телефон, Telegram и MAX пишут только функции входа. Поиск пользователя до входа, привязка телефона и проверка токена — узкие функции ниже, у `app_api` прямого доступа к чужим строкам `users` нет.
+
+Права `app_api`: `SELECT` всех таблиц кроме `schema_migrations`; `INSERT`/`UPDATE` — `club_members`, `resources`, `tariff_rules`; `UPDATE` у `clubs`; у `devices` — `INSERT` и `UPDATE` только столбцов `resource_id`, `serial`, `device_key_enc`, `last_seq`, `fw`, `caps`, `last_seen_at`; журнал — только `SELECT`, `INSERT`. Таблицы core (0100–0102): `INSERT` и `UPDATE` только нужных столбцов (например, у `auth_tokens` — `revoked_at`, `last_used_at`; у `users` — только `notify_channel`). `DELETE` — только `outbox` (обработанные события старше 7 дней, платформа), `bot_link_nonces` и `idempotency_keys` (просроченные); `TRUNCATE` — ни на что.
 
 ## Роли
 
@@ -52,7 +73,7 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 |---|---|---|
 | `bl_owner` | нет | владелец таблиц и функций контекста (роль миграций); никому не выдана |
 | `bl_audit_owner` | нет | владелец `audit_log` и функций журнала; никому не выдана |
-| `bl_definer` | нет | владелец узких функций `SECURITY DEFINER`; видит только `devices(id, club_id)` |
+| `bl_definer` | нет | владелец узких функций `SECURITY DEFINER`; видит только столбцы, нужные этим функциям (`devices(id, club_id)`, у core — `users`, `auth_tokens`, `staff_terminals`, `consents`, у light и money — свои) |
 | `app_api` | да | рабочая роль сервера: без `BYPASSRLS`, `CREATEROLE`, `CREATEDB`, ничем не владеет; `statement_timeout` 15 с |
 
 Изменения ролей Supabase (роли кластерные):
@@ -73,8 +94,13 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl.device_club(device_id uuid) → uuid` | `bl_definer` | `club_id` устройства или `NULL` | мост MQTT узнаёт клуб устройства до того, как известен контекст |
 | `bl.device_total() → bigint` | `bl_definer` | число устройств во всех клубах | `total` в логе `devices_online` |
 | `bl.audit_log_chain()` (триггер) | `bl_audit_owner` | — | читает голову цепочки любого клуба при вставке |
+| `bl.auth_resolve(token_hash text)` (0103) | `bl_definer` | действующий токен: `token_id`, `kind` (`session`, `pin`, `terminal`), `user_id`, `club_id`, `terminal_id`, `expires_at`, `has_phone`, `consents` | кто делает запрос; отозванный, истёкший, токен влитой учётки и токен PIN отозванного терминала не возвращаются |
+| `bl.auth_user_for(kind text, value text) → uuid` (0103) | `bl_definer` | найденный или созданный пользователь по `phone`, `telegram`, `max` | вход до того, как пользователь известен |
+| `bl.auth_attach_phone(phone text) → uuid` (0103) | `bl_definer` | id учётки, которой теперь принадлежит номер | «Поделиться контактом» — только пользователю из `app.user_id`; номер у другой учётки — вливание (`merged_into`, Telegram/MAX и согласия переходят); конфликт — ошибка `BL409` |
+| `bl.notify_route(user_id uuid)` (0103) | `bl_definer` | `notify_channel`, `telegram_user_id`, `max_user_id` — без телефона | доставка уведомлений |
+| `bl.user_brief(user_id uuid)` (0103) | `bl_definer` | `phone_masked`, `has_phone` | персонал клуба видит гостя только маской; без контекста клуба — только себя |
 
-Других функций `SECURITY DEFINER` в `bl` нет (проверяется тестом).
+`bl_definer` видит у `users`, `auth_tokens`, `staff_terminals`, `consents` только столбцы, нужные этим функциям. Функции light (`resource_by_code`, `resource_club`, `session_club`, `light_open_sessions`, `device_bind_window`) и money (`money_object_club`, `money_due`) описаны в README модулей. Других функций `SECURITY DEFINER` в `bl` нет: список закреплён тестом `isolation` — новая функция добавляется в него вместе с миграцией.
 
 ## Журнал `audit_log`
 
@@ -128,6 +154,14 @@ alter event trigger bl_audit_guard_drop enable always;
 
 «Тестовый клуб», Екатеринбург, `Asia/Yekaterinburg`; владелец `+70000000001`; 8 столов (1–5 пирамида, 6–8 пул) на плане 18 × 14 м; тарифы PRODUCT §9 в копейках для обоих типов (50 000 / 80 000 / 90 000 пн–чт, 60 000 / 100 000 / 110 000 пт–вс; 17:00–00:00 хранится как `end_local = 00:00`); 8 устройств без ключей. Фиксированные UUID: клуб `c1000000-0000-4000-8000-000000000001`, пользователь `a1…01`, столы `e1…01`–`e1…08`, устройства `d1000000-0000-4000-8000-00000000000N` (N — номер стола), тарифы `f1…01`–`f1…12`. Ключи и пароли MQTT задаёт `npm run provision:dev`.
 
+### Сид модулей (`seed.d/`)
+
+`0100_core.sql` — персонал тестового клуба: управляющий `+70000000003` (`a1…03`, `b1…03`) и ресепшн `+70000000004` (`a1…04`, `b1…04`); `+70000000002` занят вторым клубом тестов изоляции. PIN задаёт `npm run provision:dev` (`DEV_STAFF_PIN`, по умолчанию `1234`): хеш зависит от `SECRETS_ENC_KEY`. Вход — `POST /api/auth/dev` или через бота. `0200_money.sql`, `0300_light.sql` — модулей money и light.
+
+## Деньги
+
+Таблицы `0200_money.sql`, `0201_holidays.sql` (платежи, котировки, заявки ресепшена, чеки, возвраты, настройки ЮKassa клуба, праздники), их RLS и узкие функции — `server/payments/README.md`. Тесты — `tests/money_rls.test.mjs`, `tests/money_flow.test.mjs`.
+
 ## Тесты базы (`tests/`)
 
 Каждый файл создаёт свою временную базу `bl_test_*` из `template1`, применяет миграции и сид и удаляет её в конце: журнал нельзя очистить, поэтому тесты не пишут в рабочую базу. Пароль `app_api` тесты не меняют — действуют через `SET ROLE app_api` (те же права и RLS); если задан `DATABASE_URL`, дополнительно проверяется вход `app_api` по паролю. Файлы идут по одному (`--test-concurrency=1`), 50 параллельных соединений — нужен `max_connections` ≥ 70.
@@ -137,3 +171,5 @@ alter event trigger bl_audit_guard_drop enable always;
 - `isolation` — с контекстом клуба A не видно строк клуба B ни в одной таблице, вставка и перенос строки в клуб B падают на RLS; без контекста — ноль строк; функции `SECURITY DEFINER` — только перечисленные.
 - `roles` — у ролей Supabase нет прав на `bl`, роли с `BYPASSRLS` и роли `authenticator` получают `permission denied` на каждую таблицу; членов у `pg_read_all_data` нет; права на объекты только у наших ролей; атрибуты ролей; служебные роли Supabase без входа и без `CREATEROLE`, вход под каждой с `POSTGRES_PASSWORD` (или паролем из `DATABASE_ADMIN_URL`) отвергается, входить могут только суперпользователи и `app_api`.
 - `main_db` — только чтение и откатываемые попытки на рабочей базе из `DATABASE_ADMIN_URL` (если она уже мигрирована): все миграции применены, журнал неизменяем, роли Supabase не читают `bl`, цепочки целы.
+- `core_rls` (M1 core) — RLS включена и принудительна на всех таблицах core; пользователь видит свою строку, персонал не видит гостей; свои членства — только в личном контексте; токены, согласия, ключи идемпотентности, подписки — только свои; nonce — только платформе; outbox, уведомления, тревоги — по клубу; `auth_resolve` не отдаёт истёкший и отозванный токен и токен отозванного терминала; слияние учёток и `BL409`; маска телефона; `DELETE` у `app_api` только у `outbox`, `bot_link_nonces`, `idempotency_keys`.
+- Тесты сервера с базой — `npm run test:db -w @billiardum/server` (`server/test/db`), та же схема временных баз.

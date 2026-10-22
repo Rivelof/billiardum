@@ -148,7 +148,7 @@ test('bad_sig не сдвигает seq; та же команда с верно�
 
 test('unknown_type сдвигает seq и сохраняется: повтор получает тот же ack', () => {
   const { out, send, nvs, machine } = rig();
-  const raw = signed(makeCommand({ seq: 4, id: A, type: 'session.start', body: { session_id: B, remaining_ms: 60_000, buzzer: true } }));
+  const raw = signed(makeCommand({ seq: 4, id: A, type: 'lamp.on', body: { session_id: B } }));
   const ack = send(raw);
   assert.deepEqual([ack.ok, ack.error], [false, 'unknown_type']);
   assert.equal(nvs.get(NVS_KEYS.replay).seq, 4);
@@ -156,6 +156,19 @@ test('unknown_type сдвигает seq и сохраняется: повтор 
   send(raw);
   assert.equal(out.acks.at(-1), stored);
   assert.equal(machine.mode, 'free');
+  machine.stop();
+});
+
+test('точный повтор session.start не исполняется второй раз: свет и остаток те же', () => {
+  const { out, send, nvs, machine } = rig();
+  const raw = signed(makeCommand({ seq: 4, id: A, type: 'session.start', body: { session_id: B, remaining_ms: 3_600_000, buzzer: true } }));
+  assert.equal(send(raw).ok, true);
+  const writes = nvs.writes;
+  const states = out.states.length;
+  send(raw);
+  assert.equal(nvs.writes, writes, 'NVS не тронут');
+  assert.equal(out.states.length, states, 'state не публикуется');
+  assert.equal(machine.mode, 'active');
   machine.stop();
 });
 

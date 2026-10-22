@@ -1,0 +1,26 @@
+{
+  "name": "Офлайн-доигрывание",
+  "description": "Связь пропала посреди игры: сигналы идут локально, свет гаснет по локальному таймеру, offline_session_finished уходит после восстановления связи (T5).",
+  "steps": [
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000008", "remaining_ms": 120000, "warn_ms": [60000, 30000], "grace_ms": 30000, "buzzer": true } },
+    { "advance_ms": 10000 },
+    { "net": false },
+    { "advance_ms": 50000 },
+    { "expect": { "mode": "ending", "signals": { "warn": 1, "beep": 2 } } },
+    { "advance_ms": 30000 },
+    { "expect": { "mode": "ending", "lamp": false, "signals": { "blink2": 1 } } },
+    { "advance_ms": 30000 },
+    { "expect": { "mode": "grace", "relay": true, "signals": { "grace": 1, "grace_blink": 1 }, "outbox": [] } },
+    { "advance_ms": 29999 },
+    { "expect": { "mode": "grace", "signals": { "grace_blink": 2 } } },
+    { "advance_ms": 1 },
+    { "expect": { "mode": "free", "relay": false, "nvs_session": null, "outbox": ["offline_session_finished"] } },
+    { "events": ["boot", { "type": "offline_session_finished", "at_uptime_ms": 150000,
+      "data": { "session_id": "0192f3c0-0000-7000-8000-000000000008", "finished_uptime_ms": 150000 } }] },
+    { "advance_ms": 60000 },
+    { "expect": { "outbox": ["offline_session_finished"] } },
+    { "net": true },
+    { "expect": { "mode": "free", "outbox": [] } },
+    { "events": [] }
+  ]
+}

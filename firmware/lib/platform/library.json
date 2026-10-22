@@ -1,0 +1,13 @@
+{
+  "name": "bl-platform",
+  "version": "1.0.0",
+  "description": "Платформа ESP32: NVS (bl_state, bl_keys), часы, HMAC mbedTLS, MQTT (esp-mqtt, QoS 1, TLS с закреплённым CA), Wi-Fi, точка доступа привязки, claim по HTTPS, OTA с откатом, watchdog.",
+  "license": "UNLICENSED",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "dependencies": [{ "name": "bl-logic" }, { "name": "bl-drivers" }],
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src"
+  }
+}

@@ -1,5 +1,9 @@
-# CI «Бильярдума» (контракт M0 §9). Локально то же самое: `npm run ci`.
+# CI «Бильярдума» (контракты M0 §9 и M1 §11). Локально то же самое: `npm run ci`
+# (этапы по отдельности: `npm run ci -- --web`, `--fw`, `--config`, `--db`, `--pio`).
 # Только синтетические данные сида (decisions №21): раннеры GitHub вне РФ.
+#
+# Пакеты, которых ещё нет (web/*, firmware/), scripts/ci.mjs пропускает с пометкой
+# ::notice в сводке задачи. Пакет есть, а нужного скрипта или инструмента нет — ошибка.
 
 name: CI
 
@@ -16,7 +20,7 @@ concurrency:
 
 jobs:
   ci:
-    name: lint, test, миграции, test:db
+    name: lint, test, конфиги, миграции, test:db
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -58,9 +62,91 @@ jobs:
         run: docker pull eclipse-mosquitto:2.1.2-alpine
       - run: npm run test:it -w tools/device-sim
 
+      # docker compose config, caddy validate, mosquitto --test-config — образами из compose.yml.
+      - name: Конфиги окружения разработки
+        run: node scripts/ci.mjs --config
+
       # Наши роли — в supautils.reserved_roles (pentester L1), до миграций.
       - name: Роли базы в supautils.reserved_roles
         run: docker exec -i -u postgres ${{ job.services.db.id }} sh -s < deploy/postgres/reserved-roles.sh
       - run: npm run db:migrate
       - run: npm run db:seed
       - run: npm run test:db
+
+  web:
+    name: сборка web/guest и web/admin, бюджет JS гостя
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      # vite build обоих приложений, затем npm run size -w web/guest (≤ 200 КБ gzip, PRODUCT §20).
+      - run: node scripts/ci.mjs --web
+
+  firmware-native:
+    name: прошивка, нативные тесты (CMake + g++)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # CMake и g++ есть в образе ubuntu-24.04; npm ci не нужен (scripts/ci.mjs — только Node).
+      - run: node scripts/ci.mjs --fw
+
+  firmware-pio:
+    name: прошивка, pio run -e esp32dev и pio test -e native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Закреплённая версия; меняется вместе с PIO_VERSION в scripts/ci.mjs.
+      PIO_VERSION: 6.1.19
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Есть ли прошивка
+        id: fw
+        run: |
+          if [ -f firmware/platformio.ini ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=CI: шаг пропущен::firmware/platformio.ini ещё нет, pio run и pio test пропущены"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Платформа espressif32 и тулчейны (сотни МБ) — из кэша, ключ по platformio.ini.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.fw.outputs.present == 'true'
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ env.PIO_VERSION }}-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: PlatformIO ${{ env.PIO_VERSION }} в отдельном venv
+        if: steps.fw.outputs.present == 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/pio-venv"
+          "$RUNNER_TEMP/pio-venv/bin/pip" install --disable-pip-version-check "platformio==$PIO_VERSION"
+          echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"
+
+      - name: pio run и pio test
+        if: steps.fw.outputs.present == 'true'
+        run: node scripts/ci.mjs --pio

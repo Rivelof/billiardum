@@ -65,8 +65,11 @@ describe('два клуба', () => {
         const byId = await c.query(`select count(*)::int as n from bl.${table} where club_id = $1`, [CLUB_B]);
         assert.equal(byId.rows[0].n, 0, `${table}: строки B по прямому условию`);
       }
+      // Видны только участники клуба A (владелец из seed.sql и персонал из seed.d), гостей и клуба B — нет.
+      const members = (await db.pool.query('select distinct user_id from bl.club_members where club_id = $1 order by user_id', [CLUB_A])).rows.map((r) => r.user_id);
+      assert.ok(members.includes(OWNER_A));
       const users = await c.query('select id from bl.users order by id');
-      assert.deepEqual(users.rows.map((r) => r.id), [OWNER_A], 'виден только участник своего клуба');
+      assert.deepEqual(users.rows.map((r) => r.id), members, 'видны только участники своего клуба');
     });
   });
 
@@ -167,9 +170,30 @@ describe('узкие функции SECURITY DEFINER', () => {
     assert.deepEqual(
       rows.map((r) => [r.proname, r.owner]),
       [
+        // M0
         ['audit_log_chain', 'bl_audit_owner'],
+        // M1 core (0103): вход и уведомления
+        ['auth_attach_phone', 'bl_definer'],
+        ['auth_resolve', 'bl_definer'],
+        ['auth_user_for', 'bl_definer'],
+        // M1 light (0300–0320)
+        ['device_bind_window', 'bl_definer'],
+        // M0
         ['device_club', 'bl_definer'],
         ['device_total', 'bl_definer'],
+        // M1 light
+        ['light_open_sessions', 'bl_definer'],
+        // M1 money (0200)
+        ['money_due', 'bl_definer'],
+        ['money_object_club', 'bl_definer'],
+        // M1 core
+        ['notify_route', 'bl_definer'],
+        // M1 light
+        ['resource_by_code', 'bl_definer'],
+        ['resource_club', 'bl_definer'],
+        ['session_club', 'bl_definer'],
+        // M1 core
+        ['user_brief', 'bl_definer'],
       ],
     );
     for (const r of rows) assert.ok(r.proconfig?.some((s) => s.startsWith('search_path=pg_catalog')), `${r.proname}: search_path`);

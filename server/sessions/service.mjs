@@ -1,0 +1,969 @@
+// Сессии стола (контракт M1 §6): оплата → старт и продление, остановка плательщиком,
+// «Я играю за этим столом», выбор после interrupted, продление без оплаты, сервисный свет,
+// поиск стола, зал, удержание pending (§13, для money) и шаг планировщика.
+//
+// Все функции принимают db — клиента транзакции. Команды контроллеру ставятся в
+// bl.device_commands в той же транзакции и уходят после коммита (queries.queueCommand).
+
+import { createHash } from 'node:crypto';
+import { normalizeCode } from './codes.mjs';
+import { fail, LightError } from './errors.mjs';
+import { createKit, minutesText, phaseOf, playEnd, premarkNotified, UNPLAYED_THRESHOLD_MS, unplayedMs } from './kit.mjs';
+import {
+  activeHold,
+  addParticipant,
+  currentClub,
+  deviceOfResource,
+  enterClub,
+  isOpen,
+  isUuid,
+  loadClub,
+  loadResource,
+  loadSession,
+  lockResource,
+  notifyLight,
+  openSessionOn,
+  OPEN_STATUSES,
+  participants,
+  queueCommand,
+  releaseHold,
+  resourceClub,
+  rolesIn,
+  sessionClub,
+} from './queries.mjs';
+import { graceMs, serviceMaxMinutes, warnMs } from './settings.mjs';
+import { sessionSummary, sessionView } from './view.mjs';
+
+export const PENDING_MAX_MS = 30 * 60_000;
+export const MAX_FREE_EXTEND_MINUTES = 240;
+export const MAX_IDENTIFY_SECONDS = 600;
+export const MAX_PARTICIPANTS = 20;
+export const UNLIMITED_DEFAULT_MINUTES = 120;
+export const ROLES = Object.freeze({
+  staff: ['owner', 'manager', 'reception', 'installer'],
+  reception: ['owner', 'manager', 'reception'],
+  manager: ['owner', 'manager'],
+  installer: ['owner', 'installer'],
+});
+const REASON_CODE = /^[a-z0-9_]{1,32}$/;
+const MINUTE = 60_000;
+
+const iso = (d) => (d ? new Date(d).toISOString() : null);
+const intIn = (v, min, max) => Number.isSafeInteger(v) && v >= min && v <= max;
+
+function cleanText(v, max = 2000) {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  return s.length > 0 && s.length <= max ? s : null;
+}
+
+/**
+ * @param {{ deps: object, log: object, clock: { now(): Date }, getBridge?: () => any }} opts
+ */
+export function createLightService(opts) {
+  const { deps, log } = opts;
+  const kit = createKit(opts);
+  const { now, audit, emit, alarm, manualAction, notifyParticipants, sessionEvent, deviceOnline, markInterrupted } = kit;
+
+  // Контекст и права ---------------------------------------------------------------
+
+  async function enterSession(db, sessionId) {
+    const clubId = await sessionClub(db, sessionId);
+    if (!clubId) fail('not_found', 'session');
+    await enterClub(db, clubId);
+    return clubId;
+  }
+
+  async function enterResource(db, resourceId) {
+    const clubId = await resourceClub(db, resourceId);
+    if (!clubId) fail('not_found', 'resource');
+    await enterClub(db, clubId);
+    return clubId;
+  }
+
+  /** Для интерфейса §13: без контекста клуба — перейти в клуб ресурса; с контекстом — RLS. */
+  async function ensureResourceClub(db, resourceId) {
+    if ((await currentClub(db)) !== null) return;
+    const clubId = await resourceClub(db, resourceId);
+    if (clubId) await enterClub(db, clubId);
+  }
+
+  async function requireRole(db, clubId, userId, allowed) {
+    const roles = await rolesIn(db, clubId, userId);
+    if (!roles.some((r) => allowed.includes(r))) fail('forbidden', 'role');
+    return roles;
+  }
+
+  async function view(db, s, userId) {
+    return sessionView(s, { now: now(), userId, participants: await participants(db, s.id) });
+  }
+
+  async function command(db, s, { type, body = {}, cause, paymentId = null }) {
+    const device = await deviceOfResource(db, s.resource_id);
+    if (!device) {
+      log.warn('light_no_device', { session_id: s.id, resource_id: s.resource_id, type });
+      return null;
+    }
+    return queueCommand(db, { clubId: s.club_id, deviceId: device.id, type, body, cause, sessionId: s.id, paymentId, now: now() });
+  }
+
+  async function changed(db, s) {
+    await notifyLight(db, { k: 'session', c: s.club_id, s: s.id, r: s.resource_id });
+  }
+
+  // Статус стола и удержание (§13, light → money) ----------------------------------
+
+  async function resourceStatus(db, resourceId, { userId = null } = {}) {
+    await ensureResourceClub(db, resourceId);
+    const t = now();
+    const s = await openSessionOn(db, resourceId);
+    if (s) return { status: 'busy', busy_until: iso(s.paid_until), session_id: s.id };
+    const h = await activeHold(db, resourceId, t);
+    if (h?.kind === 'service') return { status: 'service', busy_until: iso(h.until), session_id: null };
+    if (h?.kind === 'pending') return { status: 'pending', busy_until: iso(h.until), session_id: null, pending_mine: userId !== null && h.user_id === userId };
+    if (h?.kind === 'reserved') return { status: 'reserved', busy_until: iso(h.until), session_id: null };
+    const device = await deviceOfResource(db, resourceId);
+    if (!deviceOnline(device)) return { status: 'offline', busy_until: null, session_id: null };
+    return { status: 'free', busy_until: null, session_id: null };
+  }
+
+  /** Гость перешёл к оплате: стол за ним на until (3 минуты). Гонку решает FOR UPDATE ресурса. */
+  async function holdPending(db, { resourceId, userId, until }) {
+    const t = now();
+    const u = new Date(until);
+    if (!isUuid(userId) || Number.isNaN(u.getTime()) || u <= t || u.getTime() - t.getTime() > PENDING_MAX_MS) fail('bad_request', 'until');
+    await ensureResourceClub(db, resourceId);
+    const res = await lockResource(db, resourceId);
+    if (!res || !res.active) fail('not_found', 'resource');
+    if (await openSessionOn(db, resourceId)) fail('table_busy');
+    const h = await activeHold(db, resourceId, t);
+    if (h?.kind === 'service') fail('table_service');
+    if (h && h.user_id !== userId) fail(h.kind === 'pending' ? 'table_pending' : 'table_busy');
+    const device = await deviceOfResource(db, resourceId);
+    if (!deviceOnline(device)) fail('table_offline');
+    let holdId;
+    if (h?.kind === 'pending') {
+      await db.query('update bl.resource_holds set until = $2 where id = $1', [h.id, u]);
+      holdId = h.id;
+    } else {
+      if (h) await releaseHold(db, h.id, t, 'replaced');
+      const ins = await db.query(
+        `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, created_at)
+         values ($1, $2, 'pending', $3, $4, $5) returning id`,
+        [res.club_id, resourceId, userId, u, t],
+      );
+      holdId = ins.rows[0].id;
+    }
+    await queueCommand(db, { clubId: res.club_id, deviceId: device.id, type: 'state.pending', body: {}, cause: 'hold', now: t });
+    await notifyLight(db, { k: 'hall', c: res.club_id, r: resourceId });
+    return { ok: true, hold_id: holdId, until: u.toISOString() };
+  }
+
+  async function releasePending(db, { resourceId, userId }) {
+    await ensureResourceClub(db, resourceId);
+    const t = now();
+    const res = await lockResource(db, resourceId);
+    if (!res) return { ok: true, released: false };
+    const h = await activeHold(db, resourceId, t);
+    if (!h || h.kind !== 'pending' || h.user_id !== userId) return { ok: true, released: false };
+    await releaseHold(db, h.id, t, 'released');
+    if (!(await openSessionOn(db, resourceId))) {
+      const device = await deviceOfResource(db, resourceId);
+      if (device) await queueCommand(db, { clubId: res.club_id, deviceId: device.id, type: 'state.free', body: {}, cause: 'hold', now: t });
+    }
+    await notifyLight(db, { k: 'hall', c: res.club_id, r: resourceId });
+    return { ok: true, released: true };
+  }
+
+  /** Стол по коду (/api/t/{code}). Переводит транзакцию в контекст клуба стола. */
+  async function getResourceByCode(db, code) {
+    const c = normalizeCode(code);
+    if (!c) return null;
+    const { rows } = await db.query('select resource_id, club_id from bl.resource_by_code($1)', [c]);
+    if (rows.length === 0) return null;
+    const cur = await currentClub(db);
+    if (cur !== null && cur !== rows[0].club_id) return null;
+    await enterClub(db, rows[0].club_id);
+    const r = await loadResource(db, rows[0].resource_id);
+    const club = await loadClub(db, rows[0].club_id);
+    if (!r || !club) return null;
+    return {
+      resource: { id: r.id, club_id: r.club_id, number: r.number, type: r.type, title: r.title, code: r.code },
+      club: { id: club.id, name: club.name, timezone: club.timezone, settings: club.settings },
+    };
+  }
+
+  async function getSessionForExtend(db, { sessionId, userId }) {
+    const clubId = await sessionClub(db, sessionId);
+    if (!clubId) return null;
+    const cur = await currentClub(db);
+    if (cur !== null && cur !== clubId) return null;
+    await enterClub(db, clubId);
+    const s = await loadSession(db, sessionId);
+    if (!s) return null;
+    const list = await participants(db, sessionId);
+    return {
+      id: s.id,
+      club_id: s.club_id,
+      resource_id: s.resource_id,
+      paid_until: iso(s.paid_until),
+      status: s.status,
+      is_participant: list.some((p) => p.user_id === userId),
+      is_payer: s.payer_user_id === userId,
+      unlimited: s.unlimited,
+      grace_ms: s.grace_ms,
+    };
+  }
+
+  // Оплата (outbox payment.confirmed, контракт §6) ------------------------------------
+
+  async function paymentConfirmedAt(db, paymentId) {
+    // Таблица money (0200). Без неё (тесты light, параллельная разработка) — без метрики.
+    await db.query('savepoint light_confirmed_at');
+    try {
+      const { rows } = await db.query('select confirmed_at from bl.payments where id = $1', [paymentId]);
+      await db.query('release savepoint light_confirmed_at');
+      return rows[0]?.confirmed_at ?? null;
+    } catch {
+      await db.query('rollback to savepoint light_confirmed_at');
+      return null;
+    }
+  }
+
+  /** bl.payments.session_id (money) — один раз; без таблицы money (тесты light) — пропуск. */
+  async function linkPayment(db, paymentId, sessionId) {
+    await db.query('savepoint light_link_payment');
+    try {
+      await db.query('update bl.payments set session_id = $2 where id = $1 and session_id is null', [paymentId, sessionId]);
+      await db.query('release savepoint light_link_payment');
+    } catch (err) {
+      await db.query('rollback to savepoint light_link_payment');
+      if (err?.code !== '42P01') log.warn('payment_link_failed', { payment_id: paymentId, code: err?.code ?? null });
+    }
+  }
+
+  function validPayment(p) {
+    return (
+      p &&
+      isUuid(p.payment_id) &&
+      isUuid(p.club_id) &&
+      (p.kind === 'start' || p.kind === 'extend') &&
+      (p.kind === 'start' ? isUuid(p.resource_id) && isUuid(p.user_id) : isUuid(p.session_id)) &&
+      (p.minutes === null || p.minutes === undefined || intIn(p.minutes, 1, 1440)) &&
+      (p.minutes || p.unlimited) &&
+      intIn(p.amount_kopecks, 0, Number.MAX_SAFE_INTEGER)
+    );
+  }
+
+  async function recordPayment(db, p, { sessionId, outcome, minutes, confirmedAt, refunded = 0 }) {
+    await db.query(
+      `insert into bl.session_payments
+         (payment_id, club_id, session_id, quote_id, kind, outcome, minutes, unlimited, amount_kopecks, method, refunded_kopecks, confirmed_at, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        p.payment_id,
+        p.club_id,
+        sessionId,
+        isUuid(p.quote_id) ? p.quote_id : null,
+        p.kind,
+        outcome,
+        minutes,
+        Boolean(p.unlimited),
+        p.amount_kopecks,
+        typeof p.method === 'string' && /^[a-z_]{1,32}$/.test(p.method) ? p.method : null,
+        refunded,
+        confirmedAt,
+        now(),
+      ],
+    );
+  }
+
+  /** Стол занят к моменту оплаты (крайний случай): тревога и автоматический возврат. */
+  async function rejectPayment(db, p, { reason, resourceId, minutes, confirmedAt }) {
+    await recordPayment(db, p, { sessionId: null, outcome: 'refunded', minutes, confirmedAt, refunded: p.amount_kopecks });
+    if (p.amount_kopecks > 0) {
+      await deps.payments.refund(db, { paymentId: p.payment_id, amountKopecks: p.amount_kopecks, reason: `light_${reason}` });
+    }
+    await audit(db, {
+      action: 'session.start_rejected',
+      objectType: 'resource',
+      objectId: isUuid(resourceId) ? resourceId : null,
+      data: { payment_id: p.payment_id, reason, amount_kopecks: p.amount_kopecks, kind: p.kind },
+    });
+    await alarm(db, p.club_id, {
+      type: 'payment_conflict',
+      level: 'important',
+      resourceId: isUuid(resourceId) ? resourceId : null,
+      data: { payment_id: p.payment_id, reason, amount_kopecks: p.amount_kopecks },
+    });
+    log.warn('payment_rejected', { payment_id: p.payment_id, reason });
+    return { result: 'refunded', reason };
+  }
+
+  async function startFromPayment(db, p, t, confirmedAt, minutes) {
+    const res = await lockResource(db, p.resource_id);
+    if (!res || res.club_id !== p.club_id) return rejectPayment(db, p, { reason: 'no_resource', resourceId: null, minutes, confirmedAt });
+    const open = await openSessionOn(db, res.id);
+    const h = await activeHold(db, res.id, t);
+    let busy = null;
+    if (open) busy = 'busy';
+    else if (h?.kind === 'service') busy = 'service';
+    else if (h && h.user_id !== p.user_id) busy = h.kind;
+    if (busy) return rejectPayment(db, p, { reason: busy, resourceId: res.id, minutes, confirmedAt });
+
+    const club = await loadClub(db, p.club_id);
+    const warn = warnMs(club.settings);
+    const paidUntil = new Date(t.getTime() + minutes * MINUTE);
+    const ins = await db.query(
+      `insert into bl.sessions (club_id, resource_id, status, source, payer_user_id, unlimited, started_at, paid_until,
+                                warn_ms, grace_ms, notified, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $7, $7) returning id`,
+      [
+        p.club_id,
+        res.id,
+        phaseOf(paidUntil, t, warn),
+        ['cash', 'card_terminal'].includes(p.method) ? 'reception' : 'qr',
+        p.user_id,
+        Boolean(p.unlimited),
+        t,
+        paidUntil,
+        warn,
+        graceMs(club.settings),
+        JSON.stringify(premarkNotified({}, paidUntil, t)),
+      ],
+    );
+    const s = await loadSession(db, ins.rows[0].id);
+    await addParticipant(db, { session: s, userId: p.user_id, role: 'payer', now: t });
+    await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
+    await linkPayment(db, p.payment_id, s.id);
+    if (h && h.user_id === p.user_id) await releaseHold(db, h.id, t, 'session');
+    await audit(db, {
+      action: 'session.start',
+      objectType: 'session',
+      objectId: s.id,
+      data: { session_id: s.id, paid_until: iso(paidUntil), payment_id: p.payment_id, resource_id: res.id, minutes, unlimited: s.unlimited },
+    });
+    await emit(db, 'session.started', sessionEvent(s));
+    await command(db, s, { type: 'session.start', body: { session_id: s.id }, cause: 'payment', paymentId: p.payment_id });
+    await changed(db, s);
+    log.info('session_started', { session_id: s.id, resource_id: res.id, minutes });
+    return { result: 'started', session_id: s.id };
+  }
+
+  async function extendFromPayment(db, p, t, confirmedAt, minutes) {
+    const s = await loadSession(db, p.session_id, { lock: true });
+    if (!s || s.club_id !== p.club_id) return rejectPayment(db, p, { reason: 'no_session', resourceId: p.resource_id, minutes, confirmedAt });
+    const add = minutes * MINUTE;
+    if (isOpen(s)) {
+      // paid_until += minutes; из льготы тоже (контракт §6).
+      const paidUntil = new Date(s.paid_until.getTime() + add);
+      await db.query(
+        `update bl.sessions set paid_until = $2, status = $3, notified = $4::jsonb, updated_at = $5 where id = $1`,
+        [s.id, paidUntil, phaseOf(paidUntil, t, s.warn_ms), JSON.stringify(premarkNotified(s.notified, paidUntil, t)), t],
+      );
+      await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
+      await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
+      await audit(db, {
+        action: 'session.extend',
+        objectType: 'session',
+        objectId: s.id,
+        data: { session_id: s.id, paid_until: iso(paidUntil), payment_id: p.payment_id, minutes },
+      });
+      await emit(db, 'session.extended', sessionEvent({ ...s, paid_until: paidUntil }));
+      await command(db, s, { type: 'session.extend', body: { session_id: s.id }, cause: 'payment', paymentId: p.payment_id });
+      await changed(db, s);
+      log.info('session_extended', { session_id: s.id, minutes });
+      return { result: 'extended', session_id: s.id };
+    }
+    if (s.status === 'interrupted') {
+      // Свет уже погас: оплаченное время добавляется к недоигранному, гость выбирает сам.
+      const paidUntil = new Date(s.paid_until.getTime() + add);
+      await db.query('update bl.sessions set paid_until = $2, unplayed_ms = unplayed_ms + $3, updated_at = $4 where id = $1', [
+        s.id,
+        paidUntil,
+        add,
+        t,
+      ]);
+      await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
+      await audit(db, {
+        action: 'session.extend',
+        objectType: 'session',
+        objectId: s.id,
+        data: { session_id: s.id, paid_until: iso(paidUntil), payment_id: p.payment_id, minutes, interrupted: true },
+      });
+      await emit(db, 'session.extended', sessionEvent({ ...s, paid_until: paidUntil }));
+      await changed(db, s);
+      return { result: 'extended_interrupted', session_id: s.id };
+    }
+    if (s.status === 'closed' && s.close_reason === 'expired') {
+      // Продление оплачено в льготу, а подтверждение пришло после закрытия: если стол
+      // свободен, игра продолжается с момента подтверждения; иначе — возврат.
+      const res = await lockResource(db, s.resource_id);
+      const open = await openSessionOn(db, s.resource_id);
+      const h = await activeHold(db, s.resource_id, t);
+      if (!res || open || (h && (h.kind === 'service' || h.user_id !== p.user_id))) {
+        return rejectPayment(db, p, { reason: 'busy', resourceId: s.resource_id, minutes, confirmedAt });
+      }
+      if (h) await releaseHold(db, h.id, t, 'session');
+      const paidUntil = new Date(t.getTime() + add);
+      await db.query(
+        `update bl.sessions set status = $2, paid_until = $3, ended_at = null, close_reason = null, device_paid_until = null,
+                                notified = $4::jsonb, updated_at = $5 where id = $1`,
+        [s.id, phaseOf(paidUntil, t, s.warn_ms), paidUntil, JSON.stringify(premarkNotified({}, paidUntil, t)), t],
+      );
+      await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
+      await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
+      await audit(db, {
+        action: 'session.extend',
+        objectType: 'session',
+        objectId: s.id,
+        data: { session_id: s.id, paid_until: iso(paidUntil), payment_id: p.payment_id, minutes, reopened: true },
+      });
+      await emit(db, 'session.extended', sessionEvent({ ...s, paid_until: paidUntil }));
+      await command(db, s, { type: 'session.start', body: { session_id: s.id }, cause: 'payment', paymentId: p.payment_id });
+      await changed(db, s);
+      return { result: 'reopened', session_id: s.id };
+    }
+    return rejectPayment(db, p, { reason: 'session_closed', resourceId: s.resource_id, minutes, confirmedAt });
+  }
+
+  /**
+   * Обработчик outbox payment.confirmed. Идемпотентен по payment_id (bl.session_payments).
+   * db — транзакция outbox; контекст клуба ставится по payload.club_id.
+   */
+  async function onPaymentConfirmed(db, p) {
+    if (!validPayment(p)) {
+      log.error('payment_confirmed_invalid', { payment_id: isUuid(p?.payment_id) ? p.payment_id : null });
+      if (isUuid(p?.club_id)) {
+        await enterClub(db, p.club_id);
+        await alarm(db, p.club_id, { type: 'payment_unapplied', level: 'critical', data: { payment_id: isUuid(p.payment_id) ? p.payment_id : null } });
+      }
+      return { result: 'invalid' };
+    }
+    await enterClub(db, p.club_id);
+    await db.query("select set_config('app.actor_type', 'system', true)");
+    const dup = await db.query('select session_id, outcome from bl.session_payments where payment_id = $1', [p.payment_id]);
+    if (dup.rowCount > 0) return { result: 'duplicate', session_id: dup.rows[0].session_id };
+    const t = now();
+    const confirmedAt = await paymentConfirmedAt(db, p.payment_id);
+    const minutes = p.minutes ?? UNLIMITED_DEFAULT_MINUTES;
+    if (p.kind === 'start') return startFromPayment(db, p, t, confirmedAt, minutes);
+    return extendFromPayment(db, p, t, confirmedAt, minutes);
+  }
+
+  /** Сколько возвращено по платежу (bl.refunds, money); без таблицы money — null. */
+  async function refundedTotal(db, paymentId) {
+    await db.query('savepoint light_refunded');
+    try {
+      const { rows } = await db.query(
+        "select coalesce(sum(amount_kopecks), 0)::bigint as total from bl.refunds where payment_id = $1 and status in ('succeeded', 'manual')",
+        [paymentId],
+      );
+      await db.query('release savepoint light_refunded');
+      return Number(rows[0].total);
+    } catch {
+      await db.query('rollback to savepoint light_refunded');
+      return null;
+    }
+  }
+
+  /**
+   * outbox payment.refunded. Сумма возвратов платежа сверяется по bl.refunds (событие несёт
+   * сумму одного возврата, а возвраты самого light уже учтены). Если возвращено всё
+   * оплаченное, идущая сессия отменяется и свет гаснет (возврат персоналом, money).
+   */
+  async function onPaymentRefunded(db, p) {
+    if (!p || !isUuid(p.club_id) || !isUuid(p.payment_id)) return { result: 'invalid' };
+    await enterClub(db, p.club_id);
+    await db.query("select set_config('app.actor_type', 'system', true)");
+    const row = await db.query('select session_id from bl.session_payments where payment_id = $1', [p.payment_id]);
+    if (row.rowCount === 0 || !row.rows[0].session_id) return { result: 'ignored' };
+    const total = await refundedTotal(db, p.payment_id);
+    if (total !== null) {
+      await db.query('update bl.session_payments set refunded_kopecks = least(amount_kopecks, greatest(refunded_kopecks, $2)) where payment_id = $1', [
+        p.payment_id,
+        total,
+      ]);
+    }
+    const s = await loadSession(db, row.rows[0].session_id, { lock: true });
+    if (!s || !isOpen(s)) return { result: 'ignored' };
+    const totals = await db.query(
+      "select coalesce(sum(amount_kopecks), 0) as paid, coalesce(sum(refunded_kopecks), 0) as refunded from bl.session_payments where session_id = $1 and outcome = 'applied'",
+      [s.id],
+    );
+    if (Number(totals.rows[0].refunded) < Number(totals.rows[0].paid)) {
+      await changed(db, s);
+      return { result: 'partial' };
+    }
+    const t = now();
+    await db.query("update bl.sessions set status = 'cancelled', ended_at = $2, close_reason = 'cancelled', updated_at = $2 where id = $1", [s.id, t]);
+    await audit(db, { action: 'session.stop', objectType: 'session', objectId: s.id, data: { session_id: s.id, paid_until: iso(s.paid_until), payment_id: p.payment_id, reason: 'refunded' } });
+    await emit(db, 'session.closed', sessionEvent(s, { started_at: iso(s.started_at), ended_at: iso(t), unlimited: s.unlimited, reason: 'cancelled' }));
+    await command(db, s, { type: 'session.stop', body: { session_id: s.id, reason_code: 'refunded' }, cause: 'system' });
+    await changed(db, s);
+    return { result: 'cancelled', session_id: s.id };
+  }
+
+  // Гость ---------------------------------------------------------------------------------
+
+  /** «Закончить игру» — только плательщик (decisions №46). Фиксированное время не возвращается (№45). */
+  async function stop(db, { sessionId, userId }) {
+    await enterSession(db, sessionId);
+    const s = await loadSession(db, sessionId, { lock: true });
+    if (!s) fail('not_found', 'session');
+    if (s.payer_user_id !== userId) {
+      const list = await participants(db, s.id);
+      fail(list.some((p) => p.user_id === userId) ? 'not_payer' : 'not_found', 'stop');
+    }
+    if (!isOpen(s)) fail('session_not_active');
+    const t = now();
+    await db.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'stopped', updated_at = $2 where id = $1", [s.id, t]);
+    await audit(db, {
+      action: 'session.stop',
+      objectType: 'session',
+      objectId: s.id,
+      actorType: 'user',
+      actorId: userId,
+      data: { session_id: s.id, paid_until: iso(s.paid_until), ended_at: iso(t), unlimited: s.unlimited },
+    });
+    await emit(db, 'session.closed', sessionEvent(s, { started_at: iso(s.started_at), ended_at: iso(t), unlimited: s.unlimited, reason: 'stopped' }));
+    await command(db, s, { type: 'session.stop', body: { session_id: s.id, reason_code: 'guest_stop' }, cause: 'guest' });
+    await changed(db, s);
+    return view(db, await loadSession(db, s.id), userId);
+  }
+
+  /** «Я играю за этим столом». */
+  async function join(db, { sessionId, userId }) {
+    if (!isUuid(userId)) fail('unauthorized');
+    await enterSession(db, sessionId);
+    const s = await loadSession(db, sessionId, { lock: true });
+    if (!s) fail('not_found', 'session');
+    if (!isOpen(s)) fail('session_not_active');
+    const list = await participants(db, s.id);
+    if (list.some((p) => p.user_id === userId)) return { ok: true };
+    if (list.length >= MAX_PARTICIPANTS) fail('limit_exceeded', 'participants');
+    await addParticipant(db, { session: s, userId, role: 'player', now: now() });
+    await changed(db, s);
+    return { ok: true };
+  }
+
+  /** Деление неотыгранного времени по платежам с конца: возврат долей суммы каждого платежа. */
+  async function refundShares(db, s, unplayed) {
+    const { rows } = await db.query(
+      `select payment_id, minutes, amount_kopecks, refunded_kopecks from bl.session_payments
+        where session_id = $1 and outcome = 'applied' order by created_at desc, payment_id desc`,
+      [s.id],
+    );
+    let left = BigInt(Math.max(0, Math.floor(unplayed)));
+    const out = [];
+    for (const r of rows) {
+      if (left <= 0n) break;
+      const covered = BigInt(r.minutes ?? 0) * 60_000n;
+      if (covered <= 0n) continue;
+      const take = left < covered ? left : covered;
+      const amount = BigInt(r.amount_kopecks);
+      const room = amount - BigInt(r.refunded_kopecks);
+      let refund = (amount * take) / covered; // вниз до копейки: не больше оплаченного
+      if (refund > room) refund = room;
+      left -= take;
+      if (refund > 0n) out.push({ paymentId: r.payment_id, amountKopecks: Number(refund) });
+    }
+    return out;
+  }
+
+  /** Выбор после interrupted (T6): continue — оплаченный остаток с этого момента; refund — возврат. */
+  async function resolve(db, { sessionId, userId, choice }) {
+    if (choice !== 'continue' && choice !== 'refund') fail('bad_request', 'choice');
+    await enterSession(db, sessionId);
+    const s = await loadSession(db, sessionId, { lock: true });
+    if (!s) fail('not_found', 'session');
+    if (s.payer_user_id !== userId) {
+      const list = await participants(db, s.id);
+      fail(list.some((p) => p.user_id === userId) ? 'not_payer' : 'not_found', 'resolve');
+    }
+    if (s.status !== 'interrupted') fail('session_not_active');
+    const t = now();
+    if (choice === 'continue') {
+      await lockResource(db, s.resource_id);
+      if (await openSessionOn(db, s.resource_id)) fail('table_busy');
+      const h = await activeHold(db, s.resource_id, t);
+      if (h?.kind === 'service') fail('table_service');
+      if (h && h.user_id !== userId) fail(h.kind === 'pending' ? 'table_pending' : 'table_busy');
+      if (!deviceOnline(await deviceOfResource(db, s.resource_id))) fail('table_offline');
+      if (h) await releaseHold(db, h.id, t, 'session');
+      const paidUntil = new Date(t.getTime() + s.unplayed_ms);
+      await db.query(
+        `update bl.sessions set status = $2, paid_until = $3, unplayed_ms = null, device_paid_until = null,
+                                notified = $4::jsonb, updated_at = $5 where id = $1`,
+        [s.id, phaseOf(paidUntil, t, s.warn_ms), paidUntil, JSON.stringify(premarkNotified({}, paidUntil, t)), t],
+      );
+      await audit(db, {
+        action: 'session.resolve',
+        objectType: 'session',
+        objectId: s.id,
+        actorType: 'user',
+        actorId: userId,
+        data: { session_id: s.id, choice, paid_until: iso(paidUntil), unplayed_ms: s.unplayed_ms },
+      });
+      await emit(db, 'session.started', sessionEvent({ ...s, paid_until: paidUntil }, { resumed: true }));
+      await command(db, s, { type: 'session.start', body: { session_id: s.id }, cause: 'guest' });
+    } else {
+      let refundTotal = 0;
+      let endedAt = t;
+      if (s.unlimited) {
+        // «Без лимита»: money спишет фактическое время по session.closed (started_at … ended_at).
+        endedAt = playEnd(s);
+      } else {
+        for (const r of await refundShares(db, s, s.unplayed_ms)) {
+          await deps.payments.refund(db, { paymentId: r.paymentId, amountKopecks: r.amountKopecks, reason: 'interrupted' });
+          await db.query('update bl.session_payments set refunded_kopecks = refunded_kopecks + $2 where payment_id = $1', [r.paymentId, r.amountKopecks]);
+          refundTotal += r.amountKopecks;
+        }
+      }
+      await db.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'refunded', updated_at = $3 where id = $1", [
+        s.id,
+        endedAt,
+        t,
+      ]);
+      await audit(db, {
+        action: 'session.resolve',
+        objectType: 'session',
+        objectId: s.id,
+        actorType: 'user',
+        actorId: userId,
+        data: { session_id: s.id, choice, paid_until: iso(s.paid_until), unplayed_ms: s.unplayed_ms, refund_kopecks: refundTotal },
+      });
+      await emit(db, 'session.closed', sessionEvent(s, { started_at: iso(s.started_at), ended_at: iso(endedAt), unlimited: s.unlimited, reason: 'refunded', refund_kopecks: refundTotal }));
+    }
+    await changed(db, s);
+    return view(db, await loadSession(db, s.id), userId);
+  }
+
+  async function getSession(db, { sessionId, userId }) {
+    await enterSession(db, sessionId);
+    const s = await loadSession(db, sessionId);
+    if (!s) fail('not_found', 'session');
+    const list = await participants(db, s.id);
+    if (!list.some((p) => p.user_id === userId)) {
+      const roles = await rolesIn(db, s.club_id, userId);
+      if (!roles.some((r) => ROLES.reception.includes(r))) fail('not_found', 'session');
+    }
+    return sessionView(s, { now: now(), userId, participants: list });
+  }
+
+  /** Сессии гостя во всех клубах (идущие и ждущие выбора после interrupted). */
+  async function listCurrent(db, { userId }) {
+    if (!isUuid(userId)) fail('unauthorized');
+    const start = await currentClub(db);
+    const { rows } = await db.query(
+      `select s.id, s.club_id from bl.sessions s join bl.session_participants p on p.session_id = s.id
+        where p.user_id = $1 and s.status = any($2::text[]) order by s.started_at desc limit 20`,
+      [userId, [...OPEN_STATUSES, 'interrupted']],
+    );
+    const out = [];
+    for (const r of rows) {
+      if (start !== null && start !== r.club_id) continue;
+      await db.query("select set_config('app.club_id', $1, true)", [r.club_id]);
+      const s = await loadSession(db, r.id);
+      if (s) out.push(sessionView(s, { now: now(), userId, participants: await participants(db, s.id) }));
+    }
+    await db.query("select set_config('app.club_id', $1, true)", [start ?? '']);
+    return out;
+  }
+
+  async function receipt(db, { sessionId, userId }) {
+    await enterSession(db, sessionId);
+    const s = await loadSession(db, sessionId);
+    if (!s) fail('not_found', 'session');
+    const list = await participants(db, s.id);
+    if (!list.some((p) => p.user_id === userId)) {
+      const roles = await rolesIn(db, s.club_id, userId);
+      if (!roles.some((r) => ROLES.reception.includes(r))) fail('not_found', 'session');
+    }
+    const { rows } = await db.query(
+      `select payment_id, kind, minutes, unlimited, amount_kopecks, refunded_kopecks, method, created_at
+         from bl.session_payments where session_id = $1 and outcome = 'applied' order by created_at, payment_id`,
+      [s.id],
+    );
+    const lines = rows.map((r) => ({
+      title: r.unlimited ? `Стол ${s.resource_number}, без лимита` : `Стол ${s.resource_number}, ${minutesText(r.minutes)}`,
+      kind: r.kind,
+      minutes: r.minutes,
+      amount_kopecks: Number(r.amount_kopecks),
+    }));
+    const payments = rows.map((r) => ({
+      payment_id: r.payment_id,
+      method: r.method,
+      amount_kopecks: Number(r.amount_kopecks),
+      refunded_kopecks: Number(r.refunded_kopecks),
+      at: iso(r.created_at),
+    }));
+    let receiptStatus = 'unknown';
+    if (typeof deps.payments.receiptStatus === 'function' && rows.length > 0) {
+      receiptStatus = await deps.payments.receiptStatus(db, { paymentIds: rows.map((r) => r.payment_id) });
+    }
+    return {
+      lines,
+      total_kopecks: payments.reduce((sum, p) => sum + p.amount_kopecks - p.refunded_kopecks, 0),
+      payments,
+      receipt_status: receiptStatus,
+    };
+  }
+
+  // Персонал ------------------------------------------------------------------------------
+
+  /** Продление без оплаты — ручное действие: причина, журнал, тревога владельцу сразу (инвариант 8). */
+  async function extendFree(db, { sessionId, userId, minutes, reasonText }) {
+    const reason = cleanText(reasonText);
+    if (!reason) fail('reason_required');
+    if (!Number.isSafeInteger(minutes) || minutes < 1) fail('bad_request', 'minutes');
+    if (minutes > MAX_FREE_EXTEND_MINUTES) fail('limit_exceeded', 'minutes');
+    const clubId = await enterSession(db, sessionId);
+    await requireRole(db, clubId, userId, ROLES.manager);
+    const s = await loadSession(db, sessionId, { lock: true });
+    if (!s) fail('not_found', 'session');
+    if (!isOpen(s)) fail('session_not_active');
+    const t = now();
+    const paidUntil = new Date(s.paid_until.getTime() + minutes * MINUTE);
+    await db.query('update bl.sessions set paid_until = $2, status = $3, notified = $4::jsonb, updated_at = $5 where id = $1', [
+      s.id,
+      paidUntil,
+      phaseOf(paidUntil, t, s.warn_ms),
+      JSON.stringify(premarkNotified(s.notified, paidUntil, t)),
+      t,
+    ]);
+    await audit(db, {
+      action: 'manual.extend_free',
+      objectType: 'session',
+      objectId: s.id,
+      reason,
+      actorType: 'user',
+      actorId: userId,
+      data: { session_id: s.id, minutes, paid_until: iso(paidUntil) },
+    });
+    await manualAction(db, clubId, {
+      type: 'manual_action',
+      resourceId: s.resource_id,
+      data: { action: 'manual.extend_free', session_id: s.id, minutes, actor_id: userId },
+      text: `Стол ${s.resource_number}: продление без оплаты на ${minutesText(minutes)}`,
+    });
+    await emit(db, 'session.extended', sessionEvent({ ...s, paid_until: paidUntil }, { free: true }));
+    await command(db, s, { type: 'session.extend', body: { session_id: s.id }, cause: 'staff' });
+    await changed(db, s);
+    return view(db, await loadSession(db, s.id), userId);
+  }
+
+  /** Сервисный свет — ручное действие: reason_code и reason_text обязательны, предел минут клуба. */
+  async function serviceStart(db, { resourceId, userId, minutes, reasonCode, reasonText }) {
+    const text = cleanText(reasonText);
+    if (typeof reasonCode !== 'string' || !REASON_CODE.test(reasonCode) || !text) fail('reason_required');
+    if (!Number.isSafeInteger(minutes) || minutes < 1) fail('bad_request', 'minutes');
+    const clubId = await enterResource(db, resourceId);
+    await requireRole(db, clubId, userId, ROLES.reception);
+    const club = await loadClub(db, clubId);
+    if (minutes > serviceMaxMinutes(club.settings)) fail('limit_exceeded', 'minutes');
+    const t = now();
+    const res = await lockResource(db, resourceId);
+    if (!res || !res.active) fail('not_found', 'resource');
+    if (await openSessionOn(db, resourceId)) fail('table_busy');
+    const h = await activeHold(db, resourceId, t);
+    if (h?.kind === 'service') fail('table_service');
+    if (h?.kind === 'pending') fail('table_pending');
+    if (h) fail('table_busy');
+    const device = await deviceOfResource(db, resourceId);
+    if (!deviceOnline(device)) fail('table_offline');
+    const until = new Date(t.getTime() + minutes * MINUTE);
+    await db.query(
+      `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, reason_code, reason_text, created_at)
+       values ($1, $2, 'service', $3, $4, $5, $6, $7)`,
+      [clubId, resourceId, userId, until, reasonCode, text, t],
+    );
+    await audit(db, {
+      action: 'service.start',
+      objectType: 'resource',
+      objectId: resourceId,
+      reason: text,
+      actorType: 'user',
+      actorId: userId,
+      data: { minutes, reason_code: reasonCode, until: iso(until), resource_number: res.number },
+    });
+    await manualAction(db, clubId, {
+      type: 'service_light',
+      resourceId,
+      data: { action: 'service.start', minutes, reason_code: reasonCode, actor_id: userId },
+      text: `Стол ${res.number}: включён сервисный свет на ${minutesText(minutes)}`,
+    });
+    await queueCommand(db, { clubId, deviceId: device.id, type: 'service.start', body: { reason_code: reasonCode }, cause: 'staff', now: t });
+    await notifyLight(db, { k: 'hall', c: clubId, r: resourceId });
+    return { ok: true, until: until.toISOString() };
+  }
+
+  async function serviceStop(db, { resourceId, userId, reasonText = null }) {
+    const clubId = await enterResource(db, resourceId);
+    await requireRole(db, clubId, userId, ROLES.reception);
+    const t = now();
+    const res = await lockResource(db, resourceId);
+    if (!res) fail('not_found', 'resource');
+    const h = await activeHold(db, resourceId, t);
+    if (!h || h.kind !== 'service') fail('not_found', 'service');
+    await releaseHold(db, h.id, t, 'stopped');
+    await audit(db, {
+      action: 'service.stop',
+      objectType: 'resource',
+      objectId: resourceId,
+      // Ручное действие пишется с причиной: своя или причина включения этого сервисного света.
+      reason: cleanText(reasonText) ?? h.reason_text,
+      actorType: 'user',
+      actorId: userId,
+      data: { reason_code: h.reason_code, minutes: Math.ceil((t - h.created_at) / MINUTE), resource_number: res.number },
+    });
+    const device = await deviceOfResource(db, resourceId);
+    if (device) await queueCommand(db, { clubId, deviceId: device.id, type: 'service.stop', body: {}, cause: 'staff', now: t });
+    await notifyLight(db, { k: 'hall', c: clubId, r: resourceId });
+    return { ok: true };
+  }
+
+  /** Мигнуть индикатором, чтобы найти стол при монтаже. */
+  async function identify(db, { resourceId, userId, seconds }) {
+    if (!intIn(seconds, 1, MAX_IDENTIFY_SECONDS)) fail('bad_request', 'seconds');
+    const clubId = await enterResource(db, resourceId);
+    await requireRole(db, clubId, userId, [...ROLES.installer, 'manager']);
+    const device = await deviceOfResource(db, resourceId);
+    if (!deviceOnline(device)) fail('table_offline');
+    await queueCommand(db, { clubId, deviceId: device.id, type: 'identify', body: { duration_ms: seconds * 1000 }, cause: 'staff', now: now() });
+    return { ok: true };
+  }
+
+  /** Элемент зала одного стола (hall и SSE). */
+  async function hallItem(db, r, { withSession = true } = {}) {
+    const t = now();
+    const s = await openSessionOn(db, r.id);
+    const h = await activeHold(db, r.id, t);
+    const device = await deviceOfResource(db, r.id);
+    const info = device ? (opts.getBridge?.()?.deviceInfo?.(device.id) ?? null) : null;
+    const online = deviceOnline(device);
+    let status = 'free';
+    if (!online) status = 'offline';
+    else if (s) status = s.status;
+    else if (h) status = h.kind;
+    else if (info?.mode === 'fault') status = 'fault';
+    return {
+      resource: { id: r.id, number: r.number, type: r.type, title: r.title, code: r.code, plan_x: r.plan_x, plan_y: r.plan_y, plan_rotation: r.plan_rotation },
+      status,
+      session: s && withSession ? sessionSummary(s, t) : null,
+      busy_until: s ? iso(s.paid_until) : null,
+      until: h ? iso(h.until) : null,
+      hold: h ? { kind: h.kind, until: iso(h.until), reason_code: h.reason_code ?? null } : null,
+      device: device
+        ? { id: device.id, online, rssi: info?.rssi ?? null, fw: info?.fw ?? device.fw ?? null, caps: info?.caps ?? device.caps ?? [], mode: info?.mode ?? null }
+        : { id: null, online: false, rssi: null, fw: null, caps: [], mode: null },
+    };
+  }
+
+  async function hall(db, { clubId, userId }) {
+    if (!isUuid(clubId)) fail('not_found', 'club');
+    await enterClub(db, clubId);
+    const roles = await requireRole(db, clubId, userId, ROLES.staff);
+    const withSession = roles.some((r) => ROLES.reception.includes(r));
+    const { rows } = await db.query(
+      'select id, number, type, title, code, plan_x, plan_y, plan_rotation from bl.resources where active order by number',
+    );
+    const out = [];
+    for (const r of rows) out.push(await hallItem(db, r, { withSession }));
+    return out;
+  }
+
+  // Планировщик ------------------------------------------------------------------------------
+
+  /**
+   * Шаг планировщика для одной сессии: сигналы T−10, T−1, T−0, переходы active → ending →
+   * grace и закрытие в T+льгота (или interrupted, если свет не горел оплаченное время).
+   * @returns {Promise<Date|null>} когда снова проверить сессию; null — сессия не идёт.
+   */
+  async function tick(db, sessionId) {
+    const s = await loadSession(db, sessionId, { lock: true });
+    if (!s || !isOpen(s)) return null;
+    const t = now();
+    const T = t.getTime();
+    const P = s.paid_until.getTime();
+    const G = s.grace_ms;
+    if (T >= P + G) {
+      await closeExpired(db, s, t);
+      return null;
+    }
+    const key = s.paid_until.toISOString();
+    const notified = { ...s.notified };
+    const sends = [];
+    if (T >= P - 10 * MINUTE && notified.t10 !== key) {
+      notified.t10 = key;
+      if (P - T > MINUTE) {
+        const left = Math.ceil((P - T) / MINUTE);
+        sends.push({ kind: 'session.t10', text: `Стол ${s.resource_number}: осталось ${minutesText(left)}`, data: { action: 'extend', remaining_ms: P - T } });
+      }
+    }
+    if (T >= P - MINUTE && notified.t1 !== key) {
+      notified.t1 = key;
+      if (T < P) sends.push({ kind: 'session.t1', text: `Стол ${s.resource_number}: осталась минута`, data: { action: 'extend', remaining_ms: P - T } });
+    }
+    if (T >= P && notified.t0 !== key) {
+      notified.t0 = key;
+      const g = Math.max(1, Math.round(G / MINUTE));
+      sends.push({ kind: 'session.t0', text: `Стол ${s.resource_number}: время вышло, ${minutesText(g)} на продление`, data: { action: 'extend', grace_ms: P + G - T } });
+    }
+    const status = phaseOf(s.paid_until, t, s.warn_ms);
+    if (status !== s.status || JSON.stringify(notified) !== JSON.stringify(s.notified)) {
+      await db.query('update bl.sessions set status = $2, notified = $3::jsonb, updated_at = $4 where id = $1', [s.id, status, JSON.stringify(notified), t]);
+      if (status !== s.status) await changed(db, s);
+    }
+    for (const msg of sends) await notifyParticipants(db, s, msg);
+    const next = [P - 10 * MINUTE, P - s.warn_ms[0], P - MINUTE, P, P + G].filter((x) => x > T);
+    return new Date(Math.min(...next));
+  }
+
+  async function closeExpired(db, s, t) {
+    const unplayed = unplayedMs(s);
+    if (unplayed > UNPLAYED_THRESHOLD_MS) {
+      // Контроллер не подтвердил оплаченное время (продление не дошло, связь пропала):
+      // гость выбирает «Продолжить» или «Вернуть» (T6).
+      await markInterrupted(db, s, t, unplayed);
+      return;
+    }
+    await db.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'expired', updated_at = $2 where id = $1", [s.id, t]);
+    await audit(db, { action: 'session.close', objectType: 'session', objectId: s.id, data: { session_id: s.id, paid_until: iso(s.paid_until), ended_at: iso(t) } });
+    await emit(db, 'session.closed', sessionEvent(s, { started_at: iso(s.started_at), ended_at: iso(t), unlimited: s.unlimited, reason: 'expired' }));
+    await notifyParticipants(db, s, { kind: 'session.closed', text: `Стол ${s.resource_number}: игра завершена`, data: { action: 'receipt' } });
+    await changed(db, s);
+    log.info('session_closed', { session_id: s.id, reason: 'expired' });
+  }
+
+  return {
+    kit,
+    resourceStatus,
+    holdPending,
+    releasePending,
+    getResourceByCode,
+    getSessionForExtend,
+    onPaymentConfirmed,
+    onPaymentRefunded,
+    stop,
+    join,
+    resolve,
+    getSession,
+    listCurrent,
+    receipt,
+    extendFree,
+    serviceStart,
+    serviceStop,
+    identify,
+    hall,
+    hallItem,
+    tick,
+  };
+}
+
+/** sha256 кода привязки, привязанный к устройству (в базе только хеш). */
+export function claimCodeHash(deviceId, code) {
+  return createHash('sha256').update(`${deviceId}:${code}`, 'utf8').digest('hex');
+}
+
+export { LightError };

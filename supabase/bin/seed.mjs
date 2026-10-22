@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// npm run db:seed — синтетические данные разработки из supabase/seed.sql (decisions №17, №21).
+// npm run db:seed — синтетические данные разработки: supabase/seed.sql, затем seed.d/*.sql
+// по порядку имён (decisions №17, №21; контракт M1 §13).
 // Повторный запуск ничего не дублирует. При NODE_ENV=production отказывает.
 
 import { refuseInProduction, requireEnv, runCli, seed } from '../lib/db.mjs';

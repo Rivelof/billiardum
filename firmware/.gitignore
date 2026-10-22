@@ -1,0 +1,5 @@
+# Сборка PlatformIO и нативных тестов
+.pio/
+build/
+# Закреплённые CA и ключ OTA конкретного стенда или прода (src/certs.h)
+src/certs.local.h

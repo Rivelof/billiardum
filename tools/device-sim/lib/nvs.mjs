@@ -1,7 +1,8 @@
 // Хранилище NVS. Интерфейс повторяет то, что прошивка делает с NVS ESP32:
 // запись ключа целиком и атомарно (nvs_set_blob + nvs_commit), чтение копии.
-// В M0 — память процесса (MemoryNvs). В M1 сюда добавится хранилище в файле (SIM_NVS_DIR),
-// а имитация перезагрузки передаст тот же объект новой загрузке автомата.
+// MemoryNvs — память процесса (тесты, по умолчанию). FileNvs — файл на устройство
+// (SIM_NVS_DIR): перезапуск процесса симулятора — как перезагрузка контроллера.
+// Имитация перезагрузки без перезапуска передаёт тот же объект новой загрузке автомата.
 //
 // interface Nvs {
 //   get(key: string): unknown | undefined   // копия значения
@@ -9,6 +10,9 @@
 //   delete(key: string): void
 //   readonly writes: number                  // счётчик записей (для оценки износа флеша)
 // }
+
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 export class MemoryNvs {
   #map = new Map();
@@ -31,17 +35,73 @@ export class MemoryNvs {
   get writes() {
     return this.#writes;
   }
+
+  keys() {
+    return [...this.#map.keys()];
+  }
+}
+
+/**
+ * NVS в файле `<dir>/<device_id>.json`. Каждая запись переписывает файл целиком
+ * через временный файл и rename — как атомарный nvs_commit. Секретов в NVS симулятора нет:
+ * device_key и пароль MQTT берутся из файла устройств (в прошивке — зашифрованный раздел).
+ */
+export class FileNvs extends MemoryNvs {
+  #file;
+  #loading = false;
+
+  constructor(dir, deviceId) {
+    super();
+    if (!/^[0-9a-f-]{36}$/.test(deviceId)) throw new TypeError('device_id — UUID');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    this.#file = path.join(dir, `${deviceId}.json`);
+    if (existsSync(this.#file)) {
+      let data;
+      try {
+        data = JSON.parse(readFileSync(this.#file, 'utf8'));
+      } catch {
+        throw new Error(`NVS ${this.#file} не читается как JSON`);
+      }
+      this.#loading = true;
+      for (const [key, value] of Object.entries(data?.keys ?? {})) super.set(key, value);
+      this.#loading = false;
+    }
+  }
+
+  get file() {
+    return this.#file;
+  }
+
+  set(key, value) {
+    super.set(key, value);
+    this.#flush();
+  }
+
+  delete(key) {
+    super.delete(key);
+    this.#flush();
+  }
+
+  #flush() {
+    if (this.#loading) return;
+    const keys = {};
+    for (const key of this.keys()) keys[key] = this.get(key);
+    const tmp = `${this.#file}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ v: 1, keys }), { mode: 0o600 });
+    renameSync(tmp, this.#file);
+  }
 }
 
 // Ключи NVS (до 15 символов, как в ESP-IDF).
 export const NVS_KEYS = Object.freeze({
   boot: 'boot', // счётчик загрузок, u32
   replay: 'replay', // { seq, id, ok, error, state_seq } последней принятой команды — одним блоком, §3.2
-  session: 'session', // M1: session_id, остаток, параметры сигналов, offline_resumes (§5 правило 3)
-  config: 'config', // M1: config.set
+  session: 'session', // { session_id, remaining_ms, warn_ms, grace_ms, buzzer, offline_resumes } — §5 правило 3
+  config: 'config', // config.set: led_brightness, current_on_ma, current_confirm_ms, grace_dim, grace_blink_s
   ringMeta: 'ev_meta', // { head, count, dropped } кольцевого буфера
   ringSlot: (i) => `ev_${i}`,
   droppedEvent: 'ev_drop', // недоставленное событие events_dropped
+  binding: 'bind', // отпечаток device_key: новый ключ — новая привязка, §7 (только симулятор)
 });
 
 export const EVENT_RING_CAPACITY = 64;
@@ -69,7 +129,7 @@ export class EventRing {
     this.#persisted = new Array(capacity).fill(false);
     const meta = nvs.get(NVS_KEYS.ringMeta);
     if (meta) {
-      // После перезагрузки (M1): недоставленные события из NVS. Слот без записи — дыра,
+      // После перезагрузки: недоставленные события из NVS. Слот без записи — дыра,
       // событие было в полёте и в NVS не попало.
       this.#head = meta.head;
       this.#count = meta.count;

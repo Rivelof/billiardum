@@ -1,0 +1,25 @@
+{
+  "name": "Льгота с диммером: приглушение до grace_dim, без мигания",
+  "description": "caps с dimmer, свои warn_ms и grace_ms, пищалка выключена флагом buzzer (тихие часы решает сервер).",
+  "caps": ["relay", "led", "buzzer", "current", "dimmer"],
+  "steps": [
+    { "cmd": "config.set", "body": { "grace_dim": 40 } },
+    { "expect": { "config": { "grace_dim": 40, "grace_blink_s": 15, "current_confirm_ms": 10000 } } },
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000002", "remaining_ms": 10000, "warn_ms": [5000, 2000], "grace_ms": 3000, "buzzer": false } },
+    { "expect": { "mode": "active", "dim": 100, "buzzer": false } },
+    { "advance_ms": 5000 },
+    { "expect": { "mode": "ending", "led": "yellow_blink", "signals": { "warn": 1, "beep": 0 } } },
+    { "advance_ms": 3000 },
+    { "expect": { "mode": "ending", "lamp": false, "signals": { "blink2": 1 } } },
+    { "advance_ms": 2000 },
+    { "expect": { "mode": "grace", "led": "red", "relay": true, "lamp": true, "dim": 40, "current_ma": 160,
+      "signals": { "grace": 1, "grace_blink": 0 } } },
+    { "cmd": "config.set", "body": { "grace_dim": 20 } },
+    { "expect": { "mode": "grace", "dim": 20, "current_ma": 80 } },
+    { "advance_ms": 2999 },
+    { "expect": { "mode": "grace", "signals": { "grace_blink": 0 } } },
+    { "advance_ms": 1 },
+    { "expect": { "mode": "free", "relay": false, "dim": 0, "led": "green_dim", "current_ma": 0 } },
+    { "events": ["boot"] }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@billiardum/web-guest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Бильярдум: приложение гостя (PWA, мини-приложения MAX и Telegram), база /app/",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "build": "vite build",
+    "build:mock": "vite build --mode mock",
+    "preview": "vite preview",
+    "size": "vite build --logLevel warn && node scripts/size.mjs",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "devDependencies": {
+    "vite": "7.3.7"
+  },
+  "dependencies": {
+    "@billiardum/shared": "0.1.0",
+    "preact": "10.29.8"
+  }
+}

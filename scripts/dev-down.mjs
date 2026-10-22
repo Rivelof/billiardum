@@ -1,11 +1,12 @@
 // `npm run down`: останавливает окружение разработки.
-// `npm run down -- --volumes`: ещё и стирает данные — тома базы, брокера и Caddy
-// и deploy/dev/devices.json (его секреты без тома брокера недействительны).
+// `npm run down -- --volumes`: ещё и стирает данные — тома базы, брокера, NVS
+// симулятора и Caddy и deploy/dev/devices.json (его секреты без тома брокера
+// недействительны).
 // .env и сертификаты остаются.
 
 import { existsSync, unlinkSync } from 'node:fs';
 
-import { checkDocker, composeArgs, DEVICES_FILE, ENV_EXAMPLE, ENV_FILE, isMain, makeLogger, runChecked, runMain } from './dev-lib.mjs';
+import { checkDocker, composeArgs, DEVICES_FILE, EMU_PROFILE, ENV_EXAMPLE, ENV_FILE, isMain, makeLogger, runChecked, runMain } from './dev-lib.mjs';
 
 const log = makeLogger('down');
 
@@ -20,10 +21,12 @@ async function main() {
   checkDocker();
   // Без .env Compose ругался бы на незаданные переменные; для остановки они не нужны.
   const envFile = existsSync(ENV_FILE) ? ENV_FILE : ENV_EXAMPLE;
-  await runChecked('docker', composeArgs(envFile, 'down', '--remove-orphans', ...(volumes ? ['--volumes'] : [])), {}, 'docker compose down');
+  // Профиль эмулятора включён всегда: иначе Compose не остановит его контейнер.
+  const downArgs = ['--profile', EMU_PROFILE, 'down', '--remove-orphans', ...(volumes ? ['--volumes'] : [])];
+  await runChecked('docker', composeArgs(envFile, ...downArgs), {}, 'docker compose down');
   if (volumes) {
     if (existsSync(DEVICES_FILE)) unlinkSync(DEVICES_FILE);
-    log('окружение остановлено, данные стёрты (тома и deploy/dev/devices.json). .env и сертификаты на месте.');
+    log('окружение остановлено, данные стёрты (тома и deploy/dev/devices.json). .env, сертификаты и web/*/dist на месте.');
   } else {
     log('окружение остановлено, данные сохранены. Стереть: npm run down -- --volumes');
   }

@@ -1,0 +1,17 @@
+{
+  "name": "Готовое реле без индикатора, пищалки и датчика (путь B)",
+  "description": "caps только relay: сигналы пищалки не звучат, identify — hw_fault, current_ma = null, свет в обход не обнаруживается — сервер показывает владельцу, что защита выключена.",
+  "caps": ["relay"],
+  "steps": [
+    { "cmd": "session.start", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000023", "remaining_ms": 400000, "buzzer": true } },
+    { "expect": { "mode": "active", "relay": true, "buzzer": true, "current_ma": null } },
+    { "advance_ms": 100000 },
+    { "expect": { "mode": "ending", "led": "yellow_blink", "signals": { "warn": 1, "beep": 0 } } },
+    { "cmd": "identify", "body": { "duration_ms": 1000 }, "ack": "hw_fault" },
+    { "cmd": "session.stop", "body": { "session_id": "0192f3c0-0000-7000-8000-000000000023", "reason_code": "guest_finished" } },
+    { "fault": "bypass", "on": true },
+    { "advance_ms": 60000 },
+    { "expect": { "mode": "free", "current_ma": null } },
+    { "events": ["boot"] }
+  ]
+}

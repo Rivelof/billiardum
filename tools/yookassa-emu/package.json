@@ -1,0 +1,18 @@
+{
+  "name": "@billiardum/yookassa-emu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Эмулятор ЮKassa API v3 для разработки и тестов «Бильярдума»",
+  "type": "module",
+  "main": "lib/emulator.mjs",
+  "exports": {
+    ".": "./lib/emulator.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

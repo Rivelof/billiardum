@@ -11,6 +11,9 @@ export const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.u
 export const REPO_ROOT = path.resolve(PACKAGE_DIR, '..');
 export const MIGRATIONS_DIR = path.join(PACKAGE_DIR, 'migrations');
 export const SEED_FILE = path.join(PACKAGE_DIR, 'seed.sql');
+/** Добавки сида модулей M1 (контракт M1 §13): 0100_core.sql, 0200_money.sql, 0300_light.sql. */
+export const SEED_DIR = path.join(PACKAGE_DIR, 'seed.d');
+const SEED_D_FILE = /^\d{4}_[a-z0-9_]+\.sql$/;
 
 const MIGRATION_FILE = /^(\d{4})_([a-z0-9_]+)\.sql$/;
 const MIGRATE_LOCK = 'bl.migrate';
@@ -160,15 +163,35 @@ export async function migrate({ connectionString, appPassword, dir = MIGRATIONS_
   }
 }
 
-/** Применяет supabase/seed.sql в одной транзакции. Сид идемпотентен. */
-export async function seed({ connectionString, file = SEED_FILE, quiet = false }) {
-  const sql = readFileSync(file, 'utf8');
+/** Файлы seed.d по порядку имён (NNNN_name.sql); каталога нет — пусто. */
+export function listSeedFiles(dir = SEED_DIR) {
+  if (!existsSync(dir)) return [];
+  const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+  for (const f of files) {
+    if (!SEED_D_FILE.test(f)) throw new Error(`имя файла сида ${f} не по шаблону NNNN_name.sql`);
+  }
+  return files.map((f) => path.join(dir, f));
+}
+
+/**
+ * Применяет supabase/seed.sql, затем seed.d/*.sql по порядку — всё в одной транзакции:
+ * ошибка в любом файле не оставляет половины сида. Сид идемпотентен.
+ */
+export async function seed({ connectionString, file = SEED_FILE, dir = SEED_DIR, quiet = false }) {
+  const files = [file, ...listSeedFiles(dir)];
   const client = await connectAdmin(connectionString);
   try {
     await client.query('begin');
-    await client.query(sql);
+    for (const f of files) {
+      try {
+        await client.query(readFileSync(f, 'utf8'));
+      } catch (err) {
+        err.message = `${path.relative(REPO_ROOT, f)}: ${err.message}`;
+        throw err;
+      }
+    }
     await client.query('commit');
-    if (!quiet) log('info', 'seed_done', { file: path.relative(REPO_ROOT, file) });
+    if (!quiet) log('info', 'seed_done', { files: files.map((f) => path.relative(REPO_ROOT, f)) });
   } catch (err) {
     await client.query('rollback').catch(() => {});
     throw err;

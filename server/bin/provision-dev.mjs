@@ -7,6 +7,10 @@
 //    с точными топиками протокола §2, клиент (логин и client id = device_id).
 // 3. device_key — в bl.devices.device_key_enc (AES-256-GCM, SECRETS_ENC_KEY).
 // 4. deploy/dev/devices.json (или SIM_DEVICES_FILE) для симулятора, права 0600.
+// 5. PIN персонала сида без PIN (владелец, управляющий, ресепшн тестового клуба) — DEV_STAFF_PIN
+//    (по умолчанию 1234): хеш зависит от SECRETS_ENC_KEY, поэтому его ставит провижининг, а не сид.
+// 6. Деньги: server/payments/provision-dev.mjs (backend-money) — магазин ЮKassa тестового
+//    клуба на эмуляторе, если модуль есть.
 // Повторный запуск выдаёт новые ключи и пароли и согласованно обновляет брокер, базу и файл.
 // Секреты не печатаются.
 
@@ -19,6 +23,10 @@ import { REPO_ROOT, repoPath } from '../lib/config.mjs';
 import { createDynsec, deviceRoleAcls, deviceRoleName, ensureServerClient, SERVER_CLIENT_ID } from '../lib/dynsec.mjs';
 import { createLogger } from '../lib/log.mjs';
 import { deviceKeyContext, encryptSecret, loadEncKey } from '../lib/secrets.mjs';
+import { hashPin, PIN, pinPepper } from '../auth/pin.mjs';
+
+const DEV_CLUB_ID = 'c1000000-0000-4000-8000-000000000001';
+const DEV_STAFF = ['a1000000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000004'];
 
 const log = createLogger({ level: process.env.LOG_LEVEL || 'info' });
 
@@ -70,6 +78,57 @@ function writeDevicesFile(file, content) {
   writeFileSync(tmp, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, file);
+}
+
+/** Модуль соседа, если он уже есть (параллельная разработка). */
+async function importOptional(spec) {
+  const url = new URL(spec, import.meta.url);
+  try {
+    return await import(url.href);
+  } catch (err) {
+    if (err?.code === 'ERR_MODULE_NOT_FOUND' && String(err.message).includes(url.pathname)) return null;
+    throw err;
+  }
+}
+
+/** PIN персонала сида, у кого его ещё нет. */
+async function setDevPins(db, encKey) {
+  const pin = process.env.DEV_STAFF_PIN || '1234';
+  if (!PIN.test(pin)) throw new Error('DEV_STAFF_PIN — 4–6 цифр');
+  const pepper = pinPepper(encKey);
+  const { rows } = await db.query(
+    'select id from bl.club_members where club_id = $1 and user_id = any($2::uuid[]) and pin_hash is null',
+    [DEV_CLUB_ID, DEV_STAFF],
+  );
+  for (const r of rows) {
+    await db.query('update bl.club_members set pin_hash = $2, pin_set_at = now(), pin_failed_count = 0, pin_locked_until = null where id = $1', [
+      r.id,
+      await hashPin(pin, pepper),
+    ]);
+  }
+  log.info('provision_dev_pins', { set: rows.length });
+}
+
+/** После устройств: PIN персонала и деньги (backend-money). */
+async function provisionAfterDevices(databaseUrl, encKey) {
+  const db = new pg.Client({ connectionString: databaseUrl, application_name: 'bl-provision-dev' });
+  await db.connect();
+  try {
+    await setDevPins(db, encKey);
+    const payments = await importOptional('../payments/provision-dev.mjs');
+    if (typeof payments?.provisionPayments === 'function') {
+      const res = await payments.provisionPayments({
+        client: db,
+        env: process.env,
+        log: (level, msg, fields) => (log[level] ?? log.info)(msg, fields),
+      });
+      log.info('provision_payments', { status: res?.status ?? null });
+    } else {
+      log.warn('provision_payments_missing', {});
+    }
+  } finally {
+    await db.end();
+  }
 }
 
 async function main() {
@@ -143,6 +202,7 @@ async function main() {
       })),
     });
     log.info('provision_done', { devices: devices.length, file: path.relative(REPO_ROOT, devicesFile) });
+    await provisionAfterDevices(databaseUrl, encKey);
   } finally {
     await client.endAsync();
   }

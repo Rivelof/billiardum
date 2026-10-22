@@ -26,6 +26,7 @@ if (!URL_) {
     let sim;
     let simExited;
     const bootIds = new Map();
+    const SESSION = '0192f3c0-0000-7000-8000-000000000001';
 
     const on = (d, leaf) => messages.filter((m) => m.topic === topic(d, leaf));
     async function waitFor(fn, what, ms = 8000) {
@@ -61,7 +62,10 @@ if (!URL_) {
       messages.length = 0;
 
       sim = spawn(process.execPath, [INDEX], {
-        env: { ...env, SIM_DEVICES_FILE: env.SIM_IT_DEVICES_FILE, LOG_LEVEL: 'debug', MQTT_URL: '', MQTT_CA_FILE: '' },
+        env: {
+          ...env, SIM_DEVICES_FILE: env.SIM_IT_DEVICES_FILE, LOG_LEVEL: 'debug', MQTT_URL: '', MQTT_CA_FILE: '',
+          SIM_CONTROL_PORT: env.SIM_IT_CONTROL_PORT, SIM_CONTROL_HOST: '127.0.0.1',
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       simExited = new Promise((r) => sim.on('exit', r));
@@ -157,19 +161,66 @@ if (!URL_) {
       assert.equal((await command(dev1, cmd, raw)).ack.ok, true, 'seq 2 с верной подписью принимается');
     });
 
-    test('identify: индикатор identify и возврат; остальные типы — unknown_type', async () => {
+    test('identify: индикатор identify и возврат', async () => {
       const cmd = makeCommand({ seq: 3, type: 'identify', body: { duration_ms: 700 } });
       assert.equal((await command(dev1, cmd)).ack.ok, true);
       await waitFor(() => on(dev1, 'state').some((m) => JSON.parse(m.payload).led === 'identify'), 'led identify');
       await waitFor(() => JSON.parse(on(dev1, 'state').at(-1).payload).led === 'green_dim', 'led снова green_dim', 4000);
-      const start = makeCommand({ seq: 4, type: 'session.start', body: { session_id: '0192f3c0-0000-7000-8000-000000000001', remaining_ms: 60000, buzzer: true } });
-      assert.deepEqual(Object.values((await command(dev1, start)).ack).slice(3, 5), [false, 'unknown_type']);
+    });
+
+    test('session.start: state с relay true раньше ack, метрика sim_relay в логе', async () => {
+      const start = makeCommand({ seq: 4, type: 'session.start', body: { session_id: SESSION, remaining_ms: 3_600_000, buzzer: true } });
+      const n = on(dev1, 'state').length;
+      const { ack } = await command(dev1, start);
+      assert.deepEqual([ack.ok, ack.error], [true, null]);
+      const st = JSON.parse(on(dev1, 'state').slice(n).find((m) => JSON.parse(m.payload).relay).payload);
+      assert.deepEqual([st.mode, st.relay, st.session_id, st.state_seq], ['active', true, SESSION, ack.state_seq]);
+      const metric = JSON.parse(await waitFor(() => logs.find((l) => l.includes('"sim_relay"')), 'sim_relay'));
+      assert.deepEqual([metric.device_id, metric.table, metric.relay, metric.cmd_id], [dev1.device_id, dev1.table_number, true, start.id]);
+      assert.ok(metric.ms_since_cmd >= 0 && metric.ms_since_cmd < 1000);
     });
 
     test('bad_format: ack без cmd_id; второй стол команд не видел', async () => {
       const { ack } = await command(dev1, null, '{"v":1,"id":');
       assert.deepEqual([ack.cmd_id, ack.seq, ack.ok, ack.error], [null, null, false, 'bad_format']);
       assert.equal(on(dev2, 'ack').length, 0);
+    });
+
+    const control = (p, body) => fetch(`http://127.0.0.1:${env.SIM_IT_CONTROL_PORT}${p}`, body === undefined ? {} : {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+    test('управление: GET /sim/tables показывает оба стола', async () => {
+      const tables = await (await control('/sim/tables')).json();
+      assert.deepEqual(tables.map((t) => t.table).sort(), [dev1.table_number, dev2.table_number].sort());
+      const t1 = tables.find((t) => t.table === dev1.table_number);
+      assert.deepEqual([t1.online, t1.state.mode, t1.state.session_id], [true, 'active', SESSION]);
+    });
+
+    test('управление: обрыв связи — Last Will offline, связь вернулась — online и state', async () => {
+      const n = on(dev1, 'status').length;
+      const res = await control(`/sim/tables/${dev1.table_number}/net`, { up: false });
+      assert.equal(res.status, 200);
+      await waitFor(() => on(dev1, 'status').slice(n).some((m) => m.payload === 'offline'), 'Last Will offline', 60_000);
+      const m = on(dev1, 'status').length;
+      const s = on(dev1, 'state').length;
+      await control(`/sim/tables/${dev1.table_number}/net`, { up: true });
+      await waitFor(() => on(dev1, 'status').slice(m).some((x) => x.payload === 'online'), 'online после восстановления');
+      await waitFor(() => on(dev1, 'state').length > s, 'state после восстановления');
+      assert.equal(JSON.parse(on(dev1, 'state').at(-1).payload).mode, 'active', 'без связи игра шла дальше');
+    });
+
+    test('управление: перезагрузка — свет выключен, boot 2, session.resume возвращает свет (T7)', async () => {
+      const e = on(dev1, 'event').length;
+      await control(`/sim/tables/${dev1.table_number}/reboot`, { reset_reason: 'sw' });
+      const boot = await waitFor(() => on(dev1, 'event').slice(e).map((x) => JSON.parse(x.payload)).find((x) => x.type === 'boot'), 'boot после перезагрузки');
+      assert.deepEqual([boot.boot, boot.n, boot.data.reset_reason], [2, 1, 'sw']);
+      await waitFor(() => on(dev1, 'state').map((x) => JSON.parse(x.payload)).some((x) => x.boot === 2 && x.mode === 'free' && !x.relay), 'state free после загрузки');
+      const resume = makeCommand({ seq: 5, type: 'session.resume', body: { session_id: SESSION, remaining_ms: 1_800_000, buzzer: true } });
+      const { ack } = await command(dev1, resume);
+      assert.equal(ack.ok, true);
+      const st = JSON.parse(on(dev1, 'state').at(-1).payload);
+      assert.deepEqual([st.mode, st.relay, st.boot], ['active', true, 2]);
     });
 
     test('устройство пишет только в свои топики (ACL как у Dynamic Security)', () => {
