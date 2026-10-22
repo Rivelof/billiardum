@@ -17,6 +17,7 @@ const RECEIPTS = ['чек', 'чека', 'чеков'];
 function hoursShort(min) {
   const h = Math.floor(min / 60);
   const m = Math.round(min % 60);
+  if (!h) return `${m} мин`;
   return m ? `${h} ч ${m} мин` : `${h} ч`;
 }
 
@@ -299,6 +300,8 @@ function Reconcile({ rec }) {
 
 function Play({ play }) {
   if (!play) return null;
+  // Сначала самые загруженные: владелец ищет простаивающие и перегруженные столы
+  const tables = [...(play.by_resource ?? [])].sort((a, b) => (b.utilization_percent ?? 0) - (a.utilization_percent ?? 0) || (a.number ?? 0) - (b.number ?? 0));
   return (
     <section class="rcard" aria-labelledby="r-play">
       <h3 class="rcard__title" id="r-play">
@@ -326,6 +329,23 @@ function Play({ play }) {
         <p class="small">
           Загрузка — доля времени смены ({hoursShort(play.shift_minutes)}), когда на {play.resources ?? 'всех'} {plural(play.resources ?? 0, ['столе', 'столах', 'столах'])} шла игра: {play.sessions ?? 0} {plural(play.sessions ?? 0, GAMES)}.
         </p>
+      ) : null}
+      {tables.length ? (
+        <ul class="ptables" aria-label="Загрузка по столам">
+          {tables.map((t) => (
+            <li class="ptable" key={t.resource_id ?? t.number}>
+              <span class="ptable__name">Стол {t.number ?? t.resource_number}</span>
+              <span class="ptable__meta">
+                {t.sessions ? `${hoursShort(t.minutes ?? 0)} · ${t.sessions} ${plural(t.sessions, GAMES)}` : 'Не играли'}
+                {t.revenue_kopecks ? ` · ${formatMoney(t.revenue_kopecks)}` : ''}
+              </span>
+              <span class="meter ptable__meter" aria-hidden="true">
+                <span class="meter__fill" style={{ width: `${Math.min(100, Number(t.utilization_percent) || 0)}%` }} />
+              </span>
+              <span class="ptable__pct mono">{pct(t.utilization_percent)}</span>
+            </li>
+          ))}
+        </ul>
       ) : null}
     </section>
   );

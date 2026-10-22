@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addFixed, addProduct, emptyCart, normalizeMenu } from '@billiardum/shared/bar';
-import { discountBase, discountKopecks, discountPercent, kktState, normalizeSale, overLimit, receiptView, requestLine, saleBody, saleTotals, tabLine, wholeDiscount } from '../src/lib/pos.js';
+import { approvalError, discountBase, discountKopecks, discountPercent, kktState, normalizeSale, overLimit, receiptView, requestLine, saleBody, saleTotals, tabLine, wholeDiscount } from '../src/lib/pos.js';
 import { errorMessage } from '@billiardum/shared/errors';
 
 const menu = normalizeMenu({
@@ -92,4 +92,14 @@ test('ошибки кассы для персонала: смена закрыт
   assert.match(errorMessage('already_paid', { audience: 'staff' }).title, /уже оплачен/);
   assert.match(errorMessage('phone_required', { audience: 'staff' }).title, /телефон гостя/);
   assert.match(errorMessage('approval_unavailable', { audience: 'staff' }).action, /провести эту продажу самому/);
+});
+
+test('подтверждение скидки PIN управляющего: 401, 403, 429 — словами для кассира (№95)', () => {
+  assert.equal(approvalError({ code: 'unauthorized' }).code, 'pin_invalid');
+  assert.equal(approvalError({ code: 'forbidden' }).code, 'approver_forbidden');
+  assert.equal(approvalError({ code: 'rate_limited' }).code, 'pin_locked');
+  assert.equal(approvalError({ code: 'not_found' }).code, 'approval_unavailable');
+  assert.equal(approvalError({ code: 'reason_required' }).code, 'reason_required');
+  assert.match(errorMessage('pin_locked', { audience: 'staff' }).title, /заблокирован/);
+  assert.match(errorMessage('approver_forbidden', { audience: 'staff' }).title, /не может подтвердить/);
 });

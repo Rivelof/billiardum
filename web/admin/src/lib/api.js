@@ -100,11 +100,14 @@ export const api = {
   /** Продажа: ключ идемпотентности живёт одну попытку оплаты чека — повтор после обрыва не пробьёт второй чек. */
   sale: (body, idempotencyKey) => client.post('/pos/sales', body, { idempotencyKey }),
   saleStatus: (id) => client.get(`/pos/sales/${e(id)}`),
-  /** Отменить ожидание СБП: QR больше не действует. */
-  cancelSale: (id) => client.post(`/pos/sales/${e(id)}/cancel`),
+  /** Снять QR неоплаченной СБП-продажи (№98): { reason? }; уже оплачено — 409 already_paid. */
+  cancelSale: (id, reason) => client.post(`/pos/sales/${e(id)}/cancel`, reason ? { reason } : {}),
   /** Кто может подтвердить скидку выше лимита: [{ user_id, name, role }] — управляющие и владелец клуба. */
   approvers: (club) => client.get(`/clubs/${e(club)}/staff/approvers`),
-  /** Подтверждение скидки выше лимита управляющим по PIN на этом терминале. */
+  /**
+   * Подтверждение скидки выше лимита PIN управляющего на этом терминале (№95):
+   * { user_id, pin, reason_code, reason_text, percent | amount_kopecks } → { approval_id, expires_at }; 401 PIN, 403 не управляющий, 429 блок.
+   */
   approveDiscount: (body) => client.post('/pos/discount-approvals', body),
   /** Касса ККТ: { state: online | warning | offline, reason, bridges, queue: { pending, failed } } (backend-kkt). */
   kktStatus: (club) => client.get(`/clubs/${e(club)}/kkt/status`),
@@ -160,12 +163,13 @@ export { newIdempotencyKey };
 
 /**
  * Живые обновления клуба: SSE /api/stream?club={id}. M1: hall, reception_request, alarm, session (контракт §7);
- * M2: bar (заказ бара целиком, m2 §5), pos_sale (продажа кассы: оплата СБП прошла или отменена), shift, kkt (состояние кассы ККТ и очередь чеков).
+ * M2: bar (заказ бара целиком, m2 §5), stop_list ({ product_id, stop_list }), pos_sale (продажа кассы: оплата СБП прошла
+ * или отменена), shift, kkt (состояние кассы ККТ и очередь чеков). Бармену сервер шлёт из канала клуба только bar и stop_list (№97).
  */
 export function streamClub(club, handlers) {
   return openStream(client.url('/stream', { club }), {
     ...handlers,
-    events: handlers.events ?? ['hall', 'reception_request', 'alarm', 'session', 'bar', 'pos_sale', 'shift', 'kkt'],
+    events: handlers.events ?? ['hall', 'reception_request', 'alarm', 'session', 'bar', 'stop_list', 'pos_sale', 'shift', 'kkt'],
     EventSource: EventSourceImpl,
   });
 }

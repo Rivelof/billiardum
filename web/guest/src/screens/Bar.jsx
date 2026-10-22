@@ -8,6 +8,7 @@ import {
   emptyCart,
   lineTotal,
   mergeOrder,
+  itemsLine,
   modifiersText,
   normalizeMenu,
   orderItems,
@@ -325,7 +326,7 @@ function OrderCard({ order }) {
       ) : (
         <p class="hint">Оплата ещё не подтверждена. Если деньги списались, заказ сам уйдёт бару.</p>
       )}
-      <p class="ocard__items">{(order.items ?? []).map((i) => `${i.qty} × ${i.name}${i.modifiers?.length ? ` (${modifiersText(i.modifiers)})` : ''}`).join(', ')}</p>
+      <p class="ocard__items">{itemsLine(order.items)}</p>
       <p class="ocard__meta">
         <span>{orderPayWord(order)}</span>
         <span class="mono">{formatMoney(orderTotal(order))}</span>
@@ -400,7 +401,7 @@ function TabBlock({ sessionId, tab, summary, onPaid }) {
             </label>
           </fieldset>
           <ErrorNote error={error} />
-          <button type="button" class="btn btn--secondary btn--block btn--lg" disabled={busy} onClick={pay}>
+          <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={pay}>
             {busy ? 'Открываем оплату…' : `Оплатить счёт ${formatMoney(summary.total)}`}
           </button>
         </>

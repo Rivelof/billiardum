@@ -94,7 +94,9 @@ function orderLine(cat, productId, qty, modIds = []) {
   const p = cat.products.find((x) => x.id === productId);
   const ms = modsOf(cat, modIds);
   const unit = p.price_kopecks + ms.reduce((s, x) => s + x.price_delta_kopecks, 0);
-  return { id: uuid(), product_id: p.id, name: p.name, qty, unit_price_kopecks: unit, amount_kopecks: unit * qty, modifiers: ms.map(({ id: mid, name }) => ({ id: mid, name })) };
+  // Имя для чека — с модификаторами, как server/catalog/api.mjs
+  const name = [p.name, ...ms.map((x) => x.name)].join(', ').slice(0, 128);
+  return { id: uuid(), product_id: p.id, name, qty, unit_price_kopecks: unit, amount_kopecks: unit * qty, modifiers: ms.map(({ id: mid, name: n }) => ({ id: mid, name: n })) };
 }
 
 /** Заказ в виде orderView backend-pos (server/orders/core.mjs). */
@@ -124,6 +126,8 @@ function makeOrder(cat, { number, session, table, status, minAgo, pay, items, co
 }
 
 const STAFF_NAMES = { reception: 'Анна К.', reception2: 'Игорь П.', manager: 'Ольга Р.', owner: 'Андрей' };
+/** Доля часов игры по столам 1–8 в отчёте заглушки: один стол почти не играл. */
+const PLAY_SHARE = [0.19, 0.17, 0.16, 0.14, 0.13, 0.11, 0.08, 0.02];
 
 /** Отчёт смены как buildShiftReport backend-kkt (server/reports/shift-report.mjs): числа сходятся до копейки. */
 function reportSeed(shift, x) {
@@ -161,7 +165,20 @@ function reportSeed(shift, x) {
       payments_count: x.sessions + 31,
       net_kopecks: total(byMethod),
     },
-    play: { sessions: x.sessions, minutes: x.playMinutes, hours: Math.round((x.playMinutes / 60) * 10) / 10, resources: 8, shift_minutes: shiftMinutes, utilization_percent: Math.round((x.playMinutes / (8 * shiftMinutes)) * 1000) / 10 },
+    play: {
+      sessions: x.sessions,
+      minutes: x.playMinutes,
+      hours: Math.round((x.playMinutes / 60) * 10) / 10,
+      resources: 8,
+      shift_minutes: shiftMinutes,
+      utilization_percent: Math.round((x.playMinutes / (8 * shiftMinutes)) * 1000) / 10,
+      // Как server/reports/queries.mjs: по столам — игры, минуты, выручка, загрузка от времени смены
+      by_resource: PLAY_SHARE.map((share, i) => {
+        const minutes = Math.round(x.playMinutes * share);
+        const sessions = Math.max(0, Math.round(x.sessions * share));
+        return { resource_id: id('00000000', i + 1), number: i + 1, title: null, sessions, minutes, hours: Math.round((minutes / 60) * 10) / 10, revenue_kopecks: Math.round((total(tables) * share) / 100) * 100, refunds_kopecks: 0, utilization_percent: Math.round((minutes / shiftMinutes) * 1000) / 10 };
+      }),
+    },
     service_light: {
       total_minutes: svcTotal,
       count: x.service.length,
@@ -463,13 +480,18 @@ export function m2Routes(ctx) {
     ['GET', /^\/api\/clubs\/([^/]+)\/kkt\/status$/, staffOnly(() => ok(kktStatus()))],
     ['GET', /^\/api\/clubs\/([^/]+)\/staff\/approvers$/, staffOnly(() => ok(ctx.approvers()))],
     ['POST', /^\/api\/pos\/discount-approvals$/, staffOnly((_m, b) => {
+      // Как server/orders/approvals.mjs: ровно одно из percent | amount_kopecks, причина, PIN управляющего; 5 минут, одноразовое
+      const hasP = b.percent !== undefined && b.percent !== null;
+      const hasA = b.amount_kopecks !== undefined && b.amount_kopecks !== null;
+      if (typeof b.pin !== 'string' || !/^\d{4,6}$/.test(b.pin) || hasP === hasA) return err(400, 'bad_request');
+      if (hasP && (!Number.isInteger(b.percent) || b.percent < 1 || b.percent > 100)) return err(400, 'bad_request');
+      if (!b.reason_code || !String(b.reason_text ?? '').trim()) return err(400, 'reason_required');
       const u = ctx.staffById(b.user_id);
       if (!u || !['manager', 'owner'].includes(u.role)) return err(403, 'forbidden');
-      if (b.pin !== '1234') return err(401, 'pin_invalid');
-      if (!b.reason_code || !String(b.reason_text ?? '').trim()) return err(400, 'reason_required');
+      if (b.pin !== '1234') return err(401, 'unauthorized');
       const aid = uuid();
-      S().approvals[aid] = { id: aid, discount_kopecks: b.discount_kopecks, base_kopecks: b.base_kopecks, by: u.name, used: false };
-      return ok({ approval_id: aid, approved_by: { id: u.id, name: u.name }, expires_at: new Date(now() + 10 * MIN).toISOString() });
+      S().approvals[aid] = { id: aid, percent: hasP ? b.percent : null, amount_kopecks: hasA ? b.amount_kopecks : null, by: u.name, used: false, expires: now() + 5 * MIN };
+      return ok({ approval_id: aid, expires_at: new Date(now() + 5 * MIN).toISOString() });
     })],
     ['POST', /^\/api\/pos\/sales$/, (_m, b) => {
       if (!can('reception', 'manager', 'owner')) return err(403, 'forbidden');
@@ -507,9 +529,10 @@ export function m2Routes(ctx) {
           if (can('manager', 'owner')) {
             if (!String(d.reason ?? '').trim()) return err(400, 'reason_required');
           } else {
+            if (d.approval_id == null) return err(403, 'limit_exceeded');
             const a = S().approvals[d.approval_id];
-            if (!a) return err(400, 'limit_exceeded');
-            if (a.used || a.discount_kopecks !== discount) return err(409, 'approval_invalid');
+            const same = a && (a.percent !== null ? d.percent === a.percent && d.amount_kopecks == null : d.amount_kopecks === a.amount_kopecks && d.percent == null);
+            if (!a || a.used || a.expires <= now() || !same) return err(403, 'forbidden');
             a.used = true;
           }
           ctx.state().alarms.unshift({ id: uuid(), type: 'discount_over_limit', level: 'important', created_at: new Date(now()).toISOString() });
@@ -582,7 +605,13 @@ export function m2Routes(ctx) {
 
     // ---------- смены ----------
     // Как у backend-kkt: { shift }; expected_cash_kopecks и cash_sales_kopecks в открытой смене — предложение frontend
-    ['GET', /^\/api\/clubs\/([^/]+)\/shifts\/current$/, staffOnly(() => ok({ shift: liveShift() }))],
+    // Как server/shifts/service.mjs currentShiftFor: ресепшну — вслепую, без ожидаемых наличных; управляющему — с ними
+    ['GET', /^\/api\/clubs\/([^/]+)\/shifts\/current$/, staffOnly(() => {
+      const s = liveShift();
+      if (!s || can('manager', 'owner')) return ok({ shift: s });
+      const { expected_cash_kopecks: _e, cash_sales_kopecks: _c, cash_refunds_kopecks: _r, ...blind } = s;
+      return ok({ shift: blind });
+    })],
     ['GET', /^\/api\/clubs\/([^/]+)\/shifts$/, managerOnly(() => {
       const list = S().shifts.map((s) => ({ ...s, revenue_total_kopecks: totalOf(S().reports[s.id]) }));
       const cur = liveShift();
@@ -740,14 +769,15 @@ export function m2Routes(ctx) {
       return ok({ applied: !b.dry_run, created, updated, unchanged: 0, categories_created: newCats, errors: [] });
     })],
 
-    // ---------- стоп-лист: ресепшн и выше (№88) ----------
+    // ---------- стоп-лист: бармен, ресепшн и выше (№88, №97); SSE stop_list в канал клуба ----------
     ['POST', /^\/api\/catalog\/products\/([^/]+)\/stop-list$/, (mm, b) => {
-      if (!can('reception', 'manager', 'owner')) return err(403, 'forbidden');
+      if (!can('bar', 'reception', 'manager', 'owner')) return err(403, 'forbidden');
       const p = product(mm[1]);
       if (!p) return err(404, 'not_found');
       if (typeof b.stop_list !== 'boolean') return err(400, 'bad_request');
       p.stop_list = b.stop_list;
       ctx.audit('catalog.stop_list', { data: { product_id: p.id } });
+      ctx.emit('stop_list', { product_id: p.id, stop_list: p.stop_list, active: p.active !== false });
       return ok(p);
     }],
 

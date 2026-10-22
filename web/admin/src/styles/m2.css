@@ -500,6 +500,25 @@
 .meter__fill { display: block; height: 100%; border-radius: 4px; background: var(--lamp); }
 .meter__val { display: inline-block; width: 4rem; text-align: right; font-size: var(--fs-13); }
 
+/* Загрузка по столам: стол, часы и игры, полоса, процент */
+.ptables { display: grid; margin: 4px 0 0; padding: 0; list-style: none; }
+.ptable {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) minmax(80px, 30%) 4.2rem;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.ptable__name { font-weight: 600; }
+.ptable__meta { font-size: var(--fs-13); color: var(--ink-2); }
+.ptable__meter.meter { width: 100%; }
+.ptable__pct { text-align: right; font-size: var(--fs-15); font-weight: 600; }
+@media (max-width: 599px) {
+  .ptable { grid-template-columns: minmax(0, 1fr) 4.2rem; }
+  .ptable__meta { grid-column: 1 / -1; grid-row: 2; }
+  .ptable__meter.meter { grid-column: 1 / -1; grid-row: 3; }
+}
 .svc { display: grid; gap: 12px; }
 .meter--wide { display: block; width: 100%; height: 10px; }
 .recon--wait .recon__title .icon { color: var(--ink-2); }

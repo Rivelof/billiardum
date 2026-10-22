@@ -1,33 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  normalizeMenu,
-  available,
-  unavailableWord,
-  defaultModifiers,
-  toggleModifier,
-  validateModifiers,
-  unitPrice,
-  lineKey,
-  modifiersText,
-  emptyCart,
-  addProduct,
-  addFixed,
-  setQty,
-  removeLine,
-  cartTotals,
-  orderItems,
-  refreshCart,
-  waitMinutes,
-  orderTable,
-  orderTotal,
-  orderPayWord,
-  waitTone,
-  sortQueue,
-  mergeOrder,
-  orderWord,
-  ORDER_NEXT,
-} from '../bar.mjs';
+import { ORDER_NEXT, addFixed, addProduct, available, cartTotals, defaultModifiers, emptyCart, itemView, itemsLine, lineKey, mergeOrder, modifiersText, normalizeMenu, orderItems, orderPayWord, orderTable, orderTotal, orderWord, refreshCart, removeLine, setQty, sortQueue, toggleModifier, unavailableWord, unitPrice, validateModifiers, waitMinutes, waitTone } from '../bar.mjs';
 
 const VOLUME = { id: 'g-vol', name: 'Объём', required: true, modifiers: [{ id: 'm-03', name: '0,3 л', price_delta_kopecks: 0 }, { id: 'm-04', name: '0,4 л', price_delta_kopecks: 4000 }] };
 const SUGAR = { id: 'g-sug', name: 'Сахар', required: false, max: 1, modifiers: [{ id: 'm-s1', name: '1 ложка', price_delta_kopecks: 0 }, { id: 'm-s2', name: '2 ложки', price_delta_kopecks: 0 }] };
@@ -195,4 +168,15 @@ test('очередь бара: порядок, ожидание, статусы 
   const merged = mergeOrder([{ id: 'a', status: 'new', items: [1] }], { id: 'a', status: 'preparing' });
   assert.deepEqual(merged, [{ id: 'a', status: 'preparing', items: [1] }]);
   assert.equal(mergeOrder([], { id: 'z', status: 'new' }).length, 1);
+});
+
+test('позиция заказа: сервер пишет модификаторы в имя для чека — показываем имя и модификаторы раздельно', () => {
+  const tea = { name: 'Чай чёрный, С сахаром', qty: 1, modifiers: [{ id: 'm', name: 'С сахаром' }] };
+  assert.deepEqual(itemView(tea), { name: 'Чай чёрный', mods: 'С сахаром' });
+  assert.deepEqual(itemView({ name: 'Американо, 0,3 л, Без сахара', modifiers: [{ name: '0,3 л' }, { name: 'Без сахара' }] }), { name: 'Американо', mods: '0,3 л, Без сахара' });
+  assert.deepEqual(itemView({ name: 'Капучино', modifiers: [{ name: 'Овсяное' }] }), { name: 'Капучино', mods: 'Овсяное' }, 'старый вид — имя без хвоста');
+  assert.deepEqual(itemView({ name: 'Чипсы', modifiers: [] }), { name: 'Чипсы', mods: '' });
+  const long = `${'Очень длинное название '.repeat(5)}, Кетчуп, Сыр`.slice(0, 128);
+  assert.equal(itemView({ name: long, modifiers: [{ name: 'Кетчуп' }, { name: 'Сырный соус' }] }).name, 'Очень длинное название '.repeat(5));
+  assert.equal(itemsLine([tea, { name: 'Чипсы', qty: 2, modifiers: [] }]), '1 × Чай чёрный (С сахаром), 2 × Чипсы');
 });

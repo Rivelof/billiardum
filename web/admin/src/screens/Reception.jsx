@@ -13,6 +13,9 @@ import { mergeHall } from '../lib/hall.js';
 import { expiresOf, minutesLeft } from '../lib/reception.js';
 import { audioState, chime, unlockAudio } from '../lib/sound.js';
 import { agoWords, minutesShort, minutesWords } from '../lib/words.js';
+import { currentOf } from '../lib/shift.js';
+import { linkHandler } from '../lib/router.js';
+import { BASE } from '../lib/env.js';
 
 const HIGHLIGHT_MS = 15000;
 
@@ -33,8 +36,17 @@ export function Reception({ ctx }) {
   const [declining, setDeclining] = useState(null);
   const [table, setTable] = useState(null);
   const [sound, setSound] = useState(audioState() === 'running');
+  const [shift, setShift] = useState(undefined); // undefined — не знаем, null — смена закрыта: оплату заявки не принять (409 shift_closed)
   const seen = useRef(null);
   const now = useNow(0, true);
+
+  const loadShift = useCallback(async () => {
+    try {
+      setShift(currentOf(await api.currentShift(clubId)));
+    } catch {
+      setShift(undefined);
+    }
+  }, [clubId]);
 
   const loadRequests = useCallback(async () => {
     try {
@@ -69,15 +81,18 @@ export function Reception({ ctx }) {
   useEffect(() => {
     loadRequests();
     loadHall();
+    loadShift();
     const stream = streamClub(clubId, {
       onEvent: (name, data) => {
-        if (name === 'reception_request') loadRequests();
+        if (name === 'shift') loadShift();
+        else if (name === 'reception_request') loadRequests();
         else if (name === 'hall') setHall((h) => (data ? mergeHall(h, data) : h));
         else if (name === 'session') loadHall();
       },
       onOpen: () => {
         loadRequests();
         loadHall();
+        loadShift();
       },
       onState: setLive,
     });
@@ -89,7 +104,7 @@ export function Reception({ ctx }) {
       stream.close();
       clearInterval(poll);
     };
-  }, [clubId, loadRequests, loadHall]);
+  }, [clubId, loadRequests, loadHall, loadShift]);
 
   // Звук разрешается первым касанием экрана — дальше заявки звенят сами
   useEffect(() => {
@@ -140,6 +155,18 @@ export function Reception({ ctx }) {
             Заявки на оплату
             {visible.length ? <span class="count">{visible.length}</span> : null}
           </h2>
+          {shift === null ? (
+            <div class="note note--lamp">
+              <Icon name="register" />
+              <p class="note__title">Смена не открыта</p>
+              <p class="note__body">Оплату заявок примете после открытия смены с разменом. Онлайн-оплата гостей работает и без неё.</p>
+              <div class="note__actions">
+                <a class="btn btn--secondary btn--sm" href={`${BASE}c/${encodeURIComponent(clubId)}/shift`} onClick={linkHandler}>
+                  Открыть смену
+                </a>
+              </div>
+            </div>
+          ) : null}
           <ErrorNote error={error}>
             <button
               type="button"

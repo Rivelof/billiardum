@@ -45,7 +45,9 @@ function line(product, qty, modIds) {
     picked.push(...sel);
   }
   const unit = product.price_kopecks + picked.reduce((s, m) => s + m.price_delta_kopecks, 0);
-  return { id: uuid(), product_id: product.id, name: product.name, qty, unit_price_kopecks: unit, amount_kopecks: unit * qty, modifiers: picked.map((m) => ({ id: m.id, name: m.name })) };
+  // Имя для чека — с модификаторами, как server/catalog/api.mjs
+  const name = [product.name, ...picked.map((m) => m.name)].join(', ').slice(0, 128);
+  return { id: uuid(), product_id: product.id, name, qty, unit_price_kopecks: unit, amount_kopecks: unit * qty, modifiers: picked.map((m) => ({ id: m.id, name: m.name })) };
 }
 
 /** Заказ для сценариев: [название, кол-во, [модификаторы]]. */

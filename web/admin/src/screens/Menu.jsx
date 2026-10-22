@@ -45,7 +45,11 @@ export function MenuAdmin({ ctx }) {
   }, [load]);
 
   const menu = raw ? normalizeMenu(raw) : null;
-  const products = menu ? menu.products.filter((p) => cat === ALL || p.category_id === cat) : [];
+  // «Все» — по разделам в порядке меню, как на кассе и у гостя
+  const catOrder = new Map((menu?.categories ?? []).map((c, i) => [c.id, i]));
+  const products = menu
+    ? menu.products.filter((p) => cat === ALL || p.category_id === cat).sort((a, b) => (catOrder.get(a.category_id) ?? 999) - (catOrder.get(b.category_id) ?? 999))
+    : [];
   const stopCount = menu ? menu.products.filter((p) => p.stop_list).length : 0;
 
   const toggleStop = async (p) => {

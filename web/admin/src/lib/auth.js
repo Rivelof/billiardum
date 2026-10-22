@@ -95,6 +95,8 @@ export const can = {
   // отчёты смен, склад и меню — управляющий и владелец; мост ККТ — только владелец
   pos: (role) => ['reception', 'manager', 'owner'].includes(role),
   bar: (role) => ['bar', 'reception', 'manager', 'owner'].includes(role),
+  /** Стоп-лист (№88, №97): бармен, ресепшн и выше — только флаг, без цен и состава. */
+  stopList: (role) => ['bar', 'reception', 'manager', 'owner'].includes(role),
   shift: (role) => ['reception', 'manager', 'owner'].includes(role),
   reports: (role) => ['manager', 'owner'].includes(role),
   stock: (role) => ['manager', 'owner'].includes(role),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { formatTime, plural } from '@billiardum/shared/format';
-import { ORDER_ACTION, ORDER_NEXT, mergeOrder, modifiersText, orderPayWord, orderTable, orderWord, sortQueue, waitMinutes, waitTone } from '@billiardum/shared/bar';
+import { ORDER_ACTION, ORDER_NEXT, itemView, mergeOrder, normalizeMenu, orderPayWord, orderTable, orderWord, sortQueue, waitMinutes, waitTone } from '@billiardum/shared/bar';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { useNow } from '../components/hooks.js';
@@ -9,6 +9,7 @@ import { can } from '../lib/auth.js';
 import { audioState, chime, unlockAudio, ORDER_CHIME } from '../lib/sound.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
+import { StopListDialog } from './PosDialogs.jsx';
 
 const COLUMNS = [
   { status: 'new', title: 'Новые', empty: 'Новых заказов нет. Заказ со стола появится здесь со звуком.' },
@@ -34,8 +35,23 @@ export function BarScreen({ ctx }) {
   const [fresh, setFresh] = useState(() => new Set());
   const [busy, setBusy] = useState(null);
   const [announce, setAnnounce] = useState('');
+  const [stopMenu, setStopMenu] = useState(null); // меню для стоп-листа: грузим, когда бармен открыл окно
+  const [stopOpen, setStopOpenState] = useState(false);
+  const stopOpenRef = useRef(false);
+  const setStopOpen = (v) => {
+    stopOpenRef.current = v;
+    setStopOpenState(v);
+  };
   const seen = useRef(null);
   const now = useNow(0, true);
+
+  const loadStopMenu = useCallback(async () => {
+    try {
+      setStopMenu(normalizeMenu(await api.menu(clubId)));
+    } catch (err) {
+      setError(err);
+    }
+  }, [clubId]);
 
   const noticeNew = useCallback((list) => {
     if (!seen.current) {
@@ -48,7 +64,7 @@ export function BarScreen({ ctx }) {
     chime(ORDER_CHIME);
     setFresh((prev) => new Set([...prev, ...added.map((o) => o.id)]));
     const o = added[added.length - 1];
-    setAnnounce(`Новый заказ: ${orderTable(o) ? `стол ${orderTable(o)}` : 'касса'}, ${o.items.map((i) => `${i.name} ${i.qty}`).join(', ')}`);
+    setAnnounce(`Новый заказ: ${orderTable(o) ? `стол ${orderTable(o)}` : 'касса'}, ${o.items.map((i) => `${itemView(i).name} ${i.qty}`).join(', ')}`);
     setTimeout(() => setFresh((prev) => new Set([...prev].filter((id) => !added.some((a) => a.id === id)))), HIGHLIGHT_MS);
   }, []);
 
@@ -67,8 +83,12 @@ export function BarScreen({ ctx }) {
   useEffect(() => {
     load();
     const stream = streamClub(clubId, {
-      events: ['bar'],
-      onEvent: (_name, data) => {
+      events: ['bar', 'stop_list'],
+      onEvent: (name, data) => {
+        if (name === 'stop_list') {
+          if (stopOpenRef.current) loadStopMenu();
+          return;
+        }
         // Сервер шлёт заказ целиком; если пришло только {order_id, status} — перечитываем очередь
         if (data?.id && Array.isArray(data.items)) {
           setOrders((list) => {
@@ -86,7 +106,7 @@ export function BarScreen({ ctx }) {
       stream.close();
       clearInterval(poll);
     };
-  }, [clubId, load, noticeNew]);
+  }, [clubId, load, noticeNew, loadStopMenu]);
 
   useEffect(() => {
     const unlock = () => unlockAudio().then((ok) => setSound(ok)).catch(() => {});
@@ -152,6 +172,19 @@ export function BarScreen({ ctx }) {
             <Icon name={sound ? 'sound' : 'mute'} />
             {sound ? 'Звук заказов включён' : 'Включить звук заказов'}
           </button>
+          {can.stopList(role) ? (
+            <button
+              type="button"
+              class="btn btn--quiet btn--sm"
+              onClick={() => {
+                setStopOpen(true);
+                loadStopMenu();
+              }}
+            >
+              <Icon name="list" />
+              Стоп-лист
+            </button>
+          ) : null}
           <a class="btn btn--quiet btn--sm" href={home} onClick={linkHandler}>
             <Icon name="back" />
             {can.pos(role) ? 'К кассе' : 'Меню программы'}
@@ -197,15 +230,18 @@ export function BarScreen({ ctx }) {
                             {tone === 'late' ? ' — очень долго' : tone === 'slow' ? ' — долго' : ''}
                           </p>
                           <ul class="ticket__items">
-                            {o.items.map((it, i) => (
-                              <li key={i}>
-                                <span class="ticket__qty mono">{it.qty}&nbsp;×</span>
-                                <span>
-                                  <span class="ticket__name">{it.name}</span>
-                                  {it.modifiers?.length ? <span class="ticket__mods">{modifiersText(it.modifiers)}</span> : null}
-                                </span>
-                              </li>
-                            ))}
+                            {o.items.map((it, i) => {
+                              const v = itemView(it);
+                              return (
+                                <li key={i}>
+                                  <span class="ticket__qty mono">{it.qty}&nbsp;×</span>
+                                  <span>
+                                    <span class="ticket__name">{v.name}</span>
+                                    {v.mods ? <span class="ticket__mods">{v.mods}</span> : null}
+                                  </span>
+                                </li>
+                              );
+                            })}
                           </ul>
                           {o.comment ? <p class="ticket__comment">«{o.comment}»</p> : null}
                           <p class="ticket__meta">
@@ -228,6 +264,7 @@ export function BarScreen({ ctx }) {
           );
         })}
       </main>
+      <StopListDialog open={stopOpen && Boolean(stopMenu)} menu={stopMenu} onClose={() => setStopOpen(false)} onChanged={loadStopMenu} />
     </div>
   );
 }

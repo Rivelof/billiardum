@@ -37,8 +37,15 @@ export const ACTION_LABEL = {
   'order.create': 'Заказ со стола',
   'order.cancel': 'Заказ бара отменён',
   'tab.pay': 'Оплата счёта стола',
+  'pos.discount_approval': 'Скидка подтверждена PIN управляющего',
   'kkt.receipt_retry': 'Чек ККТ повторён',
   'kkt.receipt_mark_printed': 'Чек ККТ отмечен пробитым',
+  'manual.receipt_mark_printed': 'Чек ККТ отмечен пробитым вручную',
+  'kkt.receipt_printed': 'Чек пробит на кассе',
+  'kkt.receipt_failed': 'Чек не пробился',
+  'kkt.receipt_unknown': 'Исход чека неизвестен',
+  'kkt.shift_open': 'Смена ККТ открыта',
+  'kkt.shift_close': 'Смена ККТ закрыта',
   'catalog.import': 'Меню загружено из CSV',
   'order.status': 'Статус заказа бара',
   'shift.open': 'Смена открыта',
@@ -48,6 +55,15 @@ export const ACTION_LABEL = {
   'stock.audit': 'Ревизия склада',
   'menu.product': 'Товар меню изменён',
   'menu.stop_list': 'Стоп-лист изменён',
+  'catalog.stop_list': 'Стоп-лист изменён',
+  'catalog.product_create': 'Товар добавлен в меню',
+  'catalog.product_update': 'Товар меню изменён',
+  'catalog.category_create': 'Раздел меню добавлен',
+  'catalog.category_update': 'Раздел меню изменён',
+  'catalog.modifier_group_create': 'Группа модификаторов добавлена',
+  'catalog.modifier_group_update': 'Группа модификаторов изменена',
+  'catalog.modifier_create': 'Модификатор добавлен',
+  'catalog.modifier_update': 'Модификатор изменён',
   'receipt.printed': 'Чек пробит на кассе',
   'receipt.failed': 'Чек не пробился',
   'kkt.bridge_register': 'Мост ККТ подключён',
@@ -55,12 +71,12 @@ export const ACTION_LABEL = {
 };
 
 /** Ручные действия (инвариант 8) — подсвечиваются в журнале. */
-export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'manual.discount', 'payment.refunded', 'pos.refund', 'order.cancel', 'stock.writeoff', 'kkt.receipt_retry']);
+export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'manual.discount', 'manual.receipt_mark_printed', 'pos.discount_approval', 'pos.sale_canceled', 'payment.refunded', 'pos.refund', 'order.cancel', 'stock.writeoff', 'kkt.receipt_retry']);
 
 /** Группы фильтра «Действие». В API уходит список через запятую, `*` — любое продолжение (запрошено у backend-core). */
 export const ACTION_GROUPS = [
   { value: '', label: 'Все действия' },
-  { value: 'service.*,manual.*,payment.refunded,pos.refund,order.cancel,stock.writeoff,kkt.receipt_retry', label: 'Ручные действия' },
+  { value: 'service.*,manual.*,payment.refunded,pos.refund,pos.discount_approval,pos.sale_canceled,order.cancel,stock.writeoff,kkt.receipt_retry', label: 'Ручные действия' },
   { value: 'payment.*,reception.*', label: 'Деньги' },
   { value: 'pos.*,shift.*,kkt.*,tab.*', label: 'Касса и смены' },
   { value: 'order.*,stock.*,catalog.*', label: 'Бар и склад' },

@@ -18,6 +18,8 @@ test('заглушка кассы: продажа бара, счёта и зая
   assert.ok(t1 && t1.orders === 2 && Number.isSafeInteger(t1.total_kopecks));
   const reqs = (await req(b, 'GET', '/api/clubs/c/reception/requests')).body;
   const shiftBefore = (await req(b, 'GET', '/api/clubs/c/shifts/current')).body.shift;
+  assert.equal('expected_cash_kopecks' in shiftBefore, false, 'ресепшну смена вслепую (№93)');
+  const cashBefore = b.state.m2.shift.cash_sales_kopecks;
   const colaBefore = b.state.m2.catalog.products.find((p) => p.id === PID['Кола, 0,33 л']).stock_qty;
 
   const body = {
@@ -37,8 +39,7 @@ test('заглушка кассы: продажа бара, счёта и зая
   assert.equal(sale.receipt_status, 'receipt_pending');
   assert.equal(b.state.m2.catalog.products.find((p) => p.id === PID['Кола, 0,33 л']).stock_qty, colaBefore - 1, 'склад уменьшился');
   assert.ok(!(await req(b, 'GET', '/api/clubs/c/tabs')).body.some((t) => t.session_id === t1.session_id), 'счёт стола закрыт');
-  const shiftAfter = (await req(b, 'GET', '/api/clubs/c/shifts/current')).body.shift;
-  assert.equal(shiftAfter.expected_cash_kopecks - shiftBefore.expected_cash_kopecks, sale.total_kopecks);
+  assert.equal(b.state.m2.shift.cash_sales_kopecks - cashBefore, sale.total_kopecks, 'наличные смены выросли на сумму чека');
   now += 3000;
   assert.equal((await req(b, 'GET', `/api/pos/sales/${sale.sale_id}`)).body.receipt_status, 'printed');
   assert.ok((await req(b, 'GET', '/api/clubs/c/bar/queue')).body.some((o) => o.sale_id === sale.sale_id && o.source === 'pos'), 'заказ кассы на экране бара');
@@ -64,10 +65,15 @@ test('заглушка кассы: СБП — QR и оплата позже, з�
   assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 10 } })).body.status, 'completed', '10 % — в пределах лимита');
   assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 20, reason: 'x' } })).body.error, 'limit_exceeded', 'ресепшну выше лимита нельзя');
   const managers = (await req(b, 'GET', '/api/clubs/c/staff/approvers')).body;
-  assert.equal((await req(b, 'POST', '/api/pos/discount-approvals', { user_id: managers[0].user_id, pin: '0000', discount_kopecks: 11800, reason_code: 'promo', reason_text: 'Акция' })).body.error, 'pin_invalid');
-  const ok = (await req(b, 'POST', '/api/pos/discount-approvals', { user_id: managers[0].user_id, pin: '1234', discount_kopecks: 11800, base_kopecks: 59000, reason_code: 'promo', reason_text: 'Акция' })).body;
+  const approve = (extra) => req(b, 'POST', '/api/pos/discount-approvals', { user_id: managers[0].user_id, pin: '1234', reason_code: 'promo', reason_text: 'Акция', percent: 20, ...extra });
+  assert.equal((await approve({ pin: '0000' })).status, 401, 'неверный PIN — 401 (как server/orders/approvals.mjs)');
+  assert.equal((await approve({ amount_kopecks: 11800 })).status, 400, 'ровно одно из percent и amount_kopecks');
+  const ok = (await approve()).body;
+  assert.ok(ok.approval_id && ok.expires_at);
+  assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 25, approval_id: ok.approval_id } })).status, 403, 'другая скидка — подтверждение не подходит');
   const sale = (await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 20, reason: 'Акция', approval_id: ok.approval_id } })).body;
   assert.equal(sale.discount_kopecks, 11800);
+  assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 20, approval_id: ok.approval_id } })).status, 403, 'подтверждение одноразовое');
   assert.equal(b.state.alarms[0].type, 'discount_over_limit', 'тревога владельцу');
   b.scenario('manager');
   assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 30 } })).body.error, 'reason_required');
@@ -78,7 +84,7 @@ test('заглушка кассы: СБП — QR и оплата позже, з�
 
 test('заглушка бара и смен: статусы вперёд, закрытие с недостачей — тревога, отчёт сходится до копейки, мост ККТ', async () => {
   const b = createBackend(memory());
-  b.scenario('pos');
+  b.scenario('pos-manager');
   const queue = (await req(b, 'GET', '/api/clubs/c/bar/queue')).body;
   const fresh = queue.find((o) => o.status === 'new');
   assert.ok(fresh.resource.number && fresh.subtotal_kopecks && fresh.pay_mode);

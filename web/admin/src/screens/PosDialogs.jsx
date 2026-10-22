@@ -9,7 +9,7 @@ import { Keypad, PIN_KEYS } from '../components/Keypad.jsx';
 import { CashEntry, cashState } from '../components/CashEntry.jsx';
 import { QrCode } from '../components/QrCode.jsx';
 import { api, newIdempotencyKey } from '../lib/api.js';
-import { discountKopecks, discountPercent, normalizeSale, overLimit, receiptView, saleBody, saleTotals, wholeDiscount } from '../lib/pos.js';
+import { approvalError, discountKopecks, discountPercent, normalizeSale, overLimit, receiptView, saleBody, saleTotals, wholeDiscount } from '../lib/pos.js';
 import { keypad, parseRubles } from '../lib/cash.js';
 import { normalizePhone } from '../lib/auth.js';
 import { linkHandler } from '../lib/router.js';
@@ -100,6 +100,7 @@ export function ModifierDialog({ product, onClose, onAdd }) {
 
 const QUICK_PERCENTS = [5, 10, 15, 20];
 
+
 /**
  * Скидка на бар (товары и счёт стола). В пределах лимита клуба — сразу; выше — причина обязательна (инвариант 8),
  * ресепшену — подтверждение управляющего его PIN на этом экране, владельцу уходит тревога (№82).
@@ -165,18 +166,18 @@ export function DiscountDialog({ open, clubId, base, limit, current, bigAllowed,
     setBusy(true);
     setError(null);
     try {
+      // Та же скидка, что уйдёт в продажу: сервер сверяет percent или amount_kopecks с подтверждением (№95)
       const a = await api.approveDiscount({
         user_id: approver,
         pin,
-        discount_kopecks: kop,
-        base_kopecks: base,
-        ...(d.type === 'percent' ? { percent: d.value } : {}),
         reason_code: why.code,
         reason_text: why.text,
+        ...(d.type === 'percent' ? { percent: d.value } : { amount_kopecks: kop }),
       });
-      onApply({ ...result, reason: why, approval: { ...a, base_kopecks: base, discount_kopecks: kop } });
+      const who = approvers?.find((u) => u.user_id === approver);
+      onApply({ ...result, reason: why, approval: { ...a, approved_by: { user_id: approver, name: who?.name ?? null }, base_kopecks: base, discount_kopecks: kop } });
     } catch (err) {
-      setError(['not_found', 'method_not_allowed'].includes(err?.code) ? { code: 'approval_unavailable' } : err);
+      setError(approvalError(err));
       setPin('');
     } finally {
       setBusy(false);
@@ -361,7 +362,8 @@ export function PayDialog({ method, cart, discount, toBar, kktOnline, clubId, li
       if (method === 'sbp' && normalizePhone(phone)) body.customer_phone = normalizePhone(phone);
       setSale(normalizeSale(await api.sale(body, key.current)));
     } catch (err) {
-      setError(err);
+      // Подтверждение управляющего истекло (5 минут), уже использовано или скидка изменилась — 403
+      setError(err?.code === 'forbidden' && discount?.approval ? { code: 'approval_invalid' } : err);
       if (err?.code === 'shift_closed') onShiftClosed?.();
     } finally {
       setBusy(false);
@@ -410,13 +412,17 @@ export function PayDialog({ method, cart, discount, toBar, kktOnline, clubId, li
 
   const close = async () => {
     if (pending && sale?.id) {
-      // QR мог уже уйти гостю: просим отменить, а касса ещё следит за продажей — придёт оплата, чек закроется сам
-      onAbandon?.(sale.id);
+      // Снимаем QR (№98). Гость успел оплатить — 409 already_paid: показываем оплату, окно не закрываем
       try {
-        await api.cancelSale(sale.id);
-      } catch {
-        // отмены нет на сервере или уже оплачено — продажа отменится по сроку платежа или придёт событием pos_sale
+        await api.cancelSale(sale.id, 'Гость не стал платить по QR');
+      } catch (err) {
+        if (err?.code === 'already_paid') {
+          await refresh();
+          return;
+        }
+        // сеть или сервер: касса ещё следит за продажей — придёт оплата событием pos_sale, чек закроется сам
       }
+      onAbandon?.(sale.id);
     }
     if (paid) onDone?.();
     onClose();

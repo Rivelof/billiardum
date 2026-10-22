@@ -112,7 +112,7 @@ export function Shift({ ctx }) {
                   </div>
                 ) : null}
               </dl>
-              {!Number.isSafeInteger(shift.expected_cash_kopecks) ? <p class="hint">Сколько наличных должно быть в кассе, программа покажет при закрытии смены.</p> : null}
+              {!Number.isSafeInteger(shift.expected_cash_kopecks) ? <p class="hint">Сколько наличных должно быть в кассе, программа покажет после закрытия смены: вы вводите только то, что насчитали.</p> : null}
               {Number.isSafeInteger(shift.sales_count) ? <p class="small">Продаж за смену: {shift.sales_count}.</p> : null}
               <button type="button" class="btn btn--primary btn--lg" onClick={() => setClosing(true)}>
                 <Icon name="register" />
@@ -244,9 +244,11 @@ function CloseShift({ shift, onCancel, onClosed }) {
               </div>
             </dl>
           ) : (
-            <p class="hint" id="diff-out">
-              Ожидаемую сумму и расхождение программа покажет сразу после закрытия. Расхождение уйдёт владельцу.
-            </p>
+            <div class="note" id="diff-out">
+              <Icon name="register" />
+              <p class="note__title">Пересчитайте наличные дважды</p>
+              <p class="note__body">После закрытия сумму не изменить. Сколько должно быть и расхождение программа покажет сразу после закрытия, расхождение уйдёт владельцу.</p>
+            </div>
           )}
           {known ? <div id="diff-out" class={`diff diff--${diff.kind}`} aria-live="polite">
             <p class="diff__label">
@@ -330,7 +332,7 @@ function ClosedSummary({ shift, role, clubId, onNew, fmtT }) {
         </div>
       ) : null}
       <p class="hint">
-        {d === 0 ? 'Отчёт смены отправлен владельцу.' : 'Отчёт смены и расхождение отправлены владельцу.'} Наличные можно сдать управляющему.
+        {d === 0 ? 'Отчёт смены отправлен владельцу. ' : ''}Наличные можно сдать управляющему.
       </p>
       <div class="row">
         {can.reports(role) && shift.id ? (

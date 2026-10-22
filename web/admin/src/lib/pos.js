@@ -77,8 +77,8 @@ export function saleTotals(cart, discount) {
  * Тело `POST /api/pos/sales` по backend-pos (server/orders/pos.mjs createSale):
  * { method, items: [{ product_id, qty, modifier_ids }], tabs: [session_id], requests: [request_id],
  *   discount: { percent } | { amount_kopecks } + reason, received_kopecks, to_bar }.
- * Подтверждение управляющего (approval_id) — предложение frontend: на сервере пока скидку выше лимита
- * проводит только сам управляющий.
+ * Скидка выше лимита у ресепшена — discount.approval_id из POST /api/pos/discount-approvals (PIN управляющего, №95):
+ * сервер сверяет ту же скидку (percent или amount_kopecks), подтверждение одноразовое и живёт 5 минут.
  */
 export function saleBody(cart, opts) {
   const body = {
@@ -182,4 +182,14 @@ export function receiptView(receipt, kktOnline, method) {
 /** «3 позиции» для кнопки корзины. */
 export function itemsWord(n) {
   return plural(n, ['позиция', 'позиции', 'позиций']);
+}
+
+/** Ответ POST /api/pos/discount-approvals словами: 401 — неверный PIN, 403 — не управляющий, 429 — PIN заблокирован. */
+export function approvalError(err) {
+  const code = err?.code;
+  if (code === 'unauthorized') return { code: 'pin_invalid' };
+  if (code === 'rate_limited') return { code: 'pin_locked' };
+  if (code === 'forbidden') return { code: 'approver_forbidden' };
+  if (code === 'not_found' || code === 'method_not_allowed') return { code: 'approval_unavailable' };
+  return err;
 }

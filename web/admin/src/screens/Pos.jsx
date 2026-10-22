@@ -124,6 +124,7 @@ export function Pos({ ctx }) {
       onEvent: (name, data) => {
         if (name === 'reception_request' || name === 'bar' || name === 'session') loadTables();
         else if (name === 'shift') loadShift();
+        else if (name === 'stop_list') loadMenu(); // стоп-лист сменили бар или другая касса: плитки и чек — заново
         else if (name === 'kkt') {
           // Сводка кассы ККТ приходит целиком; изменилась очередь — окну оплаты перечитать чек
           if (data && typeof data === 'object') setKkt(data);
@@ -151,7 +152,7 @@ export function Pos({ ctx }) {
       stream.close();
       clearInterval(poll);
     };
-  }, [clubId, loadAll, loadTables, loadShift, loadKkt]);
+  }, [clubId, loadAll, loadMenu, loadTables, loadShift, loadKkt]);
 
   const kkt = kktState(kktRaw);
   const totals = saleTotals(cart, discount);
