@@ -44,7 +44,10 @@ function freshState(scenario, t) {
   const empty = scenario === 'empty';
   const hall = [
     table(1, 'pyramid', 'busy', { session: session(1, 80, 40) }),
-    table(2, 'pyramid', 'free'),
+    // ?mock=waitlist (№122): стол 2 предложен гостю из очереди — удержание до конца предложения
+    scenario === 'waitlist'
+      ? table(2, 'pyramid', 'reserved', { until: new Date(t + 4 * MIN).toISOString(), hold: { kind: 'reserved', until: new Date(t + 4 * MIN).toISOString(), reason_code: null, source: 'waitlist', offer_id: uuid() } })
+      : table(2, 'pyramid', 'free'),
     table(3, 'pyramid', 'busy', { session: session(3, 116, 4) }),
     table(4, 'pyramid', empty ? 'free' : 'pending'),
     table(5, 'pyramid', 'service', { until: new Date(t + 20 * MIN).toISOString() }),
@@ -62,6 +65,8 @@ function freshState(scenario, t) {
     { id: uuid(), type: 'bypass_detected', level: 'critical', resource_number: 2, created_at: new Date(t - 6 * MIN).toISOString() },
     { id: uuid(), type: 'device_offline', level: 'critical', resource_number: 8, created_at: new Date(t - 14 * MIN).toISOString() },
     { id: uuid(), type: 'manual_action', level: 'important', resource_number: 5, created_at: new Date(t - 3 * MIN).toISOString() },
+    // Д2: чек зачёта предоплаты отклонён ЮKassa — действие «Повторить»
+    { id: uuid(), type: 'settlement_receipt_failed', level: 'important', created_at: new Date(t - 25 * MIN).toISOString(), data: { receipt_id: 'c1d2e3f4-0000-4000-8000-00000000d002', action_id: 'retry', action_title: 'Повторить', action_url: '/api/receipts/c1d2e3f4-0000-4000-8000-00000000d002/retry' } },
   ];
   // Роль — по сценарию; «kktoff-owner» — касса не на связи, вошёл владелец
   const asRole = scenario?.split('-')[1];
@@ -259,6 +264,24 @@ export function createBackend(storage, now = () => Date.now()) {
     }],
     ['GET', /^\/api\/clubs\/([^/]+)\/now$/, () => ok({ hall: m3.withNextBooking(state.hall), revenue_today_kopecks: state.revenue, alarms_open: state.alarms.length })],
     ['GET', /^\/api\/clubs\/([^/]+)\/alarms$/, () => ok(state.alarms)],
+    // Д2: повтор чека зачёта (управляющий+, причина, Idempotency-Key) → { receipt_id, status, retried }
+    ['POST', /^\/api\/receipts\/([^/]+)\/retry$/, (m, b) => {
+      if (!['owner', 'manager'].includes(me()?.role)) return err(403, 'forbidden');
+      if (!String(b?.reason ?? '').trim()) return err(400, 'reason_required');
+      audit('manual.receipt_retry', { reason: b.reason.trim(), data: { receipt_id: m[1] } });
+      return ok({ receipt_id: m[1], status: 'pending', retried: true });
+    }],
+    // №122: снять удержание стола предложением из очереди (ресепшн+, причина) — стол свободен
+    ['POST', /^\/api\/waitlist\/offers\/([^/]+)\/release$/, (m, b) => {
+      if (!['owner', 'manager', 'reception'].includes(me()?.role)) return err(403, 'forbidden');
+      if (!String(b?.reason ?? '').trim()) return err(400, 'reason_required');
+      const tbl = state.hall.find((x) => x.hold?.offer_id === m[1]);
+      if (!tbl || Date.parse(tbl.hold.until) <= now()) return err(409, 'offer_expired');
+      Object.assign(tbl, { status: 'free', until: null, hold: null });
+      audit('manual.waitlist_release', { resource_number: tbl.resource.number, reason: b.reason.trim() });
+      emit('hall', tbl);
+      return ok({ id: m[1], status: 'expired' });
+    }],
     ['POST', /^\/api\/alarms\/([^/]+)\/ack$/, (m) => {
       const a = state.alarms.find((x) => x.id === m[1]);
       if (!a) return err(404, 'not_found');

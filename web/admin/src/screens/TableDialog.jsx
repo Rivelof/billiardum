@@ -19,7 +19,7 @@ const FREE_MINUTES = [10, 15, 30, 60];
  * «Сервисный свет» (ресепшн и выше), «Продлить без оплаты» (управляющий и владелец).
  */
 export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
-  const [mode, setMode] = useState(null); // null | 'service' | 'free' | 'deposit'
+  const [mode, setMode] = useState(null); // null | 'service' | 'free' | 'deposit' | 'release'
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -35,6 +35,8 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
   const s = item.session;
   const d = item.device ?? {};
   const number = item.resource.number;
+  // №122: предложение из очереди держит стол — ресепшн может снять удержание с причиной
+  const offer = item.hold?.source === 'waitlist' && item.hold.kind !== 'pending' ? item.hold : null;
 
   const stopService = async () => {
     setBusy(true);
@@ -84,6 +86,14 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
           </p>
         ) : null}
 
+        {offer ? (
+          <p class="note note--lamp">
+            <Icon name="hourglass" />
+            <span class="note__title">Предложен из очереди{offer.until ? ` до ${fmt(offer.until)}` : ''}</span>
+            <span class="note__body">Гость из листа ожидания получил уведомление: стол держим за ним, пока не ответит. Гость у стойки этот стол занять не сможет.</span>
+          </p>
+        ) : null}
+
         {item.status === 'service' ? (
           <dl class="facts">
             <div>
@@ -127,6 +137,8 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
           <ServiceForm item={item} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'free' ? (
           <ExtendFreeForm session={s} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
+        ) : mode === 'release' ? (
+          <ReleaseForm offerId={offer?.offer_id} number={number} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'deposit' ? (
           <DepositForm item={item} timeZone={timeZone} onCancel={() => setMode(null)} onDone={() => onChanged?.()} onClose={onClose} />
         ) : (
@@ -134,6 +146,11 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
             {item.status === 'service' && can.reception(role) ? (
               <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={stopService}>
                 {busy ? 'Выключаем…' : 'Выключить сервисный свет'}
+              </button>
+            ) : null}
+            {offer?.offer_id && can.reception(role) ? (
+              <button type="button" class="btn btn--secondary btn--block btn--lg" onClick={() => setMode('release')}>
+                Снять удержание
               </button>
             ) : null}
             {['free', 'booked'].includes(st.tone) && can.reception(role) ? (
@@ -409,6 +426,51 @@ function DepositForm({ item, timeZone, onCancel, onDone, onClose }) {
       <div class="dialog__actions dialog__actions--row">
         <button type="submit" class="btn btn--primary btn--lg" disabled={busy || !okAmount || !okReceived}>
           {busy ? 'Включаем свет…' : `Принять ${okAmount ? formatMoney(amountK) : ''} и включить свет`}
+        </button>
+        <button type="button" class="btn btn--quiet btn--lg" onClick={onCancel}>
+          Назад
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Снять удержание предложения из очереди (№122): ручное действие с причиной, гостю уходит уведомление. */
+function ReleaseForm({ offerId, number, onCancel, onDone }) {
+  const [text, setText] = useState('');
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const ok = text.trim().length >= 3;
+  const submit = async (e) => {
+    e.preventDefault();
+    setTouched(true);
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.releaseOffer(offerId, text.trim());
+      onDone();
+    } catch (err) {
+      setError(err);
+      setBusy(false);
+    }
+  };
+  return (
+    <form class="form" onSubmit={submit} noValidate>
+      <ManualWarning />
+      <p class="hint">Стол {number} станет свободным для гостя у стойки. Гость из очереди получит уведомление, что предложение снято.</p>
+      <div class="field">
+        <label class="field__label" for="rel-reason">
+          Причина
+        </label>
+        <input id="rel-reason" class="field__input" maxLength={300} value={text} aria-invalid={touched && !ok ? 'true' : undefined} onInput={(e) => setText(e.currentTarget.value)} />
+        {touched && !ok ? <p class="field__error">Напишите причину — её увидит владелец.</p> : <p class="field__hint">Например: «Гость из очереди не отвечает, за стол просится пара у стойки».</p>}
+      </div>
+      <ErrorNote error={error} />
+      <div class="dialog__actions dialog__actions--row">
+        <button type="submit" class="btn btn--danger btn--lg" disabled={busy}>
+          {busy ? 'Снимаем…' : 'Снять удержание'}
         </button>
         <button type="button" class="btn btn--quiet btn--lg" onClick={onCancel}>
           Назад

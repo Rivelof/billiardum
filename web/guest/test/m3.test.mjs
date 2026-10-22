@@ -73,6 +73,8 @@ test('заглушка брони держит вид ответов server/book
   const started = (await b.handle('POST', `/api/bookings/${bk.id}/start`, { code })).body;
   assert.equal(started.status, 'started');
   assert.ok(started.session_id);
+  const game = (await b.handle('GET', `/api/sessions/${started.session_id}`)).body;
+  assert.equal(game.paid_until, bk.ends_at, '№123: игра по брони кончается ровно в конце брони');
   assert.equal((await b.handle('POST', `/api/bookings/${bk.id}/cancel`, {})).body.error, 'booking_not_active');
 });
 
@@ -96,6 +98,8 @@ test('заглушка: очередь на занятый стол, предл�
   assert.ok(Date.parse(mine.offer_until) - now <= 5 * MIN);
   const offered = events.find(([n, d]) => n === 'waitlist' && d.type === 'waitlist.offered')?.[1];
   assert.equal(offered.offer_id, w.id);
+  // №122: предложение держит стол — гость «с улицы» получает table_busy
+  assert.equal((await b.handle('GET', '/api/t/7H3D2RT9QF')).body.status, 'reserved');
   assert.ok(offered.resource.number && offered.expires_at);
   const acc = (await b.handle('POST', `/api/waitlist/${w.id}/accept`)).body;
   assert.equal(acc.status, 'accepted');
@@ -125,5 +129,7 @@ test('заглушка: очередь на занятый стол, предл�
   const me = (await b.handle('PATCH', '/api/me', { notify_channel: 'webpush', channels_order: ['webpush', 'max', 'telegram'] })).body.user;
   assert.equal(me.notify_channel, 'webpush');
   assert.deepEqual(Object.keys(me.channels).sort(), ['max', 'telegram', 'webpush']);
+  assert.deepEqual(me.channels_available, ['telegram', 'webpush'], '№126: MAX на сервере не настроен');
+  assert.equal(me.channels.max, false);
   assert.deepEqual(me.channels_order, ['webpush', 'max', 'telegram']);
 });

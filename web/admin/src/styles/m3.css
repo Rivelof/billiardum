@@ -228,3 +228,21 @@
 .refund .hint { margin: 0; max-width: 62ch; }
 .refund__search { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; }
 .refund__search .field { flex: 1 1 16rem; max-width: 22rem; margin: 0; }
+
+/* Отчёт смены (№125): автоматические действия системы — отдельной строкой под ручными */
+.auto { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.auto__summary { cursor: pointer; color: var(--ink-2); }
+.auto__summary b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.auto__summary:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
+.auto__by { font-size: var(--fs-13); }
+
+/* Действие тревоги (Д2: «Повторить» чек зачёта) рядом с «Принято» */
+.alarm__tools { grid-column: 1; justify-self: start; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.alarm__tools .alarm__ack { margin-top: 0; }
+.alarm__done { grid-column: 1; display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--fs-15); color: var(--ink); }
+.alarm__done .icon { width: 18px; height: 18px; color: var(--cloth); }
+@media (min-width: 640px) {
+  .alarm__tools { grid-column: 2; grid-row: 2 / 5; align-self: center; flex-direction: column; align-items: stretch; margin-top: 0; }
+}
+.alarm__tools .alarm__ack { align-self: stretch; }
+.alarm__tools .btn { justify-content: center; }

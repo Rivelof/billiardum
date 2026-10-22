@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
-import { channelsOrder, moveChannel } from '@billiardum/shared/booking';
+import { availableChannels, channelsOrder, moveChannel, primaryChannel } from '@billiardum/shared/booking';
 import { Header } from '../components/Header.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { Dialog } from '../components/Dialog.jsx';
@@ -87,7 +87,7 @@ export function ProfileScreen({ search }) {
     return () => clearInterval(t);
   }, [paidReturn, status, club?.id]);
 
-  const primary = user?.notify_channel ?? 'max';
+  const primary = primaryChannel(user);
 
   return (
     <div class="screen screen--paper">
@@ -167,7 +167,7 @@ export function ProfileScreen({ search }) {
                 <Icon name="bell" />
                 <span>
                   Уведомления
-                  <span class="plinks__sub">Основной канал — {CHANNEL[primary]?.name ?? primary}</span>
+                  <span class="plinks__sub">{primary ? `Основной канал — ${CHANNEL[primary]?.name ?? primary}` : 'Каналы пока не настроены'}</span>
                 </span>
                 <Icon name="forward" />
               </a>
@@ -249,8 +249,10 @@ export function NotifyScreen() {
   // только что на этом устройстве, — сразу, не дожидаясь перечитывания профиля
   const [pushOn, setPushOn] = useState(false);
   const linked = { ...(user?.channels ?? {}), webpush: pushOn || Boolean(user?.channels?.webpush) };
-  const [primary, setPrimary] = useState(user?.notify_channel ?? 'max');
-  const [order, setOrder] = useState(() => channelsOrder(user?.channels_order, user?.notify_channel ?? 'max'));
+  // Предлагаем только каналы, настроенные на сервере (№126: channels_available); основной по умолчанию — первый из них
+  const available = availableChannels(user);
+  const [primary, setPrimary] = useState(() => primaryChannel(user));
+  const [order, setOrder] = useState(() => channelsOrder(user?.channels_order, primaryChannel(user), available));
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -258,13 +260,13 @@ export function NotifyScreen() {
 
   useEffect(() => {
     if (!user) return;
-    setPrimary(user.notify_channel ?? 'max');
-    setOrder(channelsOrder(user.channels_order, user.notify_channel ?? 'max'));
-  }, [user?.notify_channel, (user?.channels_order ?? []).join()]);
+    setPrimary(primaryChannel(user));
+    setOrder(channelsOrder(user.channels_order, primaryChannel(user), availableChannels(user)));
+  }, [user?.notify_channel, (user?.channels_order ?? []).join(), available.join()]);
 
   const choose = (c) => {
     setPrimary(c);
-    setOrder((o) => channelsOrder(o, c));
+    setOrder((o) => channelsOrder(o, c, available));
     setSaved(false);
   };
   const move = (c, dir) => {
@@ -280,7 +282,7 @@ export function NotifyScreen() {
     setBusy('save');
     setError(null);
     try {
-      const res = await api.updateMe({ notify_channel: primary, channels_order: channelsOrder(order, primary) });
+      const res = await api.updateMe({ notify_channel: primary, channels_order: channelsOrder(order, primary, available) });
       if (res?.user) auth.set((s) => ({ user: { ...s.user, ...res.user } }));
       setSaved(true);
     } catch (err) {
@@ -321,7 +323,8 @@ export function NotifyScreen() {
 
         {status === 'user' ? (
           <>
-            <fieldset class="channels">
+            {!available.length ? <p class="empty">Уведомления в клубе пока не настроены. О конце игры напомнит сам стол: за 5 минут индикатор замигает жёлтым и прозвучит короткий сигнал.</p> : null}
+            <fieldset class="channels" hidden={!available.length}>
               <legend class="step__label">Каналы по порядку</legend>
               <ol class="chlist">
                 {order.map((c, i) => {
@@ -383,11 +386,11 @@ export function NotifyScreen() {
             {saved ? (
               <p class="note note--free" role="status">
                 <Icon name="check" />
-                <span class="note__title">Сохранили: основной канал — {CHANNEL[primary].name}.</span>
+                <span class="note__title">Сохранили: основной канал — {CHANNEL[primary]?.name ?? primary}.</span>
               </p>
             ) : null}
             <div class="actionbar">
-              <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy === 'save'} onClick={save}>
+              <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy === 'save' || !primary} onClick={save}>
                 {busy === 'save' ? 'Сохраняем…' : 'Сохранить'}
               </button>
             </div>

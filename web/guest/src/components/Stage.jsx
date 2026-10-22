@@ -21,7 +21,7 @@ const BADGE = {
   free: ['free', 'Свободен'],
   busy: ['play', 'Идёт игра'],
   pending: ['pending', 'Сейчас оплачивают'],
-  reserved: ['reserved', 'Забронирован'],
+  reserved: ['reserved', 'Ждёт гостя'],
   service: ['pending', 'На обслуживании'],
   offline: ['alert', 'Нет связи со столом'],
 };

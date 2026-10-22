@@ -36,7 +36,7 @@ export function Alarms({ ctx }) {
             Обновить
           </button>
         </ErrorNote>
-        {alarms ? <AlarmList alarms={alarms} timeZone={timeZone} onAck={(id) => setAlarms((l) => l.filter((x) => x.id !== id))} /> : <p class="muted">Загружаем…</p>}
+        {alarms ? <AlarmList alarms={alarms} timeZone={timeZone} role={role} onAck={(id) => setAlarms((l) => l.filter((x) => x.id !== id))} /> : <p class="muted">Загружаем…</p>}
       </div>
     </Shell>
   );

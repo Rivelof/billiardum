@@ -907,6 +907,19 @@ export function WaitlistOffer({ id }) {
       setBusy(false);
     }
   };
+  const rejoin = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const w = await api.joinWaitlist(entry.resource.id);
+      // Новая запись — со своей ссылкой; экран следит за ней
+      navigate(`${BASE}waitlist/${encodeURIComponent(w.id)}`, { replace: true });
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
   const leave = async () => {
     setBusy(true);
     try {
@@ -934,7 +947,7 @@ export function WaitlistOffer({ id }) {
               {tableName(entry.resource?.number)}
             </p>
             <h1 class="offer__title display" id="wo-title">
-              {v.state === 'offered' ? 'Стол ваш на 5 минут' : v.state === 'waiting' ? v.text : v.state === 'accepted' ? 'Стол ваш' : 'Время предложения вышло'}
+              {v.state === 'offered' ? 'Стол ваш на 5 минут' : v.state === 'waiting' ? v.text : v.state === 'accepted' ? 'Стол ваш' : 'Предложение закончилось'}
             </h1>
             {v.state === 'offered' ? (
               <>
@@ -953,6 +966,15 @@ export function WaitlistOffer({ id }) {
               </>
             ) : null}
             {v.state === 'waiting' ? <p class="hint">Когда стол освободится, пришлём уведомление. Стол будет ваш 5 минут.</p> : null}
+            {v.state === 'missed' ? (
+              <>
+                <p class="hint">Время вышло или клуб отдал стол гостю у стойки. Можно снова встать в очередь — когда стол освободится, предложим его вам.</p>
+                <button type="button" class="btn btn--secondary btn--block btn--lg" disabled={busy} onClick={rejoin}>
+                  <Icon name="bell" />
+                  {busy ? 'Ставим в очередь…' : 'Встать в очередь снова'}
+                </button>
+              </>
+            ) : null}
             {v.state === 'accepted' ? (
               <div class="held">
                 <p class="held__title">{entry.hold_until ? `Стол держим до ${formatTime(entry.hold_until, tz)}` : 'Стол держим 3 минуты'}</p>

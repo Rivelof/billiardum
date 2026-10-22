@@ -7,6 +7,7 @@ import {
   bookingPrice,
   busyAt,
   cancelText,
+  availableChannels,
   channelsOrder,
   durationsFor,
   extendLimitText,
@@ -16,6 +17,7 @@ import {
   holdMinutes,
   localDate,
   moveChannel,
+  primaryChannel,
   normalizePhone,
   prepayFor,
   sortBookings,
@@ -149,6 +151,14 @@ test('телефон для брони по телефону и порядок �
   assert.deepEqual(channelsOrder(['max', 'telegram', 'webpush'], 'webpush'), ['webpush', 'max', 'telegram']);
   assert.deepEqual(channelsOrder(null, 'telegram'), ['telegram', 'max', 'webpush']);
   assert.deepEqual(channelsOrder(['telegram'], 'max'), ['max', 'telegram', 'webpush'], 'недостающие каналы — в конец');
+  // №126: только каналы, настроенные на сервере; основной по умолчанию — первый из них
+  assert.deepEqual(channelsOrder(['max', 'telegram', 'webpush'], 'telegram', ['telegram', 'webpush']), ['telegram', 'webpush']);
+  assert.deepEqual(availableChannels({ channels_available: ['webpush', 'sms'] }), ['webpush']);
+  assert.deepEqual(availableChannels({}), ['max', 'telegram', 'webpush'], 'без поля — все');
+  assert.equal(primaryChannel({ notify_channel: 'max', channels_available: ['telegram', 'webpush'] }), 'telegram', 'max не настроен — первый доступный');
+  assert.equal(primaryChannel({ notify_channel: 'webpush', channels_available: ['telegram', 'webpush'] }), 'webpush');
+  assert.equal(primaryChannel({ channels_available: [] }), null);
+  assert.equal(primaryChannel({ channels_available: ['telegram', 'webpush'], channels: { webpush: true } }), 'webpush', 'подключённый — раньше неподключённого');
   assert.deepEqual(moveChannel(['max', 'telegram', 'webpush'], 'webpush', -1), ['max', 'webpush', 'telegram']);
   assert.deepEqual(moveChannel(['max', 'telegram', 'webpush'], 'max', -1), ['max', 'telegram', 'webpush']);
 });

@@ -35,6 +35,7 @@ const TEXT = {
   discount_over_limit: ['Скидка больше лимита', 'Управляющий подтвердил скидку выше лимита клуба с причиной. Подробности — в журнале.'],
   service_light_limit: ['Много сервисного света за смену', 'Минут сервисного света больше порога клуба. Разбивка по сотрудникам — в отчёте смены.'],
   // M3 волна B (server/payments/pay.mjs onProviderNotFound): data.action — canceled (ждал оплаты, отменён) или kept (у нас проведён)
+  settlement_receipt_failed: ['Чек зачёта предоплаты не принят', 'ЮKassa отклонила чек зачёта. Проверьте данные клуба в ЮKassa и нажмите «Повторить» — причина уйдёт в журнал.'],
   payment_not_found_at_provider: ['Платёж не найден в ЮKassa — отменён', 'ЮKassa не знает этот платёж: деньги с гостя не списаны, у нас он отменён. Подробности — в журнале.'],
 };
 
@@ -65,4 +66,20 @@ export function alarmView(alarm) {
 /** Сначала критичные, затем новые. */
 export function sortAlarms(list) {
   return [...list].sort((a, b) => (LEVEL_ORDER[a.level] ?? 1) - (LEVEL_ORDER[b.level] ?? 1) || String(alarmTime(b)).localeCompare(String(alarmTime(a))));
+}
+
+const RETRY_URL = /^\/api\/receipts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/retry$/;
+
+/**
+ * Действие тревоги (Д2): settlement_receipt_failed несёт data { action_id: 'retry', action_title, action_url:
+ * '/api/receipts/{id}/retry' }. Кнопку показываем только для известного действия и адреса этого вида —
+ * сервер не может прислать нам произвольный адрес для POST.
+ * @returns {{ id: 'retry', title: string, receiptId: string } | null}
+ */
+export function alarmAction(alarm) {
+  const d = alarm?.data;
+  if (d?.action_id !== 'retry' || typeof d.action_url !== 'string') return null;
+  const m = RETRY_URL.exec(d.action_url);
+  if (!m) return null;
+  return { id: 'retry', title: typeof d.action_title === 'string' && d.action_title.length <= 40 ? d.action_title : 'Повторить', receiptId: m[1] };
 }

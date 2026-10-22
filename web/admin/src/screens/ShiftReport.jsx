@@ -427,6 +427,10 @@ function Service({ light }) {
 function Manual({ manual, timeZone }) {
   const items = Array.isArray(manual) ? manual : Array.isArray(manual?.items) ? manual.items : [];
   const count = Number.isInteger(manual?.count) ? manual.count : items.length;
+  // №125: действия системы (сгорание предоплаты, автовозвраты, отмены платежей, расчёт депозита) — отдельной строкой
+  const auto = manual?.automatic ?? null;
+  const autoItems = Array.isArray(auto?.items) ? auto.items : [];
+  const autoCount = Number.isInteger(auto?.count) ? auto.count : autoItems.length;
   return (
     <section class="rcard rcard--wide" aria-labelledby="r-man">
       <h3 class="rcard__title" id="r-man">
@@ -437,25 +441,47 @@ function Manual({ manual, timeZone }) {
       {items.length ? (
         <ul class="log">
           {items.map((a, i) => (
-            <li class="log__item log__item--manual" key={`${a.at}-${i}`}>
-              <span class="log__time mono">{formatTime(a.at, timeZone)}</span>
-              <div class="log__body">
-                <p class="log__title">
-                  {a.resource_number ? <span class="log__table">Стол {a.resource_number} · </span> : null}
-                  {ACTION_LABEL[a.action] ?? a.action}
-                  {Number.isFinite(a.minutes) ? `, ${minutesWords(a.minutes)}` : ''}
-                  {Number.isSafeInteger(a.amount_kopecks) ? `, ${formatMoney(a.amount_kopecks)}` : ''}
-                </p>
-                {a.reason ? <p class="log__reason">«{a.reason}»</p> : null}
-                <p class="log__meta">{a.actor_name ?? 'Сотрудник'}</p>
-              </div>
-            </li>
+            <LogItem a={a} timeZone={timeZone} key={`${a.at}-${i}`} />
           ))}
         </ul>
       ) : (
         <p class="hint">Ручных действий за смену не было: ни сервисного света, ни скидок выше лимита, ни возвратов.</p>
       )}
       {count > items.length ? <p class="small">Показаны первые {items.length}. Остальные — в журнале.</p> : null}
+      {autoCount ? (
+        <details class="auto">
+          <summary class="auto__summary">
+            Автоматические действия системы: <b>{autoCount}</b>
+            {auto?.by_action ? <span class="auto__by"> — {Object.entries(auto.by_action).map(([k, n]) => `${(ACTION_LABEL[k] ?? k).toLowerCase()} ${n}`).join(', ')}</span> : null}
+          </summary>
+          {autoItems.length ? (
+            <ul class="log">
+              {autoItems.map((a, i) => (
+                <LogItem a={a} timeZone={timeZone} key={`${a.at}-${i}`} />
+              ))}
+            </ul>
+          ) : null}
+        </details>
+      ) : null}
     </section>
+  );
+}
+
+function LogItem({ a, timeZone }) {
+  const system = a.kind === 'automatic';
+  return (
+    <li class={`log__item${system ? '' : ' log__item--manual'}`}>
+      <span class="log__time mono">{formatTime(a.at, timeZone)}</span>
+      <div class="log__body">
+        <p class="log__title">
+          {a.resource_number ? <span class="log__table">Стол {a.resource_number} · </span> : null}
+          {ACTION_LABEL[a.action] ?? a.action}
+          {Number.isFinite(a.minutes) ? `, ${minutesWords(a.minutes)}` : ''}
+          {Number.isSafeInteger(a.amount_kopecks) ? `, ${formatMoney(a.amount_kopecks)}` : ''}
+        </p>
+        {a.reason ? <p class="log__reason">«{a.reason}»</p> : null}
+        <p class="log__meta">{system ? 'Система' : (a.actor_name ?? 'Сотрудник')}</p>
+      </div>
+    </li>
   );
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { canArrive, lanes, place, startOptions, timelineWindow } from '../src/lib/bookings.js';
 import { lotRefundCall, lotView, maskTail, packageItems, packageLine, packagePerHour } from '../src/lib/packages.js';
-import { alarmView } from '../src/lib/alarms.js';
+import { alarmAction, alarmView } from '../src/lib/alarms.js';
 import { saleBody, saleTotals } from '../src/lib/pos.js';
 import { addFixed, emptyCart } from '@billiardum/shared/bar';
 import { createBackend } from '../src/mock/backend.js';
@@ -42,6 +42,13 @@ test('«гость пришёл» — только бронь по телефо�
 
   assert.equal(alarmView({ type: 'payment_not_found_at_provider', level: 'important', data: { action: 'canceled' } }).title, 'Платёж не найден в ЮKassa — отменён');
   assert.match(alarmView({ type: 'payment_not_found_at_provider', level: 'critical', data: { action: 'kept' } }).text, /проведён/);
+
+  // Д2: действие тревоги — только известный вид адреса
+  const rid = 'c1d2e3f4-0000-4000-8000-00000000d002';
+  assert.deepEqual(alarmAction({ data: { action_id: 'retry', action_title: 'Повторить', action_url: `/api/receipts/${rid}/retry` } }), { id: 'retry', title: 'Повторить', receiptId: rid });
+  assert.equal(alarmAction({ data: { action_id: 'retry', action_url: 'https://evil.example/api/receipts/x/retry' } }), null);
+  assert.equal(alarmAction({ data: { action_id: 'retry', action_url: `/api/staff/${rid}/retry` } }), null);
+  assert.equal(alarmAction({ type: 'bypass_detected' }), null);
 });
 
 test('пакет часов в чеке кассы: позиция с телефоном гостя, без скидки, items для сервера', () => {
@@ -134,4 +141,14 @@ test('заглушка M3 программы клуба: брони дня, бр
   assert.equal((await req(b, 'POST', `/api/pos/sales/${call.id}/refund`, call.body)).status, 201);
   b.scenario('pos');
   assert.equal((await req(b, 'GET', '/api/clubs/c/package-lots?phone=%2B79123456789')).body.error, 'forbidden', 'ресепшн — 403');
+  assert.equal((await req(b, 'POST', '/api/receipts/c1d2e3f4-0000-4000-8000-00000000d002/retry', { reason: 'x' })).body.error, 'forbidden', 'повтор чека — управляющий+');
+
+  // №122: стол предложен из очереди — ресепшн снимает удержание с причиной
+  b.scenario('waitlist');
+  const held = (await req(b, 'GET', '/api/clubs/c/hall')).body.find((h) => h.hold?.source === 'waitlist');
+  assert.ok(held.hold.offer_id && held.hold.until);
+  assert.equal((await req(b, 'POST', `/api/waitlist/offers/${held.hold.offer_id}/release`, {})).body.error, 'reason_required');
+  assert.equal((await req(b, 'POST', `/api/waitlist/offers/${held.hold.offer_id}/release`, { reason: 'Гость у стойки' })).status, 200);
+  assert.equal((await req(b, 'POST', `/api/waitlist/offers/${held.hold.offer_id}/release`, { reason: 'Гость у стойки' })).body.error, 'offer_expired', 'повтор');
+  assert.equal((await req(b, 'GET', '/api/clubs/c/hall')).body.find((h) => h.resource.id === held.resource.id).status, 'free');
 });

@@ -194,6 +194,11 @@ export const api = {
   /** Возврат по продаже кассы: { reason, items?, packages?: [idx] } (управляющий+, №118) → { pos_refund_id, amount_kopecks, status, receipt_status, … }. */
   refundSale: (id, body, idempotencyKey) => client.post(`/pos/sales/${e(id)}/refund`, body, { idempotencyKey }),
 
+  /** Снять удержание стола предложением из очереди (№122, ресепшн+): { reason } → запись очереди; 409 offer_expired. */
+  releaseOffer: (id, reason) => client.post(`/waitlist/offers/${e(id)}/release`, { reason }),
+  /** Действие тревоги «Повторить» чек зачёта (Д2, управляющий+): { reason } → { receipt_id, status, retried }. */
+  retryReceiptSettle: (id, reason, idempotencyKey) => client.post(`/receipts/${e(id)}/retry`, { reason }, { idempotencyKey }),
+
   /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
   deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),
 };

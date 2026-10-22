@@ -187,7 +187,20 @@ function reportSeed(shift, x) {
       by_staff: svcByStaff,
       by_resource: [...new Set(x.service.map((v) => v.table))].map((n) => ({ resource_id: id('00000000', n), number: n, count: x.service.filter((v) => v.table === n).length, minutes: x.service.filter((v) => v.table === n).reduce((a, v) => a + v.minutes, 0) })),
     },
-    manual_actions: { count: items.length, by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1 }, items },
+    // №125: ручные и действия персонала — общим списком с kind; действия системы — automatic отдельно
+    manual_actions: {
+      count: items.length,
+      by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1 },
+      items: items.map((it) => ({ kind: it.action.startsWith('manual.') ? 'manual' : 'staff', ...it })),
+      automatic: {
+        count: 2,
+        by_action: { 'payment.forfeited': 1, 'payment.refunded': 1 },
+        items: [
+          { at: new Date(opened + 140 * MIN).toISOString(), action: 'payment.forfeited', kind: 'automatic', actor_id: null, actor_name: null, reason: 'Гость не пришёл по брони', resource_id: id('00000000', 3), resource_number: 3, amount_kopecks: 120000 },
+          { at: new Date(opened + 260 * MIN).toISOString(), action: 'payment.refunded', kind: 'automatic', actor_id: null, actor_name: null, reason: 'Оплата пришла на занятый стол', resource_id: id('00000000', 5), resource_number: 5, amount_kopecks: 80000 },
+        ],
+      },
+    },
     cash: {
       float_kopecks: shift.float_kopecks,
       cash_sales_kopecks: shift.cash_sales_kopecks,

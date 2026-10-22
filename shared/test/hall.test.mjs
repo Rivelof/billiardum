@@ -109,4 +109,8 @@ test('бронь на плане зала (M3): свободный стол с �
   assert.equal(tableState({ status: 'reserved', next_booking: { starts_at: '2026-10-22T16:00:00Z' } }, fmt).word, 'Бронь 21:00');
   assert.equal(tableState({ status: 'busy', next_booking: { starts_at: 'x' }, until: '2026-10-22T15:00:00Z' }, fmt).tone, 'play', 'идёт игра важнее брони');
   assert.equal(tableState({ status: 'free', next_booking: { starts_at: '2026-10-23T16:00:00Z' } }, fmt).tone, 'free', 'бронь завтра — стол свободен');
+  const offered = tableState({ status: 'reserved', hold: { kind: 'reserved', source: 'waitlist', until: '2026-10-22T16:05:00Z', offer_id: 'w1' } }, fmt);
+  assert.equal(offered.tone, 'reserved');
+  assert.equal(offered.word, 'Из очереди до 21:00');
+  assert.match(offered.spoken, /предложен гостю из очереди/);
 });

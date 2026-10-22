@@ -160,8 +160,9 @@ export function m3Routes(ctx) {
         const t = ctx.tables().find((x) => x.code === w.code);
         const s = t.session_id && ctx.state().sessions[t.session_id];
         if (s) Object.assign(s, { status: 'closed', ended_at: now() });
-        Object.assign(t, { status: 'pending', pending_by: 'waitlist', busy_until: null, session_id: null });
+        // №122: предложение держит стол за гостем (reserved до конца предложения) — гость «с улицы» его не займёт
         Object.assign(w, { status: 'offered', position: 1, offer_until: now() + 5 * MIN });
+        Object.assign(t, { status: 'reserved', pending_by: 'waitlist', busy_until: w.offer_until, session_id: null });
         ctx.emitMe('waitlist', { type: 'waitlist.offered', offer_id: w.id, resource: wlResource(w), expires_at: iso(w.offer_until) });
       }
       if (w.status === 'waiting' && w.position > 1 && now() - w.created > 12_000) {
@@ -228,7 +229,8 @@ export function m3Routes(ctx) {
 
   function startSession(b, p) {
     const table = tableById(b.resource_id);
-    const minutes = Math.round((b.ends - Math.min(now(), b.starts)) / MIN);
+    // №123: игра по брони кончается ровно в конце брони — и при раннем приходе, и при опоздании
+    const minutes = (b.ends - now()) / MIN;
     p.session_id = ctx.createSession({ code: table.code, minutes, unlimited: false, paymentId: p.id, amount: b.paid, method: p.method ?? 'booking' });
     Object.assign(b, { status: 'started', session_id: p.session_id });
     bookingEvent(b);
@@ -324,7 +326,8 @@ export function m3Routes(ctx) {
       if (table.status === 'busy') return err(409, 'table_busy');
       if (table.status === 'service') return err(409, 'table_service');
       const early = t < b.starts - SETTINGS.early_free_minutes * MIN;
-      const extra = early ? ctx.amountFor(t, Math.ceil((b.starts - t) / MIN)).amount_kopecks : 0;
+      // №123: минуты раннего прихода — вниз
+      const extra = early ? ctx.amountFor(t, Math.floor((b.starts - t) / MIN)).amount_kopecks : 0;
       const due = Math.max(0, b.amount - b.paid) + extra;
       if (due === 0) return ok({ status: 'started', session_id: startSession(b, { id: uuid(), method: 'booking' }), booking: view(b) });
       const id = uuid();
@@ -405,8 +408,11 @@ export function m3Routes(ctx) {
     }],
   ];
 
+  // №126: MAX на сервере пока заглушка — не настроен, предлагаем только Telegram и Web Push
+  const AVAILABLE = ['telegram', 'webpush'];
+
   function meView(user) {
-    return { ...user, notify_channel: user.notify_channel ?? null, channels_order: user.channels_order ?? null, channels: { max: user.max_linked !== false, telegram: Boolean(user.telegram_linked), webpush: Boolean(user.push_linked) } };
+    return { ...user, notify_channel: user.notify_channel ?? null, channels_order: user.channels_order ?? null, channels: { max: false, telegram: Boolean(user.telegram_linked), webpush: Boolean(user.push_linked) }, channels_available: AVAILABLE };
   }
 
   /** Котировка с use_balance (№112): balance_minutes покрыто балансом, amount_kopecks — доплата за остальное. */

@@ -265,7 +265,7 @@ export function createBackend(storage) {
         club: CLUB,
         resource: { id: resourceId(table.number), number: table.number, type: table.type, title: table.title },
         status,
-        busy_until: status === 'busy' || status === 'service' ? new Date(table.busy_until).toISOString() : null,
+        busy_until: ['busy', 'service', 'reserved'].includes(status) && table.busy_until ? new Date(table.busy_until).toISOString() : null,
         ...pricesAround(now()),
         options: [60, 120, 180, 'unlimited'],
         my_session_id: isMine ? table.session_id : null,
@@ -315,7 +315,8 @@ export function createBackend(storage) {
       let from = t;
       if (body.kind === 'start') {
         if (table.status === 'pending' && table.pending_by !== state.user.id) return err(409, 'table_pending');
-        if (table.status === 'busy') return err(409, 'table_busy');
+        // Стол держат за другим гостем (бронь, предложение из очереди №122) — table_busy
+        if (table.status === 'busy' || table.status === 'reserved') return err(409, 'table_busy');
         if (table.status === 'offline') return err(409, 'table_offline');
         if (table.status === 'service') return err(409, 'table_service');
         Object.assign(table, { status: 'pending', pending_by: state.user.id, pending_until: t + 3 * MIN });

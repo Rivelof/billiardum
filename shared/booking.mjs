@@ -241,7 +241,8 @@ export function waitlistView(entry, now = Date.now()) {
     return { state: 'waiting', left: 0, text: n <= 1 ? 'Вы первый в очереди' : `Вы ${n}-й в очереди` };
   }
   if (entry.status === 'accepted') return { state: 'accepted', left: 0, text: 'Стол ваш' };
-  if (entry.status === 'expired') return { state: 'missed', left: 0, text: 'Время предложения вышло' };
+  // Истекло или клуб снял удержание (№122) — сервер не различает их в записи: общий текст
+  if (entry.status === 'expired') return { state: 'missed', left: 0, text: 'Предложение закончилось' };
   return { state: 'none', left: 0, text: '' };
 }
 
@@ -273,10 +274,28 @@ export const CHANNELS = Object.freeze(['max', 'telegram', 'webpush']);
  * Порядок каналов уведомлений (№110): основной — первым, остальные — в прежнем порядке.
  * @param {string[]} order
  * @param {string} primary
+ * @param {string[]} [available] каналы, настроенные на сервере (№126): остальные не показываем
  */
-export function channelsOrder(order, primary) {
+export function channelsOrder(order, primary, available = CHANNELS) {
+  const ok = (c) => available.includes(c);
   const all = [...(Array.isArray(order) && order.length ? order : []), ...CHANNELS];
-  return [primary, ...all.filter((c) => c !== primary)].filter((c, i, a) => a.indexOf(c) === i);
+  return [primary, ...all.filter((c) => c !== primary)].filter((c, i, a) => ok(c) && a.indexOf(c) === i);
+}
+
+/** Каналы, которые сервер умеет доставлять (№126: user.channels_available); без поля — все. */
+export function availableChannels(user) {
+  const list = Array.isArray(user?.channels_available) ? user.channels_available.filter((c) => CHANNELS.includes(c)) : CHANNELS;
+  return list;
+}
+
+/**
+ * Основной канал для показа (№126): сохранённый, если сервер его доставляет; иначе первый доступный из уже
+ * подключённых (user.channels), иначе просто первый доступный.
+ */
+export function primaryChannel(user) {
+  const available = availableChannels(user);
+  if (available.includes(user?.notify_channel)) return user.notify_channel;
+  return available.find((c) => user?.channels?.[c]) ?? available[0] ?? null;
 }
 
 /** Сдвинуть канал вверх (-1) или вниз (+1) в списке. */
