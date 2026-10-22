@@ -7,6 +7,10 @@
 // повтор с тем же Idempotency-Key — тот же ответ; второй «Принять» с новым ключом — отказ.
 // Чек: bl.receipts channel kkt, status receipt_pending; в чеке сессии — pending. Журнал
 // reception.accept. В конце гость «Закончить игру».
+//
+// С M2: приём наличных без открытой смены — 409 shift_closed (decisions №93), поэтому тест
+// открывает свою смену (если открытой нет; чужую ждёт) и закрывает её честно в конце. Чек ККТ
+// теперь пробивает мост ККТ: в bl.receipts — receipt_pending или уже printed.
 
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -28,6 +32,7 @@ import {
   waitSim,
   waitTableFree,
 } from './helpers.mjs';
+import { closeMyShift, openMyShift } from '../m2/helpers.mjs';
 
 const TABLE = Number(process.env.E2E_T2_TABLE || 5);
 let db;
@@ -36,15 +41,20 @@ let rec;
 let q;
 let requestId;
 let accepted;
+let man;
+let shift;
 
 before(async () => {
   db = await adminClient();
   await waitTableFree(TABLE);
   guest = await newGuest();
   rec = await staff('reception');
+  man = await staff('manager');
+  shift = await openMyShift({ rec, man, floatKopecks: 0, log: (m) => console.log(`# ${m}`) });
 });
 
 after(async () => {
+  if (shift) await closeMyShift({ rec, man, shiftId: shift.id, comment: 'e2e M1 T2' }).catch((e) => console.log(`# смена не закрыта: ${e.message}`));
   await db?.end();
 });
 
@@ -132,10 +142,10 @@ test('T2: чек ККТ в очереди (receipt_pending), журнал recept
   assert.ok(accepted);
   const { rows } = await db.query('select kind, channel, status, amount_kopecks from bl.receipts where payment_id = $1', [accepted.payment_id]);
   t.diagnostic(`bl.receipts: ${JSON.stringify(rows)}`);
-  assert.ok(rows.some((r) => r.channel === 'kkt' && r.status === 'receipt_pending' && Number(r.amount_kopecks) === q.amount_kopecks));
+  assert.ok(rows.some((r) => r.channel === 'kkt' && ['receipt_pending', 'printed'].includes(r.status) && Number(r.amount_kopecks) === q.amount_kopecks));
   const rc = await ok(api('GET', `/api/sessions/${accepted.session_id}/receipt`, { token: guest.token }));
   t.diagnostic(`чек сессии у гостя: receipt_status=${rc.receipt_status}, платежи ${JSON.stringify(rc.payments.map((p) => ({ method: p.method, amount_kopecks: p.amount_kopecks, receipt_status: p.receipt_status })))}`);
-  assert.equal(rc.receipt_status, 'pending');
+  assert.ok(['pending', 'succeeded'].includes(rc.receipt_status), `чек сессии: ${rc.receipt_status}`);
   const { rows: au } = await db.query("select action, actor_type, data from bl.audit_log where club_id = $1 and action = 'reception.accept' and data->>'request_id' = $2", [CLUB_A, requestId]);
   t.diagnostic(`журнал: ${JSON.stringify(au.map((r) => ({ action: r.action, actor_type: r.actor_type, method: r.data.method, amount_kopecks: r.data.amount_kopecks })))}`);
   assert.equal(au.length, 1);
