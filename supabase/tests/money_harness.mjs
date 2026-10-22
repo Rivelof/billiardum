@@ -257,13 +257,13 @@ export async function setupMoney({ start, configOverrides = {} } = {}) {
     setWebhookRoute(route) {
       webhookRoute = route;
     },
-    /** Вызвать маршрут: { user, club, params, body, headers, idempotencyKey, actor } → { status, json }. */
-    async call(route, { user = null, club = null, params = {}, body = null, headers = {}, idempotencyKey = null, ip = '203.0.113.1', actor = 'user', roles = null } = {}) {
+    /** Вызвать маршрут: { user, club, params, query, body, headers, idempotencyKey, actor } → { status, json }. */
+    async call(route, { user = null, club = null, params = {}, query = {}, body = null, headers = {}, idempotencyKey = null, ip = '203.0.113.1', actor = 'user', roles = null } = {}) {
       const userObj = user ? { id: user } : null;
       return tx({ clubId: club, userId: actor === 'system' ? null : user, actorType: actor }, (client) =>
         route.handler(
           { ...ctx, db: client, user: userObj, club, roles, idempotencyKey },
-          { params, query: {}, body, headers, ip, user: userObj, club, roles, idempotencyKey },
+          { params, query, body, headers, ip, user: userObj, club, roles, idempotencyKey },
         ),
       );
     },

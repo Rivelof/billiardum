@@ -210,6 +210,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['light_open_sessions', 'bl_definer'],
         // M1 money (0200)
         ['money_due', 'bl_definer'],
+        // M3 money (0654): гость с партиями пакета по точному телефону — управляющему (№118)
+        ['money_lot_guest', 'bl_definer'],
         ['money_object_club', 'bl_definer'],
         // M1 core
         ['notify_route', 'bl_definer'],

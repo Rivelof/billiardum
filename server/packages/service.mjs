@@ -5,9 +5,13 @@
 //   POST /api/packages/{id}/archive        — управляющий, владелец: { reason } (снять с продажи)
 //   POST /api/packages/{id}/buy            — гость, Idempotency-Key: { method: sbp | card } → платёж ЮKassa kind package
 //   GET  /api/clubs/{club}/balance         — гость: остаток минут в клубе
+//   GET  /api/clubs/{club}/package-lots?phone=+7…  — управляющий, владелец: партии гостя для экрана возврата (№118)
+//   POST /api/packages/lots/{id}/refund   — управляющий, владелец: { reason } — возврат пакета из приложения
 // Новый пакет и снятие с продажи — изменение тарифа (инвариант 8): причина, журнал, уведомление владельцу.
 // Цена и часы пакета не меняются — только новый пакет.
 
+import { maskPhone, normalizePhone } from '../auth/index.mjs';
+import { createRateLimiter } from '../http/rate-limit.mjs';
 import { createYooKassaPayment, ownReturnUrl, returnUrl } from '../payments/pay.mjs';
 import { enterClub, enterObjectClub, isUuid, requireGuestReady, requireIdempotencyKey, requireStaff, requireUser } from '../payments/context.mjs';
 import { MoneyError } from '../payments/errors.mjs';
@@ -179,4 +183,57 @@ export async function refundLot(db, deps, config, info) {
   const reason = reasonOf(info.body);
   const { revokePackageLot } = await import('../payments/api.mjs');
   return revokePackageLot(db, { lotId: id, reason, staffId: info.userId }, { deps, config });
+}
+
+/** Поиск партий по телефону — не чаще 30 раз в минуту на сотрудника (как у других поисков). */
+export const LOT_SEARCH_LIMIT = Object.freeze({ max: 30, windowMs: 60_000 });
+const lotSearchLimiter = createRateLimiter();
+
+/**
+ * GET /api/clubs/{club}/package-lots?phone=+7… — управляющий и выше (№118, экран возврата пакета).
+ * Только точный телефон (нормализация как при входе; частичный поиск — перечисление гостей), только
+ * партии клуба из пути (RLS + club), телефон наружу и в лог — маской. Гостя ищет узкая функция
+ * bl.money_lot_guest (0654): у персонала нет доступа к bl.users гостей.
+ */
+export async function listPackageLots(db, deps, info) {
+  const clubId = info.params.club;
+  if (!isUuid(clubId)) throw new MoneyError('not_found', 'club');
+  await enterClub(db, clubId);
+  const staffId = requireUser(info);
+  await requireStaff(db, info, clubId, MANAGER_ROLES);
+  if (!lotSearchLimiter.hit(`${staffId}`, LOT_SEARCH_LIMIT).ok) throw new MoneyError('rate_limited');
+  const raw = info.query?.phone;
+  const phone = typeof raw === 'string' && raw.length <= 32 ? normalizePhone(raw) : null;
+  if (!phone) throw new MoneyError('bad_request', 'phone');
+  const guest = (await db.query('select user_id, name, phone_masked from bl.money_lot_guest($1)', [phone])).rows[0] ?? null;
+  deps.log?.info?.('package_lots_lookup', { club_id: clubId, staff_id: staffId, phone: maskPhone(phone), found: Boolean(guest) });
+  if (!guest) return [];
+  const { rows } = await db.query(
+    `select l.id, l.package_id, tp.title, l.price_kopecks, l.minutes_total, l.minutes_left, l.created_at, l.expires_at,
+            l.revoked_at, p.kind as payment_kind, sp.sale_id, sp.idx
+       from bl.balance_lots l
+       join bl.tariff_packages tp on tp.club_id = l.club_id and tp.id = l.package_id
+       join bl.payments p on p.club_id = l.club_id and p.id = l.payment_id
+       left join bl.pos_sale_packages sp on sp.club_id = l.club_id and sp.lot_id = l.id
+      where l.club_id = $1 and l.user_id = $2
+      order by l.created_at desc, l.id
+      limit 200`,
+    [clubId, guest.user_id],
+  );
+  const iso = (d) => (d ? new Date(d).toISOString() : null);
+  return rows.map((r) => ({
+    id: r.id,
+    package_id: r.package_id,
+    title: r.title,
+    source: r.payment_kind === 'package' ? 'app' : 'pos',
+    sale_id: r.sale_id ?? null,
+    idx: r.idx ?? null,
+    price_kopecks: Number(r.price_kopecks),
+    minutes_total: r.minutes_total,
+    minutes_left: r.minutes_left,
+    created_at: iso(r.created_at),
+    expires_at: iso(r.expires_at),
+    refunded_at: iso(r.revoked_at),
+    guest: { name: guest.name ?? null, phone_masked: guest.phone_masked },
+  }));
 }

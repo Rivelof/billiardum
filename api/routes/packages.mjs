@@ -1,6 +1,6 @@
 // Пакеты часов и баланс гостя (контракт M3 §4, backend-money; server/packages/service.mjs).
 
-import { archivePackage, buyPackage, createPackage, listPackages, MANAGER_ROLES, myBalance, refundLot } from '../../server/packages/service.mjs';
+import { archivePackage, buyPackage, createPackage, listPackageLots, listPackages, MANAGER_ROLES, myBalance, refundLot } from '../../server/packages/service.mjs';
 import { moneyRoute } from '../../server/payments/route.mjs';
 
 export const routes = [
@@ -32,6 +32,16 @@ export const routes = [
     requires: ['phone', 'consent'],
     idempotent: true,
     handler: moneyRoute(({ db, deps, info, config }) => buyPackage(db, deps, config, info)),
+  },
+  {
+    // Партии гостя для экрана возврата (№118): только точный телефон, маска в ответе.
+    // rateLimit — на IP; на сотрудника — 30 в минуту в обработчике.
+    method: 'GET',
+    path: '/api/clubs/{club}/package-lots',
+    auth: 'staff',
+    roles: [...MANAGER_ROLES],
+    rateLimit: { max: 30, windowMs: 60_000 },
+    handler: moneyRoute(({ db, deps, info }) => listPackageLots(db, deps, info)),
   },
   {
     // Возврат пакета из приложения целиком (№118): партия отзывается, деньги — ЮKassa с чеком возврата.

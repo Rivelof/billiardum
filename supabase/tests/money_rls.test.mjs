@@ -173,9 +173,9 @@ describe('узкие функции денег', () => {
     const { rows } = await db.pool.query(
       `select p.proname, pg_get_userbyid(p.proowner) as owner, p.proconfig, p.prosecdef,
               has_function_privilege('anon', p.oid, 'execute') as anon_exec
-         from pg_proc p where p.pronamespace = 'bl'::regnamespace and p.proname in ('money_object_club', 'money_due')`,
+         from pg_proc p where p.pronamespace = 'bl'::regnamespace and p.proname in ('money_object_club', 'money_due', 'money_lot_guest')`,
     );
-    assert.equal(rows.length, 2);
+    assert.equal(rows.length, 3);
     for (const r of rows) {
       assert.equal(r.owner, 'bl_definer');
       assert.ok(r.prosecdef);

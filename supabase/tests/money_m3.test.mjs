@@ -16,7 +16,7 @@ import { NOT_FOUND_REASON, onProviderNotFound } from '../../server/payments/pay.
 import { sendSettlementReceipt, SETTLE_TOPIC } from '../../server/payments/settle.mjs';
 import { cashTotals } from '../../server/shifts/service.mjs';
 import { withContext } from '../../server/lib/store.mjs';
-import { CLUB_A, GUEST_1, GUEST_2, newKey, OWNER_A, RECEPTION_A, setupMoney } from './money_harness.mjs';
+import { CLUB_A, CLUB_B, GUEST_1, GUEST_2, newKey, OWNER_A, OWNER_B, RECEPTION_A, setupMoney } from './money_harness.mjs';
 
 const route = (list, method, path) => list.find((r) => r.method === method && r.path === path);
 const QUOTE = route(quoteRoutes, 'POST', '/api/quotes');
@@ -27,6 +27,7 @@ const ARCHIVE_PKG = route(packageRoutes, 'POST', '/api/packages/{id}/archive');
 const BUY_PKG = route(packageRoutes, 'POST', '/api/packages/{id}/buy');
 const BALANCE = route(packageRoutes, 'GET', '/api/clubs/{club}/balance');
 const REFUND_LOT = route(packageRoutes, 'POST', '/api/packages/lots/{id}/refund');
+const LOTS = route(packageRoutes, 'GET', '/api/clubs/{club}/package-lots');
 const DEPOSIT = route(receptionRoutes, 'POST', '/api/reception/deposits');
 const WEBHOOK = route(webhookRoutes, 'POST', '/api/webhooks/yookassa/{club_id}');
 
@@ -602,3 +603,70 @@ describe('return_url: только путь своего сайта (пакет 
   });
 });
 
+
+describe('партии гостя для экрана возврата (№118, волна B)', () => {
+  const lots = (user, club, query) => h.call(LOTS, { user, club, params: { club }, query });
+
+  it('точный телефон → партии клуба с источником, продажей кассы и маской; полный телефон нигде не светится', async () => {
+    // Кассовая партия GUEST_2 — строка продажи pos (чтение pos_sale_packages, сами строки pos тут — суперпользователем).
+    const pos = (await h.q("select l.*, p.id as pay_id from bl.balance_lots l join bl.payments p on p.id = l.payment_id where l.user_id = $1 and p.kind = 'bar' limit 1", [GUEST_2]))[0];
+    const saleId = newKey();
+    await h.pool.query(
+      `insert into bl.pos_sales (id, club_id, channel, method, status, payment_id, package_kopecks, created_by, created_at, completed_at, updated_at)
+       values ($1, $2, 'pos', 'card_terminal', 'completed', $3, 300000, $4, now(), now(), now())`,
+      [saleId, CLUB_A, pos.pay_id, RECEPTION_A],
+    );
+    await h.pool.query(
+      `insert into bl.pos_sale_packages (club_id, sale_id, idx, package_id, user_id, amount_kopecks, line, lot_id, created_at)
+       values ($1, $2, 0, $3, $4, 300000, '{}'::jsonb, $5, now())`,
+      [CLUB_A, saleId, pos.package_id, GUEST_2, pos.id],
+    );
+    const logStart = h.logs.length;
+    const r = await lots(OWNER_A, CLUB_A, { phone: '+7 (999) 000-00-02' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const expected = await h.q('select id from bl.balance_lots where club_id = $1 and user_id = $2', [CLUB_A, GUEST_2]);
+    assert.deepEqual(r.json.map((x) => x.id).sort(), expected.map((x) => x.id).sort());
+    const p = r.json.find((x) => x.id === pos.id);
+    assert.deepEqual({ s: p.source, sale: p.sale_id, idx: p.idx }, { s: 'pos', sale: saleId, idx: 0 });
+    assert.ok(p.refunded_at, 'кассовая партия отозвана раньше (revokeLotOnly)');
+    const app = r.json.filter((x) => x.source === 'app');
+    assert.ok(app.length >= 1);
+    assert.ok(app.every((x) => x.sale_id === null && x.idx === null));
+    for (const x of r.json) {
+      assert.deepEqual(Object.keys(x).sort(), ['created_at', 'expires_at', 'guest', 'id', 'idx', 'minutes_left', 'minutes_total', 'package_id', 'price_kopecks', 'refunded_at', 'sale_id', 'source', 'title']);
+      assert.deepEqual(x.guest, { name: null, phone_masked: '+7999***0002' });
+    }
+    assert.ok(!JSON.stringify(r.json).includes('79990000002'));
+    const newLogs = h.logs.slice(logStart);
+    assert.ok(newLogs.some((l) => l.msg === 'package_lots_lookup' && l.phone === '+7999***0002' && l.found === true));
+    assert.ok(!JSON.stringify(newLogs).includes('79990000002'), 'в логе — только маска');
+  });
+
+  it('без телефона и с неполным — 400; ресепшн — 403; чужой клуб — 403 или пусто; гость без партий — пусто', async () => {
+    assert.deepEqual([(await lots(OWNER_A, CLUB_A, {})).status, (await lots(OWNER_A, CLUB_A, {})).json], [400, { error: 'bad_request' }]);
+    for (const bad of ['+7999', '7999*', '+7999000000%', '', 'abc']) assert.equal((await lots(OWNER_A, CLUB_A, { phone: bad })).status, 400, bad);
+    const rec = await lots(RECEPTION_A, CLUB_A, { phone: '+79990000002' });
+    assert.deepEqual([rec.status, rec.json], [403, { error: 'forbidden' }]);
+    assert.equal((await lots(OWNER_A, CLUB_B, { phone: '+79990000002' })).status, 403, 'владелец A в клубе B');
+    const other = await lots(OWNER_B, CLUB_B, { phone: '+79990000002' });
+    assert.deepEqual([other.status, other.json], [200, []], 'у клуба B нет партий этого гостя');
+    assert.deepEqual((await lots(OWNER_A, CLUB_A, { phone: '+79990000099' })).json, []);
+    // Узкая функция сама проверяет роль: ресепшну и без клуба — пусто.
+    const fn = (user, club) => h.tx({ clubId: club, userId: user }, async (db) => (await db.query('select * from bl.money_lot_guest($1)', ['+79990000002'])).rows);
+    assert.equal((await fn(RECEPTION_A, CLUB_A)).length, 0);
+    assert.equal((await fn(OWNER_A, null)).length, 0);
+    assert.equal((await fn(OWNER_B, CLUB_B)).length, 0);
+    assert.deepEqual(Object.keys((await fn(OWNER_A, CLUB_A))[0]).sort(), ['name', 'phone_masked', 'user_id']);
+  });
+
+  it('не чаще 30 запросов в минуту на сотрудника — дальше 429 rate_limited', async () => {
+    let n = 0;
+    let last;
+    do {
+      n += 1;
+      last = await lots(OWNER_B, CLUB_B, { phone: '+79990000002' });
+    } while (last.status === 200 && n < 40);
+    assert.deepEqual([last.status, last.json], [429, { error: 'rate_limited' }]);
+    assert.ok(n <= 31 && n >= 29, `сработало на ${n}-м запросе`);
+  });
+});
