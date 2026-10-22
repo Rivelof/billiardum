@@ -170,7 +170,7 @@ test('очередь бара: порядок, ожидание, статусы 
   assert.equal(mergeOrder([], { id: 'z', status: 'new' }).length, 1);
 });
 
-test('позиция заказа: сервер пишет модификаторы в имя для чека — показываем имя и модификаторы раздельно', () => {
+test('позиция заказа: product_name сервера, без него — имя для чека без хвоста модификаторов', () => {
   const tea = { name: 'Чай чёрный, С сахаром', qty: 1, modifiers: [{ id: 'm', name: 'С сахаром' }] };
   assert.deepEqual(itemView(tea), { name: 'Чай чёрный', mods: 'С сахаром' });
   assert.deepEqual(itemView({ name: 'Американо, 0,3 л, Без сахара', modifiers: [{ name: '0,3 л' }, { name: 'Без сахара' }] }), { name: 'Американо', mods: '0,3 л, Без сахара' });
@@ -179,4 +179,8 @@ test('позиция заказа: сервер пишет модификато�
   const long = `${'Очень длинное название '.repeat(5)}, Кетчуп, Сыр`.slice(0, 128);
   assert.equal(itemView({ name: long, modifiers: [{ name: 'Кетчуп' }, { name: 'Сырный соус' }] }).name, 'Очень длинное название '.repeat(5));
   assert.equal(itemsLine([tea, { name: 'Чипсы', qty: 2, modifiers: [] }]), '1 × Чай чёрный (С сахаром), 2 × Чипсы');
+  // product_name сервера (№100) — без разбора name
+  assert.deepEqual(itemView({ product_name: 'Чай, чёрный', name: 'Чай, чёрный, С сахаром', modifiers: [{ name: 'С сахаром' }] }), { name: 'Чай, чёрный', mods: 'С сахаром' });
+  assert.deepEqual(itemView({ product_name: 'Очень длинное название', name: long, modifiers: [{ name: 'Кетчуп' }] }), { name: 'Очень длинное название', mods: 'Кетчуп' });
+  assert.deepEqual(itemView({ product_name: null, name: 'Американо, 0,3 л', modifiers: [{ name: '0,3 л' }] }), { name: 'Американо', mods: '0,3 л' }, 'запасной путь');
 });

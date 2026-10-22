@@ -490,6 +490,11 @@ export function Pos({ ctx }) {
         onDone={newCheck}
         onShiftClosed={loadShift}
         onAbandon={(id) => (abandoned.current = id)}
+        onReapprove={() => {
+          setPayMethod(null);
+          setDiscount((d) => (d ? { ...d, approval: undefined } : d));
+          setDiscountOpen(true);
+        }}
       />
     </Shell>
   );

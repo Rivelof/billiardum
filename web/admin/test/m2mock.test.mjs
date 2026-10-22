@@ -65,11 +65,15 @@ test('заглушка кассы: СБП — QR и оплата позже, з�
   assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 10 } })).body.status, 'completed', '10 % — в пределах лимита');
   assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 20, reason: 'x' } })).body.error, 'limit_exceeded', 'ресепшну выше лимита нельзя');
   const managers = (await req(b, 'GET', '/api/clubs/c/staff/approvers')).body;
-  const approve = (extra) => req(b, 'POST', '/api/pos/discount-approvals', { user_id: managers[0].user_id, pin: '1234', reason_code: 'promo', reason_text: 'Акция', percent: 20, ...extra });
+  const approve = (extra) => req(b, 'POST', '/api/pos/discount-approvals', { user_id: managers[0].user_id, pin: '1234', reason_code: 'promo', reason_text: 'Акция', percent: 20, subtotal_kopecks: 59000, ...extra });
   assert.equal((await approve({ pin: '0000' })).status, 401, 'неверный PIN — 401 (как server/orders/approvals.mjs)');
   assert.equal((await approve({ amount_kopecks: 11800 })).status, 400, 'ровно одно из percent и amount_kopecks');
+  assert.equal((await approve({ subtotal_kopecks: undefined })).status, 400, 'без суммы корзины — 400 (№100)');
+  const small = (await approve()).body;
+  assert.equal(small.max_discount_kopecks, 11800);
+  assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [{ ...pizza, qty: 2 }], discount: { percent: 20, approval_id: small.approval_id } })).status, 403, 'корзина крупнее одобренной — 403');
   const ok = (await approve()).body;
-  assert.ok(ok.approval_id && ok.expires_at);
+  assert.ok(ok.approval_id && ok.expires_at && ok.subtotal_kopecks === 59000);
   assert.equal((await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 25, approval_id: ok.approval_id } })).status, 403, 'другая скидка — подтверждение не подходит');
   const sale = (await req(b, 'POST', '/api/pos/sales', { method: 'card_terminal', items: [pizza], discount: { percent: 20, reason: 'Акция', approval_id: ok.approval_id } })).body;
   assert.equal(sale.discount_kopecks, 11800);

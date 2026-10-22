@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addFixed, addProduct, emptyCart, normalizeMenu } from '@billiardum/shared/bar';
-import { approvalError, discountBase, discountKopecks, discountPercent, kktState, normalizeSale, overLimit, receiptView, requestLine, saleBody, saleTotals, tabLine, wholeDiscount } from '../src/lib/pos.js';
+import { approvalBody, approvalError, discountBase, discountKopecks, discountPercent, kktState, normalizeSale, overLimit, receiptView, requestLine, saleBody, saleTotals, tabLine, wholeDiscount } from '../src/lib/pos.js';
 import { errorMessage } from '@billiardum/shared/errors';
 
 const menu = normalizeMenu({
@@ -92,6 +92,17 @@ test('ошибки кассы для персонала: смена закрыт
   assert.match(errorMessage('already_paid', { audience: 'staff' }).title, /уже оплачен/);
   assert.match(errorMessage('phone_required', { audience: 'staff' }).title, /телефон гостя/);
   assert.match(errorMessage('approval_unavailable', { audience: 'staff' }).action, /провести эту продажу самому/);
+});
+
+test('подтверждение скидки: та же скидка и сумма бара в чеке (№95, №100)', () => {
+  const reason = { code: 'regular_guest', text: 'Постоянный гость' };
+  assert.deepEqual(approvalBody({ approver: 'u1', pin: '1234', reason, discount: { type: 'percent', value: '20' }, discountKopecks: 20600, subtotalKopecks: 103000 }), {
+    user_id: 'u1', pin: '1234', reason_code: 'regular_guest', reason_text: 'Постоянный гость', percent: 20, subtotal_kopecks: 103000,
+  });
+  const amount = approvalBody({ approver: 'u1', pin: '1234', reason, discount: { type: 'amount', kopecks: 30000 }, discountKopecks: 30000, subtotalKopecks: 103000 });
+  assert.equal(amount.amount_kopecks, 30000);
+  assert.equal('percent' in amount, false);
+  assert.match(errorMessage('approval_invalid', { audience: 'staff' }).title, /Корзина изменилась — подтвердите скидку заново/);
 });
 
 test('подтверждение скидки PIN управляющего: 401, 403, 429 — словами для кассира (№95)', () => {

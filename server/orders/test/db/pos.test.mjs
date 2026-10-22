@@ -90,6 +90,8 @@ describe('касса: продажа', { skip: SKIP }, () => {
     const [a] = (await h.audit('pos.sale')).filter((x) => x.object_id === s.sale_id);
     assert.equal(a.actor_id, reception.id);
     assert.equal(a.data.change_kopecks, 56000);
+    const capItem = s.items.find((i) => i.product_id === P.cappuccino);
+    assert.deepEqual([capItem.product_name, capItem.name], ['Капучино', 'Капучино, 0,4 л, С сахаром']);
     // Заказ кассы выдан сразу и оплачен; на экран бара не попадает.
     const [o] = await h.q('select * from bl.orders where sale_id = $1', [s.sale_id]);
     assert.equal(o.status, 'served');

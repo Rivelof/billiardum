@@ -96,7 +96,7 @@ function orderLine(cat, productId, qty, modIds = []) {
   const unit = p.price_kopecks + ms.reduce((s, x) => s + x.price_delta_kopecks, 0);
   // Имя для чека — с модификаторами, как server/catalog/api.mjs
   const name = [p.name, ...ms.map((x) => x.name)].join(', ').slice(0, 128);
-  return { id: uuid(), product_id: p.id, name, qty, unit_price_kopecks: unit, amount_kopecks: unit * qty, modifiers: ms.map(({ id: mid, name: n }) => ({ id: mid, name: n })) };
+  return { id: uuid(), product_id: p.id, product_name: p.name, name, qty, unit_price_kopecks: unit, amount_kopecks: unit * qty, modifiers: ms.map(({ id: mid, name: n }) => ({ id: mid, name: n })) };
 }
 
 /** Заказ в виде orderView backend-pos (server/orders/core.mjs). */
@@ -486,12 +486,16 @@ export function m2Routes(ctx) {
       if (typeof b.pin !== 'string' || !/^\d{4,6}$/.test(b.pin) || hasP === hasA) return err(400, 'bad_request');
       if (hasP && (!Number.isInteger(b.percent) || b.percent < 1 || b.percent > 100)) return err(400, 'bad_request');
       if (!b.reason_code || !String(b.reason_text ?? '').trim()) return err(400, 'reason_required');
+      // №100: подтверждение привязано к сумме бара в чеке
+      if (!Number.isSafeInteger(b.subtotal_kopecks) || b.subtotal_kopecks < 1) return err(400, 'bad_request');
+      if (hasA && b.amount_kopecks > b.subtotal_kopecks) return err(400, 'bad_request');
+      const maxDiscount = hasP ? Math.floor((b.subtotal_kopecks * b.percent * 2 + 100) / 200) : b.amount_kopecks;
       const u = ctx.staffById(b.user_id);
       if (!u || !['manager', 'owner'].includes(u.role)) return err(403, 'forbidden');
       if (b.pin !== '1234') return err(401, 'unauthorized');
       const aid = uuid();
-      S().approvals[aid] = { id: aid, percent: hasP ? b.percent : null, amount_kopecks: hasA ? b.amount_kopecks : null, by: u.name, used: false, expires: now() + 5 * MIN };
-      return ok({ approval_id: aid, expires_at: new Date(now() + 5 * MIN).toISOString() });
+      S().approvals[aid] = { id: aid, percent: hasP ? b.percent : null, amount_kopecks: hasA ? b.amount_kopecks : null, subtotal_kopecks: b.subtotal_kopecks, max_discount_kopecks: maxDiscount, by: u.name, used: false, expires: now() + 5 * MIN };
+      return ok({ approval_id: aid, expires_at: new Date(now() + 5 * MIN).toISOString(), subtotal_kopecks: b.subtotal_kopecks, max_discount_kopecks: maxDiscount });
     })],
     ['POST', /^\/api\/pos\/sales$/, (_m, b) => {
       if (!can('reception', 'manager', 'owner')) return err(403, 'forbidden');
@@ -533,6 +537,7 @@ export function m2Routes(ctx) {
             const a = S().approvals[d.approval_id];
             const same = a && (a.percent !== null ? d.percent === a.percent && d.amount_kopecks == null : d.amount_kopecks === a.amount_kopecks && d.percent == null);
             if (!a || a.used || a.expires <= now() || !same) return err(403, 'forbidden');
+            if (barSubtotal > a.subtotal_kopecks || discount > a.max_discount_kopecks) return err(403, 'forbidden');
             a.used = true;
           }
           ctx.state().alarms.unshift({ id: uuid(), type: 'discount_over_limit', level: 'important', created_at: new Date(now()).toISOString() });
@@ -561,7 +566,7 @@ export function m2Routes(ctx) {
         refunded_kopecks: 0,
         receipt_id: null,
         receipt_status: null,
-        items: lines.map((l) => ({ id: uuid(), order_id: null, order_item_id: l.id, name: l.name, qty: l.qty, amount_kopecks: l.amount_kopecks, discount_kopecks: 0, outcome: null, refunded_qty: 0, refunded_kopecks: 0 })),
+        items: lines.map((l) => ({ id: uuid(), order_id: null, order_item_id: l.id, product_id: l.product_id, product_name: l.product_name, name: l.name, qty: l.qty, amount_kopecks: l.amount_kopecks, discount_kopecks: 0, outcome: null, refunded_qty: 0, refunded_kopecks: 0 })),
         table_payments: requests.map((rid) => ({ request_id: rid, payment_id: uuid(), amount_kopecks: ctx.state().requests.find((x) => x.id === rid).amount_kopecks })),
         created_at: new Date(now()).toISOString(),
         completed_at: null,

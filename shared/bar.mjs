@@ -205,13 +205,15 @@ export function modifiersText(modifiers) {
 }
 
 /**
- * Позиция заказа для показа: сервер хранит имя для чека вместе с модификаторами — «Чай чёрный, С сахаром»
- * (server/catalog/api.mjs, до 128 знаков) и отдельно modifiers. Возвращает имя товара без хвоста и модификаторы строкой.
+ * Позиция заказа для показа: имя товара и модификаторы строкой. Сервер отдаёт product_name (без модификаторов) и name —
+ * имя для чека с модификаторами, «Чай чёрный, С сахаром» (server/catalog/api.mjs, до 128 знаков). Нет product_name
+ * (старый ответ) — отрезаем хвост модификаторов от name.
  * @returns {{ name: string, mods: string }}
  */
 export function itemView(item) {
-  const name = String(item?.name ?? '');
   const mods = modifiersText(item?.modifiers);
+  if (typeof item?.product_name === 'string' && item.product_name.trim()) return { name: item.product_name, mods };
+  const name = String(item?.name ?? '');
   if (!mods) return { name, mods: '' };
   const tail = `, ${mods}`;
   if (name.endsWith(tail)) return { name: name.slice(0, -tail.length), mods };

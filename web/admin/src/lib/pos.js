@@ -78,7 +78,8 @@ export function saleTotals(cart, discount) {
  * { method, items: [{ product_id, qty, modifier_ids }], tabs: [session_id], requests: [request_id],
  *   discount: { percent } | { amount_kopecks } + reason, received_kopecks, to_bar }.
  * Скидка выше лимита у ресепшена — discount.approval_id из POST /api/pos/discount-approvals (PIN управляющего, №95):
- * сервер сверяет ту же скидку (percent или amount_kopecks), подтверждение одноразовое и живёт 5 минут.
+ * сервер сверяет ту же скидку (percent или amount_kopecks), корзину не крупнее одобренной и скидку не больше
+ * max_discount_kopecks (№100); подтверждение одноразовое и живёт 5 минут.
  */
 export function saleBody(cart, opts) {
   const body = {
@@ -182,6 +183,21 @@ export function receiptView(receipt, kktOnline, method) {
 /** «3 позиции» для кнопки корзины. */
 export function itemsWord(n) {
   return plural(n, ['позиция', 'позиции', 'позиций']);
+}
+
+/**
+ * Тело POST /api/pos/discount-approvals (№95, №100): та же скидка, что уйдёт в продажу, и сумма бара в чеке —
+ * { user_id, pin, reason_code, reason_text, percent | amount_kopecks, subtotal_kopecks }.
+ */
+export function approvalBody({ approver, pin, reason, discount, discountKopecks: kop, subtotalKopecks }) {
+  return {
+    user_id: approver,
+    pin,
+    reason_code: reason.code,
+    reason_text: reason.text,
+    ...(discount.type === 'percent' ? { percent: Number(discount.value) } : { amount_kopecks: kop }),
+    subtotal_kopecks: subtotalKopecks,
+  };
 }
 
 /** Ответ POST /api/pos/discount-approvals словами: 401 — неверный PIN, 403 — не управляющий, 429 — PIN заблокирован. */

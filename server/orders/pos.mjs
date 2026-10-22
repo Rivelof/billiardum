@@ -83,9 +83,10 @@ async function enqueueKktReceipt(db, deps, args) {
 /** Строки продажи с данными заказа (для чека, склада, возврата). */
 async function loadSaleItems(db, saleId, { lockOrders = false } = {}) {
   const { rows } = await db.query(
-    `select si.*, oi.name, oi.qty as item_qty, oi.product_id, oi.stock_factor::text as stock_factor, oi.track_stock, oi.vat_code,
+    `select si.*, oi.name, coalesce(oi.product_name, p.name) as product_name, oi.qty as item_qty, oi.product_id, oi.stock_factor::text as stock_factor, oi.track_stock, oi.vat_code,
             oi.payment_subject, oi.is_alcohol, oi.amount_kopecks as item_amount
        from bl.pos_sale_items si join bl.order_items oi on oi.id = si.order_item_id join bl.orders o on o.id = si.order_id
+       join bl.products p on p.id = oi.product_id
       where si.sale_id = $1
       order by o.created_at, o.id, oi.position`,
     [saleId],
@@ -168,6 +169,8 @@ export async function saleView(db, saleId, { confirmation = null } = {}) {
       id: i.id,
       order_id: i.order_id,
       order_item_id: i.order_item_id,
+      product_id: i.product_id,
+      product_name: i.product_name,
       name: i.name,
       qty: i.qty,
       amount_kopecks: i.amount_kopecks,
@@ -263,7 +266,7 @@ export async function createSale(db, deps, info) {
   let approval = null;
   if (b.discount?.approval_id !== undefined && b.discount?.approval_id !== null) {
     if (discount <= 0) throw bad('discount.approval_id без скидки');
-    approval = await useApproval(db, { approvalId: b.discount.approval_id, discount: b.discount, at });
+    approval = await useApproval(db, { approvalId: b.discount.approval_id, discount: b.discount, discountKopecks: discount, subtotal: barSubtotal, at });
     reason = approval.reason_text;
   }
   if (over && !approval) {

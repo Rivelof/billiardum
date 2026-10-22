@@ -188,6 +188,7 @@ export async function resolveItems(db, { clubId, items, audience, defaultVat }) 
     const name = [p.name, ...mods.map((m) => m.name)].join(', ').slice(0, 128);
     return {
       product_id: p.id,
+      product_name: p.name,
       name,
       qty: w.qty,
       unit_price_kopecks: unit,

@@ -2,18 +2,20 @@
 //
 // * GET /api/clubs/{club}/staff/approvers — кто может подтвердить: управляющие и владельцы клуба
 //   с заданным PIN ([{user_id, name, role}]).
-// * POST /api/pos/discount-approvals {user_id, pin, reason_code, reason_text, percent | amount_kopecks}
-//   → {approval_id, expires_at}: одноразовое подтверждение на 5 минут. PIN проверяет core
+// * POST /api/pos/discount-approvals {user_id, pin, reason_code, reason_text, percent | amount_kopecks, subtotal_kopecks}
+//   → {approval_id, expires_at, subtotal_kopecks, max_discount_kopecks}: одноразовое подтверждение на 5 минут. PIN проверяет core
 //   (checkStaffPin из server/auth, роли owner и manager): своя транзакция, общий счётчик ошибок
 //   с входом по PIN — 5 ошибок подряд блокируют PIN на 15 минут. Неверный PIN — 401, не
 //   управляющий — 403, блокировка — 429 с Retry-After.
 // * В продаже: discount.approval_id — подтверждение той же скидки (процент или сумма), не
 //   использованное и не истёкшее; журнал manual.discount — от имени управляющего с его причиной,
-//   тревога владельцу (useApproval вызывает касса, pos.mjs).
+//   тревога владельцу (useApproval вызывает касса, pos.mjs). Одобрение привязано к сумме корзины
+//   (№100): корзина больше одобренной или скидка в копейках больше одобренной — 403.
 
 import { checkStaffPin } from '../auth/index.mjs';
 import { PIN } from '../auth/pin.mjs';
 import { PosError } from './errors.mjs';
+import { discountKopecks } from './money.mjs';
 import { isUuid, MANAGER_ROLES } from './core.mjs';
 
 export const APPROVAL_TTL_MS = 5 * 60_000;
@@ -57,6 +59,11 @@ export async function createApproval(db, deps, info, { pool, withContext, pepper
   if (!reasonText) throw new PosError('reason_required', 'reason_text');
   if (reasonText.length > 2000) throw new PosError('bad_request', 'reason_text');
   const { percent, amount } = parseDiscount(b);
+  // Сумма корзины (бар), на которую дана скидка (№100): одобрение не переносится на корзину крупнее.
+  const subtotal = b.subtotal_kopecks;
+  if (!Number.isSafeInteger(subtotal) || subtotal < 1 || subtotal > 100_000_000) throw new PosError('bad_request', 'subtotal_kopecks');
+  if (amount !== null && amount > subtotal) throw new PosError('bad_request', 'скидка больше суммы корзины');
+  const maxDiscount = percent !== null ? discountKopecks({ percent }, subtotal) : amount;
   const clubId = info.clubId;
   const now = deps.clock.now();
   const check = await checkStaffPin({ pool, withContext, clubId, userId: approverId, pin, roles: [...MANAGER_ROLES], pepper, now });
@@ -69,9 +76,10 @@ export async function createApproval(db, deps, info, { pool, withContext, pepper
   }
   const expiresAt = new Date(now.getTime() + APPROVAL_TTL_MS);
   const { rows: ins } = await db.query(
-    `insert into bl.pos_discount_approvals (club_id, approver_id, requested_by, reason_code, reason_text, percent, amount_kopecks, expires_at, created_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
-    [clubId, approverId, info.userId, reasonCode, reasonText, percent, amount, expiresAt, now],
+    `insert into bl.pos_discount_approvals (club_id, approver_id, requested_by, reason_code, reason_text, percent, amount_kopecks,
+                                            subtotal_kopecks, max_discount_kopecks, expires_at, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
+    [clubId, approverId, info.userId, reasonCode, reasonText, percent, amount, subtotal, maxDiscount, expiresAt, now],
   );
   const approvalId = ins[0].id;
   await deps.audit.appendAudit(db, {
@@ -79,12 +87,12 @@ export async function createApproval(db, deps, info, { pool, withContext, pepper
     objectType: 'pos_discount_approval',
     objectId: approvalId,
     reason: reasonText,
-    data: { approval_id: approvalId, reason_code: reasonCode, percent, amount_kopecks: amount, requested_by: info.userId },
+    data: { approval_id: approvalId, reason_code: reasonCode, percent, amount_kopecks: amount, subtotal_kopecks: subtotal, max_discount_kopecks: maxDiscount, requested_by: info.userId },
     actorType: 'user',
     actorId: approverId,
   });
   deps.log?.info?.('discount_approval', { club_id: clubId, approval_id: approvalId });
-  return { approval_id: approvalId, expires_at: expiresAt.toISOString() };
+  return { approval_id: approvalId, expires_at: expiresAt.toISOString(), subtotal_kopecks: subtotal, max_discount_kopecks: maxDiscount };
 }
 
 /**
@@ -92,7 +100,7 @@ export async function createApproval(db, deps, info, { pool, withContext, pepper
  * отмечает использование. Неверное, чужое, истёкшее или использованное — 403 forbidden.
  * @returns {Promise<{ id, approver_id, reason_code, reason_text }>}
  */
-export async function useApproval(db, { approvalId, discount, at }) {
+export async function useApproval(db, { approvalId, discount, discountKopecks: applied, subtotal, at }) {
   if (!isUuid(approvalId)) throw new PosError('bad_request', 'discount.approval_id');
   const { rows } = await db.query('select * from bl.pos_discount_approvals where id = $1 for update', [approvalId]);
   const a = rows[0];
@@ -102,6 +110,9 @@ export async function useApproval(db, { approvalId, discount, at }) {
   const samePercent = a.percent !== null && discount?.percent === a.percent && (discount.amount_kopecks === undefined || discount.amount_kopecks === null);
   const sameAmount = a.amount_kopecks !== null && discount?.amount_kopecks === Number(a.amount_kopecks) && (discount.percent === undefined || discount.percent === null);
   if (!samePercent && !sameAmount) throw new PosError('forbidden', 'approval: другая скидка');
+  // №100: корзина не крупнее одобренной, скидка в копейках не больше одобренной.
+  if (subtotal > Number(a.subtotal_kopecks)) throw new PosError('forbidden', 'approval: корзина больше одобренной');
+  if (applied > Number(a.max_discount_kopecks)) throw new PosError('forbidden', 'approval: скидка больше одобренной');
   return {
     id: a.id,
     approver_id: a.approver_id,

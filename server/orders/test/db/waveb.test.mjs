@@ -37,7 +37,7 @@ const sale = (token, body) => post('/api/pos/sales', token, body, newKey());
 
 describe('скидка по PIN управляющего (№95)', { skip: SKIP }, () => {
   const approve = (body) => post('/api/pos/discount-approvals', reception.token, {
-    user_id: MANAGER_ID, pin: '2468', reason_code: 'regular_guest', reason_text: 'Постоянный гость', amount_kopecks: 5000, ...body,
+    user_id: MANAGER_ID, pin: '2468', reason_code: 'regular_guest', reason_text: 'Постоянный гость', amount_kopecks: 5000, subtotal_kopecks: 18000, ...body,
   });
 
   it('кто подтверждает: управляющие и владельцы с PIN', async () => {
@@ -57,9 +57,14 @@ describe('скидка по PIN управляющего (№95)', { skip: SKIP 
   });
 
   it('подтверждённая скидка выше лимита: продажа ресепшна проходит, журнал от управляющего, тревога владельцу', async () => {
+    assert.equal((await approve({ subtotal_kopecks: undefined })).status, 400, 'без суммы корзины одобрения нет (№100)');
     const ap = await approve({});
     assert.equal(ap.status, 201, JSON.stringify(ap.json));
     assert.ok(ap.json.approval_id);
+    assert.deepEqual([ap.json.subtotal_kopecks, ap.json.max_discount_kopecks], [18000, 5000]);
+    // №100 (pentester L1): одобрение на корзину 180 ₽ не применяется к корзине крупнее.
+    const big = await sale(reception.token, { items: [{ product_id: P.nuts, qty: 2 }], method: 'card_terminal', discount: { amount_kopecks: 5000, approval_id: ap.json.approval_id } });
+    assert.deepEqual([big.status, big.json.error], [403, 'forbidden']);
     const [m] = await h.q('select pin_failed_count from bl.club_members where club_id = $1 and user_id = $2', [CLUB_A, MANAGER_ID]);
     assert.equal(m.pin_failed_count, 0, 'верный PIN сбрасывает счётчик');
     // Без подтверждения ресепшну — limit_exceeded.
@@ -84,7 +89,7 @@ describe('скидка по PIN управляющего (№95)', { skip: SKIP 
   });
 
   it('подтверждение истекает через 5 минут', async () => {
-    const ap = await approve({ amount_kopecks: undefined, percent: 30 });
+    const ap = await approve({ amount_kopecks: undefined, percent: 30, subtotal_kopecks: 9000 });
     assert.equal(ap.status, 201);
     await h.q("update bl.pos_discount_approvals set created_at = now() - interval '10 minutes', expires_at = now() - interval '5 minutes' where id = $1", [ap.json.approval_id]);
     const r = await sale(reception.token, { items: [{ product_id: P.water, qty: 1 }], method: 'card_terminal', discount: { percent: 30, approval_id: ap.json.approval_id } });
@@ -99,6 +104,21 @@ describe('скидка по PIN управляющего (№95)', { skip: SKIP 
     assert.equal(locked.status, 429);
     assert.ok(Number(locked.headers.get('retry-after')) > 800);
     await h.q('update bl.club_members set pin_locked_until = null, pin_failed_count = 0 where club_id = $1 and user_id = $2', [CLUB_A, MANAGER_ID]);
+  });
+});
+
+describe('одобрение процентом и сумма корзины (№100)', { skip: SKIP }, () => {
+  it('«50 %» на маленькую корзину: к крупной — 403, к такой же или меньшей — применяется', async () => {
+    const mk = () => post('/api/pos/discount-approvals', reception.token, {
+      user_id: MANAGER_ID, pin: '2468', reason_code: 'promo', reason_text: 'Акция', percent: 50, subtotal_kopecks: 18000,
+    });
+    const a1 = await mk();
+    assert.deepEqual([a1.status, a1.json.max_discount_kopecks], [201, 9000]);
+    const big = await sale(reception.token, { items: [{ product_id: P.water, qty: 10 }], method: 'card_terminal', discount: { percent: 50, approval_id: a1.json.approval_id } });
+    assert.deepEqual([big.status, big.json.error], [403, 'forbidden'], '90 000 коп. корзины при одобрении на 18 000');
+    const small = await sale(reception.token, { items: [{ product_id: P.water, qty: 1 }], method: 'card_terminal', discount: { percent: 50, approval_id: a1.json.approval_id } });
+    assert.equal(small.status, 201, JSON.stringify(small.json));
+    assert.equal(small.json.discount_kopecks, 4500);
   });
 });
 

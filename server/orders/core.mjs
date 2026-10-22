@@ -130,12 +130,12 @@ export async function insertOrder(db, o, lines) {
   const items = [];
   for (const [position, l] of lines.entries()) {
     const r = await db.query(
-      `insert into bl.order_items (club_id, order_id, position, product_id, name, qty, unit_price_kopecks, amount_kopecks, modifiers, stock_factor,
-                                   track_stock, is_alcohol, vat_code, payment_subject, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::numeric, $11, $12, $13, $14, $15)
+      `insert into bl.order_items (club_id, order_id, position, product_id, product_name, name, qty, unit_price_kopecks, amount_kopecks, modifiers,
+                                   stock_factor, track_stock, is_alcohol, vat_code, payment_subject, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::numeric, $12, $13, $14, $15, $16)
        returning *, stock_factor::text as stock_factor`,
-      [o.clubId, order.id, position, l.product_id, l.name, l.qty, l.unit_price_kopecks, l.amount_kopecks, JSON.stringify(l.modifiers), l.stock_factor,
-        l.track_stock, l.is_alcohol, l.vat_code, l.payment_subject, o.at],
+      [o.clubId, order.id, position, l.product_id, l.product_name ?? null, l.name, l.qty, l.unit_price_kopecks, l.amount_kopecks,
+        JSON.stringify(l.modifiers), l.stock_factor, l.track_stock, l.is_alcohol, l.vat_code, l.payment_subject, o.at],
     );
     items.push(r.rows[0]);
   }
@@ -151,7 +151,9 @@ export async function loadOrders(db, ids, { lock = false } = {}) {
     [ids],
   );
   const items = await db.query(
-    'select *, stock_factor::text as stock_factor from bl.order_items where order_id = any($1::uuid[]) order by order_id, position',
+    `select oi.*, oi.stock_factor::text as stock_factor, coalesce(oi.product_name, p.name) as product_name
+       from bl.order_items oi join bl.products p on p.id = oi.product_id
+      where oi.order_id = any($1::uuid[]) order by oi.order_id, oi.position`,
     [ids],
   );
   const byOrder = new Map();
@@ -182,6 +184,7 @@ export function orderView(o, { staff = false } = {}) {
     items: (o.items ?? []).map((i) => ({
       id: i.id,
       product_id: i.product_id,
+      product_name: i.product_name ?? null,
       name: i.name,
       qty: i.qty,
       unit_price_kopecks: Number(i.unit_price_kopecks),

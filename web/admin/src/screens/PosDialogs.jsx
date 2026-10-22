@@ -9,7 +9,7 @@ import { Keypad, PIN_KEYS } from '../components/Keypad.jsx';
 import { CashEntry, cashState } from '../components/CashEntry.jsx';
 import { QrCode } from '../components/QrCode.jsx';
 import { api, newIdempotencyKey } from '../lib/api.js';
-import { approvalError, discountKopecks, discountPercent, normalizeSale, overLimit, receiptView, saleBody, saleTotals, wholeDiscount } from '../lib/pos.js';
+import { approvalBody, approvalError, discountKopecks, discountPercent, normalizeSale, overLimit, receiptView, saleBody, saleTotals, wholeDiscount } from '../lib/pos.js';
 import { keypad, parseRubles } from '../lib/cash.js';
 import { normalizePhone } from '../lib/auth.js';
 import { linkHandler } from '../lib/router.js';
@@ -166,14 +166,9 @@ export function DiscountDialog({ open, clubId, base, limit, current, bigAllowed,
     setBusy(true);
     setError(null);
     try {
-      // Та же скидка, что уйдёт в продажу: сервер сверяет percent или amount_kopecks с подтверждением (№95)
-      const a = await api.approveDiscount({
-        user_id: approver,
-        pin,
-        reason_code: why.code,
-        reason_text: why.text,
-        ...(d.type === 'percent' ? { percent: d.value } : { amount_kopecks: kop }),
-      });
+      // Та же скидка и та же корзина, что уйдут в продажу: сервер сверяет percent | amount_kopecks (№95)
+      // и не пускает корзину крупнее одобренной или скидку больше max_discount_kopecks (№100)
+      const a = await api.approveDiscount(approvalBody({ approver, pin, reason: why, discount: d, discountKopecks: kop, subtotalKopecks: base }));
       const who = approvers?.find((u) => u.user_id === approver);
       onApply({ ...result, reason: why, approval: { ...a, approved_by: { user_id: approver, name: who?.name ?? null }, base_kopecks: base, discount_kopecks: kop } });
     } catch (err) {
@@ -335,7 +330,7 @@ const TITLES = { cash: 'Оплата наличными', card_terminal: 'Опл
  * Оплата чека (контракт m2 §4–§5). Наличные — ввод суммы и сдача крупно; карта — через терминал клуба;
  * СБП — QR из ответа API (confirmation_data), ожидание по SSE `sale` и опросу. После оплаты — состояние чека ККТ.
  */
-export function PayDialog({ method, cart, discount, toBar, kktOnline, clubId, liveTick, onClose, onDone, onShiftClosed, onAbandon }) {
+export function PayDialog({ method, cart, discount, toBar, kktOnline, clubId, liveTick, onClose, onDone, onShiftClosed, onAbandon, onReapprove }) {
   const open = Boolean(method);
   const [received, setReceived] = useState('');
   const [busy, setBusy] = useState(false);
@@ -362,8 +357,9 @@ export function PayDialog({ method, cart, discount, toBar, kktOnline, clubId, li
       if (method === 'sbp' && normalizePhone(phone)) body.customer_phone = normalizePhone(phone);
       setSale(normalizeSale(await api.sale(body, key.current)));
     } catch (err) {
-      // Подтверждение управляющего истекло (5 минут), уже использовано или скидка изменилась — 403
-      setError(err?.code === 'forbidden' && discount?.approval ? { code: 'approval_invalid' } : err);
+      // Подтверждение управляющего истекло (5 минут), использовано, корзина крупнее одобренной или скидка больше — 403 (№100)
+      // Скидка выше лимита без подтверждения (сняли старое) — 403 limit_exceeded: просим PIN управляющего
+      setError(err?.code === 'forbidden' && discount?.approval ? { code: 'approval_invalid' } : err?.code === 'limit_exceeded' && discount ? { code: 'approval_required' } : err);
       if (err?.code === 'shift_closed') onShiftClosed?.();
     } finally {
       setBusy(false);
@@ -535,6 +531,10 @@ export function PayDialog({ method, cart, discount, toBar, kktOnline, clubId, li
             <a class="btn btn--secondary btn--sm" href={`${BASE}c/${encodeURIComponent(clubId)}/shift`} onClick={linkHandler}>
               Открыть смену
             </a>
+          ) : (error?.code === 'approval_invalid' || error?.code === 'approval_required') && onReapprove ? (
+            <button type="button" class="btn btn--secondary btn--sm" onClick={onReapprove}>
+              {error.code === 'approval_invalid' ? 'Подтвердить скидку заново' : 'Подтвердить скидку'}
+            </button>
           ) : null}
         </ErrorNote>
 

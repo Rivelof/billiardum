@@ -51,6 +51,7 @@ describe('заказ со стола в счёт стола', { skip: SKIP }, ()
     // Американо 0,4 л: 180 + 40 = 220 ₽ × 2; сахар по умолчанию — «Без сахара».
     assert.equal(o.subtotal_kopecks, 2 * 22000 + 9000);
     assert.equal(o.items[0].name, 'Американо, 0,4 л, Без сахара');
+    assert.equal(o.items[0].product_name, 'Американо');
     assert.equal(o.status, 'new');
     assert.equal(o.paid, false);
     assert.equal(o.resource.number, 1);
