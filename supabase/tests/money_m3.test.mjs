@@ -9,10 +9,10 @@ import { routes as quoteRoutes } from '../../api/routes/quotes.mjs';
 import { routes as packageRoutes } from '../../api/routes/packages.mjs';
 import { routes as receptionRoutes } from '../../api/routes/reception.mjs';
 import { routes as webhookRoutes } from '../../api/routes/webhooks.mjs';
-import { createBookingQuote, createPrepayment, creditPackageForSale, revokeLotOnly, revokePackageLot, debitBalance, forfeitPrepayment, packageSaleLine, recordOfflinePayment, settleDeposit, settlePrepayment } from '../../server/payments/api.mjs';
+import { createBookingQuote, createPrepayment, creditPackageForSale, onlineMethodAvailable, revokeLotOnly, revokePackageLot, debitBalance, forfeitPrepayment, packageSaleLine, recordOfflinePayment, settleDeposit, settlePrepayment } from '../../server/payments/api.mjs';
 import { resolveDeps } from '../../server/payments/deps.mjs';
 import { tick } from '../../server/payments/index.mjs';
-import { cancelLocal, NOT_FOUND_REASON, onProviderNotFound } from '../../server/payments/pay.mjs';
+import { applyRemote, cancelLocal, NOT_FOUND_REASON, onProviderNotFound } from '../../server/payments/pay.mjs';
 import { clientFor, loadPaymentSettings } from '../../server/payments/settings.mjs';
 import { sendSettlementReceipt, SETTLE_TOPIC } from '../../server/payments/settle.mjs';
 import { cashTotals } from '../../server/shifts/service.mjs';
@@ -773,6 +773,83 @@ describe('B-L1: платёж отменён у нас, а в ЮKassa оплач�
     assert.equal(guestNotes(id).length, 1);
     await webhookAgain(real, 'payment.canceled');
     assert.equal(lateAlarms(id).length, 1);
+  });
+});
+
+describe('B-R1: гонка вебхука со сверкой; доступность способа оплаты для кассы', () => {
+  it('устаревшая строка pending (сверка уже отменила по 404), ЮKassa — succeeded: всё равно автовозврат и тревога', async () => {
+    h.sessions.holds.delete(T(2));
+    const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: T(2), kind: 'start', minutes: 60 } });
+    assert.equal(q.status, 200, JSON.stringify(q.json));
+    const r = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    const id = r.json.payment_id;
+    const stale = await payment(id);
+    const shift = 61 * 60_000;
+    h.clock.advance(shift);
+    try {
+      // Сверка без повторного запроса (client не передан) отменяет по 404.
+      await asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, async (db) => onProviderNotFound(db, deps, await payment(id), { source: 'test' }));
+      assert.equal((await payment(id)).status, 'canceled');
+      const remote = {
+        id: stale.provider_payment_id,
+        status: 'succeeded',
+        amount: { value: (Number(stale.amount_kopecks) / 100).toFixed(2), currency: 'RUB' },
+        metadata: { club_id: CLUB_A, quote_id: stale.quote_id },
+        receipt_registration: 'succeeded',
+      };
+      const calls = [];
+      const client = { createRefund: async (_body, key) => (calls.push(key), { id: `rf-${newKey().slice(0, 12)}`, status: 'succeeded', receipt_registration: 'succeeded' }) };
+      const out = await asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) => applyRemote(db, deps, stale, remote, { source: 'race', client }));
+      assert.equal(out.result, 'late_refund');
+      assert.deepEqual(calls, [`late-${id}`]);
+      assert.equal(h.alarms.items.filter((a) => a.type === 'payment_paid_after_cancel' && a.data.payment_id === id).length, 1);
+      assert.equal((await payment(id)).status, 'canceled');
+    } finally {
+      h.clock.advance(-shift);
+    }
+  });
+
+  it('вебхук берёт строку платежа FOR UPDATE: пока сверка держит строку, вебхук ждёт', async () => {
+    h.sessions.holds.delete(T(2));
+    const q = await h.call(QUOTE, { user: GUEST_2, body: { resource_id: T(2), kind: 'start', minutes: 60 } });
+    const r = await h.call(PAY, { user: GUEST_2, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    await emuSucceed(r.json.payment_id);
+    const p = await payment(r.json.payment_id);
+    assert.equal(p.status, 'succeeded');
+    const holder = await h.pool.connect();
+    let done = false;
+    try {
+      await holder.query('begin');
+      await holder.query('select id from bl.payments where id = $1 for update', [p.id]);
+      const hook = h
+        .call(WEBHOOK, { params: { club_id: CLUB_A }, body: { type: 'notification', event: 'payment.succeeded', object: { id: p.provider_payment_id } }, actor: 'system' })
+        .then((x) => {
+          done = true;
+          return x;
+        });
+      await new Promise((res) => setTimeout(res, 300));
+      assert.equal(done, false, 'вебхук ждёт блокировку строки');
+      await holder.query('commit');
+      assert.equal((await hook).status, 200);
+    } finally {
+      holder.release();
+    }
+  });
+
+  it('onlineMethodAvailable: магазин есть и способ включён — true; выключен, неизвестный способ — false', async () => {
+    const check = (method, club = CLUB_A) => asClub((db) => onlineMethodAvailable(db, { clubId: club, method }), RECEPTION_A);
+    assert.equal(await check('sbp'), true);
+    assert.equal(await check('card'), true);
+    assert.equal(await check('cash'), false);
+    assert.equal(await check('qr'), false);
+    await h.pool.query('update bl.club_payment_settings set sbp_enabled = false where club_id = $1', [CLUB_A]);
+    try {
+      assert.equal(await check('sbp'), false);
+      assert.equal(await check('card'), true);
+    } finally {
+      await h.pool.query('update bl.club_payment_settings set sbp_enabled = true where club_id = $1', [CLUB_A]);
+    }
+    await assert.rejects(asClub((db) => onlineMethodAvailable(db, { clubId: 'x', method: 'sbp' })), (e) => e.code === 'bad_request');
   });
 });
 
