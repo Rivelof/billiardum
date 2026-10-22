@@ -16,7 +16,7 @@ let manager;
 let reception;
 
 before(async () => {
-  t = await startTestApp();
+  t = await startTestApp({ notifyWorker: false });
   owner = await t.login('+70000000001');
   manager = await t.login('+70000000003');
   reception = await t.login('+70000000004');

@@ -19,7 +19,8 @@ let t;
 let owner;
 
 before(async () => {
-  t = await startTestApp({ config: { publicHost: 'bl.test' } });
+  // Telegram приложения настроен (каналы для PATCH /api/me, №130); доставку тесты делают своим notifier.
+  t = await startTestApp({ config: { publicHost: 'bl.test' }, telegram: { configured: true, call: async () => ({ ok: true }) }, notifyWorker: false });
   await seedClubB(t.admin);
   owner = await t.login('+70000000001');
 });
@@ -162,6 +163,24 @@ describe('утренняя сводка (№110): 10:00 по времени кл
   });
 });
 
+describe('сводка: время раньше конца рабочих суток, неактивный клуб (№130 п. 15)', () => {
+  it('summary_time_local 05:00 при day_start 06:00 — сводка ждёт 06:00; неактивный клуб без сводки', async () => {
+    await t.admin.query(`update bl.clubs set settings = coalesce(settings, '{}'::jsonb) || '{"summary_time_local":"05:00","day_start_local":"06:00"}' where id = $1`, [CLUB_B]);
+    try {
+      // Владивосток (UTC+10): 2030-01-10 05:30 и 06:00 местного; Екатеринбургу ещё ночь.
+      const at530 = { now: () => new Date('2030-01-09T19:30:00Z') };
+      const at600 = { now: () => new Date('2030-01-09T20:00:00Z') };
+      assert.deepEqual((await tick({ pool: t.pool, clock: at530, log: t.log })).sent, [], 'рабочие сутки ещё не закончились');
+      assert.deepEqual((await tick({ pool: t.pool, clock: at600, log: t.log })).sent, [{ club_id: CLUB_B, day: '2030-01-09' }]);
+      await t.admin.query('update bl.clubs set active = false where id = $1', [CLUB_B]);
+      const nextDay = { now: () => new Date('2030-01-11T00:00:00Z') };
+      assert.deepEqual((await tick({ pool: t.pool, clock: nextDay, log: t.log })).sent.filter((x) => x.club_id === CLUB_B), [], 'неактивный клуб пропущен');
+    } finally {
+      await t.admin.query("update bl.clubs set active = true, settings = settings - 'summary_time_local' - 'day_start_local' where id = $1", [CLUB_B]);
+    }
+  });
+});
+
 describe('персонал (№111)', () => {
   const PHONE = '+79990009001';
   let inviteId;
@@ -241,6 +260,34 @@ describe('персонал (№111)', () => {
   });
 });
 
+describe('отзыв сотрудника двух клубов (№130 п. 11, ревью входа п. 5)', () => {
+  it('отзыв в клубе A: PIN-токены и терминалы A погашены, личный вход остаётся для клуба B; отзыв в B — личный тоже', async () => {
+    const u = await t.login('+79990009100');
+    const id = u.user.id;
+    await t.admin.query("insert into bl.club_members (club_id, user_id, role) values ($1, $3, 'manager'), ($2, $3, 'reception')", [CLUB_A, CLUB_B, id]);
+    const term = await t.request('POST', '/api/staff/terminal', { token: u.token, body: { club_id: CLUB_A, name: 'Стойка менеджера' } });
+    assert.equal(term.status, 200);
+    assert.equal((await t.request('PUT', '/api/staff/pin', { token: u.token, body: { club_id: CLUB_A, pin: '271828' } })).status, 200);
+    const ownerTerm = await t.request('POST', '/api/staff/terminal', { token: owner.token, body: { club_id: CLUB_A, name: 'Стойка владельца' } });
+    const pin = await t.request('POST', '/api/staff/pin', { token: ownerTerm.json.terminal_token, body: { user_id: id, pin: '271828' } });
+    assert.equal(pin.status, 200);
+
+    const res = await t.request('DELETE', `/api/clubs/${CLUB_A}/staff/${id}`, { token: owner.token });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.terminals_revoked, 1);
+    assert.equal((await t.request('GET', '/api/me', { token: pin.json.token })).status, 401, 'PIN-токен клуба A');
+    assert.equal((await t.request('GET', '/api/staff/terminal', { token: term.json.terminal_token })).status, 401, 'терминал, заведённый сотрудником');
+    assert.equal((await t.request('GET', '/api/staff/terminal', { token: ownerTerm.json.terminal_token })).status, 200, 'чужой терминал работает');
+    const me = await t.request('GET', '/api/me', { token: u.token });
+    assert.equal(me.status, 200, 'личный вход остаётся: есть членство в клубе B');
+    assert.deepEqual(me.json.clubs.map((c) => [c.club_id, c.role]), [[CLUB_B, 'reception']]);
+
+    const ownerB = await t.login('+70000000002');
+    assert.equal((await t.request('DELETE', `/api/clubs/${CLUB_B}/staff/${id}`, { token: ownerB.token })).status, 200);
+    assert.equal((await t.request('GET', '/api/me', { token: u.token })).status, 401, 'других членств нет — личный вход погашен');
+  });
+});
+
 describe('запросы frontend (№120)', () => {
   it('GET /api/clubs без входа: только активные клубы, без персональных данных', async () => {
     const res = await t.request('GET', '/api/clubs');
@@ -264,10 +311,14 @@ describe('запросы frontend (№120)', () => {
     await t.admin.query('update bl.users set telegram_user_id = 777001 where id = $1', [g.user.id]);
     await t.admin.query("update bl.users set max_user_id = '900001', notify_channel = 'max', channels_order = '{max,telegram,webpush}' where id = $1", [g.user.id]);
     me = await t.request('GET', '/api/me', { token: g.token });
-    // №126: в тестовом приложении MAX — заглушка, Telegram без токена и прокси, VAPID не задан:
-    // привязанные мессенджеры не считаются подключёнными и не предлагаются; выбор гостя не тронут.
-    assert.deepEqual(me.json.user.channels, { max: false, telegram: false, webpush: true });
-    assert.deepEqual(me.json.user.channels_available, []);
+    // №126: в тестовом приложении MAX — заглушка, VAPID не задан, Telegram настроен:
+    // привязанный MAX не считается подключённым и не предлагается; выбор гостя не тронут.
+    assert.deepEqual(me.json.user.channels, { max: false, telegram: true, webpush: true });
+    assert.deepEqual(me.json.user.channels_available, ['telegram']);
+    // №130: в PATCH — только предлагаемые каналы.
+    for (const body of [{ notify_channel: 'max' }, { notify_channel: 'webpush' }, { channels_order: ['telegram', 'max'] }]) {
+      assert.equal((await t.request('PATCH', '/api/me', { token: g.token, body })).status, 400, JSON.stringify(body));
+    }
     assert.equal(me.json.user.notify_channel, 'max');
     assert.deepEqual(me.json.user.channels_order, ['max', 'telegram', 'webpush']);
     await t.admin.query('update bl.push_subscriptions set revoked_at = now() where user_id = $1', [g.user.id]);

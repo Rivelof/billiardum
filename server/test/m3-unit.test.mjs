@@ -11,6 +11,10 @@ describe('цепочка и сводка', () => {
     const route = { telegram_user_id: 1, max_user_id: 'm', notify_channel: 'telegram' };
     assert.deepEqual(channelChain({ ...route, channels_order: ['webpush', 'max'] }, true), ['webpush', 'max']);
     assert.deepEqual(channelChain({ ...route, channels_order: ['webpush', 'max'] }, false), ['max']);
+    // №130: critical и important — после выбранных ещё и остальные доступные; info — только выбранные.
+    assert.deepEqual(channelChain({ ...route, channels_order: ['webpush'] }, true, 'important'), ['webpush', 'max', 'telegram']);
+    assert.deepEqual(channelChain({ ...route, channels_order: ['webpush'] }, true, 'critical'), ['webpush', 'max', 'telegram']);
+    assert.deepEqual(channelChain({ ...route, channels_order: ['webpush'] }, true, 'info'), ['webpush']);
     assert.deepEqual(channelChain(route, true), ['telegram', 'max', 'webpush']);
   });
 

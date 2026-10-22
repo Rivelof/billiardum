@@ -30,21 +30,27 @@
 
 `interrupted` — контроллер подтвердил свет до `device_paid_until`, а оплачено больше чем на 60 с: так бывает, если продление оплачено без связи и связь не вернулась до локального конца (T6). Ставится при возвращении контроллера (по `device_paid_until + grace_ms`), по событию `offline_session_finished` или планировщиком в момент закрытия. Свет сам не возвращается; плательщику уведомление `session.interrupted`. Выбор ждёт 24 часа (decisions №65), затем планировщик сам возвращает деньги за неотыгранное (больше 60 с; журнал `session.resolve` с `auto: true`, уведомление `session.refunded`). `resolve`: `continue` — `paid_until = now + неотыгранное`, `session.start`; `refund` — возврат долей с последних платежей (`payments.refund`), «Без лимита» — закрытие по `device_paid_until` (money спишет фактическое). `interrupted` стол не держит.
 
+Бронь следующего гостя (№129): оплата старта и продления, повторное открытие и `continue` не заходят дальше её начала минус 5 минут — `paid_until` обрезается, лишнее возвращается частичным возвратом (`payments.refund`, причина `booking_conflict`, ключ `booking-cut-{payment_id}`; для `continue` — доли платежей с конца), журнал `session.booking_cut`, гостю уведомление `session.booking_cut` («Стол N: забронирован на HH:MM, вернули … за M минут»). До брони меньше минуты — полный возврат (`session.start_rejected`, reason `booking`), `continue` — `booking_conflict`. Депозит: до брони меньше минимума тарифа — `booking_conflict`, иначе минут не больше, чем до брони. `holdPending` владельцу брони (удержание `reserved`, source `booking`) — `booking_start_required` с `booking_id`: игра по брони начинается через booking. `clearReserved({ resourceId, source?, refId? })` снимает только совпадающее удержание. Бронь по телефону (`user_id` null) держит стол и для депозита, и для чужого `startFromBooking`.
+
+«Я играю» (`POST /api/sessions/{id}/join`) — только с кодом стола в теле `{ code }` (из QR): код не этого стола — `not_found`, без кода — `bad_request`.
+
 `cancelled` — все платежи сессии возвращены (outbox `payment.refunded`, сверка по `bl.refunds`): свет гаснет `session.stop`.
 
 ## Актуальное состояние стола (после `boot`, выхода онлайн, расхождения)
 
 Идёт сессия: контроллер её ведёт → `session.resume` (остаток по `paid_until`); не ведёт, но по подтверждённому остатку ещё должен гореть (перезагрузка, T7) → `session.resume`; уже доиграл сам → `interrupted` или `session.resume` с остатком льготы. Контроллер ведёт сессию, которой нет в базе → `session.stop` (`not_paid`). Иначе `service.start` (остаток), `service.stop`, `state.pending`/`state.reserved` (остаток удержания), `state.free`. Команды, поставленные пока устройство было офлайн, помечаются `superseded`.
 
+Мост (`server/mqtt.mjs`): без связи с брокером ничего не публикует; при обрыве неподтверждённые команды — `abandoned`, очереди сброшены, исходящие QoS 1 библиотеки mqtt удалены; после переподключения онлайн-столам — актуальное состояние. `config.set` после офлайна досылается новой командой (новый seq и `device.cmd` в журнале). Ошибка базы при отправке не теряет команду: повтор через 5 с, после 5 ошибок подряд — `cancelled` и актуальное состояние. Sweep раз в 5 с дочитывает `queued` онлайн-устройств (страховка от потерянного NOTIFY); LISTEN проверяется `select 1` раз в 30 с. Часовой пояс клуба, которого не знает Intl, — тихие часы по UTC и тревога `club_timezone_invalid`.
+
 Объект `session` (контракт §14): `club: {id, timezone}`, `resource: {id, number, type, title}`. Чек сессии: `receipt_status` — итог по `receiptStatus` money (есть `failed` → `failed`; есть `pending`/`receipt_pending` → `pending`; все `succeeded` → `succeeded`; иначе `none`), у каждого платежа — свой `receipt_status`. Сервисный свет: `reason_code` — `cleaning`, `repair`, `training`, `other` (другой — `bad_request`), `reason_text` обязателен.
 
 ## Тревоги (`alarms.raise`, уровни PRODUCT §8 и decisions №66)
 
-`bypass_detected`, `relay_fault`, `bad_sig`, `light_without_session`, `state_mismatch` (state ≠ база > 10 с), `device_offline` (офлайн во время сессии > 120 с), `service_light`, `manual_action`, `payment_unapplied` — `critical`; `lamp_fault`, `replayed_seq`, `events_dropped`, `ota_failed`, `offline_resume_denied`, `cmd_no_ack`, `payment_conflict` — `important`. Ручные действия владельцу уведомляет core всегда (`raise`, manual), со своим текстом light.
+`bypass_detected`, `relay_fault`, `bad_sig`, `light_without_session`, `state_mismatch` (state ≠ база > 10 с), `device_offline` (офлайн во время сессии > 120 с), `service_light`, `manual_action`, `payment_unapplied` — `critical`; `lamp_fault`, `replayed_seq`, `events_dropped`, `ota_failed`, `offline_resume_denied`, `cmd_no_ack`, `payment_conflict`, `club_timezone_invalid` — `important`. Ручные действия владельцу уведомляет core всегда (`raise`, manual), со своим текстом light.
 
 ## Журнал
 
-`device.cmd`, `device.event` (один раз по `(device_id, boot_id, n)`), `device.state_mismatch`, `device.seq_sync`, `device.bind`, `device.claim`, `session.start`, `session.extend`, `session.stop`, `session.close`, `session.interrupted`, `session.resolve`, `session.start_rejected`, `service.start`, `service.stop` (причина — своя или причина включения), `manual.extend_free`.
+`device.cmd`, `device.event` (один раз по `(device_id, boot_id, n)`), `device.state_mismatch`, `device.seq_sync`, `device.bind`, `device.claim`, `session.start`, `session.extend`, `session.stop`, `session.close`, `session.interrupted`, `session.resolve`, `session.start_rejected`, `session.booking_cut`, `service.start`, `service.stop` (причина — своя или причина включения), `manual.extend_free`.
 
 ## Настройки клуба (`clubs.settings`)
 

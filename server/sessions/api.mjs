@@ -9,6 +9,8 @@
 //   holdPending(db, { resourceId, userId, until }) → { ok: true, hold_id, until }
 //       ошибка — LightError с code table_busy | table_pending | table_offline | table_service
 //       (status 409), not_found (404), bad_request (400). Повтор тем же гостем продлевает удержание.
+//       Стол ждёт брони этого же гостя — booking_start_required (409), err.data = { booking_id }:
+//       игра по брони начинается через booking, а не обычной оплатой по QR (№128).
 //   releasePending(db, { resourceId, userId }) → { ok: true, released }
 //   getSessionForExtend(db, { sessionId, userId })
 //       → { id, club_id, resource_id, paid_until, status, is_participant, is_payer, unlimited, grace_ms } | null
@@ -18,8 +20,13 @@
 //       идемпотентно по booking.id; стол занят — LightError table_busy | table_pending | table_service.
 //   setReserved(db, { resourceId, until, userId?, source?, refId? }) → { ok, applied, until, reason? } (M3, №107, №122)
 //       source: booking (по умолчанию) | waitlist | staff; refId — бронь или запись очереди (в плане зала hold.booking_id / hold.offer_id)
-//   clearReserved(db, { resourceId }) → { ok, released }
+//   clearReserved(db, { resourceId, source?, refId? }) → { ok, released }
+//       source/refId — снять только совпадающее удержание (бронь не снимает предложение очереди).
 //   startFromDeposit(db, { resourceId, userId?, staffId, depositKopecks }) → { session_id, paid_until, minutes } (№112)
+//       Бронь ближе минимума тарифа — booking_conflict (409); иначе время не дальше брони − 5 мин (№129).
+//   Оплата start/extend (outbox payment.confirmed) тоже не заходит в бронь (№129): paid_until
+//   обрезается до её начала − 5 мин, лишнее возвращается частичным возвратом (журнал
+//   session.booking_cut, уведомление гостю); меньше минуты до брони — полный возврат.
 //
 // До init() модуля (тесты money, скрипты) работает автономный экземпляр: часы — системные,
 // онлайн контроллера — по devices.last_seen_at (не старше 150 с).

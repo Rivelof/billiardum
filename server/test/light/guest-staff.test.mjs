@@ -54,7 +54,10 @@ describe('гость и персонал', { skip: SKIP }, () => {
 
   it('стоп не плательщиком — not_payer (участник) или not_found (чужой); плательщиком — closed и session.stop', async () => {
     const sid = await start(2);
-    await h.asUser(GUEST(2), (db) => svc.join(db, { sessionId: sid, userId: GUEST(2) }));
+    // «Я играю» — только с кодом этого стола (ревью п. 9): session_id не секрет.
+    assert.equal(await code(() => h.asUser(GUEST(2), (db) => svc.join(db, { sessionId: sid, userId: GUEST(2) }))), 'bad_request');
+    assert.equal(await code(() => h.asUser(GUEST(2), (db) => svc.join(db, { sessionId: sid, userId: GUEST(2), code: 'TEST000003' }))), 'not_found');
+    await h.asUser(GUEST(2), (db) => svc.join(db, { sessionId: sid, userId: GUEST(2), code: 'test-000002' }));
     assert.equal(await code(() => h.asUser(GUEST(2), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(2) }))), 'not_payer');
     assert.equal(await code(() => h.asUser(GUEST(3), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(3) }))), 'not_found');
     const view = await h.asUser(GUEST(1), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(1) }));
@@ -66,7 +69,7 @@ describe('гость и персонал', { skip: SKIP }, () => {
     const ob = await t.q("select payload from bl.outbox where topic = 'session.closed'");
     assert.equal(ob.rows[0].payload.reason, 'stopped');
     assert.equal(await code(() => h.asUser(GUEST(1), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(1) }))), 'session_not_active');
-    assert.equal(await code(() => h.asUser(GUEST(3), (db) => svc.join(db, { sessionId: sid, userId: GUEST(3) }))), 'session_not_active');
+    assert.equal(await code(() => h.asUser(GUEST(3), (db) => svc.join(db, { sessionId: sid, userId: GUEST(3), code: 'TEST000002' }))), 'session_not_active');
   });
 
   it('GET current и session: участник видит сессию из любого клуба, чужой — not_found', async () => {

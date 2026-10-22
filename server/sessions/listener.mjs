@@ -4,16 +4,45 @@
 //   {k:'hall', c, r}           — стол изменился (удержание, сервисный свет) → SSE hall
 // Соединение отдельное и постоянное; после обрыва — переподключение и полный обход
 // (мост перечитывает очереди, планировщик — идущие сессии): потерянный сигнал не теряет свет.
+// Раз в HEARTBEAT_MS — select 1 на этом соединении: «молча» умершее соединение (без ошибки)
+// обнаруживается и переподключается (плюс TCP keepalive пула в server/index.mjs).
 
 import { NOTIFY_CHANNEL } from './queries.mjs';
 
 const RECONNECT_MS = 1_000;
+export const HEARTBEAT_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 10_000;
 
 export function createListener({ pool, log, onMessage, onReconnect, timers = globalThis }) {
   let client = null;
   let stopped = false;
   let retry = null;
   let first = true;
+  let beating = false;
+  // Реальные часы, а не timers: проверка — про настоящую сеть (в тестах timers ускорены).
+  const heartbeat = setInterval(async () => {
+    const c = client;
+    if (stopped || !c || beating) return;
+    beating = true;
+    let timer;
+    try {
+      await Promise.race([
+        c.query('select 1'),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('heartbeat timeout')), HEARTBEAT_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (err) {
+      if (client === c) {
+        log.warn('light_listen_dead', { error: err.message });
+        reconnect();
+      }
+    } finally {
+      clearTimeout(timer);
+      beating = false;
+    }
+  }, HEARTBEAT_MS);
+  heartbeat.unref?.();
 
   async function connect() {
     if (stopped) return;
@@ -66,6 +95,7 @@ export function createListener({ pool, log, onMessage, onReconnect, timers = glo
     start: connect,
     async stop() {
       stopped = true;
+      clearInterval(heartbeat);
       if (retry) timers.clearTimeout(retry);
       if (client) {
         try {

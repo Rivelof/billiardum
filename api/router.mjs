@@ -457,5 +457,5 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
     }
   }
 
-  return { handle, routes: compiled, match };
+  return { handle, routes: compiled, match, rateLimiter };
 }

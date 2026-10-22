@@ -2,8 +2,9 @@
 //
 // * Приглашение по телефону с ролью на 7 дней; привязывается при первом входе с этим номером
 //   (acceptInvites из server/auth, функция bl.staff_accept_invites).
-// * Смена роли; отзыв доступа в один шаг: членство гаснет, PIN стирается, все токены
-//   сотрудника (личные и PIN на терминалах) отзываются (bl.staff_revoke).
+// * Смена роли; отзыв доступа в один шаг: членство гаснет, PIN стирается, PIN-токены клуба
+//   отзываются, личные — если других членств нет (bl.staff_revoke); терминалы клуба,
+//   заведённые сотрудником, отзываются.
 // * Каждое действие — в журнал клуба: staff.invite, staff.invite_revoked, staff.invite_accepted,
 //   staff.role, staff.revoke. Телефоны наружу — только маской.
 
@@ -123,19 +124,25 @@ export async function changeRole(db, { userId, role, byUserId }) {
   return { ok: true, user_id: userId, role };
 }
 
-/** Отозвать доступ: членство, PIN, все токены (bl.staff_revoke). */
-export async function revoke(db, { userId, byUserId }) {
+/**
+ * Отозвать доступ: членство, PIN, PIN-токены клуба, личные токены — если других членств нет
+ * (bl.staff_revoke, №130 п. 11); терминалы клуба, заведённые сотрудником, — тоже (ревью входа п. 5).
+ */
+export async function revoke(db, { userId, byUserId, now = new Date() }) {
   const m = await memberForChange(db, { userId, byUserId });
   const tokens = (await db.query('select bl.staff_revoke($1) as n', [userId])).rows[0].n;
+  const terminals = (
+    await db.query('update bl.staff_terminals set revoked_at = $2 where created_by = $1 and revoked_at is null returning id', [userId, now])
+  ).rows.map((r) => r.id);
   await appendAudit(db, {
     action: 'staff.revoke',
     objectType: 'user',
     objectId: userId,
     actorType: 'user',
     actorId: byUserId,
-    data: { user_id: userId, role: m.role, tokens_revoked: tokens ?? 0 },
+    data: { user_id: userId, role: m.role, tokens_revoked: tokens ?? 0, terminals_revoked: terminals },
   });
-  return { ok: true, tokens_revoked: tokens ?? 0 };
+  return { ok: true, tokens_revoked: tokens ?? 0, terminals_revoked: terminals.length };
 }
 
 /**

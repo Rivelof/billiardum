@@ -59,7 +59,8 @@ export function memoryLog() {
 
 /**
  * База, приложение (без модулей light и money) и HTTP-сервер.
- * @param {{ config?: object, routes?: object[], extraRoutes?: object[], telegram?: object, clock?: object, listen?: boolean, pollMs?: number }} [options]
+ * @param {{ config?: object, routes?: object[], extraRoutes?: object[], telegram?: object, clock?: object, listen?: boolean, pollMs?: number,
+ *           notifyWorker?: boolean }} [options]
  */
 export async function startTestApp(options = {}) {
   const db = await createTestDatabase();
@@ -86,6 +87,8 @@ export async function startTestApp(options = {}) {
     routes,
     listen: options.listen ?? true,
   });
+  // Воркер доставки уведомлений приложения: false — тесты доставляют своим notifier сами.
+  if (options.notifyWorker === false) await app.ctx.notify.stop();
   const server = http.createServer(app.handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;

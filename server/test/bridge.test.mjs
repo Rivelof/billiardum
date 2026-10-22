@@ -307,17 +307,101 @@ describe('мост MQTT: очередь и повторы (protocol §6)', () =>
     await bridge.stop();
   });
 
-  it('config.set, не подтверждённый до офлайна, досылается после актуального состояния тем же id и seq', async () => {
+  it('config.set, не подтверждённый до офлайна, досылается после актуального состояния новой командой: новый id, seq и журнал', async () => {
     await setup([device(1)]);
     await goOnline(DEV(1));
     await ackLast(DEV(1));
     await bridge.command(DEV(1), 'config.set', { led_brightness: 10 });
-    const cfg = cmds(DEV(1)).at(-1).payload;
+    const cfg = lastCmd(DEV(1));
+    assert.equal(cfg.seq, 2);
     await bridge.onMessage(topic(DEV(1), 'status'), Buffer.from('offline'));
-    await goOnline(DEV(1));
+    assert.equal(logs('cmd_abandoned').at(-1).seq, 2);
+    await goOnline(DEV(1), CLUB, { last_seq: 2 });
     assert.equal(lastCmd(DEV(1)).type, 'ping', 'сначала актуальное состояние');
     await ackLast(DEV(1));
-    assert.equal(cmds(DEV(1)).at(-1).payload, cfg, 'затем config.set байт в байт');
+    const again = lastCmd(DEV(1));
+    assert.equal(again.type, 'config.set');
+    assert.deepEqual(again.body, { led_brightness: 10 });
+    assert.notEqual(again.id, cfg.id);
+    assert.equal(again.seq, 4, 'seq новый: старый (2) контроллер отверг бы как replayed_seq');
+    assert.deepEqual(store.audit.filter((a) => a.data.type === 'config.set').map((a) => a.data.seq), [2, 4], 'каждая отправка — в журнале');
+    assert.equal(logs('cmd_resend').at(-1).resend_of, cfg.id);
+    await bridge.stop();
+  });
+
+  it('нет связи с брокером: публикаций нет, неподтверждённая команда брошена, исходящие mqtt удалены; после connect — актуальное состояние', async () => {
+    await setup([device(1), device(2)]);
+    await goOnline(DEV(1));
+    await goOnline(DEV(2));
+    await ackLast(DEV(2));
+    const pending = lastCmd(DEV(1)); // ping без ack
+    client.outgoing = { 7: { cb() {} }, 9: { cb() {} } };
+    const removed = [];
+    client.removeOutgoingMessage = (id) => {
+      removed.push(id);
+      delete client.outgoing[id];
+    };
+    client.connected = false;
+    client.emit('close');
+    await flush();
+    await bridge.idle();
+    assert.deepEqual(removed, [7, 9]);
+    assert.equal(logs('cmd_abandoned').at(-1).seq, pending.seq);
+    assert.equal(bridge.stats().pending, 0);
+    const before = client.published.length;
+    await bridge.command(DEV(2), 'ping', {});
+    mock.timers.tick(RETRY_MS * (MAX_RETRIES + 2));
+    await flush();
+    assert.equal(client.published.length, before, 'без связи ничего не публикуется');
+    assert.equal(logs('cmd_no_ack').length, 0, 'и тревоги «нет ответа» нет');
+    client.connected = true;
+    client.emit('connect');
+    await flush();
+    await bridge.idle();
+    assert.equal(lastCmd(DEV(1)).type, 'ping', 'актуальное состояние первому столу');
+    assert.equal(lastCmd(DEV(2)).type, 'ping', 'и второму');
+    assert.equal(logs('mqtt_connected').at(-1).reconnect, true);
+    await bridge.stop();
+  });
+
+  it('ошибка базы при отправке: команда не теряется, повтор после паузы; sweep дочитывает очередь из базы', async () => {
+    await setup([device(1)]);
+    await goOnline(DEV(1));
+    await ackLast(DEV(1));
+    const rows = [];
+    store.loadQueued = async () => rows.filter((r) => r.status === 'queued');
+    store.markCommand = async ({ cmdId, status }) => {
+      const r = rows.find((x) => x.id === cmdId);
+      if (r) r.status = status;
+    };
+    const real = store.allocateCommand;
+    let failures = 2;
+    store.allocateCommand = async (args) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error('connection terminated');
+      }
+      const r = rows.find((x) => x.id === args.rowId);
+      if (r) r.status = 'sent';
+      return real(args);
+    };
+    rows.push({ id: 'b1000000-0000-4000-8000-000000000001', type: 'state.pending', body: {}, status: 'queued' });
+    // NOTIFY потерян: wake не вызывался — sweep сам находит команду.
+    mock.timers.tick(5_000);
+    await flush();
+    await bridge.idle();
+    assert.equal(logs('cmd_failed').length, 1);
+    assert.equal(lastCmd(DEV(1)).type, 'ping', 'команда пока не ушла');
+    mock.timers.tick(5_000);
+    await flush();
+    await bridge.idle();
+    assert.equal(logs('cmd_failed').length, 2);
+    mock.timers.tick(5_000);
+    await flush();
+    await bridge.idle();
+    assert.equal(lastCmd(DEV(1)).type, 'state.pending', 'ушла после восстановления базы');
+    assert.equal(lastCmd(DEV(1)).id, rows[0].id);
+    assert.equal(rows[0].status, 'sent');
     await bridge.stop();
   });
 

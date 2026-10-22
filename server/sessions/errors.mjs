@@ -15,15 +15,19 @@ export const STATUS_BY_CODE = Object.freeze({
   session_not_active: 409,
   reason_required: 400,
   limit_exceeded: 400,
+  booking_conflict: 409,
+  booking_start_required: 409,
 });
 
 export class LightError extends Error {
   /** @param {string} code код из словаря §3 @param {string} [detail] только для лога */
-  constructor(code, detail) {
+  /** @param {object} [data] поля ответа рядом с error (например, booking_id) */
+  constructor(code, detail, data = null) {
     super(detail ? `${code}: ${detail}` : code);
     this.name = 'LightError';
     this.code = code;
     this.status = STATUS_BY_CODE[code] ?? 400;
+    if (data) this.data = data;
   }
 }
 
@@ -33,6 +37,6 @@ export const fail = (code, detail) => {
 
 /** Ответ маршрута по ошибке модуля; прочие ошибки пробрасываются (500 у роутера). */
 export function errorResponse(err) {
-  if (err instanceof LightError) return { status: err.status, json: { error: err.code } };
+  if (err instanceof LightError) return { status: err.status, json: { error: err.code, ...(err.data ?? {}) } };
   throw err;
 }

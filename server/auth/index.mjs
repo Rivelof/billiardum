@@ -56,6 +56,8 @@ export async function resolveToken(pool, token) {
   const r = rows[0];
   return {
     tokenId: r.token_id,
+    // sha256 токена — для перепроверки долгих соединений через тот же bl.auth_resolve (SSE).
+    tokenHash: tokenHash(token),
     kind: r.kind,
     userId: r.user_id,
     clubId: r.club_id,

@@ -35,7 +35,7 @@ export const routes = [
     path: '/api/clubs/{club}/staff/{user_id}',
     auth: 'staff',
     roles: OWNER,
-    handler: async (ctx, req) => ({ status: 200, json: await revoke(ctx.db, { userId: req.params.user_id, byUserId: ctx.user.id }) }),
+    handler: async (ctx, req) => ({ status: 200, json: await revoke(ctx.db, { userId: req.params.user_id, byUserId: ctx.user.id, now: ctx.clock.now() }) }),
   },
   {
     method: 'DELETE',

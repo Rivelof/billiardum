@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { generateCode, isCode, normalizeCode } from '../sessions/codes.mjs';
 import { phaseOf, premarkNotified, unplayedMs } from '../sessions/kit.mjs';
-import { buzzerFlag, graceMs, inQuietHours, serviceMaxMinutes, warnMs } from '../sessions/settings.mjs';
+import { buzzerFlag, graceMs, inQuietHours, safeZone, serviceMaxMinutes, validTimeZone, warnMs } from '../sessions/settings.mjs';
 import { LightError, errorResponse } from '../sessions/errors.mjs';
 import { createScheduler } from '../scheduler.mjs';
 import { shareRefunds, summarizeReceipts } from '../sessions/service.mjs';
@@ -62,6 +62,19 @@ describe('настройки клуба', () => {
     assert.equal(buzzerFlag({ buzzer: false }, new Date('2026-10-22T12:00:00Z'), YEKB), false);
     assert.equal(inQuietHours({ buzzer_quiet: [{ from: '13:00', to: '14:00' }, { from: 'xx', to: '1' }] }, new Date('2026-10-22T08:30:00Z'), YEKB), true);
     assert.equal(inQuietHours({ buzzer_quiet: { from: '10:00', to: '10:00' } }, new Date('2026-10-22T05:00:00Z'), YEKB), false);
+  });
+
+  it('часовой пояс, которого не знает Intl (Postgres принимает «posix/…»), — UTC вместо падения команды', () => {
+    assert.equal(validTimeZone('Europe/Moscow'), true);
+    assert.equal(validTimeZone('posix/Europe/Moscow'), false);
+    assert.equal(validTimeZone(''), false);
+    assert.equal(validTimeZone(null), false);
+    assert.equal(safeZone('posix/Europe/Moscow'), 'UTC');
+    assert.equal(safeZone(YEKB), YEKB);
+    const quiet = { buzzer_quiet: { from: '23:00', to: '09:00' } };
+    // 23:30 UTC — тихие часы по UTC; без запасного пояса Intl бросил бы RangeError.
+    assert.equal(buzzerFlag(quiet, new Date('2026-10-22T23:30:00Z'), 'posix/Europe/Moscow'), false);
+    assert.equal(buzzerFlag(quiet, new Date('2026-10-22T12:00:00Z'), 'posix/Europe/Moscow'), true);
   });
 });
 

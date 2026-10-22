@@ -61,7 +61,9 @@ describe('маршруты light через роутер core', { skip: SKIP }, 
     assert.equal(cur.json[0].id, sid);
     assert.equal(cur.json[0].is_payer, true);
     assert.equal((await call('GET', `/api/sessions/${sid}`, { token: 'g2' })).status, 404);
-    assert.deepEqual((await call('POST', `/api/sessions/${sid}/join`, { token: 'g2', body: {} })).json, { ok: true });
+    assert.deepEqual(await call('POST', `/api/sessions/${sid}/join`, { token: 'g2', body: {} }), { status: 400, json: { error: 'bad_request' } });
+    assert.deepEqual(await call('POST', `/api/sessions/${sid}/join`, { token: 'g2', body: { code: 'TEST000002' } }), { status: 404, json: { error: 'not_found' } });
+    assert.deepEqual((await call('POST', `/api/sessions/${sid}/join`, { token: 'g2', body: { code: 'TEST000001' } })).json, { ok: true });
     const one = await call('GET', `/api/sessions/${sid}`, { token: 'g2' });
     assert.equal(one.status, 200);
     assert.equal(one.json.is_payer, false);

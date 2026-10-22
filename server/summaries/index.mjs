@@ -106,7 +106,9 @@ export async function tick({ pool, withContext = storeWithContext, clock, log })
   for (const c of clubs.rows) {
     try {
       const local = localParts(now, c.timezone);
-      if (local.minutes < minutesOf(c.summary_time_local, 600)) continue;
+      // Время сводки раньше конца рабочих суток (day_start) — сводка ждёт их конца (№130 п. 15).
+      const due = Math.max(minutesOf(c.summary_time_local, 600), minutesOf(c.day_start_local, 360));
+      if (local.minutes < due) continue;
       // Рабочие сутки, закончившиеся сегодня в day_start: начались вчера.
       const day = shiftDate(local.date, -1);
       const done = await withContext(pool, { clubId: c.club_id, actorType: 'system' }, async (db) => {

@@ -3,8 +3,9 @@
 // мини-приложениям — одноразовый токен POST /api/stream/token и GET /api/stream?...&token=.
 // Поток Server-Sent Events: события hall, session, reception_request, alarm.
 // Канал клуба — персоналу клуба (ресепшн и выше); канал сессии — участнику или персоналу
-// клуба сессии. Свой канал user:{id} подключается всегда. Раз в минуту поток проверяет,
-// что токен не отозван и права на клуб не отняты; иначе закрывается.
+// клуба сессии. Свой канал user:{id} подключается всегда. Раз в минуту поток перепроверяет
+// токен через bl.auth_resolve (отзыв, срок, отзыв терминала у PIN) и роль персонала в клубе
+// канала (club: или session: по правам персонала); иначе закрывается.
 
 import { HttpError } from '../../server/http/errors.mjs';
 import { hub } from '../../server/http/sse.mjs';
@@ -25,6 +26,7 @@ async function stream(ctx, req) {
   let club = null;
   let only = null;
   let barOnly = false;
+  let staffClub = null;
   if (req.query.club !== undefined) {
     if (!ctx.roles.some((r) => CLUB_ROLES.includes(r))) {
       if (!ctx.roles.includes('bar')) throw new HttpError(403, 'forbidden');
@@ -45,19 +47,27 @@ async function stream(ctx, req) {
     if (mine.rowCount === 0) {
       const roles = await ctx.useClub(sessionClub);
       if (!roles.some((r) => CLUB_ROLES.includes(r))) throw new HttpError(403, 'forbidden');
+      // Канал сессии по правам персонала — роль перепроверяется в клубе сессии.
+      staffClub = sessionClub;
     }
     channels.push(`session:${sessionId}`);
   }
-  const tokenId = ctx.principal.tokenId;
+  const { tokenId, tokenHash: hash } = ctx.principal;
   const pool = ctx.pool;
-  const revalidate = () =>
-    withContext(pool, { clubId: club, userId, actorType: 'user' }, async (db) => {
-      const t = await db.query('select 1 from bl.auth_tokens where id = $1 and revoked_at is null and expires_at > now()', [tokenId]);
-      if (t.rowCount === 0) return false;
-      if (!club) return true;
-      const r = await db.query('select role from bl.club_members where club_id = $1 and user_id = $2 and active', [club, userId]);
+  // Раз в минуту: токен — тем же bl.auth_resolve, что и при входе (отзыв, срок, отзыв терминала
+  // у токена PIN, влитая учётка); роль персонала — в клубе канала (club: или session:).
+  const revalidate = async () => {
+    const t = await pool.query('select token_id, club_id from bl.auth_resolve($1)', [hash]);
+    if (t.rowCount !== 1 || t.rows[0].token_id !== tokenId) return false;
+    const roleClub = club ?? staffClub;
+    if (!roleClub) return true;
+    // Токен PIN действует только в клубе своего терминала.
+    if (t.rows[0].club_id && t.rows[0].club_id !== roleClub) return false;
+    return withContext(pool, { clubId: roleClub, userId, actorType: 'user' }, async (db) => {
+      const r = await db.query('select role from bl.club_members where club_id = $1 and user_id = $2 and active', [roleClub, userId]);
       return r.rows.some((x) => CLUB_ROLES.includes(x.role) || (barOnly && x.role === 'bar'));
     });
+  };
   const sse = ctx.sse ?? hub;
   return {
     status: 200,

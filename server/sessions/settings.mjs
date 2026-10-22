@@ -34,9 +34,25 @@ export function serviceMaxMinutes(settings) {
   return intIn(v, 1, 24 * 60) ? v : DEFAULT_SERVICE_MAX_MINUTES;
 }
 
+/** Часовой пояс, который понимает Intl (Postgres принимает и такие, как «MSK» или «posix/…»). */
+export function validTimeZone(tz) {
+  if (typeof tz !== 'string' || tz.length === 0 || tz.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Часовой пояс клуба или UTC, если Intl его не знает (команды не должны падать). */
+export function safeZone(tz) {
+  return validTimeZone(tz) ? tz : 'UTC';
+}
+
 /** Минуты от полуночи по местному времени клуба. */
 export function localMinutes(date, timeZone) {
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: safeZone(timeZone), hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
   const h = Number(parts.find((p) => p.type === 'hour').value);
   const m = Number(parts.find((p) => p.type === 'minute').value);
   return h * 60 + m;

@@ -33,7 +33,7 @@ import {
   rolesIn,
   sessionClub,
 } from './queries.mjs';
-import { graceMs, serviceMaxMinutes, warnMs } from './settings.mjs';
+import { graceMs, safeZone, serviceMaxMinutes, warnMs } from './settings.mjs';
 import { sessionSummary, sessionView } from './view.mjs';
 
 export const PENDING_MAX_MS = 30 * 60_000;
@@ -176,6 +176,8 @@ export function createLightService(opts) {
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'service') fail('table_service');
     if (h && h.user_id !== userId) fail(h.kind === 'pending' ? 'table_pending' : 'table_busy');
+    // Владелец брони начинает игру по брони (предоплата уже внесена), а не обычной оплатой по QR (№128).
+    if (h?.kind === 'reserved' && h.source === 'booking') throw new LightError('booking_start_required', 'booking', { booking_id: h.ref_id ?? null });
     const device = await deviceOfResource(db, resourceId);
     if (!deviceOnline(device)) fail('table_offline');
     let holdId;
@@ -316,7 +318,7 @@ export function createLightService(opts) {
   }
 
   /** Стол занят к моменту оплаты (крайний случай): тревога и автоматический возврат. */
-  async function rejectPayment(db, p, { reason, resourceId, minutes, confirmedAt }) {
+  async function rejectPayment(db, p, { reason, resourceId, minutes, confirmedAt, cap = null }) {
     await recordPayment(db, p, { sessionId: null, outcome: 'refunded', minutes, confirmedAt, refunded: p.amount_kopecks });
     if (p.amount_kopecks > 0) {
       await deps.payments.refund(db, { paymentId: p.payment_id, amountKopecks: p.amount_kopecks, reason: `light_${reason}` });
@@ -333,8 +335,57 @@ export function createLightService(opts) {
       resourceId: isUuid(resourceId) ? resourceId : null,
       data: { payment_id: p.payment_id, reason, amount_kopecks: p.amount_kopecks },
     });
+    if (reason === 'booking' && cap) await notifyBookingCut(db, p, { resourceId, sessionId: null, cap, refund: p.amount_kopecks, cutMs: minutes * MINUTE });
     log.warn('payment_rejected', { payment_id: p.payment_id, reason });
     return { result: 'refunded', reason };
+  }
+
+  /** Предел игры из-за ближайшей брони (№129): её начало минус 5 минут, или null. */
+  async function bookingCap(db, resourceId, t) {
+    const next = await deps.bookings.nextBookingStart(db, { resourceId, after: t });
+    return next ? new Date(new Date(next).getTime() - BOOKING_GAP_MS) : null;
+  }
+
+  async function notifyBookingCut(db, p, { resourceId, sessionId, cap, refund, cutMs }) {
+    if (!isUuid(p.user_id)) return;
+    const club = await loadClub(db, p.club_id);
+    const r = await loadResource(db, resourceId);
+    const at = formatTime(new Date(cap.getTime() + BOOKING_GAP_MS), safeZone(club.timezone));
+    const cutMin = Math.max(1, Math.round(cutMs / MINUTE));
+    try {
+      await deps.notify.send(db, p.user_id, {
+        kind: 'session.booking_cut',
+        text: `Стол ${r?.number ?? ''}: забронирован на ${at}, вернули ${formatMoney(refund)} за ${minutesText(cutMin)}`,
+        data: { session_id: sessionId, refund_kopecks: refund, booking_start: new Date(cap.getTime() + BOOKING_GAP_MS).toISOString() },
+      });
+    } catch (err) {
+      log.error('notify_failed', { kind: 'session.booking_cut', error: err.message });
+    }
+  }
+
+  /**
+   * Игра обрезана бронью (№129): вернуть гостю долю платежа за cutMs (частичный возврат,
+   * детерминированный ключ от платежа), журнал session.booking_cut, уведомление гостю.
+   * «Без лимита» по карте не возвращается: money спишет фактическое время.
+   */
+  async function refundCut(db, p, s, { cutMs, minutes, cap }) {
+    const covered = minutes * MINUTE;
+    const take = Math.min(cutMs, covered);
+    let refund = 0;
+    if (!p.unlimited && p.amount_kopecks > 0 && take > 0) {
+      refund = take >= covered - UNSHOWN_TOLERANCE_MS ? p.amount_kopecks : Math.min(p.amount_kopecks, Math.ceil((p.amount_kopecks * take) / covered));
+      await deps.payments.refund(db, { paymentId: p.payment_id, amountKopecks: refund, reason: 'booking_conflict', key: `booking-cut-${p.payment_id}` });
+      await db.query('update bl.session_payments set refunded_kopecks = least(amount_kopecks, refunded_kopecks + $2) where payment_id = $1', [p.payment_id, refund]);
+    }
+    await audit(db, {
+      action: 'session.booking_cut',
+      objectType: 'session',
+      objectId: s.id,
+      data: { session_id: s.id, payment_id: p.payment_id, cut_ms: take, refund_kopecks: refund, paid_until: iso(cap) },
+    });
+    if (refund > 0) await notifyBookingCut(db, p, { resourceId: s.resource_id, sessionId: s.id, cap, refund, cutMs: take });
+    log.info('session_booking_cut', { session_id: s.id, cut_ms: take, refund_kopecks: refund });
+    return refund;
   }
 
   async function startFromPayment(db, p, t, confirmedAt, minutes) {
@@ -347,10 +398,18 @@ export function createLightService(opts) {
     else if (h?.kind === 'service') busy = 'service';
     else if (h && h.user_id !== p.user_id) busy = h.kind;
     if (busy) return rejectPayment(db, p, { reason: busy, resourceId: res.id, minutes, confirmedAt });
+    // Игра не заходит в интервал брони (№129): бронь могли создать между котировкой и оплатой.
+    const cap = await bookingCap(db, res.id, t);
+    if (cap && cap.getTime() - t.getTime() < MINUTE) return rejectPayment(db, p, { reason: 'booking', resourceId: res.id, minutes, confirmedAt, cap });
 
     const club = await loadClub(db, p.club_id);
     const warn = warnMs(club.settings);
-    const paidUntil = new Date(t.getTime() + minutes * MINUTE);
+    let paidUntil = new Date(t.getTime() + minutes * MINUTE);
+    let cutMs = 0;
+    if (cap && paidUntil > cap) {
+      cutMs = paidUntil.getTime() - cap.getTime();
+      paidUntil = cap;
+    }
     const ins = await db.query(
       `insert into bl.sessions (club_id, resource_id, status, source, payer_user_id, unlimited, started_at, paid_until,
                                 warn_ms, grace_ms, notified, created_at, updated_at)
@@ -373,6 +432,7 @@ export function createLightService(opts) {
     await addParticipant(db, { session: s, userId: p.user_id, role: 'payer', now: t });
     await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
     await linkPayment(db, p.payment_id, s.id);
+    if (cutMs > 0) await refundCut(db, p, s, { cutMs, minutes, cap });
     if (h && h.user_id === p.user_id) await releaseHold(db, h.id, t, 'session');
     await audit(db, {
       action: 'session.start',
@@ -392,14 +452,24 @@ export function createLightService(opts) {
     if (!s || s.club_id !== p.club_id) return rejectPayment(db, p, { reason: 'no_session', resourceId: p.resource_id, minutes, confirmedAt });
     const add = minutes * MINUTE;
     if (isOpen(s)) {
-      // paid_until += minutes; из льготы тоже (контракт §6).
-      const paidUntil = new Date(s.paid_until.getTime() + add);
+      // paid_until += minutes; из льготы тоже (контракт §6). Не дальше брони (№129).
+      let paidUntil = new Date(s.paid_until.getTime() + add);
+      const cap = await bookingCap(db, s.resource_id, t);
+      if (cap && cap.getTime() - Math.max(s.paid_until.getTime(), t.getTime()) < MINUTE) {
+        return rejectPayment(db, p, { reason: 'booking', resourceId: s.resource_id, minutes, confirmedAt, cap });
+      }
+      let cutMs = 0;
+      if (cap && paidUntil > cap) {
+        cutMs = paidUntil.getTime() - cap.getTime();
+        paidUntil = cap;
+      }
       await db.query(
         `update bl.sessions set paid_until = $2, status = $3, notified = $4::jsonb, updated_at = $5 where id = $1`,
         [s.id, paidUntil, phaseOf(paidUntil, t, s.warn_ms), JSON.stringify(premarkNotified(s.notified, paidUntil, t)), t],
       );
       if (isUuid(p.user_id)) await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
       await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
+      if (cutMs > 0) await refundCut(db, p, s, { cutMs, minutes, cap });
       await audit(db, {
         action: 'session.extend',
         objectType: 'session',
@@ -441,15 +511,27 @@ export function createLightService(opts) {
       if (!res || open || (h && (h.kind === 'service' || h.user_id !== p.user_id))) {
         return rejectPayment(db, p, { reason: 'busy', resourceId: s.resource_id, minutes, confirmedAt });
       }
+      const cap = await bookingCap(db, s.resource_id, t);
+      if (cap && cap.getTime() - t.getTime() < MINUTE) {
+        return rejectPayment(db, p, { reason: 'booking', resourceId: s.resource_id, minutes, confirmedAt, cap });
+      }
       if (h) await releaseHold(db, h.id, t, 'session');
-      const paidUntil = new Date(t.getTime() + add);
+      let paidUntil = new Date(t.getTime() + add);
+      let cutMs = 0;
+      if (cap && paidUntil > cap) {
+        cutMs = paidUntil.getTime() - cap.getTime();
+        paidUntil = cap;
+      }
       await db.query(
-        `update bl.sessions set status = $2, paid_until = $3, ended_at = null, close_reason = null, device_paid_until = null,
+        // Новый отрезок игры начинается сейчас: всё до t уже сыграно (или возвращено). Без этого
+        // неотыгранное считалось бы от started_at и включало прошлые отрезки (инвариант 4).
+        `update bl.sessions set status = $2, paid_until = $3, ended_at = null, close_reason = null, device_paid_until = $5,
                                 notified = $4::jsonb, updated_at = $5 where id = $1`,
         [s.id, phaseOf(paidUntil, t, s.warn_ms), paidUntil, JSON.stringify(premarkNotified({}, paidUntil, t)), t],
       );
       if (isUuid(p.user_id)) await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
       await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
+      if (cutMs > 0) await refundCut(db, p, s, { cutMs, minutes, cap });
       await audit(db, {
         action: 'session.extend',
         objectType: 'session',
@@ -555,7 +637,8 @@ export function createLightService(opts) {
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'service') fail('table_service');
     if (h?.kind === 'pending' && h.user_id !== userId) fail('table_pending');
-    if (h?.kind === 'reserved' && h.user_id && h.user_id !== userId) fail('table_busy');
+    // Бронь по телефону (user_id null) тоже держит стол: booking снимает её сам (clearReserved) при приходе.
+    if (h?.kind === 'reserved' && (!h.user_id || h.user_id !== userId)) fail('table_busy');
     return h;
   }
 
@@ -676,16 +759,22 @@ export function createLightService(opts) {
     return { ok: true, applied: shown, until: u.toISOString(), ...(shown ? {} : { reason: busy ? 'busy' : 'service' }) };
   }
 
-  /** Бронь отменена, сгорела или началась: снять reserved; стол свободен — state.free. */
-  async function clearReserved(db, { resourceId }) {
+  /**
+   * Бронь отменена, сгорела или началась: снять reserved; стол свободен — state.free.
+   * source/refId — снять только своё удержание (бронь не снимает очередь и наоборот).
+   */
+  async function clearReserved(db, { resourceId, source = null, refId = null }) {
+    if (source !== null && !['booking', 'waitlist', 'staff'].includes(source)) fail('bad_request', 'source');
+    if (refId !== null && !isUuid(refId)) fail('bad_request', 'refId');
     const t = now();
     await ensureResourceClub(db, resourceId);
     const res = await lockResource(db, resourceId);
     if (!res) return { ok: true, released: false };
     const r = await db.query(
       `update bl.resource_holds set released_at = $2, release_reason = 'released'
-        where resource_id = $1 and kind = 'reserved' and released_at is null and until > $2`,
-      [resourceId, t],
+        where resource_id = $1 and kind = 'reserved' and released_at is null and until > $2
+          and ($3::text is null or source = $3) and ($4::uuid is null or ref_id = $4)`,
+      [resourceId, t, source, refId],
     );
     if (r.rowCount === 0) return { ok: true, released: false };
     if (!(await openSessionOn(db, resourceId)) && !(await activeHold(db, resourceId, t))) {
@@ -735,8 +824,17 @@ export function createLightService(opts) {
     if (!res || !res.active) fail('not_found', 'resource');
     const h = await assertFreeFor(db, resourceId, userId, t);
     if (!deviceOnline(await deviceOfResource(db, resourceId))) fail('table_offline');
-    const minutes = await minutesFor(db, resourceId, t, depositKopecks);
+    let minutes = await minutesFor(db, resourceId, t, depositKopecks);
     if (minutes < 1) fail('limit_exceeded', 'депозит меньше минуты игры');
+    // Ближайшая бронь (№129): до неё меньше минимума тарифа — не начинать, иначе — не дальше брони.
+    const cap = await bookingCap(db, resourceId, t);
+    if (cap) {
+      const room = Math.floor((cap.getTime() - t.getTime()) / MINUTE);
+      const q = await deps.tariffs.amountFor(db, { resourceId, from: t, minutes: 1, minimum: true });
+      const minMinutes = Math.max(1, Number(q.min_minutes) || 0);
+      if (room < minMinutes) fail('booking_conflict', 'до брони меньше минимума тарифа');
+      minutes = Math.min(minutes, room);
+    }
     const paidUntil = new Date(t.getTime() + minutes * MINUTE);
     const s = await insertSession(db, { clubId, resourceId, payer: userId ?? staffId, unlimited: true, source: 'reception', paidUntil, t, depositKopecks });
     if (h) await releaseHold(db, h.id, t, 'session');
@@ -786,12 +884,19 @@ export function createLightService(opts) {
     return view(db, await loadSession(db, s.id), userId);
   }
 
-  /** «Я играю за этим столом». */
-  async function join(db, { sessionId, userId }) {
+  /**
+   * «Я играю за этим столом». Нужен код стола (из QR, ревью п. 9): одного session_id мало —
+   * он не секрет. Код не того стола — not_found, как и чужая сессия.
+   */
+  async function join(db, { sessionId, userId, code }) {
     if (!isUuid(userId)) fail('unauthorized');
+    const c = normalizeCode(code);
+    if (!c) fail('bad_request', 'code');
     await enterSession(db, sessionId);
     const s = await loadSession(db, sessionId, { lock: true });
     if (!s) fail('not_found', 'session');
+    const byCode = await db.query('select resource_id from bl.resource_by_code($1)', [c]);
+    if (byCode.rows[0]?.resource_id !== s.resource_id) fail('not_found', 'code');
     if (!isOpen(s)) fail('session_not_active');
     const list = await participants(db, s.id);
     if (list.some((p) => p.user_id === userId)) return { ok: true };
@@ -857,6 +962,33 @@ export function createLightService(opts) {
     return refundTotal;
   }
 
+  /** «Продолжить» обрезано бронью (№129): возврат за cutMs долями платежей с конца, журнал, уведомление. */
+  async function refundResumeCut(db, s, t, { cutMs, cap }) {
+    let refund = 0;
+    if (!s.unlimited) {
+      for (const r of await refundShares(db, s, cutMs)) {
+        await deps.payments.refund(db, {
+          paymentId: r.paymentId,
+          amountKopecks: r.amountKopecks,
+          reason: 'booking_conflict',
+          key: `bcr-${r.paymentId}-${t.getTime().toString(36)}`,
+        });
+        await db.query('update bl.session_payments set refunded_kopecks = refunded_kopecks + $2 where payment_id = $1', [r.paymentId, r.amountKopecks]);
+        refund += r.amountKopecks;
+      }
+    }
+    await audit(db, {
+      action: 'session.booking_cut',
+      objectType: 'session',
+      objectId: s.id,
+      data: { session_id: s.id, cut_ms: cutMs, refund_kopecks: refund, paid_until: iso(cap), resumed: true },
+    });
+    if (refund > 0) {
+      await notifyBookingCut(db, { user_id: s.payer_user_id, club_id: s.club_id }, { resourceId: s.resource_id, sessionId: s.id, cap, refund, cutMs });
+    }
+    return refund;
+  }
+
   /** Выбор после interrupted (T6): continue — оплаченный остаток с этого момента; refund — возврат. */
   async function resolve(db, { sessionId, userId, choice }) {
     if (choice !== 'continue' && choice !== 'refund') fail('bad_request', 'choice');
@@ -876,10 +1008,20 @@ export function createLightService(opts) {
       if (h?.kind === 'service') fail('table_service');
       if (h && h.user_id !== userId) fail(h.kind === 'pending' ? 'table_pending' : 'table_busy');
       if (!deviceOnline(await deviceOfResource(db, s.resource_id))) fail('table_offline');
+      // Не дальше ближайшей брони (№129): остаток сверх неё возвращается долями платежей.
+      const cap = await bookingCap(db, s.resource_id, t);
+      if (cap && cap.getTime() - t.getTime() < MINUTE) fail('booking_conflict', 'стол забронирован');
       if (h) await releaseHold(db, h.id, t, 'session');
-      const paidUntil = new Date(t.getTime() + s.unplayed_ms);
+      let paidUntil = new Date(t.getTime() + s.unplayed_ms);
+      let cutMs = 0;
+      if (cap && paidUntil > cap) {
+        cutMs = paidUntil.getTime() - cap.getTime();
+        paidUntil = cap;
+      }
       await db.query(
-        `update bl.sessions set status = $2, paid_until = $3, unplayed_ms = null, device_paid_until = null,
+        // Отрезок «Продолжить» начинается сейчас: неотыгранное потом — не больше прежнего долга
+        // плюс оплаченное с тех пор (device_paid_until = t, а не NULL → started_at).
+        `update bl.sessions set status = $2, paid_until = $3, unplayed_ms = null, device_paid_until = $5,
                                 notified = $4::jsonb, updated_at = $5 where id = $1`,
         [s.id, phaseOf(paidUntil, t, s.warn_ms), paidUntil, JSON.stringify(premarkNotified({}, paidUntil, t)), t],
       );
@@ -891,6 +1033,7 @@ export function createLightService(opts) {
         actorId: userId,
         data: { session_id: s.id, choice, paid_until: iso(paidUntil), unplayed_ms: s.unplayed_ms },
       });
+      if (cutMs > 0) await refundResumeCut(db, s, t, { cutMs, cap });
       await emit(db, 'session.started', sessionEvent({ ...s, paid_until: paidUntil }, { resumed: true }));
       await command(db, s, { type: 'session.start', body: { session_id: s.id }, cause: 'guest' });
     } else {
@@ -1201,7 +1344,7 @@ export function createLightService(opts) {
     if (s.unlimited && !s.deposit_kopecks && T >= P - UNLIMITED_CONFIRM_MS && notified.u5 !== key) {
       notified.u5 = key;
       if (T < P) {
-        const until = formatTime(s.paid_until, s.club_timezone ?? 'UTC');
+        const until = formatTime(s.paid_until, safeZone(s.club_timezone));
         sends.push({
           kind: 'session.unlimited_confirm',
           text: `Стол ${s.resource_number}: заморозка заканчивается в ${until}. Подтвердите продолжение игры`,

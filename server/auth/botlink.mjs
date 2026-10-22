@@ -2,19 +2,36 @@
 //
 // 1. POST /api/auth/bot-link {channel} → nonce (32 байта), deep link https://t.me/<бот>?start=<nonce>
 //    и cookie bl_link с секретом браузера: токен потом получит только этот браузер.
+//    Браузер показывает код подтверждения (6 цифр, ревью входа п. 2).
 // 2. Гость открывает бота, тот получает «/start <nonce>» → nonce связывается с аккаунтом
-//    мессенджера; бот просит «Поделиться контактом» (если телефон уже известен — сразу готово).
-// 3. Контакт (только свой: contact.user_id = from.id) → пользователь найден или создан,
-//    телефон привязан (bl.auth_attach_phone), nonce → done.
-// 4. GET /api/auth/bot-link/{nonce} с cookie → {status: done, token} один раз, затем consumed.
-// Срок nonce — 10 минут. В базе только sha256 nonce и секрета браузера.
+//    мессенджера; бот просит ввести код с экрана (защита от чужой ссылки: без кода с экрана
+//    своего браузера вход не состоится). Три неверных кода — nonce failed.
+// 3. Код верный → если телефон уже известен — готово; иначе бот просит «Поделиться контактом».
+//    Контакт (только свой: contact.user_id = from.id) → пользователь найден или создан,
+//    телефон привязан (bl.auth_attach_phone), nonce → done (только подтверждённый кодом).
+// 4. GET /api/auth/bot-link/{nonce} с cookie → {status: done, token} один раз, затем consumed;
+//    в бот уходит «Вход выполнен на новом устройстве» с кнопкой «Выйти везде» (callback logout_all).
+// Срок nonce — 10 минут. В базе только sha256 nonce, секрета браузера и кода.
 
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { setContext } from '../lib/store.mjs';
 import { normalizePhone, tokenHash } from './index.mjs';
 
 export const NONCE_TTL_MS = 10 * 60_000;
 export const NONCE = /^[A-Za-z0-9_-]{43}$/;
+export const CODE_ATTEMPTS = 3;
+const CODE_TEXT = /^\s*(\d{3})[\s-]?(\d{3})\s*$/;
+export const LOGOUT_ALL = 'logout_all';
+
+/** Код подтверждения: 6 цифр. */
+export function newCode() {
+  return String(randomInt(0, 1_000_000)).padStart(6, '0');
+}
+
+/** Хеш кода, привязанный к nonce (код без nonce не перебрать по базе). */
+export function codeHash(nonceHash, code) {
+  return tokenHash(`${nonceHash}:${code}`);
+}
 
 export function newNonce() {
   return randomBytes(32).toString('base64url');
@@ -31,13 +48,15 @@ export function secretMatches(given, expected) {
 /** Создать nonce (контекст платформы). */
 export async function createLink(db, { channel, browserSecret, now }) {
   const nonce = newNonce();
+  const code = newCode();
   const expiresAt = new Date(now.getTime() + NONCE_TTL_MS);
+  const nonceHash = tokenHash(nonce);
   await db.query(
-    `insert into bl.bot_link_nonces (nonce_hash, browser_hash, channel, created_at, expires_at)
-     values ($1, $2, $3, $4, $5)`,
-    [tokenHash(nonce), tokenHash(browserSecret), channel, now, expiresAt],
+    `insert into bl.bot_link_nonces (nonce_hash, browser_hash, channel, created_at, expires_at, code_hash)
+     values ($1, $2, $3, $4, $5, $6)`,
+    [nonceHash, tokenHash(browserSecret), channel, now, expiresAt, codeHash(nonceHash, code)],
   );
-  return { nonce, expiresAt };
+  return { nonce, code, expiresAt };
 }
 
 /**
@@ -47,7 +66,7 @@ export async function createLink(db, { channel, browserSecret, now }) {
 export async function pollLink(db, { nonce, browserSecret, now }) {
   if (!NONCE.test(nonce) || typeof browserSecret !== 'string' || !NONCE.test(browserSecret)) return null;
   const { rows } = await db.query(
-    'select id, browser_hash, status, user_id, expires_at from bl.bot_link_nonces where nonce_hash = $1 for update',
+    'select id, browser_hash, status, user_id, expires_at, channel, external_user_id from bl.bot_link_nonces where nonce_hash = $1 for update',
     [tokenHash(nonce)],
   );
   const r = rows[0];
@@ -55,9 +74,9 @@ export async function pollLink(db, { nonce, browserSecret, now }) {
   if (r.status === 'consumed') return { id: r.id, status: 'consumed' };
   if (r.status === 'done') {
     await db.query("update bl.bot_link_nonces set status = 'consumed', consumed_at = $2 where id = $1", [r.id, now]);
-    return { id: r.id, status: 'done', userId: r.user_id };
+    return { id: r.id, status: 'done', userId: r.user_id, channel: r.channel, externalUserId: r.external_user_id };
   }
-  if (r.expires_at <= now) return { id: r.id, status: 'expired' };
+  if (r.status === 'failed' || r.expires_at <= now) return { id: r.id, status: 'expired' };
   return { id: r.id, status: 'pending' };
 }
 
@@ -69,6 +88,8 @@ export async function pollLink(db, { nonce, browserSecret, now }) {
  */
 export async function handleTelegramUpdate(db, update, { now }) {
   const replies = [];
+  const cb = update?.callback_query;
+  if (cb) return handleCallback(db, cb, { now, replies });
   const msg = update?.message;
   const from = msg?.from;
   if (!msg || !from || !Number.isSafeInteger(from.id) || from.id <= 0 || from.is_bot) return { replies, event: 'ignored' };
@@ -83,9 +104,11 @@ export async function handleTelegramUpdate(db, update, { now }) {
       replies.push({ chat_id: chatId, text: 'Здравствуйте! Это бот «Бильярдума». Чтобы войти, нажмите «Войти через Telegram» в приложении.' });
       return { replies, event: 'start_plain' };
     }
+    // Привязать к этому аккаунту можно только свободный nonce (или уже свой — повторный Start).
     const { rows } = await db.query(
       `update bl.bot_link_nonces set status = 'linked', external_user_id = $2, linked_at = $3
-        where nonce_hash = $1 and channel = 'telegram' and status in ('pending', 'linked') and expires_at > $3
+        where nonce_hash = $1 and channel = 'telegram' and expires_at > $3 and code_hash is not null
+          and (status = 'pending' or (status = 'linked' and external_user_id = $2))
         returning id`,
       [tokenHash(param), tgId, now],
     );
@@ -93,19 +116,57 @@ export async function handleTelegramUpdate(db, update, { now }) {
       replies.push({ chat_id: chatId, text: 'Ссылка для входа устарела. Вернитесь в приложение и нажмите «Войти через Telegram» ещё раз.' });
       return { replies, event: 'start_expired' };
     }
+    replies.push({
+      chat_id: chatId,
+      text:
+        'Вход в «Бильярдум» на новом устройстве. Если входите вы — отправьте сюда код из 6 цифр с экрана этого устройства. ' +
+        'Никому не сообщайте код. Если вы не начинали вход — ничего не отправляйте.',
+      reply_markup: { remove_keyboard: true },
+    });
+    return { replies, event: 'link_code_requested' };
+  }
+
+  if (typeof msg.text === 'string' && CODE_TEXT.test(msg.text)) {
+    const [, a, b] = CODE_TEXT.exec(msg.text);
+    const code = `${a}${b}`;
+    const { rows } = await db.query(
+      `select id, nonce_hash, code_hash, code_attempts from bl.bot_link_nonces
+        where channel = 'telegram' and status = 'linked' and external_user_id = $1 and confirmed_at is null
+          and code_hash is not null and expires_at > $2
+        order by linked_at desc limit 1 for update`,
+      [tgId, now],
+    );
+    const link = rows[0];
+    if (!link) {
+      replies.push({ chat_id: chatId, text: 'Нет входа, который ждёт код. Нажмите «Войти через Telegram» в приложении.' });
+      return { replies, event: 'code_no_link' };
+    }
+    if (!secretMatches(codeHash(link.nonce_hash, code), link.code_hash)) {
+      const attempts = link.code_attempts + 1;
+      const failed = attempts >= CODE_ATTEMPTS;
+      await db.query(`update bl.bot_link_nonces set code_attempts = $2${failed ? ", status = 'failed'" : ''} where id = $1`, [link.id, attempts]);
+      replies.push({
+        chat_id: chatId,
+        text: failed
+          ? 'Код не совпал. Вход отменён — начните заново в приложении.'
+          : 'Код не совпал. Проверьте код на экране устройства, где начат вход, и отправьте ещё раз.',
+      });
+      return { replies, event: failed ? 'code_failed' : 'code_wrong' };
+    }
+    await db.query('update bl.bot_link_nonces set confirmed_at = $2 where id = $1', [link.id, now]);
     // Телефон уже известен — вход сразу, без контакта.
     const known = (await db.query("select * from bl.auth_user_for('telegram', $1) as id", [tgId])).rows[0].id;
     await setContext(db, { userId: known });
     const me = await db.query('select phone is not null as has_phone from bl.users where id = $1', [known]);
     await setContext(db, { userId: null });
     if (me.rows[0]?.has_phone) {
-      await db.query("update bl.bot_link_nonces set status = 'done', user_id = $2, done_at = $3 where id = $1", [rows[0].id, known, now]);
+      await db.query("update bl.bot_link_nonces set status = 'done', user_id = $2, done_at = $3 where id = $1", [link.id, known, now]);
       replies.push({ chat_id: chatId, text: 'Готово, вы вошли. Вернитесь в приложение.', reply_markup: { remove_keyboard: true } });
       return { replies, event: 'link_done' };
     }
     replies.push({
       chat_id: chatId,
-      text: 'Чтобы войти, поделитесь номером телефона — кнопка ниже. Номер нужен для чеков и связи с клубом.',
+      text: 'Код верный. Чтобы войти, поделитесь номером телефона — кнопка ниже. Номер нужен для чеков и связи с клубом.',
       reply_markup: { keyboard: [[{ text: 'Поделиться контактом', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true },
     });
     return { replies, event: 'link_pending_contact' };
@@ -139,7 +200,8 @@ export async function handleTelegramUpdate(db, update, { now }) {
     await setContext(db, { userId: null });
     const { rowCount } = await db.query(
       `update bl.bot_link_nonces set status = 'done', user_id = $2, done_at = $3
-        where channel = 'telegram' and status = 'linked' and external_user_id = $1 and expires_at > $3`,
+        where channel = 'telegram' and status = 'linked' and external_user_id = $1 and expires_at > $3
+          and confirmed_at is not null`,
       [tgId, owner, now],
     );
     replies.push({
@@ -151,4 +213,36 @@ export async function handleTelegramUpdate(db, update, { now }) {
   }
 
   return { replies, event: 'ignored' };
+}
+
+/**
+ * Сообщение в бот после входа через бота: вход выполнен на новом устройстве, кнопка «Выйти везде».
+ * @returns {{ chat_id: number, text: string, reply_markup: object }}
+ */
+export function newDeviceNotice(externalUserId) {
+  return {
+    chat_id: Number(externalUserId),
+    text: 'Выполнен вход в «Бильярдум» на новом устройстве. Если это были не вы — нажмите «Выйти везде».',
+    reply_markup: { inline_keyboard: [[{ text: 'Выйти везде', callback_data: LOGOUT_ALL }]] },
+  };
+}
+
+/**
+ * Кнопка «Выйти везде»: отзываются все токены пользователя этого аккаунта Telegram.
+ * Пользователь — по from.id (его подтверждает Telegram), данные кнопки только выбирают действие.
+ */
+async function handleCallback(db, cb, { now, replies }) {
+  const from = cb.from;
+  if (!from || !Number.isSafeInteger(from.id) || from.id <= 0 || from.is_bot || typeof cb.id !== 'string') return { replies, event: 'ignored' };
+  if (cb.data !== LOGOUT_ALL) {
+    replies.push({ method: 'answerCallbackQuery', callback_query_id: cb.id });
+    return { replies, event: 'callback_unknown' };
+  }
+  const userId = (await db.query("select * from bl.auth_user_for('telegram', $1) as id", [String(from.id)])).rows[0].id;
+  await setContext(db, { userId });
+  const { rowCount } = await db.query('update bl.auth_tokens set revoked_at = $2 where user_id = $1 and revoked_at is null', [userId, now]);
+  await setContext(db, { userId: null });
+  replies.push({ method: 'answerCallbackQuery', callback_query_id: cb.id, text: 'Все входы завершены' });
+  replies.push({ chat_id: cb.message?.chat?.id ?? from.id, text: 'Готово: вы вышли на всех устройствах. Чтобы войти снова, нажмите «Войти через Telegram» в приложении.' });
+  return { replies, event: 'logout_all', revoked: rowCount };
 }

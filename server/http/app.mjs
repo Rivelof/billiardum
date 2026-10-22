@@ -122,6 +122,8 @@ export async function createApp({
   });
 
   await outbox.start({ pool, log, alarms, listen });
+  // Воркер очереди уведомлений (№130): сеть каналов — вне транзакций outbox.
+  notify.start({ pool, withContext });
 
   // Уборка раз в час (контекст платформы): просроченные nonce входа через бота и ключи
   // идемпотентности. Токены не удаляются: отозванный или истёкший токен не действует сам.
@@ -199,6 +201,7 @@ export async function createApp({
         }
       }
       if (ctx.bridge?.fallback) await ctx.bridge.stopFallback();
+      await notify.stop();
       await outbox.stop();
     },
   };

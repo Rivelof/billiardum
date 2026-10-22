@@ -126,7 +126,7 @@ describe('контроллер и сессии', { skip: SKIP }, () => {
     const ob = await t.q("select payload from bl.outbox where topic = 'session.interrupted'");
     assert.equal(ob.rows[0].payload.session_id, sid);
     // Не плательщик выбрать не может.
-    await h.asUser(GUEST(1), (db) => svc.join(db, { sessionId: sid, userId: GUEST(1) })).catch(() => {});
+    await h.asUser(GUEST(1), (db) => svc.join(db, { sessionId: sid, userId: GUEST(1), code: 'TEST000004' })).catch(() => {});
     assert.equal(await code(() => h.asUser(GUEST(1), (db) => svc.resolve(db, { sessionId: sid, userId: GUEST(1), choice: 'continue' }))), 'not_found');
     const view = await h.asUser(GUEST(2), (db) => svc.resolve(db, { sessionId: sid, userId: GUEST(2), choice: 'continue' }));
     assert.equal(view.status, 'active');

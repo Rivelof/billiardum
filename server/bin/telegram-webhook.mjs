@@ -25,7 +25,7 @@ async function main() {
     return;
   }
   const url = `https://${host}/api/bots/telegram/webhook`;
-  await bot.call('setWebhook', { url, secret_token: secret, allowed_updates: ['message'], max_connections: 20 });
+  await bot.call('setWebhook', { url, secret_token: secret, allowed_updates: ['message', 'callback_query'], max_connections: 20 });
   const info = await bot.call('getWebhookInfo', {});
   log.info('telegram_webhook_set', { url: info.url, pending: info.pending_update_count, last_error: info.last_error_message ?? null });
 }

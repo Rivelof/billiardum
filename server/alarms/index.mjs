@@ -58,6 +58,8 @@ export const ALARM_TEXTS = {
   receipt_fd_conflict: 'Касса вернула номер документа, который уже есть у другого чека — проверьте чек на ленте',
   // M3: предоплата брони и пакеты (backend-money).
   settlement_receipt_failed: 'Не пробит чек зачёта предоплаты',
+  // Ревью входа п. 5: подбор PIN на терминале.
+  terminal_locked: 'Терминал ресепшена заблокирован: 10 неверных PIN за час. Разблокируйте в настройках клуба',
 };
 
 /**
@@ -93,6 +95,7 @@ export const ALARM_LEVELS = {
   kkt_shift_failed: 'important',
   receipt_fd_conflict: 'critical',
   settlement_receipt_failed: 'important',
+  terminal_locked: 'critical',
 };
 
 /**
@@ -105,6 +108,7 @@ export const DEDUPE_FIELDS = {
   receipt_fd_conflict: 'receipt_id',
   receipt_double: 'receipt_id',
   settlement_receipt_failed: 'receipt_id',
+  terminal_locked: 'terminal_id',
   payment_mismatch: 'payment_id',
   refund_mismatch: 'refund_id',
   unlimited_overrun: 'session_id',

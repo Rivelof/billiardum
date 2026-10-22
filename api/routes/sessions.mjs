@@ -29,7 +29,8 @@ export const routes = [
     path: '/api/sessions/{id}/join',
     auth: 'guest',
     async handler(ctx, req) {
-      return { status: 200, json: await svc().join(ctx.db, { sessionId: req.params.id, userId: userId(req) }) };
+      // Тело: { code } — код стола из QR (без него session_id из ссылки давал бы вход в чужую игру).
+      return { status: 200, json: await svc().join(ctx.db, { sessionId: req.params.id, userId: userId(req), code: req.body?.code }) };
     },
   },
   {

@@ -47,6 +47,10 @@ export function createRateLimiter({ now = Date.now, maxKeys = MAX_KEYS } = {}) {
     sweep() {
       sweep(now());
     },
+    /** Забыть все окна (проверки). */
+    clear() {
+      windows.clear();
+    },
     get size() {
       return windows.size;
     },

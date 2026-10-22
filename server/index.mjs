@@ -30,6 +30,10 @@ const pool = new pg.Pool({
   max: 12,
   connectionTimeoutMillis: 5_000,
   idleTimeoutMillis: 30_000,
+  // TCP keepalive: постоянные соединения LISTEN (outbox, light) иначе могут «молча» умереть
+  // за NAT/файрволом, и сигналы перестанут приходить без ошибки (ревью light, п. 4).
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
   application_name: 'bl-server',
 });
 pool.on('error', (err) => log.error('db_pool_error', { error: err.message }));

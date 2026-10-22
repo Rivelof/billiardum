@@ -7,7 +7,14 @@
 // * Одна неподтверждённая команда на устройство: остальные ждут в очереди. Команда — seq и
 //   журнал в одной транзакции, публикация после коммита, повтор с тем же id и seq каждые 3 с
 //   до 5 раз, затем тревога cmd_no_ack и отказ от команды. Пока устройство офлайн, повторов
-//   и тревоги cmd_no_ack нет; недоставленные команды не пересылаются (кроме config.set).
+//   и тревоги cmd_no_ack нет; недоставленные команды не пересылаются (кроме config.set —
+//   он досылается новой командой: новый seq и запись в журнале, старый seq контроллер отверг бы).
+// * Нет связи с брокером — ничего не публикуется: неподтверждённые команды брошены (abandoned),
+//   очереди сброшены, исходящие QoS 1 библиотеки mqtt удалены (иначе после переподключения
+//   ушли бы устаревшие команды). После переподключения — актуальное состояние онлайн-столам.
+// * Ошибка базы при отправке не теряет команду: она возвращается в очередь и повторяется
+//   через DB_RETRY_MS; sweep раз в 5 с дочитывает bl.device_commands онлайн-устройств
+//   (страховка от потерянного NOTIFY).
 // * M1: команды бизнес-логики лежат в bl.device_commands (queued); мост забирает их по
 //   wake(deviceId) после коммита (LISTEN bl_light) и перед отправкой зовёт prepare — тело
 //   (remaining_ms по paid_until и т. п.) считается в момент отправки, в той же транзакции,
@@ -34,6 +41,9 @@ export const RETRY_MS = 3_000;
 export const MAX_RETRIES = 5;
 export const REPORT_EVERY_MS = 60_000;
 export const SWEEP_EVERY_MS = 5_000;
+/** Пауза перед повтором команды после ошибки базы; после DB_MAX_FAILURES ошибок подряд — отказ. */
+export const DB_RETRY_MS = 5_000;
+export const DB_MAX_FAILURES = 5;
 export const UNKNOWN_RECHECK_MS = 60_000;
 export const TOUCH_EVERY_MS = 60_000;
 export const SEQ_GAP_LIMIT = 1_000_000;
@@ -114,6 +124,7 @@ export function createBridge({
   maxRetries = MAX_RETRIES,
   reportEveryMs = REPORT_EVERY_MS,
   sweepEveryMs = SWEEP_EVERY_MS,
+  dbRetryMs = DB_RETRY_MS,
   seqGapLimit = SEQ_GAP_LIMIT,
   mismatchAlarmMs = MISMATCH_ALARM_MS,
   offlineAlarmMs = OFFLINE_ALARM_MS,
@@ -124,6 +135,7 @@ export function createBridge({
   let total = null;
   let lastReport = null;
   let connected = false;
+  let everConnected = false;
   let stopped = false;
 
   function onlineCount() {
@@ -184,7 +196,8 @@ export function createBridge({
         mismatchAlarmed: false,
         queue: Promise.resolve(),
         inflight: null, // единственная неподтверждённая команда
-        outbox: [], // ждут своей очереди: { type, body, rowId? } | { sync: true, reason } | { resend: entry }
+        outbox: [], // ждут своей очереди: { type, body, rowId?, resendOf?, failures? } | { sync: true, reason, failures? }
+        retryAt: 0, // после ошибки базы очередь стоит до этого момента
         unknownLogged: false,
         mismatchLogged: new Set(),
       };
@@ -244,6 +257,12 @@ export function createBridge({
   // Команды ------------------------------------------------------------------------
 
   function publish(entry) {
+    // Без связи mqtt положил бы команду в свою очередь и отправил после переподключения —
+    // устаревшей. Не публикуем: команду бросит onClose, после connect уйдёт актуальное состояние.
+    if (!connected || !client.connected) {
+      log.debug('cmd_publish_skipped', { ...cmdFields(entry), reason: 'mqtt_disconnected' });
+      return;
+    }
     client.publish(entry.topic, entry.payload, { qos: 1, retain: false }, (err) => {
       if (err) log.warn('cmd_publish_failed', { device_id: entry.deviceId, type: entry.type, seq: entry.seq, error: err.message });
     });
@@ -255,7 +274,7 @@ export function createBridge({
 
   function scheduleRetry(d, entry) {
     entry.timer = timers.setTimeout(() => {
-      if (stopped || d.inflight !== entry || !d.online) return;
+      if (stopped || d.inflight !== entry || !d.online || !connected) return;
       if (entry.retries >= maxRetries) {
         d.inflight = null;
         // Тревога «контроллер не отвечает» и отказ от команды (protocol §6).
@@ -282,7 +301,7 @@ export function createBridge({
     scheduleRetry(d, entry);
   }
 
-  /** seq и журнал в базе, подпись, затем публикация. null — команда не ушла. */
+  /** seq и журнал в базе, подпись, затем публикация. null — команда не ушла; 'error' — ошибка базы. */
   async function allocateAndSend(d, item, sync = false) {
     const cmdId = item.rowId ?? randomUUID();
     let result;
@@ -308,7 +327,7 @@ export function createBridge({
       });
     } catch (err) {
       log.error('cmd_failed', { device_id: d.id, type: item.type, error: err.message });
-      return null;
+      return 'error';
     }
     if (result.seqGap && d.seqGapAlarmed !== result.seqGap.state_seq) {
       d.seqGapAlarmed = result.seqGap.state_seq;
@@ -336,19 +355,33 @@ export function createBridge({
       sentAt: null,
     };
     log.debug('cmd_sent', cmdFields(entry));
+    if (item.resendOf) log.info('cmd_resend', { ...cmdFields(entry), resend_of: item.resendOf });
     send(d, entry);
     return entry;
   }
 
-  /** Отправить следующую команду, если устройство онлайн и неподтверждённой нет. */
+  /**
+   * Ошибка базы: команда (или актуальное состояние) возвращается в начало очереди, очередь
+   * ждёт dbRetryMs (sweep повторит). После DB_MAX_FAILURES ошибок подряд — отказ от команды
+   * (строка bl.device_commands остаётся queued; её заменит актуальное состояние).
+   */
+  function retryLater(d, next, what) {
+    next.failures = (next.failures ?? 0) + 1;
+    if (next.failures >= DB_MAX_FAILURES) {
+      log.error('cmd_given_up', { device_id: d.id, type: next.type ?? 'sync', what, failures: next.failures });
+      // Строку очереди — в cancelled, иначе sweep подхватывал бы её снова и снова.
+      if (next.rowId) kick(d, () => mark(d, { cmdId: next.rowId, retries: next.failures - 1 }, 'cancelled', { error: 'db_error' }));
+      if (!next.sync) queueActualState(d, 'db_error');
+      return;
+    }
+    d.outbox.unshift(next);
+    d.retryAt = now() + dbRetryMs;
+  }
+
+  /** Отправить следующую команду, если связь есть, устройство онлайн и неподтверждённой нет. */
   async function pump(d) {
-    while (!stopped && d.online && !d.inflight && d.outbox.length > 0) {
+    while (!stopped && connected && d.online && !d.inflight && d.outbox.length > 0 && now() >= d.retryAt) {
       const next = d.outbox.shift();
-      if (next.resend) {
-        log.info('cmd_resend', cmdFields(next.resend));
-        send(d, next.resend);
-        return;
-      }
       let item = next;
       if (next.sync) {
         d.lastSyncAt = now();
@@ -356,11 +389,16 @@ export function createBridge({
           item = await actualState({ deviceId: d.id, clubId: d.clubId, reason: next.reason ?? 'sync', deviceState: d.lastState });
         } catch (err) {
           log.error('actual_state_failed', { device_id: d.id, error: err.message });
-          continue;
+          retryLater(d, next, 'actual_state');
+          return;
         }
         if (!item) continue;
       }
-      await allocateAndSend(d, item, Boolean(next.sync));
+      const res = await allocateAndSend(d, item, Boolean(next.sync));
+      if (res === 'error') {
+        retryLater(d, next, 'allocate');
+        return;
+      }
     }
   }
 
@@ -372,7 +410,8 @@ export function createBridge({
 
   /**
    * Связь прервалась или устройство перезагрузилось: неподтверждённая команда больше
-   * не повторяется, недоставленные команды не пересылаются (кроме RESEND_AFTER_RECONNECT).
+   * не повторяется (abandoned), недоставленные команды не пересылаются. RESEND_AFTER_RECONNECT
+   * досылается новой командой — новый seq и журнал (старый seq контроллер отверг бы как replayed_seq).
    */
   async function dropUndelivered(d, reason) {
     const keep = [];
@@ -380,17 +419,18 @@ export function createBridge({
     if (entry) {
       timers.clearTimeout(entry.timer);
       d.inflight = null;
-      if (RESEND_AFTER_RECONNECT.has(entry.type)) keep.push({ resend: entry });
-      else {
-        log.info('cmd_abandoned', { ...cmdFields(entry), reason });
-        await mark(d, entry, 'abandoned');
+      log.info('cmd_abandoned', { ...cmdFields(entry), reason });
+      await mark(d, entry, 'abandoned');
+      if (RESEND_AFTER_RECONNECT.has(entry.type)) {
+        keep.push({ type: entry.type, body: entry.body, sessionId: entry.sessionId, paymentId: entry.paymentId, cause: 'system', resendOf: entry.cmdId });
       }
     }
     for (const x of d.outbox) {
-      if (x.resend || RESEND_AFTER_RECONNECT.has(x.type)) keep.push(x);
+      if (RESEND_AFTER_RECONNECT.has(x.type)) keep.push(x);
       else if (!x.sync) log.info('cmd_dropped', { device_id: d.id, type: x.type, reason });
     }
     d.outbox = keep;
+    d.retryAt = 0;
   }
 
   /** Команды из bl.device_commands (queued) — в очередь устройства по порядку. */
@@ -431,7 +471,8 @@ export function createBridge({
           log.error('db_error', { op: 'supersede_queued', device_id: d.id, error: err.message });
         }
       }
-      d.outbox = d.outbox.filter((x) => x.resend || RESEND_AFTER_RECONNECT.has(x.type));
+      d.outbox = d.outbox.filter((x) => RESEND_AFTER_RECONNECT.has(x.type));
+      d.retryAt = 0;
       queueActualState(d, 'online');
       await pump(d);
     } else if (!shouldBeOnline && d.online) {
@@ -658,6 +699,11 @@ export function createBridge({
           .then(async () => {
             await evaluate(d, 'no_state');
             if (d.online && d.mismatchSince !== null) await reconcile(d);
+            // Страховка от потерянного NOTIFY и повтор после ошибки базы.
+            if (d.online && connected && !d.inflight) {
+              await loadQueued(d);
+              await pump(d);
+            }
           })
           .catch(() => {});
       } else if (d.offlineAt !== null && !d.offlineAlarmed) {
@@ -667,8 +713,10 @@ export function createBridge({
   }
 
   function onConnect() {
+    const reconnect = everConnected && !connected;
     connected = true;
-    log.info('mqtt_connected', {});
+    everConnected = true;
+    log.info('mqtt_connected', { reconnect });
     client.subscribe(SUBSCRIPTIONS, { qos: 1 }, (err, granted) => {
       if (err) {
         log.error('mqtt_subscribe_failed', { error: err.message });
@@ -677,11 +725,44 @@ export function createBridge({
       const denied = (granted ?? []).filter((g) => g.qos === 128).map((g) => g.topic);
       if (denied.length > 0) log.error('mqtt_subscribe_denied', { topics: denied });
     });
+    if (reconnect) {
+      // Пока связи не было, команды не уходили: онлайн-столам — актуальное состояние по базе,
+      // поставленные за это время команды им заменяются (как при возвращении устройства онлайн).
+      for (const d of devices.values()) {
+        if (!d.online || !d.clubId) continue;
+        kick(d, async () => {
+          if (typeof store.supersedeQueued === 'function') {
+            try {
+              await store.supersedeQueued({ clubId: d.clubId, deviceId: d.id });
+            } catch (err) {
+              log.error('db_error', { op: 'supersede_queued', device_id: d.id, error: err.message });
+            }
+          }
+          d.outbox = d.outbox.filter((x) => RESEND_AFTER_RECONNECT.has(x.type));
+          queueActualState(d, 'reconnect');
+          await pump(d);
+        });
+      }
+    }
+  }
+
+  /** Исходящие QoS 1 библиотеки mqtt (не дошедшие до брокера) — удалить: они устарели. */
+  function purgeOutgoing() {
+    if (typeof client.removeOutgoingMessage !== 'function' || !client.outgoing) return 0;
+    const ids = Object.keys(client.outgoing);
+    for (const id of ids) client.removeOutgoingMessage(Number(id));
+    return ids.length;
   }
 
   function onClose() {
-    if (connected) log.warn('mqtt_disconnected', {});
+    if (!connected) return;
     connected = false;
+    log.warn('mqtt_disconnected', {});
+    const purged = purgeOutgoing();
+    if (purged > 0) log.info('mqtt_outgoing_purged', { count: purged });
+    for (const d of devices.values()) {
+      if (d.inflight || d.outbox.length > 0) kick(d, () => dropUndelivered(d, 'mqtt_closed'));
+    }
   }
 
   function onError(err) {

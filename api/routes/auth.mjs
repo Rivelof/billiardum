@@ -19,7 +19,7 @@ import {
   tokenHash,
   userJson,
 } from '../../server/auth/index.mjs';
-import { createLink, handleTelegramUpdate, NONCE, NONCE_TTL_MS, pollLink, secretMatches } from '../../server/auth/botlink.mjs';
+import { createLink, handleTelegramUpdate, newDeviceNotice, NONCE, NONCE_TTL_MS, pollLink, secretMatches } from '../../server/auth/botlink.mjs';
 import { checkStaffPin, hashPin, PIN, PIN_SWITCH_ROLES } from '../../server/auth/pin.mjs';
 import { InitDataError, verifyInitData } from '../../server/auth/telegram.mjs';
 import { HttpError } from '../../server/http/errors.mjs';
@@ -29,6 +29,12 @@ import { isUuid, setContext } from '../../server/lib/store.mjs';
 
 const PHONE = /^\+[1-9][0-9]{7,14}$/;
 const MINUTE = 60_000;
+/** PIN владельца и управляющего — 6 цифр. */
+export const LONG_PIN = 6;
+export const LONG_PIN_ROLES = ['owner', 'manager'];
+/** Общий счётчик неверных PIN на терминал: столько за окно — блокировка терминала. */
+export const TERMINAL_PIN_FAILURES = 10;
+export const TERMINAL_PIN_WINDOW_MS = 3600_000;
 
 /** Вход для разработки возможен: не прод и явный флаг. */
 export function devLoginEnabled(config) {
@@ -69,13 +75,15 @@ async function botLinkCreate(ctx, req) {
   if (channel === 'max' || !telegramReady(ctx.config)) throw new HttpError(501, 'not_configured');
   const browserSecret = randomBytes(32).toString('base64url');
   const now = ctx.clock.now();
-  const { nonce, expiresAt } = await createLink(ctx.db, { channel, browserSecret, now });
+  const { nonce, code, expiresAt } = await createLink(ctx.db, { channel, browserSecret, now });
   ctx.setCookie(serializeCookie(LINK_COOKIE, browserSecret, { path: LINK_COOKIE_PATH, maxAgeSec: NONCE_TTL_MS / 1000 }));
   return {
     status: 200,
     json: {
       nonce,
       deep_link: `https://t.me/${ctx.config.telegram.botUsername}?start=${nonce}`,
+      // Код подтверждения: показать на экране, гость вводит его в боте (ревью входа п. 2).
+      code,
       expires_at: expiresAt.toISOString(),
     },
   };
@@ -93,6 +101,18 @@ async function botLinkPoll(ctx, req) {
   if (state.status === 'consumed') return { status: 200, json: { status: 'done' } };
   const out = await completeLogin(ctx, state.userId, { via: 'bot_link' });
   ctx.setCookie(serializeCookie(LINK_COOKIE, '', { path: LINK_COOKIE_PATH, maxAgeSec: 0 }));
+  // В бот: вход выполнен на новом устройстве, кнопка «Выйти везде».
+  const bot = ctx.telegram;
+  if (state.channel === 'telegram' && state.externalUserId && bot?.configured) {
+    const notice = newDeviceNotice(state.externalUserId);
+    ctx.afterCommit(async () => {
+      try {
+        await bot.call('sendMessage', notice);
+      } catch (err) {
+        ctx.log.warn('telegram_reply_failed', { code: err.code });
+      }
+    });
+  }
   return { status: 200, json: { status: 'done', token: out.token, user: out.user } };
 }
 
@@ -105,9 +125,9 @@ async function telegramWebhook(ctx, req) {
   const bot = ctx.telegram;
   if (replies.length > 0 && bot?.configured) {
     ctx.afterCommit(async () => {
-      for (const r of replies) {
+      for (const { method = 'sendMessage', ...params } of replies) {
         try {
-          await bot.call('sendMessage', r);
+          await bot.call(method, params);
         } catch (err) {
           ctx.log.warn('telegram_reply_failed', { code: err.code });
         }
@@ -171,15 +191,18 @@ async function updateMe(ctx, req) {
     params.push(v);
     sets.push(`name = $${params.length}`);
   }
+  // Только каналы, настроенные на сервере (channels_available, №126, №130).
+  const conf = ctx.notify?.configured?.() ?? { max: true, telegram: true, webpush: true };
+  const offered = ['max', 'telegram', 'webpush'].filter((c) => conf[c]);
   if (channel !== undefined) {
-    if (channel !== null && !['max', 'telegram', 'webpush'].includes(channel)) throw new HttpError(400, 'bad_request');
+    if (channel !== null && !offered.includes(channel)) throw new HttpError(400, 'bad_request');
     params.push(channel);
     sets.push(`notify_channel = $${params.length}`);
   }
   if (order !== undefined) {
-    // Порядок каналов (M3 §4): 1–3 разных из max, telegram, webpush; null — по умолчанию.
+    // Порядок каналов (M3 §4): 1–3 разных из настроенных max, telegram, webpush; null — по умолчанию.
     const ok = order === null || (Array.isArray(order) && order.length >= 1 && order.length <= 3 && new Set(order).size === order.length
-      && order.every((c) => ['max', 'telegram', 'webpush'].includes(c)));
+      && order.every((c) => offered.includes(c)));
     if (!ok) throw new HttpError(400, 'bad_request');
     params.push(order);
     sets.push(`channels_order = $${params.length}::text[]`);
@@ -233,11 +256,40 @@ async function terminalInfo(ctx) {
   };
 }
 
+/**
+ * Неверный PIN на терминале (своя транзакция — счёт не откатывается): 10 за час — терминал
+ * блокируется для входа по PIN до разблокировки владельцем, тревога terminal_locked.
+ */
+async function terminalPinFailure(ctx, terminalId, now) {
+  const windowStart = new Date(now.getTime() - TERMINAL_PIN_WINDOW_MS);
+  return ctx.withContext(ctx.pool, { clubId: ctx.club, actorType: 'system' }, async (db) => {
+    const { rows } = await db.query(
+      `update bl.staff_terminals
+          set pin_failed_count = case when pin_window_started_at is null or pin_window_started_at < $2 then 1 else pin_failed_count + 1 end,
+              pin_window_started_at = case when pin_window_started_at is null or pin_window_started_at < $2 then $3 else pin_window_started_at end
+        where id = $1
+        returning pin_failed_count, locked_at, name`,
+      [terminalId, windowStart, now],
+    );
+    const t = rows[0];
+    if (!t || t.locked_at || t.pin_failed_count < TERMINAL_PIN_FAILURES) return false;
+    await db.query('update bl.staff_terminals set locked_at = $2 where id = $1', [terminalId, now]);
+    await appendAudit(db, { action: 'auth.terminal_locked', objectType: 'staff_terminal', objectId: terminalId, actorType: 'system', data: { terminal_id: terminalId, failures: t.pin_failed_count } });
+    await ctx.alarms.raise(db, ctx.club, { type: 'terminal_locked', data: { terminal_id: terminalId, failures: t.pin_failed_count } });
+    return true;
+  });
+}
+
 async function pinSwitch(ctx, req) {
   const { user_id: userId, pin } = req.body;
   if (!isUuid(userId) || typeof pin !== 'string' || !PIN.test(pin)) throw new HttpError(400, 'bad_request');
   const terminalId = ctx.principal.terminalId;
   const now = ctx.clock.now();
+  const term = await ctx.db.query('select locked_at from bl.staff_terminals where id = $1', [terminalId]);
+  if (term.rows[0]?.locked_at) {
+    ctx.log.warn('pin_terminal_locked', { terminal_id: terminalId });
+    return { status: 429, json: { error: 'rate_limited' } };
+  }
   // Проверка и счётчик ошибок — в своей транзакции (общая блокировка PIN, checkStaffPin).
   const check = await checkStaffPin({
     pool: ctx.pool,
@@ -251,6 +303,9 @@ async function pinSwitch(ctx, req) {
   });
   if (!check.ok) {
     ctx.log.warn(check.locked ? 'pin_locked' : 'pin_rejected', { terminal_id: terminalId, user_id: userId, code: check.code });
+    if (check.code === 'unauthorized' || check.code === 'forbidden' || check.code === 'rate_limited') {
+      if (await terminalPinFailure(ctx, terminalId, now)) ctx.log.error('terminal_locked', { terminal_id: terminalId });
+    }
     if (check.code === 'rate_limited') {
       return { status: 429, json: { error: 'rate_limited' }, headers: { 'retry-after': String(check.retryAfterSec) } };
     }
@@ -275,13 +330,20 @@ async function pinSwitch(ctx, req) {
   });
   ctx.setCookie(sessionCookie(issued.token, issued.expiresAt, now));
   ctx.log.info('pin_switch', { terminal_id: terminalId, user_id: userId });
-  return { status: 200, json: { token: issued.token, user_id: userId, role: m.role, expires_at: issued.expiresAt.toISOString() } };
+  // Короткий PIN у владельца или управляющего — попросить сменить на 6 цифр (ревью входа п. 5).
+  const pinChange = pin.length < LONG_PIN && LONG_PIN_ROLES.includes(m.role);
+  return {
+    status: 200,
+    json: { token: issued.token, user_id: userId, role: m.role, expires_at: issued.expiresAt.toISOString(), ...(pinChange ? { pin_change_required: true } : {}) },
+  };
 }
 
 async function pinSet(ctx, req) {
   const pin = req.body.pin;
   if (typeof pin !== 'string' || !PIN.test(pin)) throw new HttpError(400, 'bad_request');
   if (ctx.principal.kind !== 'session') throw new HttpError(403, 'forbidden', { detail: 'personal login required' });
+  // Владелец и управляющий — PIN из 6 цифр (ревью входа п. 5).
+  if (pin.length < LONG_PIN && ctx.roles.some((r) => LONG_PIN_ROLES.includes(r))) throw new HttpError(400, 'bad_request', { detail: 'pin 6 digits' });
   const hash = await hashPin(pin, ctx.config.pinPepper);
   const { rowCount } = await ctx.db.query(
     `update bl.club_members set pin_hash = $3, pin_failed_count = 0, pin_locked_until = null, pin_set_at = $4
@@ -290,6 +352,56 @@ async function pinSet(ctx, req) {
   );
   if (rowCount === 0) throw new HttpError(403, 'forbidden');
   await appendAudit(ctx.db, { action: 'auth.pin_set', objectType: 'user', objectId: ctx.user.id, actorType: 'user', actorId: ctx.user.id, data: {} });
+  return { status: 200, json: { ok: true } };
+}
+
+const isoOrNull = (v) => (v ? new Date(v).toISOString() : null);
+
+/** GET /api/clubs/{club}/terminals — терминалы клуба (владелец). */
+async function listTerminals(ctx) {
+  const { rows } = await ctx.db.query(
+    `select s.id, s.name, s.created_by, u.name as created_by_name, s.created_at, s.expires_at, s.last_used_at, s.revoked_at,
+            s.locked_at, s.pin_failed_count
+       from bl.staff_terminals s left join bl.users u on u.id = s.created_by
+      order by s.revoked_at is not null, s.created_at desc`,
+  );
+  return {
+    status: 200,
+    json: rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      created_by: { user_id: r.created_by, name: r.created_by_name ?? null },
+      created_at: isoOrNull(r.created_at),
+      expires_at: isoOrNull(r.expires_at),
+      last_used_at: isoOrNull(r.last_used_at),
+      revoked_at: isoOrNull(r.revoked_at),
+      locked_at: isoOrNull(r.locked_at),
+    })),
+  };
+}
+
+/** DELETE /api/clubs/{club}/terminals/{id} — отозвать терминал; PIN-токены на нём гаснут. */
+async function revokeTerminal(ctx, req) {
+  const id = req.params.id;
+  if (!isUuid(id)) throw new HttpError(404, 'not_found');
+  const now = ctx.clock.now();
+  const { rowCount } = await ctx.db.query('update bl.staff_terminals set revoked_at = coalesce(revoked_at, $2) where id = $1', [id, now]);
+  if (rowCount === 0) throw new HttpError(404, 'not_found');
+  await ctx.db.query("update bl.auth_tokens set revoked_at = $2 where terminal_id = $1 and kind = 'pin' and revoked_at is null", [id, now]);
+  await appendAudit(ctx.db, { action: 'auth.terminal_revoke', objectType: 'staff_terminal', objectId: id, actorType: 'user', actorId: ctx.user.id, data: { terminal_id: id } });
+  return { status: 200, json: { ok: true } };
+}
+
+/** POST /api/clubs/{club}/terminals/{id}/unlock — снять блокировку входа по PIN. */
+async function unlockTerminal(ctx, req) {
+  const id = req.params.id;
+  if (!isUuid(id)) throw new HttpError(404, 'not_found');
+  const { rowCount } = await ctx.db.query(
+    'update bl.staff_terminals set locked_at = null, pin_failed_count = 0, pin_window_started_at = null where id = $1 and revoked_at is null',
+    [id],
+  );
+  if (rowCount === 0) throw new HttpError(404, 'not_found');
+  await appendAudit(ctx.db, { action: 'auth.terminal_unlock', objectType: 'staff_terminal', objectId: id, actorType: 'user', actorId: ctx.user.id, data: { terminal_id: id } });
   return { status: 200, json: { ok: true } };
 }
 
@@ -317,6 +429,9 @@ export const routes = [
   { method: 'GET', path: '/api/me', auth: 'guest', handler: me },
   { method: 'PATCH', path: '/api/me', auth: 'guest', rateLimit: { max: 30, windowMs: MINUTE }, handler: updateMe },
   { method: 'POST', path: '/api/staff/terminal', auth: 'staff', roles: ['owner', 'manager'], clubFromBody: true, handler: registerTerminal },
+  { method: 'GET', path: '/api/clubs/{club}/terminals', auth: 'staff', roles: ['owner'], handler: listTerminals },
+  { method: 'DELETE', path: '/api/clubs/{club}/terminals/{id}', auth: 'staff', roles: ['owner'], handler: revokeTerminal },
+  { method: 'POST', path: '/api/clubs/{club}/terminals/{id}/unlock', auth: 'staff', roles: ['owner'], handler: unlockTerminal },
   { method: 'GET', path: '/api/staff/terminal', auth: 'terminal', handler: terminalInfo },
   { method: 'POST', path: '/api/staff/pin', auth: 'terminal', rateLimit: { max: 20, windowMs: MINUTE }, handler: pinSwitch },
   { method: 'PUT', path: '/api/staff/pin', auth: 'staff', roles: PIN_SWITCH_ROLES, clubFromBody: true, rateLimit: { max: 10, windowMs: MINUTE }, handler: pinSet },

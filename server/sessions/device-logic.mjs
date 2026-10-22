@@ -4,7 +4,7 @@
 
 import { phaseOf, playEnd, UNPLAYED_THRESHOLD_MS, unplayedMs } from './kit.mjs';
 import { activeHold, isOpen, isUuid, loadClub, loadDevice, loadSession, openSessionOn } from './queries.mjs';
-import { buzzerFlag } from './settings.mjs';
+import { buzzerFlag, validTimeZone } from './settings.mjs';
 
 export const MAX_REMAINING_MS = 86_400_000;
 /** Запас на расхождение таймеров контроллера и сервера при решении «доиграл ли он сам». */
@@ -42,9 +42,30 @@ export function createDeviceLogic({ kit, log, withContext, pool }) {
   const { now, audit, alarm, markInterrupted } = kit;
   const sys = (clubId) => ({ clubId, actorType: 'system' });
 
+  const badZoneAlarmed = new Set();
+
+  /**
+   * Часовой пояс клуба, которого не знает Intl (Postgres принимает «MSK», «posix/…»): тихие
+   * часы считаются по UTC (команда не должна упасть), владельцу — тревога один раз за процесс.
+   */
+  async function checkZone(db, club) {
+    if (validTimeZone(club.timezone) || badZoneAlarmed.has(club.id)) return;
+    badZoneAlarmed.add(club.id);
+    log.error('club_timezone_invalid', { club_id: club.id });
+    await db.query('savepoint light_tz_alarm');
+    try {
+      await alarm(db, club.id, { type: 'club_timezone_invalid', level: 'important', data: { timezone: String(club.timezone).slice(0, 64) } });
+      await db.query('release savepoint light_tz_alarm');
+    } catch (err) {
+      await db.query('rollback to savepoint light_tz_alarm');
+      log.error('alarm_failed', { type: 'club_timezone_invalid', error: err.message });
+    }
+  }
+
   /** session.start/resume: остаток по paid_until на момент отправки; в льготу — её остаток. */
   async function sessionBody(db, s, t) {
     const club = await loadClub(db, s.club_id);
+    await checkZone(db, club);
     const P = s.paid_until.getTime();
     const T = t.getTime();
     const buzzer = buzzerFlag(club.settings, t, club.timezone);

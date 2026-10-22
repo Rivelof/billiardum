@@ -8,6 +8,8 @@
 //   коммитятся вместе. Ошибка — повтор с паузой 1, 2, 4 … до 300 с; после 5 неудач подряд —
 //   тревога outbox_failed клубу. Доставка «хотя бы один раз»: обработчики идемпотентны.
 // * Задержка — LISTEN bl_outbox (NOTIFY шлёт триггер при вставке) и запасной опрос раз в 1 с.
+// * У каждой темы своя очередь (№130): медленный обработчик одной темы не задерживает другие;
+//   порядок гарантирован только внутри темы (между темами его не было и раньше: повтор с паузой).
 
 import { afterCommit, withContext } from './lib/store.mjs';
 
@@ -68,8 +70,8 @@ export function createOutbox({ pollMs = POLL_MS, batch = BATCH, clock = { now: (
   let deps = null; // { pool, log, alarms, listen }
   let running = false;
   let stopping = false;
-  let draining = null;
-  let again = false;
+  /** @type {Map<string, { running: Promise<void>|null, again: boolean }>} очереди по темам */
+  const lanes = new Map();
   let pollTimer = null;
   let cleanupTimer = null;
   let listener = null;
@@ -104,45 +106,70 @@ export function createOutbox({ pollMs = POLL_MS, batch = BATCH, clock = { now: (
     });
   }
 
+  /**
+   * Проход обработки: у каждой темы свой курсор и своя очередь (№130) — медленный подписчик
+   * одной темы не держит события других тем (payment.confirmed не ждёт уведомлений).
+   * Внутри темы порядок — по id. Возвращает обещание, которое ждёт все запущенные очереди.
+   */
   function drain() {
-    if (!running || stopping) return draining ?? Promise.resolve();
-    if (draining) {
-      again = true;
-      return draining;
+    if (!running || stopping) return Promise.all([...lanes.values()].map((l) => l.running).filter(Boolean)).then(() => undefined);
+    const topics = [...subscribers.entries()].filter(([, l]) => l.length > 0).map(([t]) => t);
+    if (topics.length === 0) return Promise.resolve();
+    // Один дешёвый запрос: темы, где есть что обрабатывать; очереди запускаются только для них.
+    return withContext(deps.pool, { clubId: null, actorType: 'system' }, (db) =>
+      db.query(
+        `select distinct o.topic from bl.outbox o
+          where o.processed_at is null and o.next_attempt_at <= greatest(now(), $2::timestamptz) and o.topic = any($1)`,
+        [topics, clock.now()],
+      ),
+    )
+      .then(({ rows }) => Promise.all(rows.map((r) => runLane(r.topic))))
+      .catch((err) => deps.log.error('outbox_drain_failed', { error: errorCode(err) }))
+      .then(() => undefined);
+  }
+
+  function runLane(topic) {
+    let lane = lanes.get(topic);
+    if (!lane) {
+      lane = { running: null, again: false };
+      lanes.set(topic, lane);
     }
-    // Сначала создаётся проход, затем сбрасывается draining: проход без await (подписчиков нет)
-    // завершается синхронно, и finally внутри него сработал бы раньше присваивания.
+    if (lane.running) {
+      lane.again = true;
+      return lane.running;
+    }
+    // Сначала создаётся проход, затем сбрасывается running: проход без await завершается
+    // синхронно, и finally внутри него сработал бы раньше присваивания.
     const pass = (async () => {
       try {
         do {
-          again = false;
-          const topics = [...subscribers.entries()].filter(([, l]) => l.length > 0).map(([t]) => t);
-          if (topics.length === 0) break;
+          lane.again = false;
+          if ((subscribers.get(topic) ?? []).length === 0) break;
           const { rows } = await withContext(deps.pool, { clubId: null, actorType: 'system' }, (db) =>
             db.query(
               `select o.id, o.club_id, o.topic, o.attempts,
                       array(select d.subscriber from bl.outbox_done d where d.event_id = o.id) as done
                  from bl.outbox o
-                where o.processed_at is null and o.next_attempt_at <= greatest(now(), $2::timestamptz) and o.topic = any($1)
+                where o.processed_at is null and o.next_attempt_at <= greatest(now(), $2::timestamptz) and o.topic = $1
                 order by o.id
                 limit $3`,
-              [topics, clock.now(), batch],
+              [topic, clock.now(), batch],
             ),
           );
           for (const ev of rows) {
             if (stopping) break;
             await processEvent(ev);
           }
-          if (rows.length === batch) again = true;
-        } while (again && !stopping);
+          if (rows.length === batch) lane.again = true;
+        } while (lane.again && !stopping);
       } catch (err) {
-        deps.log.error('outbox_drain_failed', { error: errorCode(err) });
+        deps.log.error('outbox_drain_failed', { topic, error: errorCode(err) });
       }
     })();
-    draining = pass.then(() => {
-      draining = null;
+    lane.running = pass.then(() => {
+      lane.running = null;
     });
-    return draining;
+    return lane.running;
   }
 
   async function processEvent(ev) {
@@ -309,7 +336,7 @@ export function createOutbox({ pollMs = POLL_MS, batch = BATCH, clock = { now: (
       clearInterval(cleanupTimer);
       clearTimeout(listenRetry);
       listenRetry = null;
-      await draining;
+      await Promise.all([...lanes.values()].map((l) => l.running).filter(Boolean));
       if (listener) {
         const { client, onError } = listener;
         listener = null;

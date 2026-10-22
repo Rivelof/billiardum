@@ -48,7 +48,10 @@ export function createLightStore(pool, { clock = { now: () => new Date() } } = {
     }) {
       try {
         return await withContext(pool, sys(clubId), async (client) => {
-          const cur = await client.query('select last_seq, device_key_enc from bl.devices where id = $1 for update', [deviceId]);
+          // FOR NO KEY UPDATE, а не FOR UPDATE: бизнес-транзакция ставит команду в очередь
+          // (FK device_commands → devices берёт KEY SHARE) уже после записи в журнал (advisory-блокировка
+          // цепочки клуба). FOR UPDATE здесь + журнал ниже давали взаимоблокировку (40P01).
+          const cur = await client.query('select last_seq, device_key_enc from bl.devices where id = $1 for no key update', [deviceId]);
           if (cur.rowCount === 0) throw new CommandSkipped('unknown_device');
           const dbSeq = Number(cur.rows[0].last_seq);
           const keyEnc = cur.rows[0].device_key_enc;
