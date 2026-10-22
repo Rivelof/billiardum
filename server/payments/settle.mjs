@@ -7,12 +7,14 @@
 // * Предоплата через ЮKassa → строка bl.receipts (channel yookassa, receipt_pending) и событие
 //   outbox money.receipt_settle; обработчик отправляет POST /v3/receipts по платежу предоплаты
 //   (type payment, settlements [{type: prepayment}]) с ключом идемпотентности st-<receipt_id>.
-//   Сбой ЮKassa — повтор outbox; отказ — статус failed и тревога владельцу.
+//   Сбой ЮKassa (сеть, 5xx) — повтор outbox с нарастающей паузой; отказ (4xx) — статус failed и
+//   тревога с действием «Повторить» (retrySettlementReceipt, POST /api/receipts/{id}/retry, 0656).
 // * Предоплата наличными или картой через терминал (депозит, пакет на кассе) → задание ККТ
 //   (server/kkt enqueueReceipt) с оплатой «предоплата» (АТОЛ prepaid).
 // Поля /v3/receipts, в которых нет уверенности, перечислены в server/payments/README.md.
 
 import { enterClub } from './context.mjs';
+import { MoneyError } from './errors.mjs';
 import { receiptPhone } from './receipt.mjs';
 import { receiptPhoneOf } from './records.mjs';
 import { clientFor, loadPaymentSettings } from './settings.mjs';
@@ -65,6 +67,42 @@ export async function queueSettlementReceipt(db, deps, { source, forPaymentId, i
   });
 }
 
+/** Ключ ЮKassa: st-<id>; после ручного повтора (отказ 4xx) — st-<id>-r<n> (см. 0656). */
+export function settleKey(r) {
+  return r.settle_retry > 0 ? `st-${r.id}-r${r.settle_retry}` : `st-${r.id}`;
+}
+
+/**
+ * POST /api/receipts/{id}/retry — повторить чек зачёта после отказа ЮKassa (Д2): управляющий и выше,
+ * причина обязательна. Только чек зачёта через ЮKassa в статусе failed; уже отправленный или в
+ * очереди — тот же ответ без действий. Журнал manual.receipt_retry, событие money.receipt_settle.
+ */
+export async function retrySettlementReceipt(db, deps, { receiptId, reason, staffId }) {
+  const why = typeof reason === 'string' ? reason.trim() : '';
+  if (!why || why.length > 2000) throw new MoneyError('reason_required');
+  const { rows } = await db.query('select * from bl.receipts where id = $1 for update', [receiptId]);
+  const r = rows[0];
+  if (!r || r.channel !== 'yookassa' || !r.settles_payment_id || r.kind !== 'sale') throw new MoneyError('not_found', 'receipt');
+  if (r.status !== 'failed') return { receipt_id: r.id, status: r.status, retried: false };
+  if (r.settle_retry >= 100) throw new MoneyError('limit_exceeded', 'повторов чека');
+  const now = deps.clock.now();
+  const { rows: up } = await db.query(
+    `update bl.receipts set status = 'receipt_pending', settle_retry = settle_retry + 1, updated_at = $2 where id = $1 returning settle_retry`,
+    [r.id, now],
+  );
+  await deps.audit.appendAudit(db, {
+    action: 'manual.receipt_retry',
+    objectType: 'payment',
+    objectId: r.payment_id,
+    reason: why,
+    data: { receipt_id: r.id, payment_id: r.payment_id, settles_payment_id: r.settles_payment_id, attempt: up[0].settle_retry },
+    actorType: 'user',
+    actorId: staffId ?? null,
+  });
+  await deps.outbox.enqueue(db, SETTLE_TOPIC, { receipt_id: r.id, club_id: r.club_id });
+  return { receipt_id: r.id, status: 'receipt_pending', retried: true };
+}
+
 /** Обработчик outbox money.receipt_settle: отправить чек зачёта в ЮKassa. */
 export async function sendSettlementReceipt(db, deps, config, payload) {
   await enterClub(db, payload.club_id);
@@ -82,7 +120,12 @@ export async function sendSettlementReceipt(db, deps, config, payload) {
   const fail = async (code) => {
     await db.query(`update bl.receipts set status = 'failed', updated_at = $2 where id = $1`, [r.id, now]);
     deps.log?.error?.('settlement_receipt_failed', { receipt_id: r.id, club_id: r.club_id, code });
-    await deps.alarms.raise(db, r.club_id, { type: 'settlement_receipt_failed', level: 'important', data: { receipt_id: r.id, code } });
+    // Действие «Повторить» — для экрана тревог (POST /api/receipts/{id}/retry, управляющий и выше).
+    await deps.alarms.raise(db, r.club_id, {
+      type: 'settlement_receipt_failed',
+      level: 'important',
+      data: { receipt_id: r.id, code, action_id: 'retry', action_title: 'Повторить', action_url: `/api/receipts/${r.id}/retry` },
+    });
     return { result: 'failed' };
   };
   if (!phone) return fail('no_customer');
@@ -97,7 +140,7 @@ export async function sendSettlementReceipt(db, deps, config, payload) {
   };
   let remote;
   try {
-    remote = await clientFor(settings, config).createReceipt(body, `st-${r.id}`);
+    remote = await clientFor(settings, config).createReceipt(body, settleKey(r));
   } catch (err) {
     if (err instanceof YooKassaError && !err.retryable) return fail(err.code);
     throw err; // сеть или 5xx — outbox повторит тем же ключом

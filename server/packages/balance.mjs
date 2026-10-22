@@ -9,6 +9,7 @@
 //   возвращает минуты в партии.
 // db — транзакция с контекстом клуба.
 
+import { formatMoney } from '../../shared/format.mjs';
 import { MoneyError } from '../payments/errors.mjs';
 import { receiptItems } from '../payments/receipt.mjs';
 import { queueSettlementReceipt } from '../payments/settle.mjs';
@@ -161,6 +162,31 @@ export async function revokeLot(db, deps, { lotId, reason, staffId, now }) {
   const payment = (await db.query('select * from bl.payments where id = $1', [lot.payment_id])).rows[0];
   const data = { lot_id: lotId, payment_id: lot.payment_id, package_id: lot.package_id, minutes: lot.minutes_total, amount_kopecks: Number(lot.price_kopecks), user_id: lot.user_id };
   await deps.audit.appendAudit(db, { action: 'manual.package_refund', objectType: 'payment', objectId: lot.payment_id, reason: why, data, actorType: 'user', actorId: staffId });
-  await deps.alarms.raise(db, lot.club_id, { type: 'manual_action', level: 'important', data: { action: 'manual.package_refund', ...data, reason: why } });
+  // Инвариант 8 (Д3): владелец сразу видит, что, кому, на сколько, кто и почему — как у отмены брони.
+  await deps.alarms.raise(db, lot.club_id, {
+    type: 'manual_action',
+    level: 'critical',
+    manual: true,
+    data: { action: 'manual.package_refund', ...data, reason: why, staff_id: staffId ?? null },
+    text: await packageRefundText(db, lot, { staffId, reason: why }),
+  });
   return { lot: { ...lot, minutes_left: 0, revoked_at: now }, payment };
+}
+
+const ROLE_TITLE = { owner: 'владелец', manager: 'управляющий', reception: 'администратор' };
+
+/** «Возврат пакета «10 часов» гостю +7999***0002 на 3 000 ₽ — Анна: причина» (телефон — маской). */
+export async function packageRefundText(db, lot, { staffId, reason }) {
+  const title = (await db.query('select title from bl.tariff_packages where id = $1', [lot.package_id])).rows[0]?.title ?? 'пакет';
+  const masked = (await db.query('select phone_masked from bl.user_brief($1)', [lot.user_id])).rows[0]?.phone_masked ?? 'без телефона';
+  let who = 'сотрудник';
+  if (staffId) {
+    const { rows } = await db.query(
+      `select u.name, m.role from bl.club_members m join bl.users u on u.id = m.user_id
+        where m.club_id = $1 and m.user_id = $2 order by m.active desc limit 1`,
+      [lot.club_id, staffId],
+    );
+    who = rows[0]?.name?.trim() || ROLE_TITLE[rows[0]?.role] || who;
+  }
+  return `Возврат пакета «${title}» гостю ${masked} на ${formatMoney(Number(lot.price_kopecks))} — ${who}: ${reason}`;
 }

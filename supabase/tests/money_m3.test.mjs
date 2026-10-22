@@ -9,6 +9,7 @@ import { routes as quoteRoutes } from '../../api/routes/quotes.mjs';
 import { routes as packageRoutes } from '../../api/routes/packages.mjs';
 import { routes as receptionRoutes } from '../../api/routes/reception.mjs';
 import { routes as webhookRoutes } from '../../api/routes/webhooks.mjs';
+import { routes as paymentRoutes } from '../../api/routes/payments.mjs';
 import { createBookingQuote, createPrepayment, creditPackageForSale, onlineMethodAvailable, revokeLotOnly, revokePackageLot, debitBalance, forfeitPrepayment, packageSaleLine, recordOfflinePayment, settleDeposit, settlePrepayment } from '../../server/payments/api.mjs';
 import { resolveDeps } from '../../server/payments/deps.mjs';
 import { tick } from '../../server/payments/index.mjs';
@@ -17,6 +18,7 @@ import { clientFor, loadPaymentSettings } from '../../server/payments/settings.m
 import { sendSettlementReceipt, SETTLE_TOPIC } from '../../server/payments/settle.mjs';
 import { cashTotals } from '../../server/shifts/service.mjs';
 import { withContext } from '../../server/lib/store.mjs';
+import { formatMoney } from '../../shared/format.mjs';
 import { CLUB_A, CLUB_B, GUEST_1, GUEST_2, newKey, OWNER_A, OWNER_B, RECEPTION_A, setupMoney } from './money_harness.mjs';
 
 const route = (list, method, path) => list.find((r) => r.method === method && r.path === path);
@@ -29,6 +31,7 @@ const BUY_PKG = route(packageRoutes, 'POST', '/api/packages/{id}/buy');
 const BALANCE = route(packageRoutes, 'GET', '/api/clubs/{club}/balance');
 const REFUND_LOT = route(packageRoutes, 'POST', '/api/packages/lots/{id}/refund');
 const LOTS = route(packageRoutes, 'GET', '/api/clubs/{club}/package-lots');
+const RETRY = route(paymentRoutes, 'POST', '/api/receipts/{id}/retry');
 const DEPOSIT = route(receptionRoutes, 'POST', '/api/reception/deposits');
 const WEBHOOK = route(webhookRoutes, 'POST', '/api/webhooks/yookassa/{club_id}');
 
@@ -852,6 +855,82 @@ describe('B-R1: гонка вебхука со сверкой; доступно�
     await assert.rejects(asClub((db) => onlineMethodAvailable(db, { clubId: 'x', method: 'sbp' })), (e) => e.code === 'bad_request');
   });
 });
+
+describe('Д3 и Д2: текст тревоги о возврате пакета; повтор чека зачёта', () => {
+  it('Д3: тревога владельцу — пакет, маска гостя, сумма, кто и причина; critical', async () => {
+    const posLot = (await h.q("select l.* from bl.balance_lots l join bl.payments p on p.id = l.payment_id where p.kind = 'bar' and l.revoked_at is not null limit 1"))[0];
+    const a = h.alarms.items.find((x) => x.type === 'manual_action' && x.data.lot_id === posLot.id);
+    const title = (await h.q('select title from bl.tariff_packages where id = $1', [posLot.package_id]))[0].title;
+    assert.equal(a.level, 'critical');
+    assert.equal(a.manual, true);
+    assert.equal(a.text, `Возврат пакета «${title}» гостю +7999***0002 на ${formatMoney(300000)} — Владелец (тест): Ошибка продажи на кассе`);
+    const app = h.alarms.items.find((x) => x.type === 'manual_action' && x.data.action === 'manual.package_refund' && x.text.includes('Купил по ошибке'));
+    assert.ok(app.text.startsWith('Возврат пакета «') && app.text.endsWith(`гостю +7999***0002 на ${formatMoney(300000)} — Владелец (тест): Купил по ошибке`), app.text);
+  });
+
+  async function settlementReceipt() {
+    const bookingId = newKey();
+    const r = await asClub((db) => createPrepayment(db, { clubId: CLUB_A, bookingId, resourceId: T(3), userId: GUEST_1, amountKopecks: 50000, method: 'card' }, inj()), GUEST_1);
+    await emuSucceed(r.payment.id);
+    const { rows } = await h.pool.query(
+      `insert into bl.sessions (club_id, resource_id, status, payer_user_id, unlimited, started_at, paid_until, ended_at, close_reason, created_at, updated_at)
+       values ($1, $2, 'closed', $3, false, $4, $5, $5, 'stopped', $4, $4) returning id`,
+      [CLUB_A, T(3), GUEST_1, START, '2026-10-20T09:00:00Z'],
+    );
+    const s = await asClub((db) => settlePrepayment(db, { paymentId: r.payment.id, sessionId: rows[0].id }, inj()));
+    return s.receipt_id;
+  }
+  const emuFail = (status) => fetch(`${h.emuBase}/__emu/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fail_next: { count: 1, status } }) });
+  const send = (id) => asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) => sendSettlementReceipt(db, deps, h.config, { receipt_id: id, club_id: CLUB_A }));
+  const receipt = async (id) => (await h.q('select * from bl.receipts where id = $1', [id]))[0];
+  const keysFor = async () => (await (await fetch(`${h.emuBase}/__emu/requests`)).json()).filter((x) => x.path === '/v3/receipts').map((x) => x.idempotence_key);
+
+  it('Д2: 5xx — ошибка наверх (outbox повторит с паузой), чек в очереди; повтор тем же ключом проходит', async () => {
+    const id = await settlementReceipt();
+    await drainOtherSettlements(id);
+    await emuFail(500);
+    await assert.rejects(send(id), (e) => e.retryable === true);
+    assert.equal((await receipt(id)).status, 'receipt_pending');
+    assert.equal((await send(id)).result, 'succeeded');
+    assert.ok((await keysFor()).includes(`st-${id}`));
+  });
+
+  it('Д2: 4xx — failed и тревога с действием «Повторить»; повтор управляющим с причиной — новый ключ, чек пробит; ресепшн — 403', async () => {
+    const id = await settlementReceipt();
+    await drainOtherSettlements(id);
+    await emuFail(400);
+    assert.equal((await send(id)).result, 'failed');
+    assert.equal((await receipt(id)).status, 'failed');
+    const a = h.alarms.items.filter((x) => x.type === 'settlement_receipt_failed' && x.data.receipt_id === id);
+    assert.equal(a.length, 1);
+    assert.deepEqual({ t: a[0].data.action_title, u: a[0].data.action_url }, { t: 'Повторить', u: `/api/receipts/${id}/retry` });
+    const call = (user, body) => h.call(RETRY, { user, club: CLUB_A, params: { id }, body, idempotencyKey: newKey() });
+    assert.equal((await call(RECEPTION_A, { reason: 'x' })).status, 403);
+    assert.deepEqual((await call(OWNER_A, {})).json, { error: 'reason_required' });
+    const ok = await call(OWNER_A, { reason: 'ЮKassa отклонила чек, телефон гостя исправлен' });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    assert.deepEqual(ok.json, { receipt_id: id, status: 'receipt_pending', retried: true });
+    const au = (await h.audit('manual.receipt_retry')).filter((x) => x.data.receipt_id === id);
+    assert.equal(au.length, 1);
+    assert.equal(au[0].reason, 'ЮKassa отклонила чек, телефон гостя исправлен');
+    const ev = (await h.outbox(SETTLE_TOPIC)).filter((e) => e.payload.receipt_id === id && !e.processed_at);
+    assert.equal(ev.length, 1);
+    assert.equal((await send(id)).result, 'succeeded');
+    const r = await receipt(id);
+    assert.deepEqual({ s: r.status, n: r.settle_retry }, { s: 'succeeded', n: 1 });
+    assert.ok(r.provider_receipt_id);
+    assert.ok((await keysFor()).includes(`st-${id}-r1`), 'повтор — ключ st-<id>-r1');
+    const again = await call(OWNER_A, { reason: 'ещё раз' });
+    assert.deepEqual(again.json, { receipt_id: id, status: 'succeeded', retried: false });
+    const foreign = await h.call(RETRY, { user: OWNER_B, club: CLUB_B, params: { id }, body: { reason: 'x' }, idempotencyKey: newKey() });
+    assert.equal(foreign.status, 404, 'чек другого клуба не виден');
+  });
+});
+
+/** Отметить события чека зачёта, кроме id, обработанными, чтобы прямые вызовы теста не путались. */
+async function drainOtherSettlements(id) {
+  await h.pool.query("update bl.outbox set processed_at = now() where topic = $1 and processed_at is null and payload->>'receipt_id' = $2", [SETTLE_TOPIC, id]);
+}
 
 function formatRub(k) {
   return `${Math.floor(k / 100)}.${String(k % 100).padStart(2, '0')}`;
