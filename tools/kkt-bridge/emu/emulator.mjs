@@ -25,6 +25,7 @@
 //                                                         его «забыл»: GET по UUID — 404 (исход неизвестен у моста)
 //   POST /__emu/shift { expired: true }                   смена ККТ старше 24 часов
 // Выдаёт номер ФД (сквозной), ФП (10 цифр, HMAC от ФН и ФД), номер чека в смене и номер смены.
+// Номер ФН — случайный при каждом запуске (randomFn): счётчики в памяти, после перезапуска ФД с 1.
 
 import { createHmac, randomBytes } from 'node:crypto';
 import http from 'node:http';
@@ -59,6 +60,16 @@ class HttpFail extends Error {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Номер ФН эмулятора: «9999» и 12 случайных цифр при каждом запуске. Состояние эмулятора — в памяти;
+ * после перезапуска счёт ФД начинается заново, и с тем же номером ФН пара (ФН, ФД) повторила бы уже
+ * пробитые чеки. Новый ФН при старте — как замена ФН на настоящей ККТ. Свой номер — ATOL_EMU_FN.
+ */
+export function randomFn() {
+  const n = randomBytes(8).readBigUInt64BE() % 1_000_000_000_000n;
+  return `9999${String(n).padStart(12, '0')}`;
+}
 const kop = (rub) => Math.round(Number(rub) * 100);
 
 /** Время ККТ: ISO 8601 со смещением, как в fiscalDocumentDateTime («2026-10-22T15:25:00+00:00»). */
@@ -75,7 +86,7 @@ function kktDateTime(d) {
 export function createAtolEmulator({
   clock = { now: () => new Date() },
   log = null,
-  fnNumber = '9999078900012345',
+  fnNumber = randomFn(),
   registrationNumber = '0000000001012345',
   autoOpenShift = true,
   shiftHours = 24,

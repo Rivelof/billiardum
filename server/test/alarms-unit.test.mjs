@@ -18,6 +18,7 @@ describe('тревоги и коды ошибок M2', () => {
       receipt_double: 'critical',
       service_light_threshold: 'important',
       kkt_shift_failed: 'important',
+      receipt_fd_conflict: 'critical',
     };
     for (const [type, level] of Object.entries(expected)) {
       assert.equal(ALARM_LEVELS[type], level, type);

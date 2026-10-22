@@ -337,6 +337,35 @@ describe('состояние ККТ и сбои стенда', () => {
     const done = await t.receipt(sale.receiptId);
     assert.deepEqual([done.status, Number(done.fd), done.fp], ['printed', doc.fd, doc.fp]);
   });
+
+  it('ККТ начала счёт ФД заново с тем же ФН: конфликт (ФН, ФД) — чек отложен с тревогой, очередь идёт дальше', async () => {
+    t.emu.control.reset(); // ФД снова с 1, ФН тот же
+    const a = await t.barSale({ lines: [{ name: 'Конфликт 1', price_kopecks: 4100 }] });
+    const b = await t.barSale({ lines: [{ name: 'Конфликт 2', price_kopecks: 4200 }] });
+    for (const id of [a.receiptId, b.receiptId]) {
+      await waitFor(async () => {
+        const r = await t.receipt(id);
+        return r.status === 'printed' || r.kkt_job?.state === 'lost';
+      }, { timeoutMs: 10_000 });
+    }
+    const ra = await t.receipt(a.receiptId);
+    assert.equal(ra.status, 'receipt_pending');
+    assert.equal(ra.error, 'fd_conflict');
+    assert.equal(ra.kkt_job.conflict.fd, 2);
+    const alarm = await t.admin.query("select level from bl.alarms where club_id = $1 and type = 'receipt_fd_conflict'", [CLUB_A]);
+    assert.equal(alarm.rows[0].level, 'critical');
+    assert.equal(t.log.lines.filter((l) => l.msg === 'kkt_result_failed').length, 0, 'результат записан, не падает');
+    // Управляющий отмечает отложенный чек пробитым: ФД, занятый другим чеком, — 409.
+    const res = await t.request('POST', `/api/kkt/receipts/${a.receiptId}/mark-printed`, { token: await t.login('manager'), body: { fd: 2, fp: '1', reason: 'проверка' } });
+    assert.deepEqual([res.status, res.json.error], [409, 'fd_conflict']);
+    // Штатный путь — повторить: новое задание, новый ФД (догоняет занятые номера).
+    const retry = await t.request('POST', `/api/kkt/receipts/${a.receiptId}/retry`, { token: await t.login('manager'), body: { reason: 'ККТ сброшена, пробить заново' } });
+    assert.equal(retry.status, 200);
+    await waitFor(async () => {
+      const r = await t.receipt(a.receiptId);
+      return r.status === 'printed' || (r.kkt_job?.state === 'lost' && r.kkt_job.conflict?.uuid !== ra.kkt_job.conflict.uuid);
+    }, { timeoutMs: 10_000 });
+  });
 });
 
 describe('тревога «Чек не пробит больше 10 минут»', () => {

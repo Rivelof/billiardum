@@ -200,6 +200,17 @@ export function approvalBody({ approver, pin, reason, discount, discountKopecks:
   };
 }
 
+/**
+ * Сервер подтвердил ровно то, что видел управляющий (№103): subtotal_kopecks и max_discount_kopecks ответа
+ * совпадают с показанными «Корзина … · скидка …». Старый ответ без этих полей — не с чем сверять, принимаем.
+ */
+export function approvalMatches(res, subtotalKopecks, discountKopecks) {
+  if (!res || typeof res !== 'object') return false;
+  if (res.subtotal_kopecks !== undefined && res.subtotal_kopecks !== subtotalKopecks) return false;
+  if (res.max_discount_kopecks !== undefined && res.max_discount_kopecks !== discountKopecks) return false;
+  return true;
+}
+
 /** Ответ POST /api/pos/discount-approvals словами: 401 — неверный PIN, 403 — не управляющий, 429 — PIN заблокирован. */
 export function approvalError(err) {
   const code = err?.code;

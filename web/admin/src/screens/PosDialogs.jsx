@@ -9,7 +9,7 @@ import { Keypad, PIN_KEYS } from '../components/Keypad.jsx';
 import { CashEntry, cashState } from '../components/CashEntry.jsx';
 import { QrCode } from '../components/QrCode.jsx';
 import { api, newIdempotencyKey } from '../lib/api.js';
-import { approvalBody, approvalError, discountKopecks, discountPercent, normalizeSale, overLimit, receiptView, saleBody, saleTotals, wholeDiscount } from '../lib/pos.js';
+import { approvalBody, approvalError, approvalMatches, discountKopecks, discountPercent, normalizeSale, overLimit, receiptView, saleBody, saleTotals, wholeDiscount } from '../lib/pos.js';
 import { keypad, parseRubles } from '../lib/cash.js';
 import { normalizePhone } from '../lib/auth.js';
 import { linkHandler } from '../lib/router.js';
@@ -169,6 +169,11 @@ export function DiscountDialog({ open, clubId, base, limit, current, bigAllowed,
       // Та же скидка и та же корзина, что уйдут в продажу: сервер сверяет percent | amount_kopecks (№95)
       // и не пускает корзину крупнее одобренной или скидку больше max_discount_kopecks (№100)
       const a = await api.approveDiscount(approvalBody({ approver, pin, reason: why, discount: d, discountKopecks: kop, subtotalKopecks: base }));
+      if (!approvalMatches(a, base, kop)) {
+        setError({ code: 'approval_mismatch' });
+        setPin('');
+        return;
+      }
       const who = approvers?.find((u) => u.user_id === approver);
       onApply({ ...result, reason: why, approval: { ...a, approved_by: { user_id: approver, name: who?.name ?? null }, base_kopecks: base, discount_kopecks: kop } });
     } catch (err) {
@@ -283,6 +288,12 @@ export function DiscountDialog({ open, clubId, base, limit, current, bigAllowed,
                   </div>
                   {tried && !approver ? <p class="field__error">Выберите, кто подтверждает.</p> : null}
                 </fieldset>
+                <p class="approve__what" aria-live="polite">
+                  <span class="approve__label">Управляющий подтверждает</span>
+                  <span class="approve__sum display">
+                    Корзина {formatMoney(base)} · скидка {formatMoney(kop)} ({discountPercent(base, kop).toLocaleString('ru-RU')} %)
+                  </span>
+                </p>
                 <div class="approve__pin">
                   <div class="field">
                     <label class="field__label" for="approve-pin">

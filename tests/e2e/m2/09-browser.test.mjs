@@ -299,3 +299,52 @@ test(`браузер T15: гость 360 px (стол ${TABLE}) — заказ �
   tabSession = null;
   await gctx.close();
 });
+
+test('браузер: касса — скидка 20 % выше лимита по PIN управляющего (№95, №100)', { skip, timeout: 4 * 60_000 }, async (t) => {
+  if (!shift) shift = await openMyShift({ rec, man, floatKopecks: 0, log: (m) => t.diagnostic(m) });
+  const ctx = await context('+70000000004', { width: 1280, height: 800 });
+  const page = await ctx.newPage();
+  watch(page, 'касса-скидка');
+  const shot = shooter(t, page);
+  let saleJson = null;
+  page.on('response', async (r) => {
+    if (r.url().endsWith('/api/pos/sales') && r.request().method() === 'POST') saleJson = await r.json().catch(() => null);
+  });
+  await page.goto(`${BASE}/club/c/${CLUB_A}/pos`, { waitUntil: 'load' });
+  await page.getByRole('radio', { name: 'Кофе' }).check();
+  await page.getByRole('button', { name: /^Капучино/ }).click();
+  const dlg = page.locator('dialog[open]').first();
+  await dlg.getByRole('button', { name: 'Больше на одну' }).click();
+  await dlg.getByRole('button', { name: /Добавить в чек/ }).click();
+  await page.getByRole('button', { name: 'Скидка' }).click();
+  const d = page.locator('dialog[open]').first();
+  await d.getByRole('button', { name: '20 %' }).click();
+  await d.getByRole('radio', { name: 'Компенсация за неудобство' }).check();
+  await d.getByLabel('Своими словами').fill('Гость ждал заказ 40 минут (e2e)');
+  await d.getByRole('radio', { name: 'Управляющий (тест)' }).check();
+  const pin = d.locator('[aria-label*="PIN"], .pinpad, .pin').last();
+  for (const digit of '1234') {
+    const inPad = pin.getByRole('button', { name: digit, exact: true });
+    await ((await inPad.count()) ? inPad.first() : d.getByRole('button', { name: digit, exact: true }).last()).click();
+  }
+  await shot('ui-pin-01-discount-pin-1280');
+  await d.getByRole('button', { name: /Подтвердить у управляющего/ }).click();
+  await page.waitForTimeout(800);
+  const cartText = await text(page);
+  await shot('ui-pin-02-cart-discount-1280');
+  t.diagnostic(`чек после подтверждения: …${cartText.slice(cartText.indexOf('Чек'), cartText.indexOf('Чек') + 220)}`);
+  assert.match(cartText, /К оплате\s*352\s₽/);
+  await page.getByRole('button', { name: /^Наличные/ }).click();
+  const pay = page.locator('dialog[open]').first();
+  await pay.locator('#cash-received, input[inputmode=decimal], input[inputmode=numeric]').first().fill('500');
+  await pay.locator('button[type=submit]').first().click();
+  await waitFor(() => saleJson, { timeoutMs: 10_000, what: 'ответ POST /api/pos/sales' });
+  await shot('ui-pin-03-paid-1280');
+  const sale = await waitSale(rec.token, saleJson.sale_id, { printed: false });
+  const { rows: au } = await db.query("select action, actor_id, reason from bl.audit_log where club_id = $1 and object_id = $2 and action in ('manual.discount', 'pos.discount')", [CLUB_A, sale.sale_id]);
+  t.diagnostic(`продажа: ${sale.status} итог ${sale.total_kopecks}, скидка ${sale.discount_kopecks}, сдача ${sale.change_kopecks}; журнал ${JSON.stringify(au.map((a) => ({ action: a.action, manager: a.actor_id === man.user.id, reason: a.reason })))}`);
+  assert.equal(sale.discount_kopecks, 8_800);
+  assert.equal(sale.total_kopecks, 35_200);
+  assert.ok(au.some((a) => a.action === 'manual.discount' && a.actor_id === man.user.id && a.reason));
+  await ctx.close();
+});

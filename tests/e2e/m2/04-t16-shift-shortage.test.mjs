@@ -122,7 +122,7 @@ test('T16: расхождение в отчёте смены, тревога и 
   for (const n of notes) t.diagnostic(`уведомление владельцу: kind=${n.kind} level=${n.level} status=${n.status}: ${n.text.replace(/\n/g, ' / ')}`);
   const alarmNote = notes.find((n) => n.kind === 'alarm');
   assert.match(alarmNote.text, /недостача/);
-  assert.match(alarmNote.text, /[-−]500\s₽/);
+  assert.match(alarmNote.text, /−500\s₽/, "знак минус U+2212");
   const report = notes.find((n) => n.kind === 'shift.report');
   assert.match(report.text, /расхождение/);
 });

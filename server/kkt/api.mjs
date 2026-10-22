@@ -233,6 +233,10 @@ export async function markPrinted(db, deps, { id, userId, reason, fd, fp, fn = n
   if (!r) throw new HttpError(404, 'not_found');
   const job = r.kkt_job ?? {};
   if (!(r.status === 'receipt_pending' && job.state === 'lost')) throw new HttpError(409, 'receipt_not_unknown', { detail: 'исход чека известен' });
+  // ФН не введён — ФН из ответа ККТ при конфликте (ФН, ФД).
+  fn = fn ?? job.conflict?.fn ?? null;
+  const dup = await db.query(`select 1 from bl.receipts where club_id = $1 and coalesce(fn, '') = coalesce($2, '') and fd = $3 and id <> $4`, [r.club_id, fn, fd, id]);
+  if (dup.rowCount > 0) throw new HttpError(409, 'fd_conflict', { detail: 'ФД уже у другого чека' });
   await db.query(
     `update bl.receipts set status = 'printed', fd = $2, fp = $3, fn = $4, printed_at = $5, error = null, next_attempt_at = null,
             fiscal = coalesce(fiscal, '{}'::jsonb) || $6::jsonb, kkt_job = $7, updated_at = $5 where id = $1`,

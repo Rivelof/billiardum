@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addFixed, addProduct, emptyCart, normalizeMenu } from '@billiardum/shared/bar';
-import { approvalBody, approvalError, discountBase, discountKopecks, discountPercent, kktState, normalizeSale, overLimit, receiptView, requestLine, saleBody, saleTotals, tabLine, wholeDiscount } from '../src/lib/pos.js';
+import { approvalBody, approvalError, approvalMatches, discountBase, discountKopecks, discountPercent, kktState, normalizeSale, overLimit, receiptView, requestLine, saleBody, saleTotals, tabLine, wholeDiscount } from '../src/lib/pos.js';
 import { errorMessage } from '@billiardum/shared/errors';
 
 const menu = normalizeMenu({
@@ -113,4 +113,13 @@ test('подтверждение скидки PIN управляющего: 401,
   assert.equal(approvalError({ code: 'reason_required' }).code, 'reason_required');
   assert.match(errorMessage('pin_locked', { audience: 'staff' }).title, /заблокирован/);
   assert.match(errorMessage('approver_forbidden', { audience: 'staff' }).title, /не может подтвердить/);
+});
+
+test('подтверждение сверяется с показанным управляющему: корзина и скидка в копейках (№103)', () => {
+  assert.equal(approvalMatches({ approval_id: 'a', subtotal_kopecks: 900000, max_discount_kopecks: 450000 }, 900000, 450000), true);
+  assert.equal(approvalMatches({ approval_id: 'a', subtotal_kopecks: 900100, max_discount_kopecks: 450000 }, 900000, 450000), false);
+  assert.equal(approvalMatches({ approval_id: 'a', subtotal_kopecks: 900000, max_discount_kopecks: 450050 }, 900000, 450000), false);
+  assert.equal(approvalMatches({ approval_id: 'a' }, 900000, 450000), true, 'старый ответ без полей');
+  assert.equal(approvalMatches(null, 1, 1), false);
+  assert.match(errorMessage('approval_mismatch', { audience: 'staff' }).title, /другие суммы/);
 });

@@ -55,6 +55,7 @@ export const ALARM_TEXTS = {
   receipt_double: 'Чек пробит дважды: проверьте ККТ',
   service_light_threshold: 'Сервисный свет за смену дольше порога клуба',
   kkt_shift_failed: 'ККТ не открыла или не закрыла смену',
+  receipt_fd_conflict: 'Касса вернула номер документа, который уже есть у другого чека — проверьте чек на ленте',
 };
 
 /**
@@ -88,6 +89,7 @@ export const ALARM_LEVELS = {
   receipt_double: 'critical',
   service_light_threshold: 'important',
   kkt_shift_failed: 'important',
+  receipt_fd_conflict: 'critical',
 };
 
 /** Типы ручных действий персонала: уведомление владельцу при каждом подъёме. */

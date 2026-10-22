@@ -156,15 +156,25 @@ describe('Одобрение скидки по PIN управляющего (№
     await h.q('update bl.club_members set pin_hash = $1, pin_failed_count = 0, pin_locked_until = null where club_id = $2 and user_id = $3', [hash, CLUB_A, managerId]);
   });
 
-  async function makeApproval(percent) {
+  // №100: одобрение привязано к сумме корзины (subtotal_kopecks), по умолчанию 10 бутылок воды = 90 000 коп.
+  async function makeApproval(percent, subtotal = 90000, extra = {}) {
     const rec = await h.login(PHONES.reception);
+    const discount = percent === null ? {} : { percent };
     const res = await h.request('POST', '/api/pos/discount-approvals', {
       token: rec.token,
       key: newKey(),
       club: CLUB_A,
-      body: { user_id: managerId, pin: PIN, reason_code: 'promo', reason_text: 'акция', percent },
+      body: { user_id: managerId, pin: PIN, reason_code: 'promo', reason_text: 'акция', ...discount, subtotal_kopecks: subtotal, ...extra },
     });
     return res;
+  }
+
+  async function sell(items, discount) {
+    const rec = await h.login(PHONES.reception);
+    return h.request('POST', '/api/pos/sales', {
+      token: rec.token, key: newKey(), club: CLUB_A,
+      body: { items, discount, method: 'cash', received_kopecks: 10_000_000 },
+    });
   }
 
   it('неверный PIN — 401, и 5 ошибок подряд блокируют (429)', async () => {
@@ -173,7 +183,7 @@ describe('Одобрение скидки по PIN управляющего (№
     for (let i = 0; i < 5; i += 1) {
       last = await h.request('POST', '/api/pos/discount-approvals', {
         token: rec.token, key: newKey(), club: CLUB_A,
-        body: { user_id: managerId, pin: '0000', reason_code: 'promo', reason_text: 'x', percent: 50 },
+        body: { user_id: managerId, pin: '0000', reason_code: 'promo', reason_text: 'x', percent: 50, subtotal_kopecks: 90000 },
       });
     }
     // Последняя из 5 неверных уже даёт блокировку; верный PIN теперь — 429.
@@ -212,8 +222,8 @@ describe('Одобрение скидки по PIN управляющего (№
     // approval в контексте CLUB_B (admin), затем применить в CLUB_A.
     const otherApproval = randomUUID();
     await h.q(
-      `insert into bl.pos_discount_approvals (id, club_id, approver_id, requested_by, reason_code, reason_text, percent, expires_at, created_at)
-       values ($1, $2, $3, $3, 'promo', 'x', 50, now() + interval '5 minutes', now())`,
+      `insert into bl.pos_discount_approvals (id, club_id, approver_id, requested_by, reason_code, reason_text, percent, subtotal_kopecks, max_discount_kopecks, expires_at, created_at)
+       values ($1, $2, $3, $3, 'promo', 'x', 50, 90000, 45000, now() + interval '5 minutes', now())`,
       [otherApproval, CLUB_B, 'a2000000-0000-4000-8000-000000000002'],
     );
     const rec = await h.login(PHONES.reception);
@@ -222,6 +232,65 @@ describe('Одобрение скидки по PIN управляющего (№
       body: { items: [{ product_id: P.water, qty: 10 }], discount: { percent: 50, approval_id: otherApproval }, method: 'cash', received_kopecks: 100000 },
     });
     assert.equal(res.status, 403, JSON.stringify(res.json));
+  });
+
+  it('№100: 50 % на 9 000 коп. нельзя применить к корзине 90 000 коп. — 403', async () => {
+    const appr = await makeApproval(50, 9000);
+    assert.equal(appr.status, 201, JSON.stringify(appr.json));
+    assert.equal(appr.json.max_discount_kopecks, 4500);
+    const res = await sell([{ product_id: P.water, qty: 10 }], { percent: 50, approval_id: appr.json.approval_id });
+    assert.equal(res.status, 403, JSON.stringify(res.json));
+    // одобрение не израсходовано отказом: на одобренную корзину проходит
+    const ok = await sell([{ product_id: P.water, qty: 1 }], { percent: 50, approval_id: appr.json.approval_id });
+    assert.equal(ok.status, 201, JSON.stringify(ok.json));
+    assert.equal(ok.json.discount_kopecks, 4500);
+  });
+
+  it('№100: процентное одобрение нельзя применить суммой (и наоборот) — 403', async () => {
+    const pct = await makeApproval(50, 90000);
+    const asAmount = await sell([{ product_id: P.water, qty: 10 }], { amount_kopecks: 45000, approval_id: pct.json.approval_id });
+    assert.equal(asAmount.status, 403, JSON.stringify(asAmount.json));
+    const amt = await makeApproval(null, 9000, { amount_kopecks: 4500 });
+    assert.equal(amt.status, 201, JSON.stringify(amt.json));
+    const asPercent = await sell([{ product_id: P.water, qty: 1 }], { percent: 50, approval_id: amt.json.approval_id });
+    assert.equal(asPercent.status, 403, JSON.stringify(asPercent.json));
+    // сумма скидки больше одобренной суммы корзины при создании — 400
+    const tooBig = await makeApproval(null, 9000, { amount_kopecks: 9001 });
+    assert.equal(tooBig.status, 400, JSON.stringify(tooBig.json));
+  });
+
+  it('№100: другая корзина на ту же сумму и корзина меньше — скидка в копейках не больше одобренной', async () => {
+    // Одобрено 50 % на 18 000 (2 воды); корзина другого состава на 18 000 (2 газ. воды) — проходит,
+    // ущерб тот же (9 000), это ожидаемо: одобрение привязано к сумме, не к составу.
+    const a = await makeApproval(50, 18000);
+    const same = await sell([{ product_id: P.sparkling, qty: 2 }], { percent: 50, approval_id: a.json.approval_id });
+    assert.equal(same.status, 201, JSON.stringify(same.json));
+    assert.equal(same.json.discount_kopecks, 9000);
+    // Фиксированная сумма 9 000 на корзину 18 000, применённая к меньшей корзине (15 000 — чипсы):
+    // процент вырос, но копеек скидки не больше одобренных 9 000.
+    const b = await makeApproval(null, 18000, { amount_kopecks: 9000 });
+    const smaller = await sell([{ product_id: P.chips, qty: 1 }], { amount_kopecks: 9000, approval_id: b.json.approval_id });
+    assert.equal(smaller.status, 201, JSON.stringify(smaller.json));
+    assert.ok(smaller.json.discount_kopecks <= 9000);
+  });
+
+  it('№100: округление процента не даёт копейку сверх одобренного; повтор с другим Idempotency-Key — 403', async () => {
+    // 33 % от 27 000 = 8 910 при создании и при применении к той же сумме.
+    const a = await makeApproval(33, 27000);
+    assert.equal(a.json.max_discount_kopecks, 8910);
+    const first = await sell([{ product_id: P.water, qty: 3 }], { percent: 33, approval_id: a.json.approval_id });
+    assert.equal(first.status, 201, JSON.stringify(first.json));
+    assert.equal(first.json.discount_kopecks, 8910);
+    const again = await sell([{ product_id: P.water, qty: 3 }], { percent: 33, approval_id: a.json.approval_id });
+    assert.equal(again.status, 403, JSON.stringify(again.json));
+  });
+
+  it('остаток №100: subtotal_kopecks заявляет клиент кассы, а не сервер по корзине', async () => {
+    // Сервер не знает корзины на момент одобрения: касса может заявить сумму больше той, что
+    // видит управляющий на экране. Отказ ловится только интерфейсом и журналом/тревогой владельцу.
+    const a = await makeApproval(50, 1_000_000);
+    assert.equal(a.status, 201, JSON.stringify(a.json));
+    assert.equal(a.json.max_discount_kopecks, 500000);
   });
 });
 

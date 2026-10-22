@@ -49,7 +49,7 @@ node tools/kkt-bridge/index.mjs --config C:\kkt-bridge\kkt-bridge.json
 ATOL_EMU_PORT=16732 ATOL_EMU_HOST=127.0.0.1 node tools/kkt-bridge/emu/index.mjs
 ```
 
-`ATOL_EMU_CONTROL_TOKEN` — `/__emu/*` только с `X-Emu-Token`; `ATOL_EMU_AUTO_OPEN_SHIFT=0` — без автоматического открытия смены чеком.
+Номер ФН — случайный при каждом запуске (`9999` и 12 цифр, в логе `atol_emu_started`): счётчики эмулятора в памяти, после перезапуска ФД снова с 1, и с прежним ФН пара (ФН, ФД) совпала бы с уже пробитыми чеками; новый ФН — как замена ФН на ККТ, том не нужен. `ATOL_EMU_FN` — свой номер (16 цифр; повтор номера при перезапуске сервер встретит тревогой `receipt_fd_conflict`). `ATOL_EMU_CONTROL_TOKEN` — `/__emu/*` только с `X-Emu-Token`; `ATOL_EMU_AUTO_OPEN_SHIFT=0` — без автоматического открытия смены чеком.
 
 API: `POST /api/v2/requests` (201, повтор UUID — 409, ККТ выключена в режиме `reject` — 409), `GET|DELETE /api/v2/requests/{uuid}` (404 — нет), `GET /api/v2/getRequestsQueueStatus`, `GET /api/v2/serverInfo`, `POST /api/v2/operations/queryDeviceStatus|queryShiftStatus|queryFnStatus`; то же по `/requests` в старом формате (`errorCode`, `errorDescription`). Задачи: `sell`, `sellReturn`, `openShift`, `closeShift`, `getShiftStatus`, `getDeviceStatus`, `getFnStatus`, `continuePrint`, `reportX`. Проверяет задание чека (сумма позиций = `total`, оплаты, типы НДС, признаки, кассир). ФД сквозной, ФП — 10 цифр, номер чека в смене, номер смены; первый чек в закрытой смене открывает её.
 

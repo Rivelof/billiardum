@@ -282,6 +282,37 @@ async function applyReceiptResult(db, deps, r, { bridgeId, msg, now }) {
       return { ack: false, done: false };
     }
     if (!fromSender) deps.log?.warn?.('kkt_result_other_bridge', { receipt_id: r.id, bridge_id: bridgeId });
+    // Пара (ФН, ФД) уже у другого чека клуба: ККТ или драйвер сброшены (замена ФН, эмулятор начал
+    // счёт заново). Чек откладывается с неизвестным исходом и критичной тревогой, очередь идёт дальше.
+    const dup = await db.query(
+      `select id from bl.receipts where club_id = $1 and coalesce(fn, '') = coalesce($2, '') and fd = $3 and id <> $4 limit 1`,
+      [r.club_id, f.fn, f.fd, r.id],
+    );
+    if (dup.rows[0]) {
+      if (job.state === 'lost' && job.conflict?.uuid === msg.uuid) return { ack: true, done: current, source: 'receipt', id: r.id };
+      const conflict = { uuid: msg.uuid, fd: f.fd, fn: f.fn, other_receipt_id: dup.rows[0].id, bridge_id: bridgeId };
+      await db.query(`update bl.receipts set error = 'fd_conflict', next_attempt_at = null, kkt_job = $2, updated_at = $3 where id = $1`, [
+        r.id,
+        { ...job, state: 'lost', task_created: true, conflict, last_error: { code: 'fd_conflict', category: 'unknown' } },
+        now,
+      ]);
+      await deps.audit.appendAudit(db, {
+        action: 'kkt.receipt_conflict',
+        objectType: 'receipt',
+        objectId: r.id,
+        actorType: 'system',
+        actorId: null,
+        data: { receipt_id: r.id, fd: f.fd, fn: f.fn, other_receipt_id: dup.rows[0].id, amount_kopecks: Number(r.amount_kopecks) },
+      });
+      await deps.alarms.raise(db, r.club_id, {
+        type: 'receipt_fd_conflict',
+        level: 'critical',
+        data: { receipt_id: r.id, fd: f.fd, other_receipt_id: dup.rows[0].id },
+        text: `ККТ вернула номер ФД ${f.fd}, который уже есть у другого чека: проверьте ККТ (замена ФН, переустановка драйвера). Чек на ${formatMoney(Number(r.amount_kopecks))} отложен, остальные пробиваются`,
+      });
+      deps.log?.error?.('kkt_receipt_fd_conflict', { receipt_id: r.id, club_id: r.club_id, fd: f.fd, other_receipt_id: dup.rows[0].id });
+      return { ack: true, done: true, source: 'receipt', id: r.id, conflict: true };
+    }
     if (!current && job.state === 'sent') {
       // Пробит по прежнему UUID, а новое задание уже отправлено: возможен второй чек.
       await deps.alarms.raise(db, r.club_id, {
