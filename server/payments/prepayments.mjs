@@ -14,7 +14,7 @@
 import { enterClub } from './context.mjs';
 import { MoneyError } from './errors.mjs';
 import { formatValue } from './yookassa.mjs';
-import { createYooKassaPayment, returnUrl } from './pay.mjs';
+import { createYooKassaPayment, ownReturnUrl, returnUrl } from './pay.mjs';
 import { receiptPhone } from './receipt.mjs';
 import { stableUuid } from './records.mjs';
 import { queueSettlementReceipt } from './settle.mjs';
@@ -49,6 +49,7 @@ export async function createPrepayment(db, deps, config, args) {
   if (!Number.isSafeInteger(amountKopecks) || amountKopecks <= 0) throw new MoneyError('bad_request', 'amountKopecks');
   const method = args.method ?? 'sbp';
   if (method !== 'sbp' && method !== 'card') throw new MoneyError('bad_request', 'method');
+  const ownUrl = ownReturnUrl(config, args.returnUrl ?? args.returnPath);
   await enterClub(db, clubId);
   const settings = await loadPaymentSettings(db, clubId);
   if (method === 'sbp' && !settings.sbp) throw new MoneyError('bad_request', 'СБП недоступна');
@@ -85,7 +86,7 @@ export async function createPrepayment(db, deps, config, args) {
     amountKopecks,
     capture: true,
     receipt,
-    confirmation: { type: 'redirect', returnUrl: args.returnUrl ?? returnUrl(config, paymentId) },
+    confirmation: { type: 'redirect', returnUrl: ownUrl ?? returnUrl(config, paymentId) },
     description: `Бронь стола ${number}`,
     metadata: { booking_id: bookingId },
     bookingId,

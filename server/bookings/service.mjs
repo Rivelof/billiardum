@@ -45,6 +45,22 @@ function parseTime(v, what) {
   return d;
 }
 
+/** Путь своего сайта для return_url (как действия уведомлений core): «/app/…», без хоста и схемы. */
+export function localPath(v) {
+  return typeof v === 'string' && v.length <= 300 && /^\/[^/\\]/.test(v) && !/[\s<>"\\]/.test(v) && !v.includes('..') ? v : null;
+}
+
+/**
+ * Может ли персонал с ролями roles отменить бронь (№115): владелец и управляющий — любую живую;
+ * ресепшн — брони по телефону и персонала без предоплаты.
+ */
+export function staffCanCancel(b, roles = []) {
+  if (!OPEN.includes(b.status)) return false;
+  if (roles.some((r) => CANCEL_ROLES.includes(r))) return true;
+  if (roles.includes('reception')) return ['phone', 'staff'].includes(b.source) && b.prepaid_kopecks === 0 && !b.prepayment_id;
+  return false;
+}
+
 function cleanText(v, max) {
   if (typeof v !== 'string') return null;
   const s = v.trim();
@@ -70,7 +86,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
   /**
    * Бронь для ответа. staff — с гостем (имя брони по телефону и маска телефона), иначе без ПДн чужих.
    */
-  async function view(db, b, { staff = false, t = now() } = {}) {
+  async function view(db, b, { staff = false, roles = [], t = now() } = {}) {
     const club = await loadClub(db, b.club_id);
     const settings = bookingSettings(club?.settings);
     const percent = club ? await forfeitPercentOf(db, club) : 100;
@@ -104,6 +120,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       out.guest = { name: b.guest_name ?? null, phone_masked: phoneMasked, user: Boolean(b.user_id) };
       out.created_by = b.created_by ?? null;
       out.cancel_reason = b.cancel_reason ?? null;
+      out.can_cancel = staffCanCancel(b, roles);
     }
     return out;
   }
@@ -122,13 +139,19 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     };
   }
 
+  /** События гостю в SSE user:{id} (№120): имя события SSE — booking, вид — в поле type. */
+  const GUEST_EVENTS = new Set(['booking.confirmed', 'booking.reserved', 'booking.started', 'booking.expired', 'booking.canceled']);
+
   async function emit(db, topic, b, extra = {}) {
     const payload = event(b, extra);
     await deps.outbox.enqueue(db, topic, payload);
     const userId = b.user_id;
+    const forGuest = userId && GUEST_EVENTS.has(topic)
+      ? { type: topic, id: b.id, status: payload.status, starts_at: payload.starts_at, ends_at: payload.ends_at, resource: { id: b.resource_id, number: b.resource_number ?? null } }
+      : null;
     await afterCommit(db, async () => {
-      deps.sse.publish(`club:${b.club_id}`, 'booking', payload);
-      if (userId) deps.sse.publish(`user:${userId}`, 'booking', { booking_id: b.id, status: payload.status });
+      deps.sse.publish(`club:${b.club_id}`, 'booking', { type: topic, ...payload });
+      if (forGuest) deps.sse.publish(`user:${userId}`, 'booking', forGuest);
     });
   }
 
@@ -281,7 +304,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
    * POST /api/clubs/{club}/bookings — ресепшн и выше: бронь по телефону. { resource_id, starts_at,
    * minutes, name, phone, source? } → confirmed без предоплаты; телефон в ответе — маской.
    */
-  async function createByStaff(db, { clubId, staffId, body }) {
+  async function createByStaff(db, { clubId, staffId, body, roles = [] }) {
     const resourceId = body?.resource_id;
     if (!isUuid(resourceId)) fail('bad_request', 'resource_id');
     const startsAt = parseTime(body.starts_at, 'starts_at');
@@ -315,7 +338,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     await emit(db, 'booking.created', b);
     await emit(db, 'booking.confirmed', b);
     log.info('booking_created', { booking_id: id, club_id: clubId, resource_id: resourceId, status: 'confirmed', source });
-    return view(db, b, { staff: true, t });
+    return view(db, b, { staff: true, roles, t });
   }
 
   // Доступ к брони --------------------------------------------------------------------------
@@ -347,7 +370,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
 
   async function get(db, { bookingId, userId, club, roles }) {
     const { b, staff } = await access(db, { bookingId, userId, club, roles, staffRoles: STAFF_ROLES });
-    return view(db, b, { staff });
+    return view(db, b, { staff, roles: staff ? roles : [] });
   }
 
   /** GET /api/me/bookings — свои брони во всех клубах (последние 50). */
@@ -366,7 +389,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
   }
 
   /** GET /api/clubs/{club}/bookings?date= — брони рабочих суток клуба (персонал). */
-  async function listClub(db, { clubId, date }) {
+  async function listClub(db, { clubId, date, roles = [] }) {
     const t = now();
     const d = date ?? (await workdayAt(db, clubId, t))?.date;
     if (typeof d !== 'string' || !DATE.test(d)) fail('bad_request', 'date');
@@ -377,7 +400,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       [clubId, w.from, w.to],
     );
     const out = [];
-    for (const r of rows) out.push(await view(db, await loadBooking(db, r.id), { staff: true, t }));
+    for (const r of rows) out.push(await view(db, await loadBooking(db, r.id), { staff: true, roles, t }));
     return { date: d, from: iso(w.from), to: iso(w.to), bookings: out };
   }
 
@@ -392,6 +415,12 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const method = body?.method ?? 'sbp';
     if (!['sbp', 'card'].includes(method)) fail('bad_request', 'method');
     const amount = b.prepayment_kopecks - b.prepaid_kopecks;
+    // return_url — только путь своего сайта (/app/…); хост — PUBLIC_HOST сервера.
+    let path = bookingUrl(b);
+    if (body?.return_url !== undefined) {
+      path = localPath(body.return_url);
+      if (!path) fail('bad_request', 'return_url');
+    }
     const host = config.publicHost ? `https://${config.publicHost}` : null;
     const result = await deps.payments.createPrepayment(db, {
       clubId: b.club_id,
@@ -401,7 +430,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       amountKopecks: amount,
       method,
       requestKey: requestKey ?? null,
-      ...(host ? { returnUrl: `${host}${bookingUrl(b)}` } : {}),
+      ...(host ? { returnUrl: `${host}${path}` } : {}),
       description: `Предоплата брони, стол ${b.resource_number}`,
     });
     const paymentId = result?.payment?.id;
@@ -595,12 +624,12 @@ export function createBookingService({ deps, log, clock, config = {} }) {
   async function arrive(db, { bookingId, userId, club, roles }) {
     const { b, staff } = await access(db, { bookingId, userId, club, roles, staffRoles: STAFF_ROLES, lock: true });
     if (!staff) fail('forbidden');
-    if (b.status === 'started') return view(db, b, { staff: true });
+    if (b.status === 'started') return view(db, b, { staff: true, roles });
     if (!['confirmed', 'reserved'].includes(b.status)) fail('booking_not_active', b.status);
     await deps.light.clearReserved(db, { resourceId: b.resource_id });
     await markStarted(db, { bookingId: b.id, sessionId: null });
     await audit(db, { action: 'booking.arrive', objectType: 'booking', objectId: b.id, data: { booking_id: b.id, resource_id: b.resource_id } });
-    return view(db, await loadBooking(db, b.id), { staff: true });
+    return view(db, await loadBooking(db, b.id), { staff: true, roles });
   }
 
   // Отмена ----------------------------------------------------------------------------------
@@ -616,10 +645,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const { b, staff } = await access(db, { bookingId, userId, club, roles, staffRoles: STAFF_ROLES, lock: true });
     const t = now();
     // №115: ресепшн — только брони по телефону и персонала без предоплаты; остальные — управляющий и владелец.
-    if (staff && !roles.some((r) => CANCEL_ROLES.includes(r))) {
-      const phoneOnly = ['phone', 'staff'].includes(b.source) && b.prepaid_kopecks === 0 && !b.prepayment_id;
-      if (!phoneOnly) fail('forbidden', 'отмена брони — управляющий');
-    }
+    if (staff && OPEN.includes(b.status) && !staffCanCancel(b, roles)) fail('forbidden', 'отмена брони — управляющий');
     const why = cleanText(reason, 2000);
     if (staff && !why) fail('reason_required');
     if (!OPEN.includes(b.status)) fail(b.status === 'expired' ? 'booking_expired' : 'booking_not_active', b.status);
@@ -661,7 +687,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     }
     await emit(db, 'booking.canceled', nb, { by: staff ? 'staff' : 'guest' });
     log.info('booking_canceled', { booking_id: b.id, by: staff ? 'staff' : 'guest', forfeit_percent: percent });
-    return { ...(await view(db, nb, { staff, t })), refund_kopecks: refundKopecks, money: money ? { refunded_kopecks: money.refunded_kopecks ?? null } : null };
+    return { ...(await view(db, nb, { staff, roles: staff ? roles : [], t })), refund_kopecks: refundKopecks, money: money ? { refunded_kopecks: money.refunded_kopecks ?? null } : null };
   }
 
   // Планировщик -------------------------------------------------------------------------------
@@ -809,18 +835,28 @@ export function createBookingService({ deps, log, clock, config = {} }) {
 
   // Интерфейс для других модулей (§3) -----------------------------------------------------------
 
-  /** Начало ближайшей живой брони стола, которая ещё не началась и не кончилась к after. */
-  async function nextBookingStart(db, { resourceId, after }) {
+  /**
+   * Ближайшая живая бронь стола (pending_payment, confirmed, reserved), которая не кончилась к after:
+   * { id, starts_at, ends_at, source, status } без имени и телефона, или null.
+   */
+  async function nextBooking(db, { resourceId, after }) {
     if (!isUuid(resourceId)) return null;
     const a = new Date(after ?? now());
     if (Number.isNaN(a.getTime())) return null;
     const { rows } = await db.query(
-      `select starts_at from bl.bookings
+      `select id, starts_at, ends_at, source, status from bl.bookings
         where resource_id = $1 and status = any($2::text[]) and ends_at > $3
-        order by starts_at limit 1`,
-      [resourceId, ['pending_payment', 'confirmed', 'reserved'], a],
+        order by starts_at, id limit 1`,
+      [resourceId, OPEN, a],
     );
-    return rows[0] ? new Date(rows[0].starts_at) : null;
+    const r = rows[0];
+    return r ? { id: r.id, starts_at: iso(r.starts_at), ends_at: iso(r.ends_at), source: r.source, status: r.status } : null;
+  }
+
+  /** Начало ближайшей живой брони стола (nextBooking), Date или null. */
+  async function nextBookingStart(db, { resourceId, after }) {
+    const b = await nextBooking(db, { resourceId, after });
+    return b ? new Date(b.starts_at) : null;
   }
 
   /** Бронь гостя на этом столе, которую можно начать сейчас (для экрана стола и light). */
@@ -868,6 +904,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     cancel,
     step,
     markStarted,
+    nextBooking,
     nextBookingStart,
     bookingForArrival,
     onPaymentConfirmed,

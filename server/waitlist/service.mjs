@@ -57,9 +57,19 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     };
   }
 
-  async function publish(db, w) {
+  /**
+   * Событие гостю в SSE user:{id} (№120): имя события SSE — waitlist, вид — в поле type:
+   * waitlist.offered {offer_id, resource, expires_at}, waitlist.accepted {offer_id, resource, hold_until},
+   * waitlist.updated (очередь, истекло, отменено) — с видом записи. Кода стола нет (№119).
+   */
+  async function publish(db, w, type = 'waitlist.updated') {
     const v = await view(db, w);
-    await afterCommit(db, async () => deps.sse.publish(`user:${w.user_id}`, 'waitlist', v));
+    const resource = { id: w.resource_id, number: w.resource_number, title: w.resource_title };
+    let data;
+    if (type === 'waitlist.offered') data = { type, offer_id: w.id, resource, expires_at: iso(w.offer_until) };
+    else if (type === 'waitlist.accepted') data = { type, offer_id: w.id, resource, hold_until: iso(w.hold_until) };
+    else data = { type, ...v };
+    await afterCommit(db, async () => deps.sse.publish(`user:${w.user_id}`, 'waitlist', data));
     return v;
   }
 
@@ -151,7 +161,7 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     await deps.outbox.enqueue(db, 'waitlist.accepted', {
       waitlist_id: w.id, club_id: w.club_id, resource_id: w.resource_id, user_id: userId, hold_until: until.toISOString(),
     });
-    await publish(db, nw);
+    await publish(db, nw, 'waitlist.accepted');
     log.info('waitlist_accepted', { waitlist_id: w.id, resource_id: w.resource_id });
     return { status: 200, json: await acceptedView(db, nw) };
   }
@@ -214,7 +224,7 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     await deps.outbox.enqueue(db, 'waitlist.offered', {
       waitlist_id: w.id, club_id: w.club_id, resource_id: w.resource_id, user_id: w.user_id, offer_until: until.toISOString(),
     });
-    await publish(db, w);
+    await publish(db, w, 'waitlist.offered');
     log.info('waitlist_offered', { waitlist_id: w.id, resource_id: resourceId });
     return w.id;
   }

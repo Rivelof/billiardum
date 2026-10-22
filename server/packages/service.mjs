@@ -8,7 +8,7 @@
 // Новый пакет и снятие с продажи — изменение тарифа (инвариант 8): причина, журнал, уведомление владельцу.
 // Цена и часы пакета не меняются — только новый пакет.
 
-import { createYooKassaPayment, returnUrl } from '../payments/pay.mjs';
+import { createYooKassaPayment, ownReturnUrl, returnUrl } from '../payments/pay.mjs';
 import { enterClub, enterObjectClub, isUuid, requireGuestReady, requireIdempotencyKey, requireStaff, requireUser } from '../payments/context.mjs';
 import { MoneyError } from '../payments/errors.mjs';
 import { receiptPhone } from '../payments/receipt.mjs';
@@ -125,6 +125,8 @@ export async function buyPackage(db, deps, config, info) {
   if (!isUuid(id)) throw new MoneyError('not_found', 'package');
   const method = info.body?.method;
   if (method !== 'sbp' && method !== 'card') throw new MoneyError('bad_request', 'method');
+  // return_url — только путь своего сайта («/app/…»), как у предоплаты брони; хост — наш.
+  const ownUrl = ownReturnUrl(config, info.body?.return_url);
   const key = requireIdempotencyKey(info);
   requireUser(info);
   const clubId = await enterObjectClub(db, 'package', id);
@@ -148,7 +150,7 @@ export async function buyPackage(db, deps, config, info) {
     amountKopecks: Number(pkg.price_kopecks),
     capture: true,
     receipt: { customer: { phone: receiptPhone(phone) }, items, ...(settings.tax_system_code != null ? { tax_system_code: settings.tax_system_code } : {}) },
-    confirmation: { type: 'redirect', returnUrl: returnUrl(config, paymentId) },
+    confirmation: { type: 'redirect', returnUrl: ownUrl ?? returnUrl(config, paymentId) },
     description: `Пакет часов «${pkg.title}»`,
     metadata: { package_id: pkg.id },
     packageId: pkg.id,

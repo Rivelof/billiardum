@@ -97,7 +97,8 @@ export function clearSessionCookie() {
 export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VERSION } = {}) {
   const { rows } = await db.query(
     `select u.id, u.phone, u.name, u.notify_channel, u.channels_order, u.telegram_user_id is not null as telegram, u.max_user_id is not null as max,
-            exists (select 1 from bl.consents c where c.user_id = u.id and c.version = $2) as consent
+            exists (select 1 from bl.consents c where c.user_id = u.id and c.version = $2) as consent,
+            exists (select 1 from bl.push_subscriptions ps where ps.user_id = u.id and ps.revoked_at is null) as webpush
        from bl.users u where u.id = $1`,
     [userId, consentVersion],
   );
@@ -113,7 +114,8 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
     consent: { version: consentVersion, accepted: u.consent },
     notify_channel: u.notify_channel,
     channels_order: u.channels_order,
-    channels: { telegram: u.telegram, max: u.max },
+    // Какие каналы реально подключены (№120): мессенджер привязан, у Web Push — хотя бы одна подписка.
+    channels: { max: u.max, telegram: u.telegram, webpush: u.webpush },
   };
 }
 

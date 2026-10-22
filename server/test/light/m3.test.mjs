@@ -23,7 +23,7 @@ describe('M3: бронь, reserved, предел продления, депоз�
   let nextBooking = null; // подделка bookings.nextBookingStart (модуль брони — backend-booking)
   before(async () => {
     t = await createTestDb();
-    h = await startLight(t, { extra: { bookingsApi: { nextBookingStart: async () => nextBooking } } });
+    h = await startLight(t, { extra: { bookingsApi: { nextBookingStart: async () => nextBooking, nextBooking: async () => null } } });
     svc = h.st.service;
   });
   after(async () => {
@@ -159,5 +159,49 @@ describe('M3: extend_limit_until по настоящему модулю брон
     const list = await h.asUser(GUEST(1), (db) => h.st.service.listCurrent(db, { userId: GUEST(1) }));
     assert.equal(list[0].extend_limit_until, new Date(startsAt.getTime() - 5 * MIN).toISOString());
     assert.deepEqual(h.st.deps.missing.includes('bookings'), false, 'модуль брони подключён');
+  });
+});
+
+describe('M3: план зала — next_booking и deposit_kopecks', { skip: SKIP }, () => {
+  let t;
+  let h;
+  before(async () => {
+    t = await createTestDb();
+    h = await startLight(t, { devices: [1, 2] });
+  });
+  after(async () => {
+    await h?.stop();
+    await t?.drop();
+  });
+
+  it('у стола — ближайшая живая бронь без имени и телефона, у сессии по депозиту — deposit_kopecks; то же в SSE hall', async () => {
+    const startsAt = new Date(h.time.t + 90 * MIN);
+    const { rows } = await t.q(
+      `insert into bl.bookings (club_id, resource_id, guest_name, guest_phone, source, created_by, starts_at, ends_at, status, prepayment_mode, amount_kopecks, hold_minutes, created_at, updated_at)
+       values ($1, $2, 'Иван', '+79990001122', 'phone', $3, $4, $5, 'confirmed', 'none', 0, 15, $6, $6) returning id`,
+      [CLUB, RES(1), RECEPTION, startsAt, new Date(startsAt.getTime() + 60 * MIN), h.time.now()],
+    );
+    await t.q(
+      `insert into bl.bookings (club_id, resource_id, guest_name, guest_phone, source, starts_at, ends_at, status, prepayment_mode, amount_kopecks, hold_minutes, created_at, updated_at, canceled_at, cancel_reason)
+       values ($1, $2, 'Отмена', '+79990003344', 'phone', $3, $4, 'canceled', 'none', 0, 15, $5, $5, $5, 'гость передумал')`,
+      [CLUB, RES(1), new Date(h.time.t + 30 * MIN), new Date(h.time.t + 60 * MIN), h.time.now()],
+    );
+    await h.asUser(RECEPTION, (db) => api.startFromDeposit(db, { resourceId: RES(2), staffId: RECEPTION, depositKopecks: 40_000 }), { clubId: CLUB });
+    const hall = await h.asUser(RECEPTION, (db) => h.st.service.hall(db, { clubId: CLUB, userId: RECEPTION }), { clubId: CLUB });
+    const t1 = hall.find((x) => x.resource.number === 1);
+    assert.deepEqual(t1.next_booking, {
+      id: rows[0].id,
+      starts_at: startsAt.toISOString(),
+      ends_at: new Date(startsAt.getTime() + 60 * MIN).toISOString(),
+      source: 'phone',
+      status: 'confirmed',
+    });
+    assert.ok(!JSON.stringify(hall).includes('Иван') && !JSON.stringify(hall).includes('79990001122'), 'без имени и телефона');
+    const t2 = hall.find((x) => x.resource.number === 2);
+    assert.equal(t2.next_booking, null);
+    assert.equal(t2.session.deposit_kopecks, 40_000);
+    await h.until(() => h.sse.events.some((e) => e.event === 'hall' && e.data.resource.number === 2 && e.data.session?.deposit_kopecks === 40_000), 'SSE hall');
+    const ev = h.sse.events.filter((e) => e.event === 'hall' && e.data.resource.number === 2).at(-1);
+    assert.equal(ev.data.next_booking, null);
   });
 });

@@ -13,11 +13,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const sha = (t) => createHash('sha256').update(t, 'utf8').digest('hex');
 
-/** Канал запроса потока: { club } или { session } (ровно одно). */
+/** Канал запроса потока: { club }, { session } или { me } (ровно одно; me — свой канал user:{id}). */
 export function streamTarget(query) {
   const club = query?.club;
   const session = query?.session;
-  if ((club === undefined) === (session === undefined)) return null;
+  const me = query?.me;
+  const given = [club, session, me].filter((x) => x !== undefined).length;
+  if (given !== 1) return null;
+  if (me !== undefined) return me === '1' || me === 1 || me === true ? { kind: 'me', id: 'me' } : null;
   const id = club ?? session;
   if (typeof id !== 'string' || !UUID.test(id)) return null;
   return club !== undefined ? { kind: 'club', id } : { kind: 'session', id };

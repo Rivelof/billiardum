@@ -1093,6 +1093,16 @@ export function createLightService(opts) {
     return { ok: true };
   }
 
+  /**
+   * Ближайшая живая бронь стола для плана зала: { id, starts_at, ends_at, source, status } без
+   * имени и телефона — через bookings.nextBooking (server/bookings/api.mjs); без модуля — null.
+   */
+  async function nextBookingInfo(db, resourceId) {
+    const b = await deps.bookings.nextBooking(db, { resourceId, after: now() });
+    if (!b) return null;
+    return { id: b.id, starts_at: iso(b.starts_at), ends_at: iso(b.ends_at), source: b.source ?? null, status: b.status ?? null };
+  }
+
   /** Элемент зала одного стола (hall и SSE). */
   async function hallItem(db, r, { withSession = true } = {}) {
     const t = now();
@@ -1113,6 +1123,7 @@ export function createLightService(opts) {
       busy_until: s ? iso(s.paid_until) : null,
       until: h ? iso(h.until) : null,
       hold: h ? { kind: h.kind, until: iso(h.until), reason_code: h.reason_code ?? null } : null,
+      next_booking: await nextBookingInfo(db, r.id),
       device: device
         ? { id: device.id, online, rssi: info?.rssi ?? null, fw: info?.fw ?? device.fw ?? null, caps: info?.caps ?? device.caps ?? [], mode: info?.mode ?? null }
         : { id: null, online: false, rssi: null, fw: null, caps: [], mode: null },

@@ -569,3 +569,36 @@ describe('сверка: платёж, которого ЮKassa не знает (
     assert.deepEqual({ l: alarms[0].level, a: alarms[0].data.action }, { l: 'critical', a: 'kept' });
   });
 });
+
+describe('return_url: только путь своего сайта (пакет и предоплата брони)', () => {
+  const emuReturnUrl = async (paymentId) => {
+    const p = await payment(paymentId);
+    return (await (await fetch(`${h.emuBase}/__emu/payments/${p.provider_payment_id}`)).json()).confirmation?.return_url;
+  };
+  const BAD = ['https://evil.example/app', '//evil.example/app', 'https://billiardum.test@evil.example/', '/app/../admin', '/\\evil.example', 'javascript:alert(1)', '', 42];
+
+  it('покупка пакета: путь → наш хост; чужой адрес — bad_request; без return_url — экран ожидания', async () => {
+    const { rows } = await h.pool.query('select id from bl.tariff_packages where club_id = $1 and active order by created_at limit 1', [CLUB_A]);
+    const id = rows[0].id;
+    for (const bad of BAD) {
+      const r = await h.call(BUY_PKG, { user: GUEST_2, params: { id }, body: { method: 'sbp', return_url: bad }, idempotencyKey: newKey() });
+      assert.deepEqual([r.status, r.json], [400, { error: 'bad_request' }], String(bad));
+    }
+    const ok = await h.call(BUY_PKG, { user: GUEST_2, params: { id }, body: { method: 'sbp', return_url: '/app/packages?paid=1' }, idempotencyKey: newKey() });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    assert.equal(await emuReturnUrl(ok.json.payment_id), 'https://billiardum.test/app/packages?paid=1');
+    const dflt = await h.call(BUY_PKG, { user: GUEST_2, params: { id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    assert.equal(await emuReturnUrl(dflt.json.payment_id), `https://billiardum.test/app/wait/${dflt.json.payment_id}`);
+  });
+
+  it('createPrepayment: returnUrl — путь или полный адрес на своём хосте; чужой — bad_request', async () => {
+    const make = (returnUrl) =>
+      asClub((db) => createPrepayment(db, { clubId: CLUB_A, bookingId: newKey(), resourceId: T(3), userId: GUEST_1, amountKopecks: 10000, returnUrl }, inj()), GUEST_1);
+    for (const bad of BAD) await assert.rejects(make(bad), (e) => e.code === 'bad_request', String(bad));
+    const a = await make('/app/bookings?paid=1');
+    assert.equal(await emuReturnUrl(a.payment.id), 'https://billiardum.test/app/bookings?paid=1');
+    const b = await make('https://billiardum.test/app/bookings/x');
+    assert.equal(await emuReturnUrl(b.payment.id), 'https://billiardum.test/app/bookings/x');
+  });
+});
+

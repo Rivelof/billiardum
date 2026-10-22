@@ -260,7 +260,18 @@ async function shortLink(_ctx, req) {
   return { status: 302, headers: { location: `/app/t/${code}` } };
 }
 
+/** GET /api/clubs — публичный список активных клубов (№120): без входа и без персональных данных. */
+async function publicClubs(ctx) {
+  const { rows } = await ctx.db.query('select * from bl.public_clubs()');
+  return {
+    status: 200,
+    headers: { 'cache-control': 'public, max-age=60' },
+    json: rows.map((r) => ({ id: r.id, name: r.name, city: r.city, address: r.address, timezone: r.timezone, plan: r.plan })),
+  };
+}
+
 export const routes = [
+  { method: 'GET', path: '/api/clubs', auth: 'none', rateLimit: { max: 120, windowMs: 60_000 }, handler: publicClubs },
   { method: 'GET', path: '/t/{code}', auth: 'none', db: false, rateLimit: { max: 120, windowMs: 60_000 }, handler: shortLink },
   { method: 'GET', path: '/api/clubs/{club}/now', auth: 'staff', roles: MANAGER_UP, handler: now },
   { method: 'GET', path: '/api/clubs/{club}/audit', auth: 'staff', roles: MANAGER_UP, handler: audit },

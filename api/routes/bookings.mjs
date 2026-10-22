@@ -99,7 +99,7 @@ export const routes = [
     auth: 'staff',
     roles: STAFF,
     async handler(ctx, req) {
-      return { status: 200, json: await svc().listClub(ctx.db, { clubId: ctx.club, date: req.query.date }) };
+      return { status: 200, json: await svc().listClub(ctx.db, { clubId: ctx.club, date: req.query.date, roles: ctx.roles }) };
     },
   },
   {
@@ -108,7 +108,7 @@ export const routes = [
     auth: 'staff',
     roles: STAFF,
     async handler(ctx, req) {
-      return { status: 201, json: await svc().createByStaff(ctx.db, { clubId: ctx.club, staffId: userId(req), body: req.body }) };
+      return { status: 201, json: await svc().createByStaff(ctx.db, { clubId: ctx.club, staffId: userId(req), body: req.body, roles: ctx.roles }) };
     },
   },
 ];

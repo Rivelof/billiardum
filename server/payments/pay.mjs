@@ -24,6 +24,30 @@ export function returnUrl(config, paymentId) {
   return config.returnUrlTemplate.replaceAll('{payment_id}', paymentId);
 }
 
+/** Путь своего сайта (как return_url брони и действия уведомлений core): «/app/…», без хоста и схемы. */
+export function localPath(v) {
+  return typeof v === 'string' && v.length <= 300 && /^\/[^/\\]/.test(v) && !/[\s<>"\\]/.test(v) && !v.includes('..') ? v : null;
+}
+
+/**
+ * return_url от гостя или соседнего модуля: путь своего сайта («/app/…») или полный адрес на своём
+ * хосте (PUBLIC_HOST или хост PAYMENT_RETURN_URL) с таким же путём. Иначе — bad_request
+ * (открытый редирект через страницу оплаты ЮKassa не допускаем). Нет значения — null.
+ */
+export function ownReturnUrl(config, value) {
+  if (value === undefined || value === null) return null;
+  const base = new URL(returnUrl(config, 'x')).origin;
+  const origins = [base, ...(config.publicHost ? [`https://${config.publicHost}`] : [])];
+  let path = value;
+  if (typeof value === 'string' && !value.startsWith('/')) {
+    const origin = origins.find((o) => value.startsWith(`${o}/`));
+    if (!origin) throw new MoneyError('bad_request', 'return_url');
+    path = value.slice(origin.length);
+  }
+  if (!localPath(path)) throw new MoneyError('bad_request', 'return_url');
+  return `${base}${path}`;
+}
+
 /** Ответ на оплату картой или СБП. */
 export function paymentResponse(p) {
   return {

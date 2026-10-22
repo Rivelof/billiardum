@@ -1,4 +1,5 @@
-// Реальное время (decisions №50, контракт M1 §7, §14): GET /api/stream?club={club} или ?session={id};
+// Реальное время (decisions №50, контракт M1 §7, §14): GET /api/stream?club={club}, ?session={id}
+// или ?me=1 (только свой канал user:{id}: waitlist.*, booking.* гостя, №120);
 // мини-приложениям — одноразовый токен POST /api/stream/token и GET /api/stream?...&token=.
 // Поток Server-Sent Events: события hall, session, reception_request, alarm.
 // Канал клуба — персоналу клуба (ресепшн и выше); канал сессии — участнику или персоналу
@@ -18,7 +19,9 @@ async function stream(ctx, req) {
   const userId = ctx.user.id;
   const channels = [`user:${userId}`];
   const sessionId = req.query.session;
-  if (req.query.club === undefined && sessionId === undefined) throw new HttpError(400, 'bad_request');
+  // ?me=1 — только свой канал user:{id} (гость без сессии: лист ожидания, брони; №120).
+  const given = [req.query.club, sessionId, req.query.me].filter((x) => x !== undefined).length;
+  if (given !== 1 || (req.query.me !== undefined && req.query.me !== '1')) throw new HttpError(400, 'bad_request');
   let club = null;
   let only = null;
   let barOnly = false;

@@ -55,15 +55,21 @@ describe('бронь', { skip }, () => {
     assert.equal(r.json.hold_until, h.at(8 * 60 + 30));
     assert.ok(!('guest' in r.json));
 
+    // return_url — только путь своего сайта.
+    for (const bad of ['https://evil.example/x', '//evil.example', '/app/../x']) {
+      const res = await h.request('POST', `/api/bookings/${r.json.id}/pay`, { token: guest.token, key: crypto.randomUUID(), body: { return_url: bad } });
+      assert.equal(res.status, 400, bad);
+    }
     const key = crypto.randomUUID();
-    const pay = await h.request('POST', `/api/bookings/${r.json.id}/pay`, { token: guest.token, key, body: {} });
+    const pay = await h.request('POST', `/api/bookings/${r.json.id}/pay`, { token: guest.token, key, body: { return_url: '/app/bookings?paid=1' } });
     assert.equal(pay.status, 200, pay.text);
     assert.ok(pay.json.confirmation.url);
     const call = h.moneyCalls.find((c) => c.fn === 'createPrepayment' && c.args.bookingId === r.json.id);
     assert.equal(call.args.amountKopecks, 160_000);
     assert.equal(call.args.clubId, CLUB_A);
+    assert.equal(call.args.returnUrl, 'https://bl.test/app/bookings?paid=1');
     // Повтор с тем же ключом — тот же ответ без второго платежа.
-    const again = await h.request('POST', `/api/bookings/${r.json.id}/pay`, { token: guest.token, key, body: {} });
+    const again = await h.request('POST', `/api/bookings/${r.json.id}/pay`, { token: guest.token, key, body: { return_url: '/app/bookings?paid=1' } });
     assert.equal(again.json.payment_id, pay.json.payment_id);
 
     const pm = await h.payment(pay.json.payment_id);
@@ -82,6 +88,12 @@ describe('бронь', { skip }, () => {
     await h.drain();
     assert.equal((await h.notifications(guest.id, 'booking.confirmed')).length, 1);
     assert.equal((await h.refunds(pay.json.payment_id)).length, 0);
+    // SSE гостю (№120): booking.confirmed.
+    await waitFor(() => h.sseEvents.some((e) => e.channel === `user:${guest.id}` && e.data.type === 'booking.confirmed' && e.data.id === b.id));
+    const ev = h.sseEvents.find((e) => e.channel === `user:${guest.id}` && e.data.type === 'booking.confirmed' && e.data.id === b.id);
+    assert.equal(ev.event, 'booking');
+    assert.equal(ev.data.status, 'confirmed');
+    assert.equal(ev.data.starts_at, h.at(8 * 60));
 
     const mine = await h.request('GET', '/api/me/bookings', { token: guest.token });
     assert.equal(mine.status, 200);
@@ -210,6 +222,9 @@ describe('бронь', { skip }, () => {
     // Удержания больше нет: снято или истекло к этому моменту.
     assert.ok((await h.holds(table(1))).filter((x) => x.kind === 'reserved').every((x) => x.released_at || new Date(x.until).getTime() <= start + 30 * MIN));
     assert.equal((await h.outboxEvents('booking.expired')).filter((e) => e.payload.booking_id === b.id).length, 1);
+    for (const type of ['booking.confirmed', 'booking.reserved', 'booking.expired']) {
+      assert.ok(h.sseEvents.some((e) => e.channel === `user:${u.id}` && e.event === 'booking' && e.data.type === type && e.data.id === b.id), type);
+    }
     const n = await h.notifications(u.id, 'booking.expired');
     assert.equal(n.length, 1);
     assert.match(n[0].text, /сгорела/);
@@ -248,6 +263,11 @@ describe('бронь', { skip }, () => {
       await assert.rejects(bookingLimit(client, deps, { resourceId: table(2), from: new Date(start - 4 * MIN) }), (e) => e.code === 'booking_conflict');
       // Бронь в удержании (началась, гость не пришёл) — чужую игру не начать.
       await assert.rejects(bookingLimit(client, deps, { resourceId: table(2), from: new Date(start + 10 * MIN) }), (e) => e.code === 'booking_conflict');
+      // nextBooking — та же бронь целиком, без ПДн; nextBookingStart выражен через неё.
+      const nb = await api.nextBooking(client, { resourceId: table(2), after: new Date(start - 30 * MIN) });
+      assert.deepEqual(Object.keys(nb).sort(), ['ends_at', 'id', 'source', 'starts_at', 'status']);
+      assert.deepEqual(nb, { id: r.json.id, starts_at: new Date(start).toISOString(), ends_at: new Date(start + 60 * MIN).toISOString(), source: 'app', status: 'pending_payment' });
+      assert.equal(await api.nextBooking(client, { resourceId: table(2), after: new Date(start + 60 * MIN) }), null);
       // Другой стол — без предела.
       assert.equal(await api.nextBookingStart(client, { resourceId: table(6), after: new Date(start) }), null);
     } finally {
@@ -387,6 +407,10 @@ describe('бронь', { skip }, () => {
     const rec = await h.request('POST', `/api/bookings/${p.id}/cancel`, { token: reception.token, club: CLUB_A, body: { reason: 'x' } });
     assert.equal(rec.status, 403);
     assert.equal((await h.request('POST', `/api/bookings/${p.id}/cancel`, { token: manager.token, body: { reason: 'x' } })).status, 404);
+    // can_cancel по роли запрашивающего (№115).
+    assert.equal((await h.request('GET', `/api/bookings/${p.id}`, { token: reception.token, club: CLUB_A })).json.can_cancel, false);
+    assert.equal((await h.request('GET', `/api/bookings/${p.id}`, { token: manager.token, club: CLUB_A })).json.can_cancel, true);
+    assert.ok(!('can_cancel' in (await h.request('GET', `/api/bookings/${p.id}`, { token: u.token })).json));
     const noReason = await h.request('POST', `/api/bookings/${p.id}/cancel`, { token: manager.token, club: CLUB_A, body: {} });
     assert.equal(noReason.json.error, 'reason_required');
     const ok = await h.request('POST', `/api/bookings/${p.id}/cancel`, { token: manager.token, club: CLUB_A, body: { reason: 'Стол на ремонте' } });
@@ -519,6 +543,8 @@ describe('бронь', { skip }, () => {
     assert.equal(list.status, 200, list.text);
     const item = list.json.bookings.find((x) => x.id === r.json.id);
     assert.equal(item.guest.name, 'Сергей');
+    assert.equal(item.can_cancel, true);
+    assert.equal(r.json.can_cancel, true);
     assert.ok(!list.text.includes('3456789'));
     // Журнал без телефона.
     assert.ok((await h.audit('booking.create')).filter((a) => a.object_id === r.json.id).every((a) => !JSON.stringify(a.data).includes('3456789')));

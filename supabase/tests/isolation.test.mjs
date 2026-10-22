@@ -218,6 +218,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         // M3 pos (0481): поиск существующего гостя для пакета на кассе (без создания учётки)
         ['pos_guest', 'bl_definer'],
         ['pos_object_club', 'bl_definer'],
+        // M3 core (0703): публичный список клубов
+        ['public_clubs', 'bl_definer'],
         // M1 light
         ['resource_by_code', 'bl_definer'],
         ['resource_club', 'bl_definer'],

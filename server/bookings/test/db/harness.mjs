@@ -14,6 +14,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { createApp } from '../../../http/app.mjs';
+import { isChannel } from '../../../http/sse.mjs';
 import { createOutbox } from '../../../outbox.mjs';
 import { loadRoutes } from '../../../../api/router.mjs';
 import { appPool, memoryLog, ORIGIN, testConfig } from '../../../test/db/helpers.mjs';
@@ -52,7 +53,15 @@ export async function setup({ settings = {} } = {}) {
   const log = memoryLog();
   const outbox = createOutbox({ pollMs: 50, clock });
   const sseEvents = [];
-  const sse = { publish: (channel, event, data) => sseEvents.push({ channel, event, data }), closeAll() {}, setLogger() {} };
+  // Хаб SSE в тесте проверяет канал и имя события так же, как настоящий (server/http/sse.mjs).
+  const sse = {
+    publish: (channel, event, data) => {
+      if (!isChannel(channel) || !/^[a-z][a-z0-9_]{0,40}$/.test(event)) throw new Error(`sse: ${channel} ${event}`);
+      sseEvents.push({ channel, event, data: JSON.parse(JSON.stringify(data)) });
+    },
+    closeAll() {},
+    setLogger() {},
+  };
 
   // money — настоящий модуль (server/payments) с эмулятором ЮKassa; вызовы брони — через шпиона
   // с журналом (moneyCalls), чтобы тесты видели аргументы.

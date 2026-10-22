@@ -49,7 +49,11 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     assert.match(na[0].text, /Стол 1 свободен — он ваш на 5 минут/);
     assert.equal(na[0].actions?.[0]?.url, `/app/waitlist/${ja.json.id}`);
     assert.equal((await h.outboxEvents('waitlist.offered')).length, 1);
-    assert.ok(h.sseEvents.some((e) => e.channel === `user:${a.id}` && e.event === 'waitlist' && e.data.status === 'offered'));
+    // SSE гостю (№120): waitlist.offered без кода стола.
+    const offered = h.sseEvents.find((e) => e.channel === `user:${a.id}` && e.event === 'waitlist' && e.data.type === 'waitlist.offered');
+    assert.deepEqual(offered.data, {
+      type: 'waitlist.offered', offer_id: ja.json.id, resource: { id: table(1), number: 1, title: 'Стол 1' }, expires_at: new Date(T0 + 37 * MIN).toISOString(),
+    });
     const mineA = await h.request('GET', '/api/me/waitlist', { token: a.token });
     assert.equal(mineA.json[0].status, 'offered');
     assert.equal(mineA.json[0].offer_until, new Date(T0 + 37 * MIN).toISOString());
@@ -72,10 +76,19 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     assert.equal(acc.status, 200, acc.text);
     assert.equal(acc.json.status, 'accepted');
     assert.equal(acc.json.resource_id, table(1));
+    // Код стола не отдаётся (№119): игра начинается сканированием QR.
+    const code = (await h.q('select code from bl.resources where id = $1', [table(1)]))[0].code;
+    assert.ok(!acc.text.includes(code));
+    assert.ok(!(await h.request('GET', '/api/me/waitlist', { token: b.token })).text.includes(code));
+    assert.ok(!('code' in acc.json.resource));
     const hold = (await h.holds(table(1))).find((x) => x.kind === 'pending' && !x.released_at);
     assert.equal(hold.user_id, b.id);
     assert.equal(new Date(hold.until).getTime(), T0 + 41 * MIN);
     assert.equal((await h.outboxEvents('waitlist.accepted')).length, 1);
+    const accepted = h.sseEvents.find((e) => e.channel === `user:${b.id}` && e.data.type === 'waitlist.accepted');
+    assert.equal(accepted.data.offer_id, jb.json.id);
+    assert.equal(accepted.data.hold_until, new Date(T0 + 41 * MIN).toISOString());
+    assert.ok(!JSON.stringify(h.sseEvents.filter((e) => e.channel.startsWith('user:'))).includes(code));
     // Повтор принятия — тот же ответ.
     assert.equal((await h.request('POST', `/api/waitlist/${jb.json.id}/accept`, { token: b.token, body: {} })).status, 200);
     // Отказ после принятия — удержание снято.

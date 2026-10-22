@@ -233,3 +233,67 @@ describe('персонал (№111)', () => {
     assert.deepEqual((await t.request('GET', '/api/me', { token: back.token })).json.clubs, []);
   });
 });
+
+describe('запросы frontend (№120)', () => {
+  it('GET /api/clubs без входа: только активные клубы, без персональных данных', async () => {
+    const res = await t.request('GET', '/api/clubs');
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=60');
+    const a = res.json.find((c) => c.id === CLUB_A);
+    assert.deepEqual(a, { id: CLUB_A, name: 'Тестовый клуб', city: 'Екатеринбург', address: 'ул. Тестовая, 1', timezone: 'Asia/Yekaterinburg', plan: { width_cm: 1800, height_cm: 1400 } });
+    assert.ok(res.json.some((c) => c.id === CLUB_B));
+    await t.admin.query('update bl.clubs set active = false where id = $1', [CLUB_B]);
+    assert.ok(!(await t.request('GET', '/api/clubs')).json.some((c) => c.id === CLUB_B), 'неактивный клуб скрыт');
+    await t.admin.query('update bl.clubs set active = true where id = $1', [CLUB_B]);
+    assert.doesNotMatch(res.text, /\+7|phone|owner|settings/);
+  });
+
+  it('GET /api/me: каналы max, telegram, webpush (есть ли подписка)', async () => {
+    const g = await t.login('+79990010001');
+    let me = await t.request('GET', '/api/me', { token: g.token });
+    assert.deepEqual(me.json.user.channels, { max: false, telegram: false, webpush: false });
+    const keys = { p256dh: `B${'A'.repeat(86)}`, auth: 'A'.repeat(22) };
+    await t.admin.query("insert into bl.push_subscriptions (user_id, endpoint, p256dh, auth) values ($1, 'https://fcm.googleapis.com/fcm/send/me', $2, $3)", [g.user.id, keys.p256dh, keys.auth]);
+    await t.admin.query('update bl.users set telegram_user_id = 777001 where id = $1', [g.user.id]);
+    me = await t.request('GET', '/api/me', { token: g.token });
+    assert.deepEqual(me.json.user.channels, { max: false, telegram: true, webpush: true });
+    await t.admin.query('update bl.push_subscriptions set revoked_at = now() where user_id = $1', [g.user.id]);
+    assert.equal((await t.request('GET', '/api/me', { token: g.token })).json.user.channels.webpush, false);
+  });
+
+  it('SSE ?me=1: только свой канал user:{id}; по одноразовому токену тоже; с другим каналом — 400', async () => {
+    const g = await t.login('+79990010002');
+    const other = await t.login('+79990010003');
+    const res = await fetch(`${t.base}/api/stream?me=1`, { headers: { authorization: `Bearer ${g.token}` } });
+    assert.equal(res.status, 200);
+    const reader = res.body.getReader();
+    let buf = '';
+    const next = async (name) => {
+      for (;;) {
+        const m = new RegExp(`event: ${name}\\ndata: (.*)\\n\\n`).exec(buf);
+        if (m) {
+          buf = buf.slice(m.index + m[0].length);
+          return JSON.parse(m[1]);
+        }
+        const { value } = await reader.read();
+        buf += Buffer.from(value).toString('utf8');
+      }
+    };
+    const ready = await next('ready');
+    assert.deepEqual(ready.channels, [`user:${g.user.id}`]);
+    t.sse.publish(`user:${other.user.id}`, 'waitlist', { status: 'offered', id: 'чужое' });
+    t.sse.publish(`user:${g.user.id}`, 'waitlist', { status: 'offered', id: 'моё' });
+    assert.deepEqual(await next('waitlist'), { status: 'offered', id: 'моё' });
+    await reader.cancel();
+    assert.equal((await fetch(`${t.base}/api/stream?me=1&club=${CLUB_A}`, { headers: { authorization: `Bearer ${g.token}` } })).status, 400);
+    assert.equal((await fetch(`${t.base}/api/stream?me=2`, { headers: { authorization: `Bearer ${g.token}` } })).status, 400);
+    assert.equal((await fetch(`${t.base}/api/stream?me=1`)).status, 401);
+    const tok = await t.request('POST', '/api/stream/token', { token: g.token, body: { me: true } });
+    assert.equal(tok.status, 200);
+    const viaToken = await fetch(`${t.base}/api/stream?me=1&token=${tok.json.token}`);
+    assert.equal(viaToken.status, 200);
+    await viaToken.body.cancel();
+    const clubTok = await t.request('POST', '/api/stream/token', { token: g.token, body: { club: CLUB_A } });
+    assert.equal((await fetch(`${t.base}/api/stream?me=1&token=${clubTok.json.token}`)).status, 401, 'токен на другой канал');
+  });
+});

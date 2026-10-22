@@ -60,5 +60,6 @@ export function sessionSummary(s, now) {
     grace_until: s.status === 'grace' ? iso(paidUntil.getTime() + s.grace_ms) : null,
     remaining_ms: OPEN_STATUSES.includes(s.status) ? Math.max(0, paidUntil.getTime() - now.getTime()) : 0,
     unlimited: Boolean(s.unlimited),
+    deposit_kopecks: s.deposit_kopecks ?? null,
   };
 }

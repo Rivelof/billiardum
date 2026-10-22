@@ -6,6 +6,8 @@
 //       кончилась к after. Бронь в удержании (началась, гость ещё не пришёл) возвращает своё
 //       начало в прошлом — продлить и начать чужую игру нельзя. Котировка (money) ограничивает
 //       игру началом минус 5 минут (№106).
+//   nextBooking(db, { resourceId, after }) → { id, starts_at, ends_at, source, status } | null
+//       Та же ближайшая живая бронь целиком (ISO-время), без имени и телефона гостя.
 //   bookingForArrival(db, { resourceId, userId, at }) → бронь | null
 //       Бронь гостя на этом столе, которую можно начать в at (с учётом раннего прихода и
 //       удержания): { id, club_id, resource_id, status, starts_at, ends_at, hold_until,
@@ -48,6 +50,10 @@ function service() {
 
 export function nextBookingStart(db, { resourceId, after }) {
   return service().nextBookingStart(db, { resourceId, after });
+}
+
+export function nextBooking(db, { resourceId, after }) {
+  return service().nextBooking(db, { resourceId, after });
 }
 
 export function bookingForArrival(db, { resourceId, userId, at }) {

@@ -44,6 +44,7 @@ export function loadMoneyConfig(env = process.env, base = {}) {
     yookassaApiUrl: apiUrl,
     yookassaTimeoutMs: timeoutMs,
     returnUrlTemplate,
+    publicHost,
     // Ускоренное время — никогда в проде (§2.3).
     devAllowAnyMinutes: !production && (base.devAllowAnyMinutes ?? env.DEV_ALLOW_ANY_MINUTES === '1'),
     encKey,

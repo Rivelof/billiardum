@@ -66,7 +66,7 @@ function stubs(log) {
       },
     },
     // Без модуля брони (M3) броней нет: предел продления не ограничен.
-    bookings: { async nextBookingStart() { return null; } },
+    bookings: { async nextBookingStart() { return null; }, async nextBooking() { return null; } },
   };
 }
 
@@ -92,7 +92,7 @@ export async function resolveDeps(ctx, log) {
     sse: ['publish'],
     tariffs: ['amountForActual'],
     payments: ['refund'],
-    bookings: ['nextBookingStart'],
+    bookings: ['nextBookingStart', 'nextBooking'],
   };
   const ctxKey = { audit: 'audit', alarms: 'alarms', notify: 'notify', sse: 'sse', tariffs: 'tariffs', payments: 'paymentsApi', bookings: 'bookingsApi' };
   for (const [name, spec] of Object.entries(OPTIONAL)) {

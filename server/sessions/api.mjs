@@ -49,7 +49,7 @@ function service() {
           sse: { publish() {} },
           tariffs: {},
           payments: { refund: async () => { throw new Error('refund без модуля light'); } },
-          bookings: { nextBookingStart: async () => null },
+          bookings: { nextBookingStart: async () => null, nextBooking: async () => null },
         },
       });
     }

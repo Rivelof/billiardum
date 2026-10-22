@@ -7,7 +7,7 @@
 | `bookings/index.mjs` | `init(ctx)`/`stop()`/`bookings()`/`tick()`: подписки outbox `payment.confirmed`, `session.closed`, `session.started`; планировщик раз в 10 с на `ctx.clock` |
 | `bookings/service.mjs` | создание (гость, телефон), предоплата, подтверждение, старт, «гость пришёл», отмена, шаг планировщика, события light |
 | `bookings/availability.mjs` | `GET /api/clubs/{club}/availability` |
-| `bookings/api.mjs` | интерфейс §3 для light и money: `nextBookingStart`, `bookingForArrival`, `markStarted` |
+| `bookings/api.mjs` | интерфейс §3 для light и money: `nextBookingStart`, `nextBooking` (`{id, starts_at, ends_at, source, status}` без ПДн), `bookingForArrival`, `markStarted` |
 | `bookings/deps.mjs` | соседи по одной функции: `ctx.bookingDeps` → модуль соседа → заглушка (`not_configured` 501; у `setReserved`/`clearReserved` — предупреждение в лог) |
 | `bookings/settings.mjs`, `queries.mjs`, `errors.mjs` | правила клуба, запросы, ошибки |
 | `waitlist/index.mjs`, `waitlist/service.mjs` | лист ожидания: подписки `session.closed`, `booking.expired`, `booking.canceled`; планировщик предложений |
@@ -42,15 +42,15 @@
 | `GET /api/clubs/{club}/availability?date=YYYY-MM-DD` | без входа, 120/мин с IP | `{club, date, from, to, open_at, close_at, now, step_minutes, min_minutes, max_minutes, lead_minutes, max_days, rules, resources: [{id, number, type, title, plan, busy: [{from, to, kind}], free: [{from, to}], rates: [{from, to, per_hour_kopecks}]}]}`; `kind`: `session`, `pending`, `service`, `booking`, `closed` (нет тарифа). Без ПДн и id броней |
 | `POST /api/bookings {resource_id, starts_at, minutes, source?}` | гость (телефон, согласие) | `201` бронь |
 | `GET /api/bookings/{id}`, `GET /api/me/bookings` | гость (свои), персонал клуба (`X-Club-Id`) | бронь / список |
-| `POST /api/bookings/{id}/pay {method?}` | гость, `Idempotency-Key` | `{booking, payment_id, confirmation}` |
+| `POST /api/bookings/{id}/pay {method?, return_url?}` | гость, `Idempotency-Key`; `return_url` — только путь своего сайта (`/app/…`), иначе 400 | `{booking, payment_id, confirmation}` |
 | `POST /api/bookings/{id}/start {code, method?}` | гость-владелец у стола | `{status: 'started', session_id, booking}` или `{status: 'payment_required', amount_kopecks, quote? , payment_id?, confirmation?, booking}` |
 | `POST /api/bookings/{id}/cancel {reason?}` | гость (свою); владелец, управляющий, ресепшн — брони `phone`/`staff` без предоплаты (`X-Club-Id`, причина обязательна) | бронь + `refund_kopecks` |
 | `POST /api/bookings/{id}/arrive` | ресепшн и выше | гость брони по телефону пришёл: `reserved` снят, бронь `started` |
-| `GET /api/clubs/{club}/bookings?date=` | ресепшн и выше | `{date, from, to, bookings}` с `guest: {name, phone_masked, user}` |
+| `GET /api/clubs/{club}/bookings?date=` | ресепшн и выше | `{date, from, to, bookings}` с `guest: {name, phone_masked, user}` и `can_cancel` — может ли запрашивающий отменить по №115 |
 | `POST /api/clubs/{club}/bookings {resource_id, starts_at, minutes, name, phone, source?}` | ресепшн и выше | `201` бронь по телефону (`confirmed`, без предоплаты), телефон маской |
 | `POST /api/waitlist {resource_id}` | гость (согласие) | `201 {id, status, position, …}`; повтор — та же запись |
 | `GET /api/me/waitlist`, `DELETE /api/waitlist/{id}` | гость | записи / выход из очереди |
-| `POST /api/waitlist/{id}/accept` | гость | `{status: 'accepted', resource_id, hold_until}` — стол удержан на 3 минуты, дальше `POST /api/quotes` |
+| `POST /api/waitlist/{id}/accept` | гость | `{status: 'accepted', resource: {id, number, title}, resource_id, hold_until}` — стол удержан на 3 минуты; код стола не отдаётся (№119), игра — сканированием QR |
 
 Бронь: `{id, club: {id, name, timezone}, resource: {id, number, title, type}, status, source, starts_at, ends_at, minutes, hold_until, amount_kopecks, prepayment_mode, prepayment_kopecks, paid_kopecks, pay_until, payment_id, session_id, expire_reason, created_at, cancel: {allowed, refund_kopecks, free_until}}`.
 
@@ -60,7 +60,7 @@
 
 ## События outbox
 
-`booking.created`, `booking.confirmed`, `booking.reserved`, `booking.started`, `booking.expired`, `booking.canceled` — `{booking_id, club_id, resource_id, user_id, status, starts_at, ends_at, …}`; `waitlist.offered`, `waitlist.accepted` — `{waitlist_id, club_id, resource_id, user_id, offer_until | hold_until}`. SSE: `club:{id}` `booking`, `user:{id}` `booking` и `waitlist`. Журнал: `booking.create`, `booking.confirm`, `booking.reserve`, `booking.start`, `booking.arrive`, `booking.cancel`, `manual.booking_cancel`, `booking.expire`, `booking.complete`, `booking.late_payment`, `booking.pay_timeout`.
+`booking.created`, `booking.confirmed`, `booking.reserved`, `booking.started`, `booking.expired`, `booking.canceled` — `{booking_id, club_id, resource_id, user_id, status, starts_at, ends_at, …}`; `waitlist.offered`, `waitlist.accepted` — `{waitlist_id, club_id, resource_id, user_id, offer_until | hold_until}`. SSE (№120): имя события SSE — только `[a-z0-9_]`, поэтому вид события — в поле `type`. `club:{id}` `booking` — `{type: 'booking.*', booking_id, …}`; гостю `user:{id}` `booking` — `{type: 'booking.confirmed'|'booking.reserved'|'booking.started'|'booking.expired'|'booking.canceled', id, status, starts_at, ends_at, resource: {id, number}}`; `user:{id}` `waitlist` — `{type: 'waitlist.offered', offer_id, resource: {id, number, title}, expires_at}`, `{type: 'waitlist.accepted', offer_id, resource, hold_until}`, `{type: 'waitlist.updated', …запись}`; кода стола нет (№119). Журнал: `booking.create`, `booking.confirm`, `booking.reserve`, `booking.start`, `booking.arrive`, `booking.cancel`, `manual.booking_cancel`, `booking.expire`, `booking.complete`, `booking.late_payment`, `booking.pay_timeout`.
 
 ## Настройки клуба (`clubs.settings`)
 

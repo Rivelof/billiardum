@@ -24,3 +24,6 @@ update bl.users u set name = v.name
     ('a1000000-0000-4000-8000-000000000004'::uuid, 'Ресепшн (тест)')
   ) as v (id, name)
  where u.id = v.id and u.name is null;
+
+-- Адрес тестового клуба для публичного списка (№120), синтетический.
+update bl.clubs set address = 'ул. Тестовая, 1' where id = 'c1000000-0000-4000-8000-000000000001' and address is null;
