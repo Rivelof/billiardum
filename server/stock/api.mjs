@@ -87,8 +87,18 @@ export function itemQtyMilli(units, stockFactor) {
  * @param {{ order_item_id: string, product_id: string, qty: number, stock_factor: string|number, track_stock: boolean }[]} items
  */
 export async function recordSales(db, { items, saleId = null, at, userId = null }) {
-  const tracked = items.filter((i) => i.track_stock);
+  let tracked = items.filter((i) => i.track_stock);
   if (tracked.length === 0) return 0;
+  // Уже списанные строки (счёт стола списан при заказе) не трогаем; товары остальных строк
+  // блокируются в порядке id — ревизия того же товара ждёт продажу (ревью денег п. 9).
+  const { rows: done } = await db.query(
+    "select order_item_id from bl.stock_movements where kind = 'sale' and order_item_id = any($1::uuid[])",
+    [tracked.map((i) => i.order_item_id)],
+  );
+  const sold = new Set(done.map((r) => r.order_item_id));
+  tracked = tracked.filter((i) => !sold.has(i.order_item_id));
+  if (tracked.length === 0) return 0;
+  await db.query('select id from bl.products where id = any($1::uuid[]) order by id for update', [[...new Set(tracked.map((i) => i.product_id))]]);
   const avg = await avgCosts(db, [...new Set(tracked.map((i) => i.product_id))]);
   let n = 0;
   for (const i of tracked) {

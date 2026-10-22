@@ -162,8 +162,12 @@ export async function resolveItems(db, { clubId, items, audience, defaultVat }) 
   const wanted = parseItems(items);
   const ids = [...new Set(wanted.map((w) => w.product_id))];
   const { rows } = await db.query(
+    // Строки товаров блокируются в порядке id (без дедлоков): ревизия склада и «стоп при нуле»
+    // не расходятся с одновременной продажей того же товара (ревью денег п. 9).
     `select p.* from bl.products p left join bl.product_categories c on c.id = p.category_id
-      where p.club_id = $1 and p.id = any($2::uuid[]) and p.active and (p.category_id is null or c.active)`,
+      where p.club_id = $1 and p.id = any($2::uuid[]) and p.active and (p.category_id is null or c.active)
+      order by p.id
+      for update of p`,
     [clubId, ids],
   );
   const products = new Map(rows.map((p) => [p.id, p]));

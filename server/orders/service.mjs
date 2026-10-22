@@ -10,6 +10,7 @@
 //   или на кассе. Двойная оплата — один платёж: повторный запрос гостя получает тот же
 //   платёж, а заказ, оплаченный на кассе, пока шла оплата онлайн, возвращается.
 
+import { stableUuid } from '../payments/records.mjs';
 import { requireGuestReady } from '../payments/context.mjs';
 import { loadPaymentSettings } from '../payments/settings.mjs';
 import { alcoholAllowedForGuests, resolveItems } from '../catalog/api.mjs';
@@ -133,7 +134,9 @@ export async function createGuestOrder(db, deps, info) {
 
   const method = b.method ?? 'sbp';
   if (!GUEST_METHODS.includes(method)) throw bad('method');
-  const orderId = (await db.query('select gen_random_uuid() as id')).rows[0].id;
+  // id заказа (и адрес возврата в платеже) — от ключа запроса: повтор после таймаута ЮKassa — тот же
+  // платёж (тот же ключ и то же тело), без платежа-сироты (ревью денег п. 10).
+  const orderId = stableUuid(`bl.pos.guest_order/${clubId}/${userId}/${key}`);
   const fake = { id: orderId, items: lines.map((l, k) => ({ ...l, id: `line-${k}` })) };
   // Платёж ЮKassa до записи заказа (как money): сбой ЮKassa не оставит заказа без платежа.
   const guest = await createGuestSale(db, deps, {

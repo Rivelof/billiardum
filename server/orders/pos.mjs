@@ -38,7 +38,7 @@ import { stableUuid } from '../payments/records.mjs';
 import { syncPayment } from '../payments/pay.mjs';
 import { loadPaymentSettings } from '../payments/settings.mjs';
 import { resolveItems, alcoholAllowedForGuests } from '../catalog/api.mjs';
-import { recordReturns, recordSales } from '../stock/api.mjs';
+import { insertMovement, recordReturns, recordSales, toMilli } from '../stock/api.mjs';
 import { enqueueReceiptDirect } from './deps.mjs';
 import { PosError } from './errors.mjs';
 import { allocate, discountKopecks, overLimit, receiptLines, refundAmount, rub } from './money.mjs';
@@ -73,8 +73,9 @@ async function operatorName(db, userId) {
   return (rows[0]?.name ?? '').trim().slice(0, 64) || 'Кассир';
 }
 
-async function currentShift(db, deps, clubId) {
-  const shift = await deps.shifts.currentShift(db, clubId);
+/** Открытая смена клуба; forUpdate — строка смены заблокирована до конца транзакции (закрытие ждёт). */
+async function currentShift(db, deps, clubId, { forUpdate = false } = {}) {
+  const shift = await deps.shifts.currentShift(db, clubId, forUpdate ? { forUpdate: true } : undefined);
   return shift && isUuid(shift.id) ? shift : null;
 }
 
@@ -351,7 +352,8 @@ export async function createSale(db, deps, info) {
   const prev = await db.query('select id from bl.pos_sales where club_id = $1 and request_key = $2', [clubId, key]);
   if (prev.rowCount > 0) return saleView(db, prev.rows[0].id);
 
-  const shift = await currentShift(db, deps, clubId);
+  // Строка смены блокируется: закрытие смены ждёт продажу (иначе наличные выпадут из сверки).
+  const shift = await currentShift(db, deps, clubId, { forUpdate: true });
   if (!shift) throw new PosError('shift_closed');
   const at = deps.clock.now();
   const settings = await loadPaymentSettings(db, clubId);
@@ -433,7 +435,9 @@ export async function createSale(db, deps, info) {
   // Гости пакетов — последней проверкой, до записи и платежей (pentester L1).
   await resolvePackageGuests(db, deps, packages, { clubId, staffId, at });
 
-  const saleId = randomUUID();
+  // id продажи — от ключа идемпотентности: повтор после таймаута ЮKassa — тот же платёж (bar-<sale>),
+  // без второго платежа-сироты.
+  const saleId = stableUuid(`bl.pos.sale/${clubId}/${key}`);
   // Заказ кассы: сразу выдан или на экран бара (to_bar). При СБП — после оплаты.
   let posOrder = null;
   if (lines.length > 0) {
@@ -571,7 +575,8 @@ export async function createSale(db, deps, info) {
  * @param {{ clubId, method, orders: object[], userId, phone, sessionId?, resourceId?, returnUrl, requestKey, description, at }} p
  */
 export async function createGuestSale(db, deps, p) {
-  const saleId = p.saleId ?? randomUUID();
+  // id продажи гостя — от ключа запроса (повтор после таймаута — тот же платёж ЮKassa).
+  const saleId = p.saleId ?? (p.requestKey ? stableUuid(`bl.pos.guest_sale/${p.clubId}/${p.userId ?? ''}/${p.requestKey}`) : randomUUID());
   const items = p.orders.flatMap((o) => o.items.map((i) => ({ ...i, order_id: o.id })));
   const total = items.reduce((s, i) => s + Number(i.amount_kopecks), 0);
   const lines = receiptLines(items.map((i) => ({ name: i.name, qty: i.qty, amount_kopecks: Number(i.amount_kopecks), vat_code: i.vat_code, payment_subject: i.payment_subject })));
@@ -1023,11 +1028,14 @@ export async function refundSale(db, deps, info) {
   const lines = [...(rowsForReceipt.length > 0 ? receiptLines(rowsForReceipt) : []), ...packagePlan.map((p) => p.line)];
   const { rows: pr } = await db.query('select * from bl.payments where id = $1 for update', [s.payment_id]);
   const payment = pr[0];
-  // Наличные возвращаются из кассы смены (№81): без открытой смены — нельзя.
-  const shift = await currentShift(db, deps, s.club_id);
+  // Наличные возвращаются из кассы смены (№81): без открытой смены — нельзя. Строка смены
+  // блокируется: закрытие смены ждёт возврат.
+  const shift = await currentShift(db, deps, s.club_id, { forUpdate: true });
   if (s.method === 'cash' && !shift) throw new PosError('shift_closed');
 
-  const posRefundId = randomUUID();
+  // id возврата кассы и ключ ЮKassa — от ключа идемпотентности запроса: повтор после таймаута
+  // ЮKassa или отката (ответ потерян, сбой после createRefund) — тот же возврат, не второй.
+  const posRefundId = stableUuid(`bl.pos.refund/${s.club_id}/${key}`);
   // Партии минут пакетов — отозвать (money: только нетронутые, журнал и тревога там же).
   for (const p of packagePlan) await revokePackage(db, deps, { lotId: p.lot_id, reason, staffId });
   // Деньги, чек возврата (ККТ — receipt_pending, ЮKassa — с чеком), payment.refunded — у money.
@@ -1095,6 +1103,77 @@ export async function refundSale(db, deps, info) {
   await publishClub(db, deps, s.club_id, 'pos_sale', { sale_id: s.id, status: 'completed', refunded_kopecks: Number(s.refunded_kopecks) + amount });
   deps.log?.info?.('pos_refund', { sale_id: s.id, refund_id: refundRow.refund_id, amount_kopecks: amount, method: s.method });
   return refundView(db, (await db.query('select * from bl.pos_refunds where id = $1', [posRefundId])).rows[0]);
+}
+
+/**
+ * outbox payment.refund_canceled (money; ревью денег п. 4): ЮKassa отменила возврат — деньги гостю не
+ * вернулись. Учёт возврата продажи кассы откатывается: refunded_kopecks продажи и строк, склад —
+ * обратным движением (writeoff по каждому возврату на склад этого возврата), возврат кассы помечается
+ * отменённым, журнал pos.refund_canceled, тревога владельцу. Пакеты часов в возврате остаются
+ * отмеченными (партию минут money уже отозвал) — тревога говорит восстановить вручную.
+ * Нагрузка: { refund_id, payment_id, amount_kopecks, pos_refund_id? }. Повтор — already.
+ */
+export async function onRefundCanceled(db, deps, payload) {
+  if (!payload || (!isUuid(payload.refund_id) && !isUuid(payload.pos_refund_id))) return { result: 'ignored' };
+  const { rows } = isUuid(payload.pos_refund_id)
+    ? await db.query('select * from bl.pos_refunds where id = $1 for update', [payload.pos_refund_id])
+    : await db.query('select * from bl.pos_refunds where refund_id = $1 for update', [payload.refund_id]);
+  const r = rows[0];
+  if (!r) return { result: 'ignored' };
+  if (isUuid(payload.refund_id) && r.refund_id !== payload.refund_id) return { result: 'ignored' };
+  if (r.canceled_at) return { result: 'already' };
+  const at = deps.clock.now();
+  const amount = Number(r.amount_kopecks);
+  const why = 'Возврат отменён ЮKassa: деньги гостю не вернулись';
+  await db.query("select set_config('bl.pos_refund_cancel', 'on', true)");
+  const items = Array.isArray(r.items) ? r.items : [];
+  for (const i of items) {
+    if (!isUuid(i.sale_item_id)) continue;
+    await db.query(
+      `update bl.pos_sale_items set refunded_qty = greatest(0, refunded_qty - $2), refunded_kopecks = greatest(0, refunded_kopecks - $3)
+        where id = $1 and sale_id = $4`,
+      [i.sale_item_id, Number(i.qty) || 0, Number(i.amount_kopecks) || 0, r.sale_id],
+    );
+  }
+  await db.query('update bl.pos_sales set refunded_kopecks = greatest(0, refunded_kopecks - $2), updated_at = $3 where id = $1', [r.sale_id, amount, at]);
+  // Склад: возврат на склад этого возврата — обратно (списание с причиной).
+  const { rows: back } = await db.query(
+    "select product_id, qty::text as qty, cost_kopecks, order_item_id from bl.stock_movements where kind = 'return' and refund_id = $1",
+    [r.id],
+  );
+  for (const m of back) {
+    await insertMovement(db, {
+      productId: m.product_id,
+      kind: 'writeoff',
+      qtyMilli: -toMilli(m.qty),
+      cost: -Number(m.cost_kopecks),
+      orderItemId: m.order_item_id,
+      refundId: r.id,
+      reason: 'refund_canceled',
+      at,
+    });
+  }
+  await db.query('update bl.pos_refunds set canceled_at = $2, cancel_reason = $3 where id = $1', [r.id, at, why]);
+  const packages = items.filter((i) => isUuid(i.sale_package_id));
+  await deps.audit.appendAudit(db, {
+    action: 'pos.refund_canceled',
+    objectType: 'pos_sale',
+    objectId: r.sale_id,
+    reason: why,
+    data: { sale_id: r.sale_id, pos_refund_id: r.id, refund_id: r.refund_id, amount_kopecks: amount, items: items.length - packages.length, packages: packages.length },
+    actorType: 'system',
+  });
+  await deps.alarms.raise(db, r.club_id, {
+    type: 'pos_refund_canceled',
+    level: 'critical',
+    data: { sale_id: r.sale_id, pos_refund_id: r.id, refund_id: r.refund_id, amount_kopecks: amount },
+    dedupeKey: `pos_refund:${r.id}`,
+    text: (`Возврат ${rub(amount)} на кассе отменён ЮKassa — деньги гостю не вернулись, верните вручную` +
+      (packages.length > 0 ? '; минуты пакета часов отозваны — начислите гостю заново' : '')).slice(0, 900),
+  });
+  await publishClub(db, deps, r.club_id, 'pos_sale', { sale_id: r.sale_id, status: 'completed', refund_canceled: r.id });
+  deps.log?.warn?.('pos_refund_canceled', { sale_id: r.sale_id, pos_refund_id: r.id, amount_kopecks: amount });
+  return { result: 'canceled', pos_refund_id: r.id };
 }
 
 async function refundView(db, r) {

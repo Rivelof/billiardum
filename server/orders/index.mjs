@@ -8,7 +8,7 @@
 
 import { withContext as storeWithContext } from '../lib/store.mjs';
 import { resolveDeps } from './deps.mjs';
-import { onPaymentConfirmed, settleSale } from './pos.mjs';
+import { onPaymentConfirmed, onRefundCanceled, settleSale } from './pos.mjs';
 
 const TICK_MS = 10_000;
 let state = null;
@@ -39,6 +39,10 @@ export async function init(ctx) {
   const unsubscribe = [
     deps.outbox.subscribe?.('payment.confirmed', handler, { name: 'pos.settle' }),
     deps.outbox.subscribe?.('payment.canceled', handler, { name: 'pos.cancel' }),
+    // Ревью денег п. 4: ЮKassa отменила возврат — откатить учёт возврата продажи кассы.
+    deps.outbox.subscribe?.('payment.refund_canceled', (payload, { db, log } = {}) => onRefundCanceled(db, log ? { ...deps, log } : deps, payload), {
+      name: 'pos.refund_canceled',
+    }),
   ];
   let running = null;
   const timer = setInterval(() => {

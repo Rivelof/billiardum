@@ -48,6 +48,10 @@ export const newKey = () => randomUUID();
 /** Прокси перед эмулятором: confirmation.type = qr (контракт M2 §5) поверх redirect эмулятора. */
 async function startQrProxy(emuBase) {
   const qrIds = new Set();
+  // Сбой «ЮKassa выполнила, ответ потерян»: следующие count запросов на path уходят в эмулятор, а
+  // клиенту — 503 (retryable). created — id объектов, созданных через прокси (POST), по путям.
+  const faults = { loseResponse: null };
+  const created = new Map();
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -68,6 +72,11 @@ async function startQrProxy(emuBase) {
     let text = await r.text();
     try {
       const json = JSON.parse(text);
+      if (req.method === 'POST' && json?.id && r.status < 300) {
+        const list = created.get(req.url) ?? new Set();
+        list.add(json.id);
+        created.set(req.url, list);
+      }
       if (qr && json?.id) qrIds.add(json.id);
       const id = json?.id ?? null;
       if (id && qrIds.has(id) && json.confirmation) {
@@ -77,11 +86,18 @@ async function startQrProxy(emuBase) {
     } catch {
       // не JSON — как есть
     }
+    const lose = faults.loseResponse;
+    if (lose && lose.count > 0 && req.method === 'POST' && req.url === lose.path) {
+      lose.count -= 1;
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', code: 'internal_server_error', description: 'proxy: ответ потерян' }));
+      return;
+    }
     res.writeHead(r.status, { 'content-type': 'application/json' });
     res.end(text);
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  return { server, base: `http://127.0.0.1:${server.address().port}` };
+  return { server, base: `http://127.0.0.1:${server.address().port}`, faults, created };
 }
 
 export async function setup() {
@@ -121,8 +137,8 @@ export async function setup() {
     },
   };
   const shiftsApi = {
-    async currentShift(client, clubId) {
-      const { rows } = await client.query('select * from bl.shifts where club_id = $1 and closed_at is null', [clubId]);
+    async currentShift(client, clubId, { forUpdate = false } = {}) {
+      const { rows } = await client.query(`select * from bl.shifts where club_id = $1 and closed_at is null ${forUpdate ? 'for update' : ''}`, [clubId]);
       return rows[0] ?? null;
     },
   };
@@ -254,6 +270,14 @@ export async function setup() {
         [CLUB_A, q[0].id, resourceId, userId, minutes, amount],
       );
       return rows[0].id;
+    },
+    /** Следующие count POST на path (например /v3/refunds) выполнятся в эмуляторе, а ответ — 503. */
+    loseResponses(path, count = 1) {
+      proxy.faults.loseResponse = { path, count };
+    },
+    /** id объектов, созданных в ЮKassa через прокси по пути (например /v3/refunds). */
+    createdAt(path) {
+      return [...(proxy.created.get(path) ?? [])];
     },
     async emuSucceed(providerId) {
       const r = await fetch(`${emuBase}/__emu/payments/${providerId}/succeed`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
