@@ -352,3 +352,50 @@ describe('касса: поиск гостя — лимит и тревога о 
   });
 });
 
+
+describe('касса: автовозврат money после локальной отмены платежа бара (late.mjs)', { skip: SKIP }, () => {
+  it('payment.refunded с session_id null по отменённой продаже — pos пропускает: продажа, склад и возвраты кассы не меняются', async () => {
+    const stock0 = await h.stock(P.water);
+    const res = await sale({ items: [{ product_id: P.water, qty: 2 }], method: 'sbp', customer_phone: '+79990000077' });
+    assert.equal(res.status, 201, JSON.stringify(res.json));
+    const { sale_id: saleId, payment_id: paymentId } = res.json;
+    // Отмена только у нас (ЮKassa о ней не знает), как при not_found_at_provider; продажа отменена тиком pos.
+    await h.q("update bl.payments set status = 'canceled', cancellation_reason = 'expired_on_confirmation', updated_at = now() where id = $1", [paymentId]);
+    await h.tick();
+    const [canceled] = await h.q('select * from bl.pos_sales where id = $1', [saleId]);
+    assert.equal(canceled.status, 'canceled');
+    const stock1 = await h.stock(P.water);
+    const moves = async () => (await h.q('select count(*)::int as n from bl.stock_movements'))[0].n;
+    const moves1 = await moves();
+    // Гость всё же оплатил: вебхук → money late.mjs — возврат late-<payment>, outbox payment.refunded (session_id null).
+    await h.emuSucceed(await h.providerId(paymentId));
+    const [f] = await waitFor(async () => {
+      const rows = await h.q("select * from bl.refunds where payment_id = $1 and idempotence_key = 'late-' || $1::text", [paymentId]);
+      return rows.length > 0 ? rows : null;
+    });
+    assert.equal(Number(f.amount_kopecks), 18000);
+    const ev = (await h.outboxEvents('payment.refunded')).filter((e) => e.payload.payment_id === paymentId);
+    assert.equal(ev.length, 1);
+    assert.equal(ev[0].payload.session_id, null);
+    // pos на payment.refunded не подписан (возвраты кассы делает сам через refund money): событие
+    // его не касается. Обработчик оплат pos на такую нагрузку отвечает ignored и ничего не пишет.
+    assert.ok(!h.app.ctx.outbox.topics.includes('payment.refunded'), 'подписчика pos на payment.refunded нет');
+    const { onPaymentConfirmed } = await import('../../pos.mjs');
+    const { withContext } = await import('../../../lib/store.mjs');
+    const { resolveDeps } = await import('../../deps.mjs');
+    const deps = await resolveDeps(h.app.ctx);
+    const r = await withContext(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) => onPaymentConfirmed(db, deps, ev[0].payload));
+    assert.deepEqual(r, { result: 'ignored' });
+    await h.tick();
+    // pos ничего не трогал: продажа отменена и без возвратов кассы, склад не возвращён второй раз.
+    const [after] = await h.q('select * from bl.pos_sales where id = $1', [saleId]);
+    assert.deepEqual({ st: after.status, r: Number(after.refunded_kopecks), c: after.canceled_at?.toISOString() }, { st: 'canceled', r: 0, c: canceled.canceled_at.toISOString() });
+    assert.equal((await h.q('select count(*)::int as n from bl.pos_refunds where sale_id = $1', [saleId]))[0].n, 0);
+    assert.equal((await h.q('select count(*)::int as n from bl.refunds where payment_id = $1', [paymentId]))[0].n, 1, 'один возврат — у money');
+    assert.equal(await h.stock(P.water), stock1);
+    assert.equal(await moves(), moves1);
+    assert.equal(stock1, stock0, 'СБП-продажа до оплаты склад не списывала');
+    const [p] = await h.q('select status from bl.payments where id = $1', [paymentId]);
+    assert.equal(p.status, 'canceled');
+  });
+});
