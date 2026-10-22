@@ -92,6 +92,35 @@ export const ALARM_LEVELS = {
   receipt_fd_conflict: 'critical',
 };
 
+/**
+ * Объект склейки по умолчанию: тревоги этих типов по разным чекам, платежам, продажам —
+ * отдельные (ключ — поле data). Остальные склеиваются по типу и столу.
+ */
+export const DEDUPE_FIELDS = {
+  receipt_unknown: 'receipt_id',
+  receipt_failed: 'receipt_id',
+  receipt_fd_conflict: 'receipt_id',
+  receipt_double: 'receipt_id',
+  payment_mismatch: 'payment_id',
+  refund_mismatch: 'refund_id',
+  unlimited_overrun: 'session_id',
+  bar_double_payment: 'sale_id',
+  bar_late_payment: 'sale_id',
+  cash_discrepancy: 'shift_id',
+  kkt_shift_failed: 'op_id',
+};
+
+/** Ключ склейки: явный dedupeKey или поле data по DEDUPE_FIELDS; null — тип + стол. */
+export function dedupeKeyFor(type, data, dedupeKey) {
+  if (dedupeKey !== undefined && dedupeKey !== null) {
+    if (typeof dedupeKey !== 'string' || dedupeKey.length < 1 || dedupeKey.length > 200) throw new Error('alarms.raise: dedupeKey');
+    return dedupeKey;
+  }
+  const field = DEDUPE_FIELDS[type];
+  const v = field ? data?.[field] : undefined;
+  return typeof v === 'string' && v.length > 0 && v.length <= 150 ? `${field.replace(/_id$/, '')}:${v}` : null;
+}
+
 /** Типы ручных действий персонала: уведомление владельцу при каждом подъёме. */
 export const MANUAL_TYPES = new Set(['service_light', 'manual_action']);
 
@@ -125,32 +154,35 @@ export function alarmJson(row) {
  * @param {import('pg').ClientBase} db транзакция в контексте клуба clubId
  * @param {string} clubId
  * @param {{ type: string, level?: 'critical'|'important'|'info', resourceId?: string|null, data?: object,
- *           manual?: boolean, text?: string }} alarm
+ *           manual?: boolean, text?: string, dedupeKey?: string }} alarm
+ *   dedupeKey — объект тревоги для склейки повторов (по умолчанию DEDUPE_FIELDS: receipt:<id>,
+ *   payment:<id> …; иначе тип + стол).
  *   level — по умолчанию из ALARM_LEVELS (иначе important); manual — ручное действие персонала
  *   (по умолчанию для service_light и manual_action): владелец и управляющий получают уведомление
  *   при каждом вызове, даже если тревога этого типа по столу уже открыта; text — текст уведомления
  *   вместо стандартного (без персональных данных: телефоны вырезаются).
  * @returns {Promise<{ id: string, created: boolean, count: number, notified: boolean }>}
  */
-export async function raise(db, clubId, { type, level, resourceId = null, data = {}, manual, text = null }) {
+export async function raise(db, clubId, { type, level, resourceId = null, data = {}, manual, text = null, dedupeKey }) {
   if (typeof clubId !== 'string' || !UUID.test(clubId)) throw new Error('alarms.raise: clubId');
   if (typeof type !== 'string' || !TYPE.test(type)) throw new Error('alarms.raise: type');
   level ??= ALARM_LEVELS[type] ?? 'important';
   if (!LEVELS.includes(level)) throw new Error('alarms.raise: level');
   if (text !== null && (typeof text !== 'string' || text.trim() === '')) throw new Error('alarms.raise: text');
   const isManual = manual ?? MANUAL_TYPES.has(type);
+  const key = dedupeKeyFor(type, data, dedupeKey);
   if (resourceId !== null && !UUID.test(resourceId)) throw new Error('alarms.raise: resourceId');
   if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new Error('alarms.raise: data');
   const ctxClub = (await db.query('select bl.ctx_club_id() as club_id')).rows[0].club_id;
   if (ctxClub !== clubId) throw new Error('alarms.raise: транзакция не в контексте клуба тревоги');
 
   const { rows } = await db.query(
-    `insert into bl.alarms (club_id, type, level, resource_id, data)
-     values ($1, $2, $3, $4, $5::jsonb)
-     on conflict (club_id, type, coalesce(resource_id, '00000000-0000-0000-0000-000000000000'::uuid)) where state = 'open'
+    `insert into bl.alarms (club_id, type, level, resource_id, data, dedupe_key)
+     values ($1, $2, $3, $4, $5::jsonb, $6)
+     on conflict (club_id, type, coalesce(resource_id, '00000000-0000-0000-0000-000000000000'::uuid), coalesce(dedupe_key, '')) where state = 'open'
      do update set count = bl.alarms.count + 1, last_raised_at = now(), data = excluded.data
      returning *, (xmax = 0) as created, now() as db_now`,
-    [clubId, type, level, resourceId, JSON.stringify(data)],
+    [clubId, type, level, resourceId, JSON.stringify(data), key],
   );
   const alarm = rows[0];
   if (resourceId) {

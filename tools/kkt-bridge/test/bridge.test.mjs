@@ -386,6 +386,9 @@ describe('мост ККТ: процесс', () => {
       status_poll_ms: 600000, reconnect_min_ms: 50, reconnect_max_ms: 200,
     }));
     const child = spawn(process.execPath, [fileURLToPath(new URL('../index.mjs', import.meta.url)), '--config', join(cfgDir, 'kkt-bridge.json')], { stdio: 'pipe' });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
     let exited = null;
     child.on('exit', (code) => {
       exited = code;
@@ -399,7 +402,9 @@ describe('мост ККТ: процесс', () => {
       assert.equal(exited, null, 'процесс моста не завершился');
       const second = new WebSocketServer({ port, host: '127.0.0.1' });
       onConn(second);
-      await waitFor(() => hellos.length === 2, 5000);
+      await waitFor(() => hellos.length === 2, 5000).catch((err) => {
+        throw new Error(`${err.message}: ${out.slice(-1500)}`);
+      });
       assert.equal(hellos[1].srv, second);
       assert.equal(exited, null);
       for (const c of second.clients) c.terminate();

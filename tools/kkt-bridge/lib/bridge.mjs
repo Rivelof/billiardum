@@ -23,6 +23,8 @@ export const PROTOCOL = 1;
 /** Без сообщений от сервера столько интервалов ping — соединение считается мёртвым. */
 const SILENCE_PINGS = 3;
 const MAX_MESSAGE = 256 * 1024;
+/** Подключение не установилось за столько — повтор. */
+const OPEN_TIMEOUT_MS = 15_000;
 
 const JOB_KINDS = new Set(['receipt', 'open_shift', 'close_shift']);
 const UUID_LIKE = /^[0-9A-Za-z-]{8,64}$/;
@@ -127,6 +129,7 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
     counters.connects += 1;
     sock.onopen = () => {
       if (ws !== sock) return;
+      clearTimeout(openTimer);
       L.info('bridge_connected', { url: new URL(config.serverUrl).host });
       send({ type: 'hello', v: PROTOCOL, name: config.name, version: VERSION, atol_api: config.atolApi });
       armSilence();
@@ -145,21 +148,34 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
       }
       onMessage(msg);
     };
-    sock.onerror = (ev) => {
-      if (ws !== sock) return;
-      L.warn('bridge_ws_error', { error: ev?.message ?? ev?.error?.message ?? 'error' });
-    };
-    sock.onclose = (ev) => {
+    // Соединение потеряно: ошибка (сервер недоступен — клиент Node может не прислать close),
+    // закрытие или зависшее подключение. Обрабатывается один раз на сокет; переподключение — всегда.
+    const lost = (code, reason) => {
       if (ws !== sock) return;
       ws = null;
       welcomed = false;
       clearTimeout(silenceTimer);
-      const code = ev?.code ?? 0;
+      clearTimeout(openTimer);
       // 4001 — мост отозван, 4003 — токен не принят: повторять редко, ждать нового токена.
       if (code === 4001 || code === 4003) delay = config.reconnectMaxMs;
-      L.warn('bridge_disconnected', { code, reason: String(ev?.reason ?? '').slice(0, 60) });
+      L.warn('bridge_disconnected', { code, reason: String(reason ?? '').slice(0, 60) });
+      try {
+        sock.close();
+      } catch {
+        /* уже закрыт */
+      }
       scheduleReconnect();
     };
+    const openTimer = setTimeout(() => {
+      if (sock.readyState !== 1) lost(1006, 'connect timeout');
+    }, OPEN_TIMEOUT_MS);
+    openTimer.unref?.();
+    sock.onerror = (ev) => {
+      if (ws !== sock) return;
+      L.warn('bridge_ws_error', { error: ev?.message ?? ev?.error?.message ?? 'error' });
+      if (sock.readyState !== 1) lost(1006, 'error');
+    };
+    sock.onclose = (ev) => lost(ev?.code ?? 1006, ev?.reason);
   }
 
   function onMessage(msg) {

@@ -175,6 +175,29 @@ describe('тревоги', () => {
     assert.equal((await inClub((db) => raise(db, CLUB_A, { type: 'lamp_fault', level: 'important', resourceId: RESOURCE_2 }))).notified, false);
   });
 
+  it('тревоги по разным чекам не склеиваются: два receipt_unknown — два уведомления; повтор по тому же чеку — счётчик', async () => {
+    const r1 = randomUUID();
+    const r2 = randomUUID();
+    const notes = async (id) =>
+      (await t.admin.query("select count(*)::int as n from bl.notifications where data->>'alarm_id' = $1 and user_id = $2", [id, OWNER_A])).rows[0].n;
+    const a = await inClub((db) => raise(db, CLUB_A, { type: 'receipt_unknown', data: { receipt_id: r1 } }));
+    const b = await inClub((db) => raise(db, CLUB_A, { type: 'receipt_unknown', data: { receipt_id: r2 } }));
+    assert.notEqual(a.id, b.id);
+    assert.deepEqual([a.created, b.created, await notes(a.id), await notes(b.id)], [true, true, 1, 1]);
+    const again = await inClub((db) => raise(db, CLUB_A, { type: 'receipt_unknown', data: { receipt_id: r1 } }));
+    assert.deepEqual([again.id, again.created, again.count], [a.id, false, 2]);
+    // Явный ключ и тип без объекта — склейка по типу и столу.
+    const x = await inClub((db) => raise(db, CLUB_A, { type: 'kkt_shift_failed', dedupeKey: 'shift:1', data: {} }));
+    const y = await inClub((db) => raise(db, CLUB_A, { type: 'kkt_shift_failed', dedupeKey: 'shift:2', data: {} }));
+    assert.notEqual(x.id, y.id);
+    const c1 = await inClub((db) => raise(db, CLUB_A, { type: 'cash_discrepancy', data: { shift_id: randomUUID() } }));
+    const c2 = await inClub((db) => raise(db, CLUB_A, { type: 'cash_discrepancy', data: { shift_id: randomUUID() } }));
+    assert.notEqual(c1.id, c2.id, 'расхождения разных смен — отдельные');
+    const z1 = await inClub((db) => raise(db, CLUB_A, { type: 'service_light_threshold', data: { minutes: 70 } }));
+    const z2 = await inClub((db) => raise(db, CLUB_A, { type: 'service_light_threshold', data: { minutes: 80 } }));
+    assert.equal(z1.id, z2.id, 'без объекта — по типу и столу');
+  });
+
   it('raise вне контекста клуба тревоги — ошибка', async () => {
     await assert.rejects(withContext(t.pool, { clubId: null, actorType: 'system' }, (db) => raise(db, CLUB_A, { type: 'x', level: 'info' })));
   });
