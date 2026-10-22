@@ -10,10 +10,10 @@ import { DeclineDialog } from './DeclineDialog.jsx';
 import { TableDialog } from './TableDialog.jsx';
 import { api, streamClub } from '../lib/api.js';
 import { mergeHall } from '../lib/hall.js';
+import { expiresOf, minutesLeft } from '../lib/reception.js';
 import { audioState, chime, unlockAudio } from '../lib/sound.js';
 import { agoWords, minutesShort, minutesWords } from '../lib/words.js';
 
-const REQUEST_TTL = 15 * 60 * 1000; // заявка живёт 15 минут (контракт §5)
 const HIGHLIGHT_MS = 15000;
 
 /**
@@ -103,7 +103,6 @@ export function Reception({ ctx }) {
   }, []);
 
   // Срок заявки — expires_at от сервера (backend-money), иначе 15 минут от создания
-  const expiresOf = (r) => (r.expires_at ? Date.parse(r.expires_at) : Date.parse(r.created_at) + REQUEST_TTL);
   const visible = (requests ?? []).filter((r) => expiresOf(r) > now);
 
   const tools = (
@@ -159,7 +158,7 @@ export function Reception({ ctx }) {
             <ul class="queue__list">
               {visible.map((r) => {
                 const left = expiresOf(r) - now;
-                const leftMin = Math.max(1, Math.ceil(left / 60000));
+                const leftMin = minutesLeft(r, Math.max(now, Date.now()));
                 return (
                   <li key={r.id} class={`req${fresh.has(r.id) ? ' req--new' : ''}`}>
                     <p class="req__title">

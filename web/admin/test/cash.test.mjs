@@ -49,3 +49,16 @@ test('экранная клавиатура', () => {
   assert.equal(groupDigits('12500'), '12 500');
   assert.equal(groupDigits('1000000'), '1 000 000');
 });
+
+test('«сгорит через N минут»: от текущего момента и не больше срока заявки', async () => {
+  const { minutesLeft } = await import('../src/lib/reception.js');
+  const created = Date.parse('2026-10-22T02:00:00Z');
+  const r = { created_at: new Date(created).toISOString(), expires_at: new Date(created + 15 * 60_000).toISOString() };
+  assert.equal(minutesLeft(r, created), 15, 'только что созданная — 15, не 16');
+  assert.equal(minutesLeft(r, created - 1500), 15, 'часы планшета отстают от сервера');
+  assert.equal(minutesLeft(r, created + 30_000), 15);
+  assert.equal(minutesLeft(r, created + 61_000), 14);
+  assert.equal(minutesLeft(r, created + 14 * 60_000 + 59_000), 1);
+  assert.equal(minutesLeft(r, created + 20 * 60_000), 1, 'не меньше минуты, пока заявка на экране');
+  assert.equal(minutesLeft({ created_at: r.created_at }, created - 5000), 15, 'без expires_at — 15 минут от создания');
+});
