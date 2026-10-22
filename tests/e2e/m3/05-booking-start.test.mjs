@@ -11,7 +11,10 @@
 //    POST /api/quotes/{id}/pay → игра до конца брони, одна сессия, одна команда session.start.
 // C. Опоздание без предоплаты (№113): бронь confirmed без денег, гость пришёл через ~1,5 минуты
 //    после начала — платит только с прихода до конца брони (меньше цены брони), игра до конца брони.
-// Длится около 8 минут.
+// D. Отказ ЮKassa (400) на чек зачёта при старте по брони: игра идёт, чек failed, тревога с
+//    действием «Повторить»; повтор POST /api/receipts/{id}/retry — ресепшн 403, без причины 400,
+//    управляющий с причиной — чек ушёл, журнал manual.receipt_retry (Д2).
+// Длится около 12 минут.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -19,9 +22,11 @@ import {
   adminClient,
   api,
   auditOf,
+  CLUB_A,
   cancelLeftovers,
   cmdsWithAudit,
   createBooking,
+  emu,
   emuReceipts,
   emuSucceed,
   FAST_BOOKING,
@@ -41,6 +46,7 @@ import {
   staff,
   tableCode,
   waitBooking,
+  waitFor,
   waitSettlementSent,
   waitSim,
   waitTableFree,
@@ -103,7 +109,7 @@ test(`A: старт по брони через QR без повторной оп
   const endGap = (new Date(s.paid_until) - new Date(booking.ends_at)) / 1000;
   t.diagnostic(`сессия до ${hhmm(s.paid_until)}, конец брони ${hhmm(booking.ends_at)} (разница ${endGap} с), booking_id ${s.booking_id?.slice(0, 8)}`);
   assert.equal(s.booking_id, b.id);
-  assert.ok(endGap >= 0 && endGap < 60, 'игра до конца брони');
+  assert.equal(endGap, 0, 'игра кончается ровно в конце брони (№123)');
   const again = await ok(api('POST', `/api/bookings/${b.id}/start`, { token: guest.token, body: { code: tableCode(T) } }));
   assert.equal(again.session_id, st.session_id, 'повтор — та же сессия');
 
@@ -142,7 +148,7 @@ test(`B: ранний приход за 20 минут — доплата тол�
   const ph = await perHourNow();
   const tArrive = Date.now();
   const st = await ok(api('POST', `/api/bookings/${b.id}/start`, { token: guest.token, body: { code: tableCode(T) } }));
-  const earlyMin = Math.ceil((startsAt.getTime() - tArrive) / MIN);
+  const earlyMin = Math.max(1, Math.floor((startsAt.getTime() - tArrive) / MIN)); // №123: минуты вниз
   t.diagnostic(`бронь ${hhmm(startsAt)}–${hhmm(booking.ends_at)} (${booking.paid_kopecks} коп. внесено); пришёл в ${hhmm(tArrive)} — раньше на ~${earlyMin} мин: ${st.status}, к оплате ${st.amount_kopecks} коп., котировка ${JSON.stringify(st.quote)}`);
   assert.equal(st.status, 'payment_required');
   assert.ok(Math.abs(st.amount_kopecks - approxPrice(earlyMin, ph)) <= approxPrice(1, ph) + 100, `доплата ≈ цене ${earlyMin} мин`);
@@ -155,7 +161,7 @@ test(`B: ранний приход за 20 минут — доплата тол�
   const s = await session(guest.token, started.session_id);
   const endGap = (new Date(s.paid_until) - new Date(booking.ends_at)) / 1000;
   t.diagnostic(`после доплаты: сессия до ${hhmm(s.paid_until)} (конец брони ${hhmm(booking.ends_at)}, разница ${endGap} с), контроллер ${on.state.mode}`);
-  assert.ok(endGap >= 0 && endGap < 60);
+  assert.equal(endGap, 0, 'ровно в конце брони (№123)');
   const pays = await paymentsOfUser(guest.user.id);
   t.diagnostic(`платежи гостя: ${pays.map((p) => `${p.kind}/${p.method}/${p.status}/${p.amount_kopecks}`).join(', ')}`);
   assert.equal(pays.length, 2);
@@ -192,12 +198,12 @@ test(`C: опоздание без предоплаты — оплата тол�
   const ph = await perHourNow();
   const tArrive = Date.now();
   const st = await ok(api('POST', `/api/bookings/${b.id}/start`, { token: guest.token, body: { code: tableCode(T) } }));
-  const leftMin = Math.ceil((new Date(b.ends_at) - tArrive) / MIN);
+  const leftMin = Math.max(1, Math.floor((new Date(b.ends_at) - tArrive) / MIN)); // №123: минуты вниз
   t.diagnostic(`пришёл в ${hhmm(tArrive)} (опоздал на ${Math.round((tArrive - startsAt) / 1000)} с): ${st.status}, к оплате ${st.amount_kopecks} коп. за ~${leftMin} мин (цена брони ${b.amount_kopecks}); котировка ${JSON.stringify(st.quote)}`);
   assert.equal(st.status, 'payment_required');
   assert.ok(st.amount_kopecks < b.amount_kopecks, 'меньше цены всей брони');
   assert.ok(Math.abs(st.amount_kopecks - approxPrice(leftMin, ph)) <= approxPrice(1, ph) + 100, `≈ цене ${leftMin} мин с прихода`);
-  assert.ok(st.quote.minutes <= leftMin && st.quote.minutes >= leftMin - 1);
+  assert.equal(st.quote.minutes, leftMin, 'минуты с прихода — вниз (№123)');
   const pr = await ok(pay(guest.token, st.quote.quote_id));
   emuSucceed(providerId(pr));
   const started = await waitBooking(guest.token, b.id, (x) => x.status === 'started' && x.session_id, { timeoutMs: 20_000, what: 'бронь started' });
@@ -205,8 +211,50 @@ test(`C: опоздание без предоплаты — оплата тол�
   const s = await session(guest.token, started.session_id);
   const endGap = (new Date(s.paid_until) - new Date(b.ends_at)) / 1000;
   t.diagnostic(`игра до ${hhmm(s.paid_until)}, конец брони ${hhmm(b.ends_at)} (разница ${endGap} с)`);
-  assert.ok(endGap >= 0 && endGap < 60);
+  assert.equal(endGap, 0, 'ровно в конце брони (№123)');
   await stopAndComplete(guest, started.session_id, b.id);
   const { missing } = await cmdsWithAudit(db, T, since);
   assert.deepEqual(missing, []);
+});
+
+test(`D: отказ ЮKassa на чек зачёта (4xx) — повтор управляющим с причиной, Д2 (стол ${T})`, { timeout: 8 * MIN }, async (t) => {
+  await waitTableFree(T);
+  await patchClubSettings(db, { ...FAST_BOOKING, booking_prepayment: 'full' });
+  const guest = await newGuest();
+  const startsAt = slotAfter(10_000);
+  const b = await ok(createBooking(guest.token, { table: T, startsAt, minutes: 15 }), 201);
+  const { booking, pid } = await payBooking(guest, b.id);
+  await sleepUntil(new Date(startsAt.getTime() - 4.5 * MIN));
+  emu('/__emu/config', { post: true, body: { fail_next: { count: 1, status: 400 } } });
+  let st;
+  try {
+    st = await ok(api('POST', `/api/bookings/${b.id}/start`, { token: guest.token, body: { code: tableCode(T) } }));
+    await waitSim(T, (s) => s.state.relay === true && s.state.session_id === st.session_id, { timeoutMs: 5000, what: 'свет по брони' });
+  } finally {
+    emu('/__emu/config', { post: true, body: { fail_next: { count: 0 } } });
+  }
+  const failed = await waitFor(async () => (await receiptsOf(db, booking.payment_id)).find((r) => r.settles_payment_id && r.status === 'failed') ?? null, {
+    timeoutMs: 30_000,
+    what: 'чек зачёта failed после 400',
+  });
+  const { rows: al } = await db.query("select level, data from bl.alarms where club_id = $1 and type = 'settlement_receipt_failed' and data->>'receipt_id' = $2", [CLUB_A, failed.id]);
+  t.diagnostic(`свет есть, игра идёт; чек зачёта ${failed.id.slice(0, 8)} → ${failed.status}; тревога ${JSON.stringify(al.map((a) => [a.level, a.data.action_id, a.data.action_url]))}`);
+  assert.equal(al.length, 1);
+  assert.equal(al[0].data.action_id, 'retry');
+  const rec = await staff('reception');
+  const man = await staff('manager');
+  const byRec = await api('POST', `/api/receipts/${failed.id}/retry`, { token: rec.token, idem: true, body: { reason: 'тест e2e' } });
+  const noReason = await api('POST', `/api/receipts/${failed.id}/retry`, { token: man.token, idem: true, body: {} });
+  t.diagnostic(`повтор ресепшеном: ${byRec.status}; без причины: ${noReason.status} ${noReason.text}`);
+  assert.equal(byRec.status, 403);
+  assert.equal(noReason.status, 400);
+  const r = await ok(api('POST', `/api/receipts/${failed.id}/retry`, { token: man.token, idem: true, body: { reason: 'ЮKassa отказала, повтор (тест e2e)' } }));
+  const sent = await waitSettlementSent(db, booking.payment_id);
+  const er = emuReceipts(pid);
+  const au = (await auditOf(db, failed.id)).filter((a) => a.action === 'manual.receipt_retry');
+  t.diagnostic(`повтор: ${JSON.stringify(r)}; чек ${sent.map((x) => `${x.status}/${x.provider_receipt_id}`).join(', ')}; в ЮKassa чеков зачёта ${er.length}; журнал manual.receipt_retry: ${au.length} («${au[0]?.reason}»)`);
+  assert.equal(r.retried, true);
+  assert.equal(er.length, 1);
+  assert.equal(au.length, 1);
+  await stopAndComplete(guest, st.session_id, b.id);
 });

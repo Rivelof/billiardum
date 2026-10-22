@@ -67,8 +67,11 @@ test('T21 на живом стеке: MAX не доставил напомина
   const tgId = 9_000_000_000 + randomInt(1e9);
   await db.query('update bl.users set max_user_id = $2, telegram_user_id = $3 where id = $1', [guest.user.id, maxId, tgId]);
   const me = await ok(api('PATCH', '/api/me', { token: guest.token, body: { notify_channel: 'max', channels_order: ['max', 'telegram'] } }));
-  t.diagnostic(`гость: notify_channel ${me.user.notify_channel}, channels_order ${JSON.stringify(me.user.channels_order)}, каналы ${JSON.stringify(me.user.channels ?? null)}`);
+  t.diagnostic(`гость: notify_channel ${me.user.notify_channel}, channels_order ${JSON.stringify(me.user.channels_order)}, каналы ${JSON.stringify(me.user.channels ?? null)}, можно предложить ${JSON.stringify(me.user.channels_available ?? null)}`);
   assert.deepEqual(me.user.channels_order, ['max', 'telegram']);
+  // №126: ненастроенный на сервере канал гостю не показывается подключённым и не предлагается.
+  assert.equal(me.user.channels.max, false);
+  assert.ok(Array.isArray(me.user.channels_available) && !me.user.channels_available.includes('max'));
 
   await patchClubSettings(db, { ...FAST_BOOKING, booking_prepayment: 'full' });
   const startsAt = slotAfter(15 * MIN + 20_000);

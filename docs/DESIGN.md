@@ -77,8 +77,8 @@
 | `--lamp` | `#E39A2B` |
 | `--lamp-tint` | `#F8E7C8` |
 | `--brass` | `#9A6B2C` |
-| `--ball-red` | `#B83A2A` |
-| `--free` | `#1F7A4B` |
+| `--ball-red` | `#B03524` |
+| `--free` | `#1A6E43` |
 | `--on-cloth` | `#FFFBF4` |
 | `--on-lamp` | `#1E150E` |
 

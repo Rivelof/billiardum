@@ -14,7 +14,9 @@
 // 5. Касса (своя смена): пакет незарегистрированному телефону — 409 guest_not_found, учётка не
 //    создана; гостю приложения наличными — чек ККТ с позицией full_prepayment, минуты начислены;
 //    возврат этого пакета в возврате продажи — партия отозвана, чек возврата ККТ; пакет, из
-//    которого играли, — 409 package_used. Смена закрывается без расхождения.
+//    которого играли, — 409 package_used. Смена закрывается без расхождения. Отчёт смены: возврат
+//    пакета — одна строка ручных действий (деньги склеены, linked); поздняя отмена брони гостем
+//    (удержание 30 %, возврат 70 %) — в действиях гостей, не в ручных.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -24,9 +26,11 @@ import {
   auditOf,
   CLUB_A,
   closeMyShift,
+  createBooking,
   emu,
   emuPayment,
   emuReceipts,
+  FAST_BOOKING,
   guestPhone,
   MIN,
   newGuest,
@@ -34,9 +38,14 @@ import {
   OWNER_ID,
   ok,
   openMyShift,
+  patchClubSettings,
+  payBooking,
   posSale,
   RES,
+  restoreForfeitPercent,
   session,
+  setForfeitPercent,
+  slotAfter,
   staff,
   waitFor,
   waitReceiptsPrinted,
@@ -200,6 +209,10 @@ test('возврат пакета: тронутый — package_used; нетро
   const owner = await waitFor(async () => (await notificationsOf(db, OWNER_ID, { kind: 'alarm', since }))[0] ?? null, { timeoutMs: 10_000, what: 'тревога владельцу о возврате пакета' });
   t.diagnostic(`владельцу (${owner.level}): «${owner.text}»`);
   assert.ok(owner.text.includes('Ошибка продажи (тест e2e)'), 'в уведомлении владельцу — что сделано и причина');
+  assert.ok(owner.text.includes('600'), 'сумма возврата');
+  assert.ok(owner.text.includes(pkg.title), 'какой пакет');
+  assert.ok(!owner.text.includes(buyer.phone.slice(2)), 'телефон гостя — только маской');
+  assert.equal(owner.level, 'critical');
 });
 
 test('пакет на кассе: guest_not_found для незарегистрированного (№117), продажа наличными, возврат', { timeout: 6 * MIN }, async (t) => {
@@ -239,7 +252,34 @@ test('пакет на кассе: guest_not_found для незарегистр�
   assert.equal(used.status, 409);
   assert.equal(used.json.error, 'package_used');
 
+  // Поздняя отмена брони гостем в этой смене (удержание 30 %, 70 % возвращается) — действие гостя.
+  await patchClubSettings(db, { ...FAST_BOOKING, booking_prepayment: 'full' });
+  const g3 = await newGuest();
+  const bk = await ok(createBooking(g3.token, { table: T, startsAt: slotAfter(60 * MIN), minutes: 15 }), 201);
+  await payBooking(g3, bk.id);
+  await setForfeitPercent(db, 30);
+  let late;
+  try {
+    late = await ok(api('POST', `/api/bookings/${bk.id}/cancel`, { token: g3.token, body: {} }));
+  } finally {
+    await restoreForfeitPercent(db);
+  }
+  t.diagnostic(`поздняя отмена брони гостем: возврат ${late.refund_kopecks} коп. из ${bk.amount_kopecks}`);
+
   const closed = await closeMyShift({ rec, man, shiftId: shift.id });
   t.diagnostic(`смена закрыта: расхождение ${closed?.discrepancy_kopecks ?? closed?.shift?.discrepancy_kopecks}`);
+  const shiftId = shift.id;
   shift = null;
+  // Отчёт смены пишется после закрытия (report_sent_at).
+  const rep = await waitFor(async () => (await db.query('select report from bl.shifts where id = $1', [shiftId])).rows[0]?.report ?? null, { timeoutMs: 20_000, what: 'отчёт смены' });
+  const ma = rep.manual_actions;
+  assert.ok(ma, 'в отчёте смены есть ручные действия');
+  const pkgRows = ma.items.filter((i) => i.action === 'manual.package_refund');
+  t.diagnostic(`отчёт смены: ручных ${ma.count} ${JSON.stringify(ma.by_action)}; возврат пакета: ${JSON.stringify(pkgRows.map((i) => ({ reason: i.reason, linked: i.linked })))}; гостей ${ma.guests?.count} ${JSON.stringify(ma.guests?.by_action)}; автоматических ${ma.automatic?.count} ${JSON.stringify(ma.automatic?.by_action)}`);
+  assert.ok(pkgRows.length >= 1, 'возврат пакета в ручных');
+  assert.ok(pkgRows.every((i) => Array.isArray(i.linked) && i.linked.length >= 1), 'деньги возврата пакета склеены с ним (linked)');
+  assert.equal(ma.by_action['pos.refund'], undefined, 'возврат кассы пакета — не отдельной строкой');
+  assert.equal(ma.by_action['payment.refunded'], undefined, 'возврат денег — не отдельной строкой');
+  assert.ok((ma.guests?.by_action?.['payment.refunded'] ?? 0) >= 1, 'возврат при поздней отмене гостем — в действиях гостей');
+  assert.equal(ma.by_action['booking.cancel'], undefined);
 });

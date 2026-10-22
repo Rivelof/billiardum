@@ -153,6 +153,15 @@ test('содержимое сводки за сегодняшние рабочи
     assert.equal(d.revenue.net_kopecks, d.revenue.total_kopecks - d.revenue.refunds_kopecks);
     for (const r of al) assert.equal(d.alarms[r.level], r.n, r.level);
     assert.ok(d.manual_actions.count >= man[0].n, 'все manual.* в сводке');
+    // №125: действия системы — отдельно (automatic), не в «ручных».
+    const { rows: sys } = await db.query(
+      "select action, count(*)::int as n from bl.audit_log where club_id = $1 and created_at >= $2 and created_at < $3 and actor_type <> 'user' and action = 'payment.forfeited' group by action",
+      [CLUB_A, start, to],
+    );
+    t.diagnostic(`автоматические в сводке: ${JSON.stringify(d.manual_actions.automatic)}; системных payment.forfeited в журнале ${sys[0]?.n ?? 0}`);
+    assert.ok(d.manual_actions.automatic, 'есть раздел automatic');
+    assert.equal(d.manual_actions.by_action['payment.forfeited'], undefined, 'сгорание брони не в ручных');
+    if (sys.length) assert.equal(d.manual_actions.automatic.by_action['payment.forfeited'], sys[0].n);
   } finally {
     await db.query('rollback');
   }

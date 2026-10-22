@@ -239,7 +239,7 @@ export async function cmdsWithAudit(db, n, since) {
     ? await db.query("select data->>'cmd_id' as cmd_id from bl.audit_log where club_id = $1 and action = 'device.cmd' and data->>'cmd_id' = any($2::text[])", [CLUB_A, ids])
     : { rows: [] };
   const have = new Set(au.map((r) => r.cmd_id));
-  return { cmds, missing: cmds.filter((c) => !have.has(c.id) && c.status !== 'skipped') };
+  return { cmds, missing: cmds.filter((c) => !have.has(c.id) && !['skipped', 'queued', 'cancelled', 'superseded'].includes(c.status)) };
 }
 
 /** Записи журнала клуба по брони/объекту (id в object_id или в data). */

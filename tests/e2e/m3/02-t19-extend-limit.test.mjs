@@ -2,7 +2,8 @@
 //
 // Стол E2E_T19_TABLE (по умолчанию 4):
 // 1. Гость A играет 8 минут (СБП, свет). Гость B не может забронировать стол на время игры A
-//    (409 table_busy), бронирует ближайший слот после игры (предоплата) — начало S.
+//    (409 table_busy) и ближе 5 минут к её концу (409 booking_conflict, №123), бронирует слот
+//    позже (предоплата) — начало S.
 // 2. Сессия A: extend_limit_until = S − 5 мин (GET /api/sessions/{id}).
 // 3. Котировка продления на 60 минут — 409 booking_conflict; ровно до S − 5 — 200, в ответе
 //    extend_limit_until = S − 5; оплата → paid_until = S − 5 и в API, и в контроллере.
@@ -76,6 +77,13 @@ test(`T19: продление перед бронью ограничено «н�
   assert.equal(busy.json.error, 'table_busy');
 
   // Слот брони — так, чтобы до «начала − 5 минут» оставалось место продлить хотя бы на минуту.
+  // №123 (Д7): бронь ближе 5 минут к оплаченному концу игры — booking_conflict.
+  const near = slotAfter(new Date(s0.paid_until).getTime() - Date.now());
+  const nearR = await createBooking(B.token, { table: T, startsAt: near, minutes: 15 });
+  t.diagnostic(`бронь на ${hhmm(near)} (через ${Math.round((near - new Date(s0.paid_until)) / 1000)} с после конца игры): ${nearR.status} ${nearR.text}`);
+  assert.equal(nearR.status, 409);
+  assert.equal(nearR.json.error, 'booking_conflict');
+
   const S = slotAfter(new Date(s0.paid_until).getTime() - Date.now() + Math.max(g[0].grace_ms, 5 * MIN) + 90_000);
   const created = await ok(createBooking(B.token, { table: T, startsAt: S, minutes: 30 }), 201);
   const { booking } = await payBooking(B, created.id);
