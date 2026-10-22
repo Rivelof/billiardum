@@ -51,7 +51,8 @@ export async function handleWebhook(db, deps, config, { clubId, body }) {
 }
 
 async function paymentWebhook(db, deps, client, { clubId, objectId }) {
-  const { rows } = await db.query('select * from bl.payments where provider_payment_id = $1', [objectId]);
+  // FOR UPDATE: параллельная сверка (отмена по 404) ждёт конца обработки вебхука, и наоборот (B-R1).
+  const { rows } = await db.query('select * from bl.payments where provider_payment_id = $1 for update', [objectId]);
   const payment = rows[0];
   if (!payment) {
     // Не наш платёж или наша запись ещё не закоммичена: проверим, есть ли он у магазина клуба.

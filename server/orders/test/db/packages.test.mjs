@@ -337,6 +337,21 @@ describe('касса: поиск гостя — лимит и тревога о 
     assert.equal(guestLookupGuard.missesInHour(reception.id, new Date()), 0);
   });
 
+  it('СБП у клуба выключена (L1-R2): ответ одинаков для существующего и несуществующего телефона, поиска нет', async () => {
+    guestLookupGuard.reset();
+    await h.q('update bl.club_payment_settings set sbp_enabled = false where club_id = $1', [CLUB_A]);
+    try {
+      const body = (phone) => ({ items: [{ kind: 'package', package_id: pkgA, phone }], method: 'sbp', customer_phone: '+79990000077' });
+      const hit = await sale(body('+79990000077'));
+      const miss = await sale(body('+79998887766'));
+      assert.deepEqual([hit.status, hit.json], [400, { error: 'bad_request' }]);
+      assert.deepEqual([miss.status, miss.json], [hit.status, hit.json]);
+      assert.equal(guestLookupGuard.missesInHour(reception.id, new Date()), 0);
+    } finally {
+      await h.q('update bl.club_payment_settings set sbp_enabled = true where club_id = $1', [CLUB_A]);
+    }
+  });
+
   it('больше 20 поисков гостя в минуту на сотрудника — 429 rate_limited, поиск не выполняется', async () => {
     guestLookupGuard.reset();
     for (let i = 0; i < 20; i += 1) {

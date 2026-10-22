@@ -105,6 +105,20 @@ export const barPaymentId = (saleId) => stableUuid(`bl.payment/bar/${saleId}`);
 export const barIdempotenceKey = (saleId) => `bar-${saleId}`;
 
 /**
+ * Доступен ли клубу онлайн-способ оплаты (без создания платежа; касса зовёт до поиска гостя):
+ * есть магазин ЮKassa (shop_id и секрет) и способ включён в настройках клуба.
+ * @param {{ clubId: string, method: 'sbp'|'card' }} args
+ * @returns {Promise<boolean>} false и для неизвестного способа; bad_request — неверный clubId
+ */
+export async function onlineMethodAvailable(db, { clubId, method }) {
+  if (!UUID.test(clubId ?? '')) throw new MoneyError('bad_request', 'clubId');
+  if (!BAR_METHODS_ONLINE.includes(method)) return false;
+  await enterClub(db, clubId);
+  const settings = await loadPaymentSettings(db, clubId);
+  return Boolean(settings[method]);
+}
+
+/**
  * Платёж ЮKassa бара и кассы (контракт M2 §5): СБП (на экране кассы — confirmation qr) или карта
  * (гостю — redirect). kind = 'bar'. Строки платежа и чека — в транзакции вызывающего (контекст клуба).
  * Подтверждение — общий путь money: вебхук или сверка → outbox payment.confirmed (kind bar);

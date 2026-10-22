@@ -93,14 +93,26 @@ export function decryptPayload(body, { uaPrivateKey, auth }) {
 }
 
 /**
- * Ключи VAPID из .env: открытый — 65 байт (base64url), закрытый — 32 байта (base64url).
+ * Закрытый скаляр P-256 ровно в 32 байта: ECDH.getPrivateKey() и часть генераторов
+ * отбрасывают ведущие нулевые байты (≈1/256 ключей выходит 31 байт) — добиваем слева нулями.
+ * @param {Buffer} d
+ */
+export function p256Scalar(d) {
+  if (d.length >= 32) return d;
+  return Buffer.concat([Buffer.alloc(32 - d.length), d]);
+}
+
+/**
+ * Ключи VAPID из .env: открытый — 65 байт (base64url), закрытый — 32 байта (base64url;
+ * короче — допускается, если потеряны ведущие нули: добивается до 32 и сверяется с открытым).
  * @returns {{ publicKey: string, key: import('node:crypto').KeyObject, subject: string }}
  */
 export function loadVapid({ publicKey, privateKey, subject }) {
   const pub = fromB64u(publicKey ?? '');
-  const priv = fromB64u(privateKey ?? '');
+  const raw = fromB64u(privateKey ?? '');
   if (pub.length !== 65 || pub[0] !== 0x04) throw new Error('VAPID_PUBLIC_KEY — точка P-256 без сжатия, 65 байт base64url');
-  if (priv.length !== 32) throw new Error('VAPID_PRIVATE_KEY — 32 байта base64url');
+  if (raw.length < 16 || raw.length > 32) throw new Error('VAPID_PRIVATE_KEY — 32 байта base64url');
+  const priv = p256Scalar(raw);
   const check = createECDH('prime256v1');
   check.setPrivateKey(priv);
   if (!check.getPublicKey().equals(pub)) throw new Error('VAPID: открытый ключ не от этого закрытого');

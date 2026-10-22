@@ -11,11 +11,16 @@
 // * packageLine     → packageSaleLine: позиция чека пакета часов (предоплата 100 %) и цена (M3).
 // * revokePackage   → revokeLotOnly: отозвать нетронутую партию минут пакета при возврате продажи
 //   (№118; деньги и чек возврата — refundPayment, как у бара); package_used, already_refunded — 409.
+// * onlineAvailable → onlineMethodAvailable: доступен ли клубу способ онлайн-оплаты (sbp, card) —
+//   до поиска гостя пакета (pentester L1-R2). Пока функции у money нет — те же флаги настроек
+//   клуба, что проверяет createOnlinePayment (loadPaymentSettings: sbp, card).
 // * creditPackage   → creditPackageForSale: начислить минуты пакета гостю после оплаты продажи;
 //   повтор (тот же платёж, пакет и номер в продаже) — та же партия минут.
 // id платежа и ключ ЮKassa детерминированы по продаже: stableUuid('bl.payment/bar/<sale>'), bar-<sale>.
 
+import * as moneyApi from '../payments/api.mjs';
 import { createOnlinePayment, creditPackageForSale, packageSaleLine, recordOfflinePayment, refund, revokeLotOnly } from '../payments/api.mjs';
+import { loadPaymentSettings } from '../payments/settings.mjs';
 
 /** Зависимости money для её функций: из контекста запроса или модуля (не из окружения процесса). */
 const injected = (deps) => ({ deps: deps.money, config: deps.moneyConfig });
@@ -102,4 +107,16 @@ export function creditPackage(db, deps, { payment, packageId, userId, index }) {
  */
 export function revokePackage(db, deps, { lotId, reason, staffId }) {
   return revokeLotOnly(db, { lotId, reason, staffId }, injected(deps));
+}
+
+/**
+ * Способ онлайн-оплаты доступен клубу (магазин ЮKassa есть, способ включён).
+ * @returns {Promise<boolean>}
+ */
+export async function onlineAvailable(db, { clubId, method }) {
+  if (typeof moneyApi.onlineMethodAvailable === 'function') return Boolean(await moneyApi.onlineMethodAvailable(db, { clubId, method }));
+  const settings = await loadPaymentSettings(db, clubId);
+  if (method === 'sbp') return Boolean(settings.sbp);
+  if (method === 'card') return Boolean(settings.card);
+  return false;
 }

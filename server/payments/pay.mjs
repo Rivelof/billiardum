@@ -362,6 +362,8 @@ export async function applyRemote(db, deps, payment, remote, { source = 'webhook
         if (r.confirmed) payment = r.payment;
         else payment = (await db.query('select * from bl.payments where id = $1', [payment.id])).rows[0];
         if (r.confirmed) return { result: 'confirmed', payment };
+        // B-R1: строка вызывающего устарела — платёж уже отменён у нас (параллельная сверка).
+        if (payment.status === 'canceled') return applyRemote(db, deps, payment, remote, { source, client });
       }
       if (remote.status === 'succeeded' && payment.status === 'waiting_for_capture') {
         // Заморозка списана (наш capture или повторная сверка).

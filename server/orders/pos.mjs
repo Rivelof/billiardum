@@ -42,7 +42,7 @@ import { recordReturns, recordSales } from '../stock/api.mjs';
 import { enqueueReceiptDirect } from './deps.mjs';
 import { PosError } from './errors.mjs';
 import { allocate, discountKopecks, overLimit, receiptLines, refundAmount, rub } from './money.mjs';
-import { creditPackage, offlinePayment, onlinePayment, packageLine, receiptCustomer, refundPayment, revokePackage } from './payments.mjs';
+import { creditPackage, offlinePayment, onlineAvailable, onlinePayment, packageLine, receiptCustomer, refundPayment, revokePackage } from './payments.mjs';
 import { posSettings } from './settings.mjs';
 import { useApproval } from './approvals.mjs';
 import {
@@ -424,6 +424,8 @@ export async function createSale(db, deps, info) {
   splitDiscount([...lines, ...tabOrders.flatMap((o) => o.items)], discount);
   let sbpCustomer = null;
   if (sbp && saleTotal > 0) {
+    // СБП у клуба выключена или нет магазина ЮKassa — тот же ответ, что дала бы money, но до поиска.
+    if (!(await onlineAvailable(db, { clubId, method: 'sbp' }))) throw bad('СБП недоступна');
     sbpCustomer = receiptCustomer({ phone: b.customer_phone ?? null, email: pos.receipt_email });
     if (b.customer_phone !== undefined && b.customer_phone !== null && !receiptCustomer({ phone: b.customer_phone })) throw bad('customer_phone');
     if (!sbpCustomer) throw new PosError('phone_required', 'нет контакта для чека ЮKassa');

@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { createECDH, createPublicKey, verify } from 'node:crypto';
 import { describe, it } from 'node:test';
-import { decryptPayload, encryptPayload, endpointAllowed, loadVapid, sendPush, vapidJwt } from '../notify/webpush.mjs';
+import { decryptPayload, encryptPayload, endpointAllowed, loadVapid, p256Scalar, sendPush, vapidJwt } from '../notify/webpush.mjs';
 import { channelChain, cleanData, maskPhones, pushTitle } from '../notify/index.mjs';
 import { createStreamTokens, streamTarget } from '../http/stream-tokens.mjs';
 
@@ -56,7 +56,7 @@ describe('Web Push: RFC 8291', () => {
 describe('VAPID: RFC 8292', () => {
   const ecdh = createECDH('prime256v1');
   ecdh.generateKeys();
-  const keys = { publicKey: ecdh.getPublicKey().toString('base64url'), privateKey: ecdh.getPrivateKey().toString('base64url'), subject: 'mailto:ops@bl.test' };
+  const keys = { publicKey: ecdh.getPublicKey().toString('base64url'), privateKey: p256Scalar(ecdh.getPrivateKey()).toString('base64url'), subject: 'mailto:ops@bl.test' };
 
   it('JWT ES256: aud — origin push-сервиса, exp ≤ 24 ч, подпись проверяется открытым ключом', () => {
     const vapid = loadVapid(keys);
@@ -82,6 +82,22 @@ describe('VAPID: RFC 8292', () => {
     other.generateKeys();
     assert.throws(() => loadVapid({ ...keys, publicKey: other.getPublicKey().toString('base64url') }), /не от этого/);
     assert.throws(() => loadVapid({ ...keys, subject: 'ops@bl.test' }));
+    assert.throws(() => loadVapid({ ...keys, privateKey: Buffer.alloc(33, 1).toString('base64url') }), /32 байта/);
+  });
+
+  it('закрытый ключ с ведущим нулём: 31 байт (как отдаёт ECDH.getPrivateKey) добивается до 32', () => {
+    const d = Buffer.concat([Buffer.alloc(1), Buffer.alloc(31, 0x11)]);
+    const e = createECDH('prime256v1');
+    e.setPrivateKey(d);
+    assert.equal(e.getPrivateKey().length, 31); // Node отбрасывает ведущий ноль — причина плавающего сбоя
+    assert.deepEqual(p256Scalar(e.getPrivateKey()), d);
+    const pub = e.getPublicKey().toString('base64url');
+    const short = loadVapid({ publicKey: pub, privateKey: e.getPrivateKey().toString('base64url'), subject: 'mailto:ops@bl.test' });
+    const full = loadVapid({ publicKey: pub, privateKey: d.toString('base64url'), subject: 'mailto:ops@bl.test' });
+    assert.equal(short.key.export({ format: 'jwk' }).d, d.toString('base64url'));
+    assert.equal(full.key.export({ format: 'jwk' }).d, d.toString('base64url'));
+    const [h, c, s] = vapidJwt(short, 'https://fcm.googleapis.com/fcm/send/x').split('.');
+    assert.ok(verify('sha256', Buffer.from(`${h}.${c}`), { key: createPublicKey(full.key), dsaEncoding: 'ieee-p1363' }, Buffer.from(s, 'base64url')));
   });
 
   it('sendPush: заголовки RFC 8030/8291/8292; 201 — sent, 410 — gone, адрес не push-сервиса — без запроса', async () => {

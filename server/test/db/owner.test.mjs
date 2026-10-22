@@ -7,7 +7,7 @@ import { raise } from '../../alarms/index.mjs';
 import { appendAudit } from '../../lib/audit.mjs';
 import { withContext } from '../../lib/store.mjs';
 import { createNotifier, send } from '../../notify/index.mjs';
-import { decryptPayload } from '../../notify/webpush.mjs';
+import { decryptPayload, p256Scalar } from '../../notify/webpush.mjs';
 import { CLUB_A, MANAGER_A, OWNER_A, RESOURCE_1, startTestApp, waitFor } from './helpers.mjs';
 
 let t;
@@ -234,7 +234,7 @@ describe('уведомления: цепочка каналов и Web Push', ()
     const pushes = [];
     let pushStatus = 201;
     const notifier = createNotifier({
-      config: { vapid: { publicKey: vapid.getPublicKey().toString('base64url'), privateKey: vapid.getPrivateKey().toString('base64url'), subject: 'mailto:t@bl.test' } },
+      config: { vapid: { publicKey: vapid.getPublicKey().toString('base64url'), privateKey: p256Scalar(vapid.getPrivateKey()).toString('base64url'), subject: 'mailto:t@bl.test' } },
       log: t.log,
       telegram: {
         configured: true,
