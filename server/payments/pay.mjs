@@ -16,7 +16,7 @@ import { confirmedPayload, insertReceipt, sessionIdOf, stableUuid } from './reco
 import { clientFor, loadPaymentSettings } from './settings.mjs';
 import { amountKopecks, formatValue, YooKassaError } from './yookassa.mjs';
 import { createReceptionRequest, receptionResponse } from '../reception/index.mjs';
-import { applyDebit, creditPackage, issueBalanceReceipts, planDebit, restoreBalance } from '../packages/balance.mjs';
+import { applyDebit, creditPackage, planDebit, restoreBalance } from '../packages/balance.mjs';
 
 export const METHODS = Object.freeze(['sbp', 'card', 'reception', 'balance']);
 
@@ -304,7 +304,7 @@ export async function confirmPayment(db, deps, payment, { status, now, actorType
   });
   // M3: покупка пакета — минуты на баланс гостя; игра частично балансом — чеки зачёта (в той же транзакции).
   if (p.kind === 'package') await creditPackage(db, deps, { payment: p, now });
-  if (p.balance_minutes > 0) await issueBalanceReceipts(db, deps, { paymentId: p.id, now });
+  // Чеки зачёта за минуты баланса — при закрытии сессии, за сыгранное (settle.mjs settleSessionBalance, ревью п. 2).
   await deps.outbox.enqueue(db, 'payment.confirmed', confirmedPayload(p));
   deps.log?.info?.('payment_confirmed', { payment_id: p.id, club_id: p.club_id, method: p.method, status: p.status });
   return { payment: p, confirmed: true };
@@ -517,9 +517,13 @@ export async function paymentStatus(db, deps, info, config) {
   const now = deps.clock.now().getTime();
   const lastCheck = new Date(payment.checked_at ?? payment.created_at).getTime();
   if (payment.status === 'pending' && payment.provider === 'yookassa' && now - lastCheck >= 10_000) {
+    // Точка сохранения (ревью п. 11): сбой сверки не оставляет частичных записей.
+    await db.query('savepoint money_poll');
     try {
       payment = (await syncPayment(db, deps, config, payment, { source: 'poll' })).payment;
+      await db.query('release savepoint money_poll');
     } catch (err) {
+      await db.query('rollback to savepoint money_poll');
       deps.log?.warn?.('payment_poll_failed', { payment_id: id, error: err.message });
     }
   }

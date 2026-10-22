@@ -1,21 +1,24 @@
 // Денежный модуль (контракт M1 §2.1): init(ctx) и stop().
 //
 // * Подписка на outbox session.closed — списание фактической суммы «Без лимита» по карте.
-// * Планировщик (раз в 10 с, время — ctx.clock): сжигает заявки ресепшена, у которых вышло
-//   время (pending со стола снимается), и сверяет по API ЮKassa платежи, которые больше
-//   минуты в pending (вебхук мог потеряться).
+// * Подписка session.closed — чеки зачёта за сыгранные минуты баланса (пакеты часов).
+// * Планировщик (раз в 10 с, время — ctx.clock, bl.money_due): сжигает заявки ресепшена, у которых
+//   вышло время (pending со стола снимается); сверяет по API ЮKassa платежи и возвраты, которые
+//   больше минуты в pending (вебхук мог потеряться); опрашивает зависшие чеки зачёта; выдаёт
+//   отложенные до открытия смены возвраты наличных. Каждая сверка — в точке сохранения.
 // * Задаёт зависимости для server/payments/api.mjs (refund для light).
 
 import { withContext as storeWithContext } from '../lib/store.mjs';
 import { expireRequest } from '../reception/index.mjs';
-import { setRuntime } from './api.mjs';
+import { setRuntime, syncRefund } from './api.mjs';
 import { onSessionClosed } from './capture.mjs';
 import { loadMoneyConfig } from './config.mjs';
 import { resolveDeps } from './deps.mjs';
 import { syncPayment } from './pay.mjs';
 import { enterClub } from './context.mjs';
 import { settleDeposit } from './deposits.mjs';
-import { SETTLE_TOPIC, sendSettlementReceipt } from './settle.mjs';
+import { pollSettlementReceipt, SETTLE_TOPIC, sendSettlementReceipt, settleSessionBalance } from './settle.mjs';
+import { issueQueuedCashRefund } from './cash-refunds.mjs';
 
 const TICK_MS = 10_000;
 let state = null;
@@ -34,16 +37,59 @@ export async function tick({ pool, withContext, deps, config, limit = 100 }) {
           if (await expireRequest(db, deps, row.id)) done += 1;
           return;
         }
+        // Каждая сверка — в своей точке сохранения (ревью п. 11): сбой откатывает её частичные
+        // записи, а отметка checked_at (не опрашивать снова сразу) коммитится.
+        const guarded = async (fn, onError) => {
+          await db.query('savepoint money_tick_item');
+          try {
+            await fn();
+            await db.query('release savepoint money_tick_item');
+            done += 1;
+          } catch (err) {
+            await db.query('rollback to savepoint money_tick_item');
+            await onError(err);
+          }
+        };
         if (row.kind === 'payment_stale') {
           const { rows } = await db.query('select * from bl.payments where id = $1 for update', [row.id]);
           if (!rows[0] || rows[0].status !== 'pending') return;
-          try {
-            await syncPayment(db, deps, config, rows[0], { source: 'reconcile' });
-            done += 1;
-          } catch (err) {
-            deps.log.warn('payment_reconcile_failed', { payment_id: row.id, error: err.message });
-            await db.query('update bl.payments set checked_at = $2 where id = $1', [row.id, now]);
-          }
+          await guarded(
+            () => syncPayment(db, deps, config, rows[0], { source: 'reconcile' }),
+            async (err) => {
+              deps.log.warn('payment_reconcile_failed', { payment_id: row.id, error: err.message });
+              await db.query('update bl.payments set checked_at = $2 where id = $1', [row.id, now]);
+            },
+          );
+          return;
+        }
+        if (row.kind === 'refund_stale') {
+          await guarded(
+            () => syncRefund(db, deps, config, row.id),
+            async (err) => {
+              deps.log.warn('refund_reconcile_failed', { refund_id: row.id, error: err.message });
+              await db.query('update bl.refunds set checked_at = $2 where id = $1', [row.id, now]);
+            },
+          );
+          return;
+        }
+        if (row.kind === 'receipt_stale') {
+          await guarded(
+            () => pollSettlementReceipt(db, deps, config, row.id),
+            async (err) => {
+              deps.log.warn('receipt_poll_failed', { receipt_id: row.id, error: err.message });
+              await db.query('update bl.receipts set updated_at = $2 where id = $1', [row.id, now]);
+            },
+          );
+          return;
+        }
+        if (row.kind === 'cash_refund_queued') {
+          await guarded(
+            () => issueQueuedCashRefund(db, deps, row.id),
+            async (err) => {
+              deps.log.warn('cash_refund_issue_failed', { pending_id: row.id, error: err.message });
+              await db.query('update bl.cash_refunds_pending set checked_at = $2 where id = $1', [row.id, now]);
+            },
+          );
         }
       });
     } catch (err) {
@@ -79,6 +125,16 @@ export async function init(ctx) {
       await settleDeposit(db, log ? { ...deps, log } : deps, { sessionId: payload.session_id, usedKopecks: payload.used_kopecks ?? null });
     },
     { name: 'money.deposit' },
+  );
+  // Чеки зачёта за сыгранные минуты баланса — при закрытии сессии (ревью п. 2).
+  deps.outbox.subscribe(
+    'session.closed',
+    async (payload, { db, log } = {}) => {
+      if (!payload?.session_id || !payload?.club_id) return;
+      await enterClub(db, payload.club_id);
+      await settleSessionBalance(db, log ? { ...deps, log } : deps, { sessionId: payload.session_id, now: deps.clock.now() });
+    },
+    { name: 'money.balance_settle' },
   );
   let running = null;
   const timer = setInterval(() => {

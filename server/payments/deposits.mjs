@@ -13,6 +13,7 @@
 //         чеком возврата предоплаты; ресепшн и владелец получают уведомление. Идемпотентно по сессии.
 // Смена сходится: наличные смены = размен + депозит − возврат остатка (server/shifts cashTotals).
 
+import { queueCashRefund } from './cash-refunds.mjs';
 import { amountForActual } from '../tariffs/index.mjs';
 import { enterClub } from './context.mjs';
 import { MoneyError } from './errors.mjs';
@@ -143,6 +144,8 @@ export async function settleDeposit(db, deps, { sessionId, usedKopecks = null })
   let left = used;
   let refundedTotal = 0;
   let refundId = null;
+  let queuedTotal = 0;
+  let pendingId = null;
   for (const d of open) {
     const part = Math.min(left, Number(d.amount_kopecks));
     left -= part;
@@ -157,7 +160,13 @@ export async function settleDeposit(db, deps, { sessionId, usedKopecks = null })
         now,
       });
     }
-    if (rest > 0) {
+    if (rest > 0 && !shift) {
+      // Смены нет — наличные выдаст кассир следующей смены (ревью п. 7, cash-refunds.mjs).
+      const lines = [line(`Депозит за игру, стол ${s.number}`, rest, settings.vat_code, 'full_prepayment')];
+      const { pending } = await queueCashRefund(db, deps, { clubId, payment: d, key: `depr-${d.id}`, amountKopecks: rest, reason: 'Возврат остатка депозита', lines, now });
+      queuedTotal += rest;
+      pendingId ??= pending.id;
+    } else if (rest > 0) {
       const reason = 'Возврат остатка депозита';
       const { rows: f } = await db.query(
         `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, created_at, updated_at)
@@ -188,8 +197,8 @@ export async function settleDeposit(db, deps, { sessionId, usedKopecks = null })
     action: 'reception.deposit_settled',
     objectType: 'session',
     objectId: sessionId,
-    data: { session_id: sessionId, deposit_kopecks: total, used_kopecks: used, refunded_kopecks: refundedTotal, refund_id: refundId },
+    data: { session_id: sessionId, deposit_kopecks: total, used_kopecks: used, refunded_kopecks: refundedTotal, refund_id: refundId, queued_kopecks: queuedTotal },
     actorType: 'system',
   });
-  return { used_kopecks: used, refunded_kopecks: refundedTotal, refund_id: refundId };
+  return { used_kopecks: used, refunded_kopecks: refundedTotal, refund_id: refundId, ...(queuedTotal > 0 ? { queued_kopecks: queuedTotal, pending_id: pendingId } : {}) };
 }

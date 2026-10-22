@@ -21,6 +21,7 @@
 // * Журнал payment.refunded с причиной, outbox payment.refunded, уведомление владельцу (инвариант 8).
 
 import { createHash } from 'node:crypto';
+import { formatMoney as formatMoneyRu } from '../../shared/format.mjs';
 import { moneyConfig } from './config.mjs';
 import { resolveDeps } from './deps.mjs';
 import { MoneyError } from './errors.mjs';
@@ -103,6 +104,41 @@ const BAR_METHODS_OFFLINE = ['cash', 'card_terminal'];
 /** id и ключ платежа продажи кассы (детерминированные: повтор продажи — тот же платёж). */
 export const barPaymentId = (saleId) => stableUuid(`bl.payment/bar/${saleId}`);
 export const barIdempotenceKey = (saleId) => `bar-${saleId}`;
+
+/**
+ * До какого момента может дойти игра на столе по тому, что ещё не подтверждено (для брони):
+ * живая котировка старта или продления (не использована, не истекла), заявка ресепшена в ожидании
+ * и неподтверждённый платёж старта или продления не старше часа. Старт отсчитывается от момента
+ * подтверждения (не раньше конца жизни котировки или заявки), продление — от конца оплаченного
+ * (from_at котировки); «Без лимита» — на время заморозки. Котировки старта по брони не в счёт.
+ * @param {{ resourceId: string, now?: Date }} args
+ * @returns {Promise<Date|null>}
+ */
+export async function pendingPlayUntil(db, { resourceId, now = new Date() }) {
+  if (!UUID.test(resourceId ?? '')) throw new MoneyError('bad_request', 'resourceId');
+  const { rows } = await db.query(
+    `with q as (
+       select q.*, make_interval(mins => coalesce(q.minutes, greatest(q.hold_minutes, q.block_minutes))) as span
+         from bl.quotes q where q.resource_id = $1 and q.kind in ('start', 'extend')
+     )
+     select max(until) as until from (
+       select case when q.kind = 'extend' then greatest(q.from_at, $2) else q.valid_until end + q.span as until
+         from q where q.used_at is null and q.valid_until > $2
+       union all
+       select case when q.kind = 'extend' then greatest(q.from_at, $2) else greatest(rr.expires_at, $2) end + q.span
+         from bl.reception_requests rr join q on q.id = rr.quote_id
+        where rr.resource_id = $1 and rr.status = 'waiting' and rr.expires_at > $2
+       union all
+       select case when p.kind = 'extend' then greatest(coalesce(q.from_at, $2), $2) else $2 end
+              + make_interval(mins => coalesce(p.minutes, q.minutes, greatest(q.hold_minutes, q.block_minutes), 0))
+         from bl.payments p left join q on q.id = p.quote_id
+        where p.resource_id = $1 and p.kind in ('start', 'extend') and p.status = 'pending' and p.confirmed_at is null
+          and p.created_at > $2 - interval '1 hour'
+     ) x`,
+    [resourceId, now],
+  );
+  return rows[0]?.until ? new Date(rows[0].until) : null;
+}
 
 /**
  * Доступен ли клубу онлайн-способ оплаты (без создания платежа; касса зовёт до поиска гостя):
@@ -226,7 +262,102 @@ export async function applyRefundStatus(db, deps, refund, status, { now = deps.c
   );
   if (rows.length === 0) return refund;
   if (next === 'succeeded') await refunded(db, deps, rows[0], now);
+  if (next === 'canceled') await refundCanceled(db, deps, rows[0]);
   return rows[0];
+}
+
+/**
+ * ЮKassa отменила возврат (п. 4): деньги гостю не ушли. outbox payment.refund_canceled
+ * {refund_id, payment_id, club_id, amount_kopecks, pos_refund_id?} — касса (pos) откатывает учёт
+ * возврата продажи; критичная тревога владельцу.
+ */
+async function refundCanceled(db, deps, f) {
+  let posRefundId = null;
+  await db.query('savepoint money_pos_refund');
+  try {
+    posRefundId = (await db.query('select id from bl.pos_refunds where refund_id = $1 limit 1', [f.id])).rows[0]?.id ?? null;
+    await db.query('release savepoint money_pos_refund');
+  } catch {
+    await db.query('rollback to savepoint money_pos_refund'); // без таблицы кассы — без pos_refund_id
+  }
+  const amount = Number(f.amount_kopecks);
+  const lotsRestored = await restoreRevokedLots(db, deps, f, posRefundId);
+  await deps.outbox.enqueue(db, 'payment.refund_canceled', {
+    refund_id: f.id,
+    payment_id: f.payment_id,
+    club_id: f.club_id,
+    amount_kopecks: amount,
+    ...(posRefundId ? { pos_refund_id: posRefundId } : {}),
+    lots_restored: lotsRestored,
+  });
+  deps.log?.error?.('refund_canceled', { refund_id: f.id, payment_id: f.payment_id, club_id: f.club_id, amount_kopecks: amount });
+  await deps.alarms.raise(db, f.club_id, {
+    type: 'refund_canceled',
+    level: 'critical',
+    data: { refund_id: f.id, payment_id: f.payment_id, amount_kopecks: amount, lots_restored: lotsRestored.length, ...(posRefundId ? { pos_refund_id: posRefundId } : {}) },
+    text: `ЮKassa отменила возврат ${formatMoneyRu(amount)}: деньги гостю не вернулись — верните вручную${lotsRestored.length > 0 ? '; пакет часов снова действует' : ''}`,
+  });
+}
+
+/**
+ * Возврат пакета часов отменён ЮKassa — партия снова действует (отозвана только нетронутая, так что
+ * возвращаются все её минуты). Пакет из приложения — ключ возврата pkr-<lot>; пакет с кассы —
+ * pos_sale_packages этого возврата кассы. Журнал package.restored.
+ * @returns {Promise<string[]>} id восстановленных партий
+ */
+async function restoreRevokedLots(db, deps, f, posRefundId) {
+  const ids = [];
+  const m = /^pkr-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:-\d+)?$/.exec(f.idempotence_key ?? '');
+  if (m) ids.push(m[1]);
+  if (posRefundId) {
+    await db.query('savepoint money_pos_lots');
+    try {
+      const { rows } = await db.query('select lot_id from bl.pos_sale_packages where pos_refund_id = $1 and lot_id is not null', [posRefundId]);
+      ids.push(...rows.map((r) => r.lot_id));
+      await db.query('release savepoint money_pos_lots');
+    } catch {
+      await db.query('rollback to savepoint money_pos_lots');
+    }
+  }
+  const restored = [];
+  for (const id of ids) {
+    const { rows } = await db.query(
+      `update bl.balance_lots set minutes_left = minutes_total, revoked_at = null, revoked_by = null
+        where id = $1 and revoked_at is not null returning id, payment_id, minutes_total, user_id`,
+      [id],
+    );
+    if (!rows[0]) continue;
+    restored.push(id);
+    await deps.audit.appendAudit(db, {
+      action: 'package.restored',
+      objectType: 'payment',
+      objectId: rows[0].payment_id,
+      data: { lot_id: id, refund_id: f.id, minutes: rows[0].minutes_total, user_id: rows[0].user_id },
+      actorType: 'system',
+    });
+  }
+  return restored;
+}
+
+/** Сверка зависшего возврата ЮKassa (планировщик, money_due refund_stale). */
+export async function syncRefund(db, deps, config, refundId) {
+  const { rows } = await db.query(
+    `select f.*, p.provider_payment_id from bl.refunds f join bl.payments p on p.id = f.payment_id where f.id = $1 for update of f`,
+    [refundId],
+  );
+  const f = rows[0];
+  if (!f || f.status !== 'pending' || !f.provider_refund_id) return { result: 'skipped' };
+  const now = deps.clock.now();
+  await db.query('update bl.refunds set checked_at = $2 where id = $1', [f.id, now]);
+  const settings = await loadPaymentSettings(db, f.club_id);
+  const remote = await clientFor(settings, config).getRefund(f.provider_refund_id);
+  if (remote?.id !== f.provider_refund_id || remote?.payment_id !== f.provider_payment_id) {
+    deps.log?.error?.('refund_mismatch', { club_id: f.club_id, refund_id: f.id });
+    await deps.alarms.raise(db, f.club_id, { type: 'refund_mismatch', level: 'critical', data: { refund_id: f.id } });
+    return { result: 'mismatch' };
+  }
+  const out = await applyRefundStatus(db, deps, f, remote.status, { now });
+  return { result: out.status };
 }
 
 
@@ -250,6 +381,13 @@ export async function refund(db, args, injected) {
     const f = prev.rows[0];
     return { refund_id: f.id, status: f.status, amount_kopecks: Number(f.amount_kopecks) };
   }
+  const queued = await db.query('select * from bl.cash_refunds_pending where club_id = $1 and idempotence_key = $2', [p.club_id, key]);
+  if (queued.rowCount > 0) {
+    const q = queued.rows[0];
+    return { refund_id: q.refund_id, status: q.done_at ? 'manual' : 'queued', amount_kopecks: Number(q.amount_kopecks), pending_id: q.id };
+  }
+  // Игра минутами баланса (пакеты часов): деньги не двигались — минуты возвращаются в партии (п. 2).
+  if (p.provider === 'balance') return refundBalance(db, deps, p, { key, amountKopecks, reason, args, now });
 
   const settings = await loadPaymentSettings(db, p.club_id);
   const { rows: res } = await db.query('select number from bl.resources where id = $1', [p.resource_id]);
@@ -265,8 +403,8 @@ export async function refund(db, args, injected) {
     const { captureOrRelease } = await import('./capture.mjs');
     await captureOrRelease(db, deps, config, p, { amountKopecks: Number(p.amount_kopecks) - amountKopecks, number, settings, now });
     const { rows: f } = await db.query(
-      `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, created_at, updated_at)
-       values ($1, $2, $3, $4, 'succeeded', $5, $6, $6) returning *`,
+      `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, kind, created_at, updated_at)
+       values ($1, $2, $3, $4, 'succeeded', $5, 'release', $6, $6) returning *`,
       [p.club_id, p.id, key, amountKopecks, reason, now],
     );
     await refunded(db, deps, f[0], now);
@@ -275,13 +413,17 @@ export async function refund(db, args, injected) {
 
   if (p.status !== 'succeeded') throw new MoneyError('payment_pending', `платёж в статусе ${p.status}`);
   const base = p.capture ? Number(p.amount_kopecks) : Number(p.captured_kopecks ?? 0);
-  const { rows: sum } = await db.query(
-    `select coalesce(sum(amount_kopecks), 0)::bigint as total from bl.refunds where payment_id = $1 and status <> 'canceled'`,
-    [p.id],
-  );
-  if (Number(sum[0].total) + amountKopecks > base) throw new MoneyError('limit_exceeded', 'возврат больше оплаченного');
+  const already = await refundedSoFar(db, p.id);
+  if (already + amountKopecks > base) throw new MoneyError('limit_exceeded', 'возврат больше оплаченного');
 
   if (p.provider === 'reception') {
+    // Наличные без открытой смены — ждут смены (п. 7): выдаются и попадают в её сверку.
+    if (p.method === 'cash' && !(await deps.shifts.currentShift(db, p.club_id))) {
+      const { queueCashRefund } = await import('./cash-refunds.mjs');
+      const lines = items ?? receiptItems({ resourceNumber: number, minutes: p.minutes, amountKopecks, vatCode: settings.vat_code });
+      const { pending } = await queueCashRefund(db, deps, { clubId: p.club_id, payment: p, key, amountKopecks, reason, lines, requestedBy, now });
+      return { refund_id: null, status: 'queued', amount_kopecks: amountKopecks, pending_id: pending.id };
+    }
     const { rows: f } = await db.query(
       `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, requested_by, created_at, updated_at)
        values ($1, $2, $3, $4, 'manual', $5, $7, $6, $6) returning *`,
@@ -354,7 +496,71 @@ export async function refund(db, args, injected) {
     now,
   });
   f = await applyRefundStatus(db, deps, { ...f, provider_refund_id: remote.id }, remote.status, { now });
-  return { refund_id: f.id, status: f.status, amount_kopecks: amountKopecks };
+  // Смешанная оплата (карта + минуты баланса): та же доля минут возвращается на баланс (п. 2).
+  const minutesBack = p.balance_minutes > 0 ? await restoreBalanceShare(db, deps, p, { amountKopecks, base, already, now }) : 0;
+  return { refund_id: f.id, status: f.status, amount_kopecks: amountKopecks, ...(minutesBack > 0 ? { minutes_restored: minutesBack } : {}) };
+}
+
+/** Сумма возвратов платежа в лимите: деньги гостю (без снятой заморозки) и ждущие смены наличные. */
+async function refundedSoFar(db, paymentId) {
+  const { rows } = await db.query(
+    `select (select coalesce(sum(amount_kopecks), 0) from bl.refunds where payment_id = $1 and status <> 'canceled' and kind <> 'release')
+          + (select coalesce(sum(amount_kopecks), 0) from bl.cash_refunds_pending where payment_id = $1 and done_at is null) as total`,
+    [paymentId],
+  );
+  return Number(rows[0].total);
+}
+
+/**
+ * Доля минут баланса к возврату: весь остаток, если возвращается всё оплаченное, иначе
+ * balance_minutes × amount / base (округление вниз, не меньше 1 минуты при ненулевой доле).
+ */
+async function restoreBalanceShare(db, deps, p, { amountKopecks, base, already, now }) {
+  const { restoreMinutes } = await import('../packages/balance.mjs');
+  const full = already + amountKopecks >= base;
+  const minutes = full ? null : Math.max(1, Math.floor((p.balance_minutes * amountKopecks) / base));
+  const r = await restoreMinutes(db, { paymentId: p.id, minutes, now });
+  if (r.minutes > 0) await notifyBalanceBack(db, deps, p, r.minutes);
+  return r.minutes;
+}
+
+async function notifyBalanceBack(db, deps, p, minutes) {
+  if (!p.user_id) return;
+  try {
+    await deps.notify.send(db, p.user_id, {
+      kind: 'balance_returned',
+      level: 'info',
+      text: `Вернули ${minutes} мин на баланс клуба: игра не состоялась или прервалась.`,
+      data: { payment_id: p.id, minutes },
+    });
+  } catch (err) {
+    deps.log?.warn?.('balance_notify_failed', { payment_id: p.id, error: err.message });
+  }
+}
+
+/**
+ * Возврат по платежу минутами баланса (provider balance): минуты обратно в партии (с учётом срока —
+ * balance.mjs restoreMinutes), строка bl.refunds kind balance (деньги не двигались, в выручку и
+ * сверки не входит), журнал payment.refunded с причиной, outbox payment.refunded, уведомления.
+ * Чек зачёта по таким минутам пробивается при закрытии сессии только за оставшиеся (README).
+ */
+async function refundBalance(db, deps, p, { key, amountKopecks, reason, args, now }) {
+  if (p.status !== 'succeeded') throw new MoneyError('payment_pending', `платёж в статусе ${p.status}`);
+  const base = Number(p.amount_kopecks);
+  const already = await refundedSoFar(db, p.id);
+  if (already + amountKopecks > base) throw new MoneyError('limit_exceeded', 'возврат больше оплаченного');
+  const requestedBy = UUID.test(args.requestedBy ?? '') ? args.requestedBy : null;
+  const { restoreMinutes } = await import('../packages/balance.mjs');
+  const full = already + amountKopecks >= base;
+  const r = await restoreMinutes(db, { paymentId: p.id, minutes: full ? null : Math.max(1, Math.floor((p.balance_minutes * amountKopecks) / base)), now });
+  const { rows: f } = await db.query(
+    `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, requested_by, kind, created_at, updated_at)
+     values ($1, $2, $3, $4, 'succeeded', $5, $6, 'balance', $7, $7) returning *`,
+    [p.club_id, p.id, key, amountKopecks, reason, requestedBy, now],
+  );
+  await refunded(db, deps, f[0], now);
+  if (r.minutes > 0) await notifyBalanceBack(db, deps, p, r.minutes);
+  return { refund_id: f[0].id, status: 'succeeded', amount_kopecks: amountKopecks, minutes_restored: r.minutes };
 }
 
 // M3: предоплата брони, баланс пакетов, депозит (контракт m3.md §3) ----------------------------
@@ -417,6 +623,8 @@ export async function debitBalance(db, args, injected) {
     paymentId = rows[0].id;
   }
   await applyDebit(db, plan, { paymentId, userId, now });
+  // Контракт M3 §3: чек зачёта — сразу (время сессии назначает вызывающий; возврат минут по такому
+  // платежу — через refund, чек за уже начисленное время остаётся).
   await issueBalanceReceipts(db, deps, { paymentId, now });
   return { payment_id: paymentId, minutes, value_kopecks: plan.valueKopecks };
 }
@@ -484,13 +692,16 @@ export async function revokePackageLot(db, args, injected) {
   const { rows: pk } = await db.query('select * from bl.tariff_packages where id = $1', [lot.package_id]);
   const settings = await loadPaymentSettings(db, lot.club_id);
   const amount = Number(lot.price_kopecks);
+  // Ключ pkr-<lot>; после возврата, отменённого ЮKassa (партия восстановлена), — pkr-<lot>-<n>.
+  const { rows: tries } = await db.query("select count(*)::int as n from bl.refunds where payment_id = $1 and idempotence_key like $2 and status = 'canceled'", [payment.id, `pkr-${lot.id}%`]);
+  const key = tries[0].n > 0 ? `pkr-${lot.id}-${tries[0].n}` : `pkr-${lot.id}`;
   const r = await refund(
     db,
     {
       paymentId: payment.id,
       amountKopecks: amount,
       reason: args.reason,
-      key: `pkr-${lot.id}`,
+      key,
       items: [packageItem({ ...pk[0], price_kopecks: amount }, settings.vat_code)],
       requestedBy: args.staffId,
       description: `Возврат пакета часов «${pk[0].title}»`,

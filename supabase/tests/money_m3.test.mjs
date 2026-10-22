@@ -10,12 +10,12 @@ import { routes as packageRoutes } from '../../api/routes/packages.mjs';
 import { routes as receptionRoutes } from '../../api/routes/reception.mjs';
 import { routes as webhookRoutes } from '../../api/routes/webhooks.mjs';
 import { routes as paymentRoutes } from '../../api/routes/payments.mjs';
-import { createBookingQuote, createPrepayment, creditPackageForSale, onlineMethodAvailable, revokeLotOnly, revokePackageLot, debitBalance, forfeitPrepayment, packageSaleLine, recordOfflinePayment, settleDeposit, settlePrepayment } from '../../server/payments/api.mjs';
+import { applyRefundStatus, pendingPlayUntil, createBookingQuote, createPrepayment, creditPackageForSale, onlineMethodAvailable, refund, revokeLotOnly, revokePackageLot, debitBalance, forfeitPrepayment, packageSaleLine, recordOfflinePayment, settleDeposit, settlePrepayment } from '../../server/payments/api.mjs';
 import { resolveDeps } from '../../server/payments/deps.mjs';
 import { tick } from '../../server/payments/index.mjs';
 import { applyRemote, cancelLocal, NOT_FOUND_REASON, onProviderNotFound } from '../../server/payments/pay.mjs';
 import { clientFor, loadPaymentSettings } from '../../server/payments/settings.mjs';
-import { sendSettlementReceipt, SETTLE_TOPIC } from '../../server/payments/settle.mjs';
+import { sendSettlementReceipt, SETTLE_TOPIC, settleSessionBalance } from '../../server/payments/settle.mjs';
 import { cashTotals } from '../../server/shifts/service.mjs';
 import { withContext } from '../../server/lib/store.mjs';
 import { formatMoney } from '../../shared/format.mjs';
@@ -332,6 +332,12 @@ describe('пакеты часов и баланс (№112)', () => {
     const ev = (await h.outbox('payment.confirmed')).find((e) => e.payload.payment_id === p.id);
     assert.deepEqual({ m: ev.payload.minutes, me: ev.payload.method, k: ev.payload.kind }, { m: 60, me: 'balance', k: 'start' });
     assert.equal((await h.call(BALANCE, { user: GUEST_1, club: CLUB_A, params: { club: CLUB_A } })).json.minutes, 540);
+    // Чек зачёта — не при оплате, а при закрытии сессии, за сыгранное (ревью п. 2).
+    await drainSettlements();
+    assert.equal((await h.q('select count(*)::int as n from bl.receipts where payment_id = $1', [p.id]))[0].n, 0, 'до закрытия сессии чека зачёта нет');
+    const sid = await session(t, { paidUntil: '2026-10-20T09:00:00Z' });
+    await h.pool.query('update bl.payments set session_id = $2 where id = $1', [p.id, sid]);
+    await asClub((db) => settleSessionBalance(db, deps, { sessionId: sid, now: h.clock.now() }));
     await drainSettlements();
     const rec = (await h.q('select * from bl.receipts where payment_id = $1', [p.id]))[0];
     assert.equal(rec.status, 'succeeded');
@@ -716,7 +722,7 @@ describe('B-L1: платёж отменён у нас, а в ЮKassa оплач�
       assert.equal((await h.q("select * from bl.outbox where topic = 'payment.confirmed' and payload->>'payment_id' = $1", [id])).length, 0);
       const refunds = await h.q('select * from bl.refunds where payment_id = $1', [id]);
       assert.equal(refunds.length, 1);
-      assert.deepEqual({ k: refunds[0].idempotence_key, a: Number(refunds[0].amount_kopecks), s: refunds[0].status }, { k: `late-${id}`, a: Number(p.amount_kopecks), s: 'succeeded' });
+      assert.deepEqual({ k: refunds[0].idempotence_key, a: Number(refunds[0].amount_kopecks), s: refunds[0].status, kind: refunds[0].kind }, { k: `late-${id}`, a: Number(p.amount_kopecks), s: 'succeeded', kind: 'late' });
       const emuP = await (await fetch(`${h.emuBase}/__emu/payments/${real}`)).json();
       assert.deepEqual(emuP.refunded_amount, { value: formatRub(Number(p.amount_kopecks)), currency: 'RUB' });
       const sale = (await h.q("select items from bl.receipts where payment_id = $1 and kind = 'sale'", [id]))[0];
@@ -931,6 +937,278 @@ describe('Д3 и Д2: текст тревоги о возврате пакета
 async function drainOtherSettlements(id) {
   await h.pool.query("update bl.outbox set processed_at = now() where topic = $1 and processed_at is null and payload->>'receipt_id' = $2", [SETTLE_TOPIC, id]);
 }
+
+describe('ревью денег: баланс, заморозка, отмена возврата, чеки зачёта, наличные без смены, сверки', () => {
+  const t = T(2);
+  const runTick = (d = deps) => tick({ pool: h.pool, withContext: asAppApi, deps: d, config: h.config });
+  const freeTable = async () => {
+    h.sessions.holds.delete(t);
+    for (const [sid, x] of h.sessions.sessions) if (x.resource_id === t) h.sessions.sessions.delete(sid);
+    await h.pool.query("update bl.sessions set status = 'closed', ended_at = coalesce(ended_at, now()), close_reason = coalesce(close_reason, 'stopped') where resource_id = $1 and status <> 'closed'", [t]);
+  };
+  const balanceOf = async (user) => (await h.call(BALANCE, { user, club: CLUB_A, params: { club: CLUB_A } })).json.minutes;
+  /** Свежая партия минут гостю (пакет, оплаченный в приложении) — напрямую. */
+  async function giveMinutes(user, minutes, price) {
+    const pkg = (await h.q(`insert into bl.tariff_packages (club_id, title, minutes, price_kopecks, valid_days) values ($1, 'Тест', $2, $3, 30) returning id`, [CLUB_A, minutes, price]))[0].id;
+    const pay = (await h.q(
+      `insert into bl.payments (club_id, user_id, kind, provider, method, idempotence_key, status, amount_kopecks, capture, package_id, provider_payment_id, confirmed_at, captured_at, created_at, updated_at)
+       values ($1, $2, 'package', 'yookassa', 'sbp', $3, 'succeeded', $4, true, $5, $6, now(), now(), now(), now()) returning id`,
+      [CLUB_A, user, `pk-${newKey()}`, price, pkg, `yk-${newKey()}`],
+    ))[0].id;
+    await h.q(
+      `insert into bl.balance_lots (club_id, user_id, package_id, payment_id, minutes_total, minutes_left, price_kopecks, expires_at, source_key, created_at)
+       values ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9)`,
+      [CLUB_A, user, pkg, pay, minutes, price, new Date(h.clock.now().getTime() + 30 * 86_400_000), `${pay}:${pkg}:0`, h.clock.now()],
+    );
+  }
+  const asSystem = (fn, d = deps) => asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) => fn(db, d));
+
+  it('п. 2: продление балансом после закрытия сессии — минуты вернулись (без ЮKassa), журнал, гостю уведомление; чек зачёта не пробит', async () => {
+    await freeTable();
+    await giveMinutes(GUEST_1, 120, 60000);
+    const sid = await session(t, { paidUntil: '2026-10-20T09:00:00Z' });
+    const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: t, kind: 'extend', minutes: 30, session_id: sid, use_balance: true } });
+    assert.equal(q.status, 200, JSON.stringify(q.json));
+    assert.equal(q.json.amount_kopecks, 0);
+    const before = await balanceOf(GUEST_1);
+    const r = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'balance' }, idempotencyKey: newKey() });
+    const p = await payment(r.json.payment_id);
+    assert.equal(await balanceOf(GUEST_1), before - 30);
+    // Сессия уже закрыта — light отклоняет продление и возвращает всю сумму (rejectPayment).
+    await h.pool.query("update bl.sessions set status = 'closed', ended_at = now(), close_reason = 'stopped' where id = $1", [sid]);
+    const back = await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: Number(p.amount_kopecks), reason: 'light_session_closed' }, inj()));
+    assert.deepEqual({ s: back.status, m: back.minutes_restored }, { s: 'succeeded', m: 30 });
+    assert.equal(await balanceOf(GUEST_1), before);
+    const f = (await h.q('select * from bl.refunds where id = $1', [back.refund_id]))[0];
+    assert.deepEqual({ k: f.kind, s: f.status, prov: f.provider_refund_id }, { k: 'balance', s: 'succeeded', prov: null });
+    assert.equal((await h.audit('payment.refunded')).filter((a) => a.object_id === p.id).length, 1);
+    assert.equal((await h.outbox('payment.refunded')).filter((e) => e.payload.payment_id === p.id).length, 1);
+    assert.ok(h.notes.items.some((n) => n.kind === 'balance_returned' && n.userId === GUEST_1 && n.data.minutes === 30));
+    // Повтор outbox light — тот же возврат.
+    const again = await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: Number(p.amount_kopecks), reason: 'light_session_closed' }, inj()));
+    assert.equal(again.refund_id, back.refund_id);
+    assert.equal(await balanceOf(GUEST_1), before);
+    await asSystem((db) => settleSessionBalance(db, deps, { sessionId: sid, now: h.clock.now() }));
+    assert.equal((await h.q('select count(*)::int as n from bl.receipts where payment_id = $1', [p.id]))[0].n, 0, 'зачёт за неоказанное не пробит');
+    await assert.rejects(asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 1, reason: 'ещё' }, inj())), (e) => e.code === 'limit_exceeded');
+  });
+
+  it('п. 2: прерванная игра балансом — частичный возврат минут; при закрытии чек зачёта только за сыгранное', async () => {
+    await freeTable();
+    await giveMinutes(GUEST_1, 60, 30000);
+    const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: t, kind: 'start', minutes: 60, use_balance: true } });
+    const r = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'balance' }, idempotencyKey: newKey() });
+    const p = await payment(r.json.payment_id);
+    const sid = await session(t, { paidUntil: '2026-10-20T09:00:00Z' });
+    await h.pool.query('update bl.payments set session_id = $2 where id = $1', [p.id, sid]);
+    const half = Math.floor(Number(p.amount_kopecks) / 2);
+    const before = await balanceOf(GUEST_1);
+    const back = await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: half, reason: 'interrupted' }, inj()));
+    assert.equal(back.minutes_restored, 30);
+    assert.equal(await balanceOf(GUEST_1), before + 30);
+    await asSystem((db) => settleSessionBalance(db, deps, { sessionId: sid, now: h.clock.now() }));
+    const rec = (await h.q("select * from bl.receipts where payment_id = $1 and kind = 'sale'", [p.id]));
+    const total = rec.reduce((x, y) => x + Number(y.settlement_kopecks), 0);
+    const debits = (await h.q('select coalesce(sum(value_kopecks), 0)::bigint as v, coalesce(sum(minutes), 0)::int as m from bl.balance_debits where payment_id = $1 and restored_at is null', [p.id]))[0];
+    assert.equal(debits.m, 30);
+    assert.equal(total, Number(debits.v), 'чек зачёта — за 30 сыгранных минут');
+  });
+
+  it('п. 2: смешанная оплата (карта + баланс) — возврат карты ЮKassa и минут на баланс', async () => {
+    await freeTable();
+    const have = await balanceOf(GUEST_2);
+    if (have < 60) await giveMinutes(GUEST_2, 60 - have, 30000);
+    const bal = await balanceOf(GUEST_2);
+    const q = await h.call(QUOTE, { user: GUEST_2, body: { resource_id: t, kind: 'start', minutes: bal + 60, use_balance: true } });
+    assert.equal(q.status, 200, JSON.stringify(q.json));
+    assert.equal(q.json.balance_minutes, bal);
+    assert.ok(q.json.amount_kopecks > 0);
+    const r = await h.call(PAY, { user: GUEST_2, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    await emuSucceed(r.json.payment_id);
+    const p = await payment(r.json.payment_id);
+    assert.equal(await balanceOf(GUEST_2), 0);
+    const back = await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: Number(p.amount_kopecks), reason: 'light_table_busy' }, inj()));
+    assert.equal(back.minutes_restored, bal);
+    assert.equal(await balanceOf(GUEST_2), bal);
+    const emuP = await (await fetch(`${h.emuBase}/__emu/payments/${p.provider_payment_id}`)).json();
+    assert.deepEqual(emuP.refunded_amount, { value: formatRub(Number(p.amount_kopecks)), currency: 'RUB' });
+  });
+
+  it('п. 3: заморозка 1000 ₽, возврат 300 ₽ → списано 700 ₽; строка возврата kind release; следующий возврат — до 700 ₽', async () => {
+    await freeTable();
+    const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: t, kind: 'start', minutes: null } });
+    const r = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'card' }, idempotencyKey: newKey() });
+    await emuSucceed(r.json.payment_id);
+    let p = await payment(r.json.payment_id);
+    assert.equal(p.status, 'waiting_for_capture');
+    assert.equal(Number(p.amount_kopecks), 100000);
+    const a = await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 30000, reason: 'Свет не включился' }, inj()));
+    const fa = (await h.q('select * from bl.refunds where id = $1', [a.refund_id]))[0];
+    assert.equal(fa.kind, 'release');
+    p = await payment(p.id);
+    assert.deepEqual({ s: p.status, c: Number(p.captured_kopecks) }, { s: 'succeeded', c: 70000 });
+    await assert.rejects(asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 70001, reason: 'больше списанного' }, inj())), (e) => e.code === 'limit_exceeded');
+    const b = await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 70000, reason: 'Вернуть всё списанное' }, inj()));
+    assert.equal((await h.q('select kind from bl.refunds where id = $1', [b.refund_id]))[0].kind, 'refund');
+    await assert.rejects(asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 1, reason: 'ещё' }, inj())), (e) => e.code === 'limit_exceeded');
+  });
+
+  it('п. 4: возврат отменён ЮKassa — payment.refund_canceled, критичная тревога, не входит в «уже возвращено»; пакет из приложения снова действует', async () => {
+    const buy = await h.call(BUY_PKG, { user: GUEST_2, params: { id: (await h.q("select id from bl.tariff_packages where club_id = $1 and active order by created_at limit 1", [CLUB_A]))[0].id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    await emuSucceed(buy.json.payment_id);
+    const lot = (await h.q('select * from bl.balance_lots where payment_id = $1', [buy.json.payment_id]))[0];
+    const rr = await h.call(REFUND_LOT, { user: OWNER_A, params: { id: lot.id }, body: { reason: 'Передумал' } });
+    assert.equal(rr.status, 200, JSON.stringify(rr.json));
+    const f = (await h.q('select * from bl.refunds where id = $1', [rr.json.refund_id]))[0];
+    // Эмулятор проводит возврат сразу; отмену имитируем: возврат снова pending, ЮKassa сообщает canceled.
+    await h.pool.query("update bl.refunds set status = 'pending' where id = $1", [f.id]);
+    await asSystem((db) => applyRefundStatus(db, deps, { ...f, status: 'pending' }, 'canceled'));
+    const ev = (await h.outbox('payment.refund_canceled')).filter((e) => e.payload.refund_id === f.id);
+    assert.equal(ev.length, 1);
+    assert.deepEqual(ev[0].payload, { refund_id: f.id, payment_id: f.payment_id, club_id: CLUB_A, amount_kopecks: Number(f.amount_kopecks), lots_restored: [lot.id] });
+    const al = h.alarms.items.filter((x) => x.type === 'refund_canceled' && x.data.refund_id === f.id);
+    assert.equal(al.length, 1);
+    assert.equal(al[0].level, 'critical');
+    const l2 = (await h.q('select * from bl.balance_lots where id = $1', [lot.id]))[0];
+    assert.deepEqual({ m: l2.minutes_left, r: l2.revoked_at }, { m: l2.minutes_total, r: null });
+    assert.equal((await h.audit('package.restored')).filter((x) => x.data.lot_id === lot.id).length, 1);
+    // Отменённый возврат не в лимите: возврат пакета можно провести снова.
+    // Наш лимит пропускает (отменённый не в «уже возвращено»), запрос уходит в ЮKassa с новым ключом
+    // pkr-<lot>-1; эмулятор деньги уже вернул (отмену мы имитировали) и отказывает — у настоящей
+    // ЮKassa после отмены возврата остаток платежа снова доступен.
+    const emuBefore = (await (await fetch(`${h.emuBase}/__emu/requests`)).json()).length;
+    const again = await h.call(REFUND_LOT, { user: OWNER_A, params: { id: lot.id }, body: { reason: 'Повтор после отмены' } });
+    assert.deepEqual([again.status, again.json], [409, { error: 'payment_failed' }]);
+    const sent = (await (await fetch(`${h.emuBase}/__emu/requests`)).json()).slice(emuBefore).filter((x) => x.path === '/v3/refunds');
+    assert.deepEqual(sent.map((x) => x.idempotence_key), [`pkr-${lot.id}-1`]);
+    assert.equal((await h.q('select minutes_left from bl.balance_lots where id = $1', [lot.id]))[0].minutes_left, lot.minutes_total, 'отказ — откат, партия действует');
+  });
+
+  it('п. 4: зависший pending-возврат — сверка опрашивает ЮKassa', async () => {
+    await freeTable();
+    const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: t, kind: 'start', minutes: 60 } });
+    const pay = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    await emuSucceed(pay.json.payment_id);
+    const p = await payment(pay.json.payment_id);
+    const remote = await asSystem(async (db) => {
+      const client = clientFor(await loadPaymentSettings(db, CLUB_A), h.config);
+      const item = { description: 'Тест', quantity: 1, amount: { value: '1.00', currency: 'RUB' }, vat_code: 1, payment_mode: 'full_payment', payment_subject: 'service' };
+      return client.createRefund({ payment_id: p.provider_payment_id, amount: { value: '1.00', currency: 'RUB' }, description: 'тест', receipt: { customer: { phone: '79990000001' }, items: [item] } }, `t-${newKey().slice(0, 30)}`);
+    });
+    const f = (await h.q(
+      `insert into bl.refunds (club_id, payment_id, provider_refund_id, idempotence_key, amount_kopecks, status, reason, created_at, updated_at)
+       values ($1, $2, $3, $4, 100, 'pending', 'тест сверки', $5, $5) returning *`,
+      [CLUB_A, p.id, remote.id, `t-${newKey().slice(0, 30)}`, new Date(h.clock.now().getTime() - 5 * 60_000)],
+    ))[0];
+    await runTick();
+    assert.equal((await h.q('select status from bl.refunds where id = $1', [f.id]))[0].status, 'succeeded');
+  });
+
+  it('п. 6: чек зачёта pending — сверка опрашивает ЮKassa; «Повторить» сбрасывает provider_receipt_id', async () => {
+    const rec = (await h.q("select * from bl.receipts where club_id = $1 and channel = 'yookassa' and settles_payment_id is not null and status = 'succeeded' and provider_receipt_id is not null limit 1", [CLUB_A]))[0];
+    await h.pool.query("update bl.receipts set status = 'pending', updated_at = $2 where id = $1", [rec.id, new Date(h.clock.now().getTime() - 5 * 60_000)]);
+    await runTick();
+    assert.equal((await h.q('select status from bl.receipts where id = $1', [rec.id]))[0].status, 'succeeded');
+    await h.pool.query("update bl.receipts set status = 'failed' where id = $1", [rec.id]);
+    const r = await h.call(RETRY, { user: OWNER_A, club: CLUB_A, params: { id: rec.id }, body: { reason: 'ЮKassa отменила чек' }, idempotencyKey: newKey() });
+    assert.equal(r.json.retried, true);
+    const after = (await h.q('select status, provider_receipt_id from bl.receipts where id = $1', [rec.id]))[0];
+    assert.deepEqual(after, { status: 'receipt_pending', provider_receipt_id: null });
+    await h.pool.query("update bl.outbox set processed_at = now() where topic = $1 and processed_at is null", [SETTLE_TOPIC]);
+  });
+
+  it('п. 7: возврат наличных без открытой смены ждёт смены — тревога и ресепшену; после открытия проводится в новой смене', async () => {
+    const p = (await h.q(
+      `insert into bl.payments (club_id, resource_id, user_id, kind, provider, method, idempotence_key, status, amount_kopecks, capture, minutes, confirmed_at, captured_at, created_at, updated_at)
+       values ($1, $2, $3, 'start', 'reception', 'cash', $4, 'succeeded', 50000, true, 60, now(), now(), now(), now()) returning *`,
+      [CLUB_A, t, GUEST_1, `rc-${newKey()}`],
+    ))[0];
+    const noShift = { ...deps, shifts: { currentShift: async () => null } };
+    const kktBefore = kktCalls.length;
+    const q = await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 20000, reason: 'Недоиграно' }, { deps: noShift, config: h.config }));
+    assert.equal(q.status, 'queued');
+    assert.equal((await h.q('select count(*)::int as n from bl.refunds where payment_id = $1', [p.id]))[0].n, 0, 'в смену без кассира не попал');
+    assert.ok(h.alarms.items.some((a) => a.type === 'cash_refund_awaiting_shift' && a.data.pending_id === q.pending_id));
+    assert.ok(h.notes.items.some((n) => n.kind === 'cash_refund' && n.roles?.includes('reception') && n.data.pending_id === q.pending_id));
+    // Повтор и лимит учитывают ожидающий возврат.
+    assert.equal((await asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 20000, reason: 'Недоиграно' }, { deps: noShift, config: h.config }))).pending_id, q.pending_id);
+    await assert.rejects(asSystem((db) => refund(db, { paymentId: p.id, amountKopecks: 30001, reason: 'больше' }, { deps: noShift, config: h.config })), (e) => e.code === 'limit_exceeded');
+    await runTick(noShift);
+    assert.equal((await h.q('select done_at from bl.cash_refunds_pending where id = $1', [q.pending_id]))[0].done_at, null);
+    const withShift = { ...deps, shifts: { currentShift: async () => ({ id: newKey(), opened_by_name: 'Анна' }) } };
+    h.clock.advance(2 * 60_000);
+    try {
+      await runTick(withShift);
+    } finally {
+      h.clock.advance(-2 * 60_000);
+    }
+    const pend = (await h.q('select * from bl.cash_refunds_pending where id = $1', [q.pending_id]))[0];
+    assert.ok(pend.done_at && pend.refund_id);
+    const f = (await h.q('select * from bl.refunds where id = $1', [pend.refund_id]))[0];
+    assert.deepEqual({ s: f.status, a: Number(f.amount_kopecks) }, { s: 'manual', a: 20000 });
+    const call = kktCalls.slice(kktBefore).find((c) => c.refundId === f.id);
+    assert.deepEqual({ k: call.kind, op: call.operatorName, pay: call.payments }, { k: 'sell_refund', op: 'Анна', pay: [{ method: 'cash', amount_kopecks: 20000 }] });
+  });
+
+  it('п. 11: сбой сверки откатывает её частичные записи (точка сохранения), checked_at отмечен', async () => {
+    await freeTable();
+    const cfg = await (await fetch(`${h.emuBase}/__emu/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+    const hookUrl = cfg.config.webhookUrl;
+    const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: t, kind: 'start', minutes: 60 } });
+    const r = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+    const p = await payment(r.json.payment_id);
+    await fetch(`${h.emuBase}/__emu/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ webhook_url: 'http://127.0.0.1:9/none' }) });
+    try {
+      await fetch(`${h.emuBase}/__emu/payments/${p.provider_payment_id}/succeed`, { method: 'POST' });
+    } finally {
+      await fetch(`${h.emuBase}/__emu/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ webhook_url: hookUrl }) });
+    }
+    const broken = { ...deps, outbox: { ...deps.outbox, enqueue: async (db, topic, payload) => { if (topic === 'payment.confirmed') throw new Error('outbox down'); return deps.outbox.enqueue(db, topic, payload); } } };
+    h.clock.advance(2 * 60_000);
+    try {
+      await runTick(broken);
+    } finally {
+      h.clock.advance(-2 * 60_000);
+    }
+    const after = await payment(p.id);
+    assert.deepEqual({ s: after.status, c: after.confirmed_at }, { s: 'pending', c: null }, 'статус не закоммичен без события');
+    assert.ok(after.checked_at);
+    h.clock.advance(4 * 60_000);
+    try {
+      await runTick();
+    } finally {
+      h.clock.advance(-4 * 60_000);
+    }
+    assert.equal((await payment(p.id)).status, 'succeeded');
+    assert.equal((await h.outbox('payment.confirmed')).filter((e) => e.payload.payment_id === p.id).length, 1);
+  });
+});
+
+describe('pendingPlayUntil для брони', () => {
+  it('живая котировка → её конец; оплата в ожидании → сейчас + минуты; подтверждено или нет ничего — null', async () => {
+    const t = T(2);
+    h.sessions.holds.delete(t);
+    for (const [sid, x] of h.sessions.sessions) if (x.resource_id === t) h.sessions.sessions.delete(sid);
+    await h.pool.query("update bl.sessions set status = 'closed', ended_at = coalesce(ended_at, now()), close_reason = coalesce(close_reason, 'stopped') where resource_id = $1 and status <> 'closed'", [t]);
+    // Старые котировки и платежи этого стола из других тестов — вне окна: сдвигаем часы на 2 часа.
+    h.clock.advance(2 * 3600_000);
+    try {
+      const now = () => h.clock.now();
+      const until = () => asAppApi(h.pool, { clubId: CLUB_A, actorType: 'system' }, (db) => pendingPlayUntil(db, { resourceId: t, now: now() }));
+      assert.equal(await until(), null);
+      const q = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: t, kind: 'start', minutes: 60 } });
+      assert.equal(q.status, 200, JSON.stringify(q.json));
+      const qr = (await h.q('select valid_until from bl.quotes where id = $1', [q.json.quote_id]))[0];
+      assert.equal((await until()).toISOString(), new Date(new Date(qr.valid_until).getTime() + 60 * 60_000).toISOString());
+      const r = await h.call(PAY, { user: GUEST_1, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: newKey() });
+      assert.equal((await until()).toISOString(), new Date(now().getTime() + 60 * 60_000).toISOString(), 'платёж в ожидании');
+      await emuSucceed(r.json.payment_id);
+      assert.equal(await until(), null, 'подтверждено — время уже у сессии');
+    } finally {
+      h.clock.advance(-2 * 3600_000);
+    }
+  });
+});
 
 function formatRub(k) {
   return `${Math.floor(k / 100)}.${String(k % 100).padStart(2, '0')}`;

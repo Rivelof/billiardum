@@ -106,14 +106,55 @@ export async function applyDebit(db, plan, { paymentId, userId, now }) {
   }
 }
 
-/** Отмена платежа игры: минуты возвращаются в партии. */
+/** Отмена платежа игры: все его минуты возвращаются в партии. */
 export async function restoreBalance(db, { paymentId, now }) {
+  return (await restoreMinutes(db, { paymentId, minutes: null, now })).minutes;
+}
+
+/** Сколько минут было вернувшимися: истёкшая партия получает ещё сутки (ревью п. 2, README). */
+export const RESTORED_GRACE_MS = DAY_MS;
+
+/**
+ * Вернуть в партии minutes минут списаний платежа paymentId (null — все невозвращённые).
+ * Возврат — с последних списаний (LIFO); строка списания при частичном возврате делится:
+ * у неё остаются минуты и доля стоимости, рядом — строка restored. Минуты, вернувшиеся в уже
+ * истёкшую партию, иначе пропали бы — её срок продлевается до now + сутки.
+ * @returns {Promise<{ minutes: number, valueKopecks: number }>}
+ */
+export async function restoreMinutes(db, { paymentId, minutes, now }) {
   const { rows } = await db.query(
-    `update bl.balance_debits set restored_at = $2 where payment_id = $1 and restored_at is null returning lot_id, minutes`,
-    [paymentId, now],
+    `select d.*, l.expires_at from bl.balance_debits d join bl.balance_lots l on l.id = d.lot_id
+      where d.payment_id = $1 and d.restored_at is null
+      order by d.created_at desc, d.id desc
+      for update of d, l`,
+    [paymentId],
   );
-  for (const d of rows) await db.query('update bl.balance_lots set minutes_left = minutes_left + $2 where id = $1', [d.lot_id, d.minutes]);
-  return rows.reduce((s, d) => s + d.minutes, 0);
+  let left = minutes === null ? Infinity : minutes;
+  let restored = 0;
+  let value = 0;
+  for (const d of rows) {
+    if (left <= 0) break;
+    const take = Math.min(left, d.minutes);
+    const v = take === d.minutes ? Number(d.value_kopecks) : share(Number(d.value_kopecks), take, d.minutes);
+    if (take === d.minutes) {
+      await db.query('update bl.balance_debits set restored_at = $2 where id = $1', [d.id, now]);
+    } else {
+      await db.query('update bl.balance_debits set minutes = minutes - $2, value_kopecks = value_kopecks - $3 where id = $1', [d.id, take, v]);
+      await db.query(
+        `insert into bl.balance_debits (club_id, user_id, lot_id, payment_id, minutes, value_kopecks, created_at, restored_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [d.club_id, d.user_id, d.lot_id, d.payment_id, take, v, d.created_at, now],
+      );
+    }
+    await db.query('update bl.balance_lots set minutes_left = minutes_left + $2 where id = $1', [d.lot_id, take]);
+    if (new Date(d.expires_at).getTime() <= now.getTime()) {
+      await db.query('update bl.balance_lots set expires_at = greatest(expires_at, $2) where id = $1', [d.lot_id, new Date(now.getTime() + RESTORED_GRACE_MS)]);
+    }
+    left -= take;
+    restored += take;
+    value += v;
+  }
+  return { minutes: restored, valueKopecks: value };
 }
 
 /** Чеки зачёта по списаниям платежа игры: один на каждый платёж-источник партий. */

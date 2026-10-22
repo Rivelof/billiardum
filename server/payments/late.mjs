@@ -3,7 +3,8 @@
 // Так бывает, когда отмена у нас локальная: ЮKassa не знала платёж (404, not_found_at_provider),
 // заявка сгорела, вебхук пришёл после таймаута. Игру или бронь по такому платежу уже не запускаем
 // (статус canceled окончательный, payments_guard), а деньги гостя возвращаем сами:
-// * succeeded — возврат ЮKassa на всю сумму с чеком возврата (позиции — из чека продажи), ключ
+// * succeeded — возврат ЮKassa на всю сумму с чеком возврата (позиции — из чека продажи), строка
+//   bl.refunds kind late (оплата в выручку не входила — возврат тоже не входит, ревью п. 8), ключ
 //   идемпотентности late-<payment_id>: повтор вебхука или сверки возврат не дублирует;
 // * waiting_for_capture — отмена заморозки (ключ late-rel-<payment_id>).
 // Тревога владельцу (critical) и уведомление гостю «Платёж вернётся» — один раз (payments.late_paid_at).
@@ -112,8 +113,8 @@ async function lateRefund(db, deps, client, p, amount, now) {
     key,
   );
   const { rows: ins } = await db.query(
-    `insert into bl.refunds (club_id, payment_id, provider_refund_id, idempotence_key, amount_kopecks, status, reason, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, 'pending', $6, $7, $7) returning *`,
+    `insert into bl.refunds (club_id, payment_id, provider_refund_id, idempotence_key, amount_kopecks, status, reason, kind, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, 'pending', $6, 'late', $7, $7) returning *`,
     [p.club_id, p.id, remote.id, key, amount, LATE_REASON, now],
   );
   await insertReceipt(db, {

@@ -87,7 +87,8 @@ export async function retrySettlementReceipt(db, deps, { receiptId, reason, staf
   if (r.settle_retry >= 100) throw new MoneyError('limit_exceeded', 'повторов чека');
   const now = deps.clock.now();
   const { rows: up } = await db.query(
-    `update bl.receipts set status = 'receipt_pending', settle_retry = settle_retry + 1, updated_at = $2 where id = $1 returning settle_retry`,
+    `update bl.receipts set status = 'receipt_pending', settle_retry = settle_retry + 1, provider_receipt_id = null, updated_at = $2
+      where id = $1 returning settle_retry`,
     [r.id, now],
   );
   await deps.audit.appendAudit(db, {
@@ -117,17 +118,7 @@ export async function sendSettlementReceipt(db, deps, config, payload) {
   const settings = await loadPaymentSettings(db, r.club_id);
   const phone = receiptPhone(r.customer_phone);
   const now = deps.clock.now();
-  const fail = async (code) => {
-    await db.query(`update bl.receipts set status = 'failed', updated_at = $2 where id = $1`, [r.id, now]);
-    deps.log?.error?.('settlement_receipt_failed', { receipt_id: r.id, club_id: r.club_id, code });
-    // Действие «Повторить» — для экрана тревог (POST /api/receipts/{id}/retry, управляющий и выше).
-    await deps.alarms.raise(db, r.club_id, {
-      type: 'settlement_receipt_failed',
-      level: 'important',
-      data: { receipt_id: r.id, code, action_id: 'retry', action_title: 'Повторить', action_url: `/api/receipts/${r.id}/retry` },
-    });
-    return { result: 'failed' };
-  };
+  const fail = (code) => failSettlement(db, deps, r, code, now);
   if (!phone) return fail('no_customer');
   const body = {
     type: 'payment',
@@ -147,5 +138,58 @@ export async function sendSettlementReceipt(db, deps, config, payload) {
   }
   const status = { succeeded: 'succeeded', pending: 'pending', canceled: 'failed' }[remote?.status] ?? 'pending';
   await db.query(`update bl.receipts set provider_receipt_id = $2, status = $3, updated_at = $4 where id = $1`, [r.id, remote.id, status, now]);
+  if (status === 'failed') await failSettlement(db, deps, r, 'canceled', now);
   return { result: status, provider_receipt_id: remote.id };
+}
+
+/** Чек зачёта не пробит: статус failed и тревога с действием «Повторить» (экран тревог). */
+async function failSettlement(db, deps, r, code, now) {
+  await db.query(`update bl.receipts set status = 'failed', updated_at = $2 where id = $1`, [r.id, now]);
+  deps.log?.error?.('settlement_receipt_failed', { receipt_id: r.id, club_id: r.club_id, code });
+  await deps.alarms.raise(db, r.club_id, {
+    type: 'settlement_receipt_failed',
+    level: 'important',
+    data: { receipt_id: r.id, code, action_id: 'retry', action_title: 'Повторить', action_url: `/api/receipts/${r.id}/retry` },
+  });
+  return { result: 'failed' };
+}
+
+/**
+ * Опрос чека зачёта, который ЮKassa приняла, но ещё не зарегистрировала (pending; п. 6):
+ * планировщик, money_due receipt_stale. succeeded — готово; canceled — failed и тревога; pending —
+ * отметка updated_at (следующий опрос через минуту).
+ */
+export async function pollSettlementReceipt(db, deps, config, receiptId) {
+  const { rows } = await db.query('select * from bl.receipts where id = $1 for update', [receiptId]);
+  const r = rows[0];
+  if (!r || r.channel !== 'yookassa' || r.status !== 'pending' || !r.provider_receipt_id) return { result: 'skipped' };
+  const now = deps.clock.now();
+  const settings = await loadPaymentSettings(db, r.club_id);
+  const remote = await clientFor(settings, config).getReceipt(r.provider_receipt_id);
+  if (remote?.status === 'succeeded') {
+    await db.query(`update bl.receipts set status = 'succeeded', updated_at = $2 where id = $1`, [r.id, now]);
+    return { result: 'succeeded' };
+  }
+  if (remote?.status === 'canceled') return failSettlement(db, deps, r, 'canceled', now);
+  await db.query('update bl.receipts set updated_at = $2 where id = $1', [r.id, now]);
+  return { result: 'pending' };
+}
+
+/**
+ * Сессия закрыта (outbox session.closed, п. 2): чеки зачёта за минуты баланса, которые реально
+ * сыграны. Минуты, вернувшиеся на баланс (возврат light, отказ стола), в чек не попадают — зачёт
+ * за неоказанную услугу не пробивается. Повтор — те же чеки (queueSettlementReceipt).
+ */
+export async function settleSessionBalance(db, deps, { sessionId, now }) {
+  const { rows } = await db.query(
+    `select p.id from bl.payments p
+      where p.balance_minutes > 0 and p.status = 'succeeded'
+        and (p.session_id = $1 or p.id in (select sp.payment_id from bl.session_payments sp where sp.session_id = $1 and sp.outcome = 'applied'))
+      order by p.created_at, p.id`,
+    [sessionId],
+  );
+  const { issueBalanceReceipts } = await import('../packages/balance.mjs');
+  const out = [];
+  for (const p of rows) out.push(...(await issueBalanceReceipts(db, deps, { paymentId: p.id, now })));
+  return out.filter(Boolean);
 }
