@@ -644,8 +644,9 @@ export function createLightService(opts) {
    * стол освободится (а pending другим гостем стол не получит). Стол в pending — не трогаем.
    * @returns {{ ok: true, applied: boolean, until?: string, reason?: string }}
    */
-  async function setReserved(db, { resourceId, until, userId = null, source = 'booking' }) {
+  async function setReserved(db, { resourceId, until, userId = null, source = 'booking', refId = null }) {
     if (!['booking', 'waitlist', 'staff'].includes(source)) fail('bad_request', 'source');
+    if (refId !== null && !isUuid(refId)) fail('bad_request', 'refId');
     const t = now();
     const u = new Date(until);
     if (Number.isNaN(u.getTime()) || u <= t || u.getTime() - t.getTime() > 24 * 3600_000) fail('bad_request', 'until');
@@ -656,14 +657,14 @@ export function createLightService(opts) {
     const busy = await openSessionOn(db, resourceId);
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'pending') return { ok: true, applied: false, reason: 'pending' };
-    if (h?.kind === 'reserved' && h.user_id === userId && h.source === source) {
+    if (h?.kind === 'reserved' && h.user_id === userId && h.source === source && (h.ref_id ?? null) === refId) {
       await db.query('update bl.resource_holds set until = $2 where id = $1', [h.id, u]);
     } else {
       // Другое удержание reserved (другой гость, бронь вместо очереди) заменяется новым.
       if (h?.kind === 'reserved') await releaseHold(db, h.id, t, 'replaced');
       await db.query(
-        `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, source, created_at) values ($1, $2, 'reserved', $3, $4, $5, $6)`,
-        [res.club_id, resourceId, userId, u, source, t],
+        `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, source, ref_id, created_at) values ($1, $2, 'reserved', $3, $4, $5, $6, $7)`,
+        [res.club_id, resourceId, userId, u, source, refId, t],
       );
     }
     const shown = !busy && h?.kind !== 'service';
@@ -1109,6 +1110,14 @@ export function createLightService(opts) {
     return { id: b.id, starts_at: iso(b.starts_at), ends_at: iso(b.ends_at), source: b.source ?? null, status: b.status ?? null };
   }
 
+  /** Удержание в плане зала: без ПДн; у очереди — offer_id, у брони — booking_id (№122). */
+  function holdView(h) {
+    const out = { kind: h.kind, until: iso(h.until), reason_code: h.reason_code ?? null, source: h.source ?? null };
+    if (h.source === 'waitlist') out.offer_id = h.ref_id ?? null;
+    if (h.source === 'booking') out.booking_id = h.ref_id ?? null;
+    return out;
+  }
+
   /** Элемент зала одного стола (hall и SSE). */
   async function hallItem(db, r, { withSession = true } = {}) {
     const t = now();
@@ -1128,7 +1137,7 @@ export function createLightService(opts) {
       session: s && withSession ? sessionSummary(s, t) : null,
       busy_until: s ? iso(s.paid_until) : null,
       until: h ? iso(h.until) : null,
-      hold: h ? { kind: h.kind, until: iso(h.until), reason_code: h.reason_code ?? null, source: h.source ?? null } : null,
+      hold: h ? holdView(h) : null,
       next_booking: await nextBookingInfo(db, r.id),
       device: device
         ? { id: device.id, online, rssi: info?.rssi ?? null, fw: info?.fw ?? device.fw ?? null, caps: info?.caps ?? device.caps ?? [], mode: info?.mode ?? null }

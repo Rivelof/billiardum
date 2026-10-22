@@ -216,7 +216,7 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     await set(db, first[0].id, { status: 'offered', offered_at: t, offer_until: until, updated_at: t });
     const w = await load(db, first[0].id);
     // Стол за предложенным гостем до конца предложения (№122).
-    await deps.light.setReserved(db, { resourceId, until, userId: w.user_id, source: 'waitlist' });
+    await deps.light.setReserved(db, { resourceId, until, userId: w.user_id, source: 'waitlist', refId: w.id });
     try {
       await deps.notify.send(db, w.user_id, {
         kind: 'waitlist.offer',

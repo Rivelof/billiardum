@@ -16,7 +16,8 @@
 //   startFromBooking(db, { booking, userId, paidMinutes, paymentIds }) → session_id (M3)
 //       booking: { id, club_id, resource_id }; время покрыто предоплатой и доплатой (paidMinutes);
 //       идемпотентно по booking.id; стол занят — LightError table_busy | table_pending | table_service.
-//   setReserved(db, { resourceId, until, userId? }) → { ok, applied, until, reason? } (M3, №107)
+//   setReserved(db, { resourceId, until, userId?, source?, refId? }) → { ok, applied, until, reason? } (M3, №107, №122)
+//       source: booking (по умолчанию) | waitlist | staff; refId — бронь или запись очереди (в плане зала hold.booking_id / hold.offer_id)
 //   clearReserved(db, { resourceId }) → { ok, released }
 //   startFromDeposit(db, { resourceId, userId?, staffId, depositKopecks }) → { session_id, paid_until, minutes } (№112)
 //

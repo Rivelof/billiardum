@@ -103,7 +103,7 @@ export async function loadResource(db, resourceId) {
 /** Действующее удержание стола (одно: его гарантирует блокировка ресурса). */
 export async function activeHold(db, resourceId, now) {
   const { rows } = await db.query(
-    `select id, kind, user_id, until, reason_code, reason_text, source, created_at from bl.resource_holds
+    `select id, kind, user_id, until, reason_code, reason_text, source, ref_id, created_at from bl.resource_holds
       where resource_id = $1 and released_at is null and until > $2
       order by created_at desc limit 1`,
     [resourceId, now],

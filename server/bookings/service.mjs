@@ -754,7 +754,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       }
       if (b.status === 'confirmed') {
         const until = new Date(startMs + b.hold_minutes * MIN);
-        const r = await deps.light.setReserved(db, { resourceId: b.resource_id, until, userId: b.user_id ?? null, source: 'booking' });
+        const r = await deps.light.setReserved(db, { resourceId: b.resource_id, until, userId: b.user_id ?? null, source: 'booking', refId: b.id });
         flags.reserved_hold = true;
         await updateBooking(db, b.id, { status: 'reserved', reserved_at: t, notified: flags, updated_at: t });
         const nb = await loadBooking(db, b.id);

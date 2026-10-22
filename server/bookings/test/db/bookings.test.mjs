@@ -197,6 +197,9 @@ describe('бронь', { skip }, () => {
     assert.ok(hold);
     assert.equal(new Date(hold.until).getTime(), start + 30 * MIN);
     assert.equal(hold.user_id, u.id);
+    const sr = h.lightCalls.filter((c) => c.fn === 'setReserved' && c.args.refId === b.id);
+    assert.equal(sr.length, 1);
+    assert.equal(sr[0].args.source, 'booking');
     const cmds = await h.q("select type from bl.device_commands where device_id = 'd1000000-0000-4000-8000-000000000001' and type = 'state.reserved'");
     assert.ok(cmds.length >= 1);
     assert.equal((await h.notifications(u.id, 'booking.soon')).length, 1);
@@ -300,7 +303,7 @@ describe('бронь', { skip }, () => {
     assert.equal(s.payer_user_id, u.id);
     assert.equal(new Date(s.paid_until).getTime(), start + 60 * MIN);
     // light получает конец брони (№123).
-    const lc = h.lightCalls.filter((c) => c.args.booking.id === p.id).at(-1).args;
+    const lc = h.lightCalls.filter((c) => c.fn === 'startFromBooking' && c.args.booking.id === p.id).at(-1).args;
     assert.equal(lc.paidUntil, new Date(start + 60 * MIN).toISOString());
     assert.equal(lc.paidMinutes, undefined);
     const settle = h.moneyCalls.filter((c) => c.fn === 'settlePrepayment' && c.args.paymentId === p.paymentId);

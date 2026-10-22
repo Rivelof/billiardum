@@ -62,6 +62,10 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     assert.equal(heldA.length, 1);
     assert.equal(heldA[0].user_id, a.id);
     assert.equal(new Date(heldA[0].until).getTime(), T0 + 37 * MIN);
+    const sr = h.lightCalls.filter((x) => x.fn === 'setReserved' && x.args.refId === ja.json.id);
+    assert.equal(sr.length, 1);
+    assert.equal(sr[0].args.source, 'waitlist');
+    assert.equal(sr[0].args.userId, a.id);
     const walkIn = await h.pool.connect();
     try {
       await walkIn.query('begin');

@@ -262,12 +262,20 @@ describe('M3: порядок очереди (Д1), конец брони (№123
 
   it('№122: удержание листа ожидания без брони — синий, чужой гость получает 409, предложенный гость занимает стол', async () => {
     const c = h.ctl.get(2);
-    const r = await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(2), until: new Date(h.time.t + 5 * MIN), userId: GUEST(2), source: 'waitlist' }));
+    const offerId = randomUUID();
+    const r = await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(2), until: new Date(h.time.t + 5 * MIN), userId: GUEST(2), source: 'waitlist', refId: offerId }));
     assert.equal(r.applied, true);
     await h.until(() => c.st.mode === 'reserved', 'синий');
     const hall = await h.asUser(RECEPTION, (db) => h.st.service.hall(db, { clubId: CLUB, userId: RECEPTION }), { clubId: CLUB });
     const t2 = hall.find((x) => x.resource.number === 2);
-    assert.deepEqual([t2.status, t2.hold.kind, t2.hold.source], ['reserved', 'reserved', 'waitlist']);
+    assert.deepEqual([t2.status, t2.hold.kind, t2.hold.source, t2.hold.offer_id], ['reserved', 'reserved', 'waitlist', offerId]);
+    assert.ok(!('user_id' in t2.hold) && !('booking_id' in t2.hold), 'без гостя и лишних полей');
+    // Бронь: hold.booking_id.
+    const bookingId = randomUUID();
+    await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(1), until: new Date(h.time.t + 30 * MIN), refId: bookingId }));
+    const hall2 = await h.asUser(RECEPTION, (db) => h.st.service.hall(db, { clubId: CLUB, userId: RECEPTION }), { clubId: CLUB });
+    assert.deepEqual(hall2.find((x) => x.resource.number === 1).hold, { kind: 'reserved', until: new Date(h.time.t + 30 * MIN).toISOString(), reason_code: null, source: 'booking', booking_id: bookingId });
+    assert.equal(await code(() => h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(1), until: new Date(h.time.t + MIN), refId: 'x' }))), 'bad_request');
     assert.equal((await h.asSystem(CLUB, (db) => api.getResourceStatus(db, RES(2)))).status, 'reserved');
     assert.equal(await code(() => h.asUser(GUEST(1), (db) => api.holdPending(db, { resourceId: RES(2), userId: GUEST(1), until: new Date(h.time.t + 3 * MIN) }))), 'table_busy');
     const ok = await h.asUser(GUEST(2), (db) => api.holdPending(db, { resourceId: RES(2), userId: GUEST(2), until: new Date(h.time.t + 3 * MIN) }));
