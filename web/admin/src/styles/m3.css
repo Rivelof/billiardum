@@ -246,3 +246,9 @@
 }
 .alarm__tools .alarm__ack { align-self: stretch; }
 .alarm__tools .btn { justify-content: center; }
+
+/* Шапка на телефоне: заголовок в одну строку, длинные кнопки инструментов — только значком (подпись — aria-label) */
+.bar__title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 639px) {
+  .bar__tools .bar__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}

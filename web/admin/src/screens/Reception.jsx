@@ -134,6 +134,7 @@ export function Reception({ ctx }) {
         type="button"
         class={`btn btn--sm ${sound ? 'btn--quiet' : 'btn--lamp'}`}
         aria-pressed={sound ? 'true' : 'false'}
+        aria-label={sound ? 'Звук заявок включён' : 'Включить звук заявок'}
         onClick={async () => {
           const ok = await unlockAudio().catch(() => false);
           setSound(ok);
@@ -141,7 +142,7 @@ export function Reception({ ctx }) {
         }}
       >
         <Icon name={sound ? 'sound' : 'mute'} />
-        {sound ? 'Звук заявок включён' : 'Включить звук заявок'}
+        <span class="bar__label">{sound ? 'Звук заявок включён' : 'Включить звук заявок'}</span>
       </button>
     </>
   );

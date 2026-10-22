@@ -392,15 +392,16 @@ export function BookScreen({ clubId }) {
             ) : (
               <ErrorNote error={error} />
             )}
-            {!askAuth || (signedIn && !consentNeeded) ? (
-              <div class="actionbar">
-                <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={book}>
-                  <Icon name="calendar" />
-                  {busy ? 'Бронируем…' : prepay ? `Забронировать и оплатить ${formatMoney(prepay)}` : 'Забронировать стол'}
-                </button>
-              </div>
-            ) : null}
           </section>
+        ) : null}
+        {/* Липкая кнопка — после карточки сводки, не внутри: не наезжает на её заголовок (под ней — свой отступ) */}
+        {ready && slot && resource && chosenMinutes && (!askAuth || (signedIn && !consentNeeded)) ? (
+          <div class="actionbar book__bar">
+            <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={book}>
+              <Icon name="calendar" />
+              {busy ? 'Бронируем…' : prepay ? `Забронировать и оплатить ${formatMoney(prepay)}` : 'Забронировать стол'}
+            </button>
+          </div>
         ) : null}
       </main>
     </div>
@@ -515,7 +516,26 @@ export function BoardScale({ slots, selected, minutes = 60, onPick, tz, date, ta
 
 /** План зала для брони: свободные на выбранное время столы тёмные и нажимаются, занятые приглушены со словом «до 20:00». */
 function BookPlan({ day, slot, free, selected, onPick, tz }) {
-  const layout = useMemo(() => planLayout(day.resources.map((r) => ({ id: r.id, number: r.number, type: r.type }))), [day.resources.map((r) => r.id).join(',')]);
+  // Подписи «Стол N / Свободен» не должны наезжать друг на друга: на узком плане — меньше столов в ряду
+  // (на столбец нужно около 88 px ширины плана)
+  const floor = useRef(null);
+  const [floorWidth, setFloorWidth] = useState(0);
+  useEffect(() => {
+    const el = floor.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(([e]) => setFloorWidth(Math.round(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const perRow = floorWidth ? Math.max(2, Math.min(6, Math.floor(floorWidth / 88))) : undefined;
+  const ids = day.resources.map((r) => r.id).join(',');
+  const layout = useMemo(() => {
+    const items = day.resources.map((r) => ({ id: r.id, number: r.number, type: r.type }));
+    const auto = planLayout(items);
+    // Ряд по умолчанию шире, чем помещается, — переложить по ширине плана
+    const cols = new Set(auto.items.map((i) => i.x)).size;
+    return perRow && cols > perRow ? planLayout(items, { perRow }) : auto;
+  }, [ids, perRow]);
   const svgs = useMemo(() => new Map(layout.items.map((p) => [p.id, tableSvg(p.kind, { uid: `bk-${p.id}` })])), [layout]);
   const byId = new Map(day.resources.map((r) => [r.id, r]));
   const minLen = day.min_minutes ?? 60;
@@ -537,7 +557,7 @@ function BookPlan({ day, slot, free, selected, onPick, tz }) {
           </li>
         </ul>
       </div>
-      <div class="hall__floor">
+      <div class="hall__floor" ref={floor}>
         <div class="plan" role="group" aria-label={`План зала на ${formatTime(slot, tz)}`} style={{ aspectRatio: `${layout.width} / ${layout.height}` }}>
           {layout.items.map((p) => {
             const r = byId.get(p.id);

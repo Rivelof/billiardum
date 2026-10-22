@@ -1,4 +1,4 @@
-import { useMemo } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { planLayout, tableSvg, tableState, typeLabel } from '@billiardum/shared/hall';
 import { formatTime, plural } from '@billiardum/shared/format';
 
@@ -23,10 +23,23 @@ export function hallCounts(items, timeZone) {
  * Каждый стол — кнопка с подписью для диктора «Стол 4, идёт игра до 21:40». Зал всегда тёмный.
  */
 export function HallPlan({ items, timeZone, onSelect, perRow, label = 'План зала', selected }) {
-  const layout = useMemo(
-    () => planLayout(items.map((i) => ({ id: i.resource.id, number: i.resource.number, type: i.resource.type })), { perRow }),
-    [items.map((i) => `${i.resource.id}:${i.resource.type}`).join(','), perRow],
-  );
+  // Подписи столов не должны наезжать друг на друга: на столбец нужно около 88 px ширины плана
+  const floor = useRef(null);
+  const [floorWidth, setFloorWidth] = useState(0);
+  useEffect(() => {
+    const el = floor.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(([e]) => setFloorWidth(Math.round(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const fit = floorWidth ? Math.max(2, Math.min(6, Math.floor(floorWidth / 88))) : null;
+  const layout = useMemo(() => {
+    const list = items.map((i) => ({ id: i.resource.id, number: i.resource.number, type: i.resource.type }));
+    const auto = planLayout(list, { perRow });
+    const cols = new Set(auto.items.map((i) => i.x)).size;
+    return fit && cols > fit ? planLayout(list, { perRow: fit }) : auto;
+  }, [items.map((i) => `${i.resource.id}:${i.resource.type}`).join(','), perRow, fit]);
   const byId = useMemo(() => new Map(items.map((i) => [i.resource.id, i])), [items]);
   const svgs = useMemo(() => new Map(layout.items.map((p) => [p.id, tableSvg(p.kind, { uid: `spot-${p.id}` })])), [layout]);
   const fmt = (iso) => formatTime(iso, timeZone);
@@ -73,7 +86,7 @@ export function HallPlan({ items, timeZone, onSelect, perRow, label = 'План 
           ) : null}
         </ul>
       </div>
-      <div class="hall__floor">
+      <div class="hall__floor" ref={floor}>
         <div class="plan" role="group" aria-label={`${label}, ${items.length} ${plural(items.length, TABLES)}`} style={{ aspectRatio: `${layout.width} / ${layout.height}` }}>
           {layout.items.map((p) => {
             const item = byId.get(p.id);
