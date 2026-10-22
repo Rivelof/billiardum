@@ -24,12 +24,13 @@
 
 `pending_payment` (ждёт предоплаты `booking_pay_minutes`) → `confirmed` → `reserved` (за 15 минут до начала: `setReserved` light с `userId` гостя, стол синий, если свободен) → `started` → `completed`; `expired` (`unpaid` — не оплачена; `no_show` — не пришёл за 15 минут без предоплаты или 30 с предоплатой, №107: `clearReserved`, `forfeitPrepayment` без `percent` — процент клуба у money); `canceled`.
 
-Планировщик (`tick`): за час — `booking.reminder`, за 15 минут — `booking.soon` (оба с кнопкой «Моя бронь» `/app/bookings/{id}`; не шлются, если бронь сделана позже порога), `reserved`, после удержания — сгорание и `booking.expired`; идущая бронь после конца без живой сессии — `completed`. Стол освободился (`session.closed`) — ожидающая бронь сразу получает `reserved`.
+Планировщик (`tick`): за час — `booking.reminder`, за 15 минут — `booking.soon` (оба с кнопкой «Моя бронь» `/app/bookings/{id}`; не шлются, если бронь сделана позже порога), `reserved`, после удержания — сгорание и `booking.expired`; идущая бронь после конца без живой сессии — `completed`. Стол освободился (`session.closed`) — ожидающая бронь сразу получает `reserved`. Предложение листа ожидания держит стол `setReserved` за гостем до конца предложения (№122); отказ, истечение, неудачное принятие — `clearReserved`, принятие — `holdPending`.
 
 ## Деньги
 
 - `POST /api/bookings/{id}/pay` → `createPrepayment` money (платёж `kind: booking`, id детерминирован по брони); `payment.confirmed {kind: 'booking', booking_id}` → `confirmed`, уведомление. Платёж за сгоревшую или отменённую бронь — `forfeitPrepayment(percent: 0)` (вернуть всё).
-- Старт: предоплата зачитывается `settlePrepayment(paymentId, sessionId)`.
+- Старт: предоплата зачитывается `settlePrepayment(paymentId, sessionId)`; light получает `paidUntil` = конец брони (№123), игра кончается ровно в этот момент. `setReserved` — с `source: 'booking'` или `'waitlist'` и `userId` гостя.
+- Бронь ближе 5 минут к оплаченному концу текущей игры стола — `booking_conflict`, пересечение с игрой — `table_busy` (№123). Минуты опоздания и раннего прихода считаются вниз.
 - Нужна доплата (ранний приход больше чем за `booking_early_free_minutes` до начала при свободном столе; остаток при депозите) — `createBookingQuote` money (№116; пока функции нет — 501 `not_configured`) → `{status: 'payment_required', quote}`; гость платит `POST /api/quotes/{id}/pay`; `payment.confirmed {kind: 'booking_start', quote_id, booking_id}` → старт. Стол успели занять — `refund` доплаты.
 - Опоздавший (пришёл после начала) платит только с прихода до конца брони за вычетом внесённого (№113).
 - Бронь без предоплаты: при старте гость платит тем же платежом брони (`createPrepayment`, флаг `start_on_pay`); подтверждение сразу начинает игру; не оплатил за 10 минут — бронь снова `confirmed`.
@@ -50,6 +51,7 @@
 | `POST /api/clubs/{club}/bookings {resource_id, starts_at, minutes, name, phone, source?}` | ресепшн и выше | `201` бронь по телефону (`confirmed`, без предоплаты), телефон маской |
 | `POST /api/waitlist {resource_id}` | гость (согласие) | `201 {id, status, position, …}`; повтор — та же запись |
 | `GET /api/me/waitlist`, `DELETE /api/waitlist/{id}` | гость | записи / выход из очереди |
+| `POST /api/waitlist/offers/{id}/release {reason}` | ресепшн и выше | снять удержание стола предложением (№122): журнал `manual.waitlist_release`, тревога владельцу, гостю уведомление |
 | `POST /api/waitlist/{id}/accept` | гость | `{status: 'accepted', resource: {id, number, title}, resource_id, hold_until}` — стол удержан на 3 минуты; код стола не отдаётся (№119), игра — сканированием QR |
 
 Бронь: `{id, club: {id, name, timezone}, resource: {id, number, title, type}, status, source, starts_at, ends_at, minutes, hold_until, amount_kopecks, prepayment_mode, prepayment_kopecks, paid_kopecks, pay_until, payment_id, session_id, expire_reason, created_at, cancel: {allowed, refund_kopecks, free_until}}`.

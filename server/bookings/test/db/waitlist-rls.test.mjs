@@ -57,6 +57,20 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     const mineA = await h.request('GET', '/api/me/waitlist', { token: a.token });
     assert.equal(mineA.json[0].status, 'offered');
     assert.equal(mineA.json[0].offer_until, new Date(T0 + 37 * MIN).toISOString());
+    // Предложение держит стол за A (№122): гость «с улицы» его не займёт.
+    const heldA = (await h.holds(table(1))).filter((x) => x.kind === 'reserved' && !x.released_at);
+    assert.equal(heldA.length, 1);
+    assert.equal(heldA[0].user_id, a.id);
+    assert.equal(new Date(heldA[0].until).getTime(), T0 + 37 * MIN);
+    const walkIn = await h.pool.connect();
+    try {
+      await walkIn.query('begin');
+      await walkIn.query("select set_config('app.club_id', $1, true), set_config('app.actor_type', 'system', true)", [CLUB_A]);
+      await assert.rejects(h.light().holdPending(walkIn, { resourceId: table(1), userId: c.id, until: new Date(T0 + 35 * MIN) }), (e) => e.code === 'table_busy');
+    } finally {
+      await walkIn.query('rollback');
+      walkIn.release();
+    }
 
     // 4 минуты — ещё за A; 5 минут — A истёк, B получил предложение.
     h.clock.set(T0 + 36 * MIN);
@@ -66,6 +80,8 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     await h.tickWaitlist();
     assert.equal((await h.q('select status from bl.waitlist where id = $1', [ja.json.id]))[0].status, 'expired');
     assert.equal((await h.q('select status from bl.waitlist where id = $1', [jb.json.id]))[0].status, 'offered');
+    const heldB = (await h.holds(table(1))).filter((x) => x.kind === 'reserved' && !x.released_at && new Date(x.until).getTime() > T0 + 37 * MIN);
+    assert.deepEqual(heldB.map((x) => x.user_id), [b.id]);
     // A опоздал — offer_expired.
     assert.equal((await h.request('POST', `/api/waitlist/${ja.json.id}/accept`, { token: a.token, body: {} })).json.error, 'offer_expired');
     // Чужую запись не принять.
@@ -83,6 +99,8 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     assert.ok(!('code' in acc.json.resource));
     const hold = (await h.holds(table(1))).find((x) => x.kind === 'pending' && !x.released_at);
     assert.equal(hold.user_id, b.id);
+    // Удержание предложения сменилось удержанием оплаты.
+    assert.equal((await h.holds(table(1))).filter((x) => x.kind === 'reserved' && !x.released_at && new Date(x.until).getTime() > T0 + 38 * MIN).length, 0);
     assert.equal(new Date(hold.until).getTime(), T0 + 41 * MIN);
     assert.equal((await h.outboxEvents('waitlist.accepted')).length, 1);
     const accepted = h.sseEvents.find((e) => e.channel === `user:${b.id}` && e.data.type === 'waitlist.accepted');
@@ -110,6 +128,28 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     const [w] = await h.q('select status, missed from bl.waitlist where id = $1', [j.json.id]);
     assert.equal(w.status, 'waiting');
     assert.equal(w.missed, 1);
+  });
+
+  it('ресепшн снимает удержание предложения: причина, manual.waitlist_release, тревога владельцу (№122)', async () => {
+    h.clock.set(T0 + 180 * MIN);
+    const reception = await h.login(PHONES.reception);
+    const s = await h.session({ resourceId: table(6), payer: c.id, paidUntilMs: T0 + 190 * MIN });
+    const j = await h.request('POST', '/api/waitlist', { token: a.token, body: { resource_id: table(6) } });
+    h.clock.set(T0 + 192 * MIN);
+    await h.closeSession(s);
+    await waitFor(async () => (await h.q('select status from bl.waitlist where id = $1', [j.json.id]))[0].status === 'offered');
+    assert.equal((await h.request('POST', `/api/waitlist/offers/${j.json.id}/release`, { token: a.token, club: CLUB_A, body: { reason: 'x' } })).status, 403);
+    assert.equal((await h.request('POST', `/api/waitlist/offers/${j.json.id}/release`, { token: reception.token, club: CLUB_A, body: {} })).json.error, 'reason_required');
+    const rel = await h.request('POST', `/api/waitlist/offers/${j.json.id}/release`, { token: reception.token, club: CLUB_A, body: { reason: 'Гость у стойки' } });
+    assert.equal(rel.status, 200, rel.text);
+    assert.equal(rel.json.status, 'expired');
+    assert.ok((await h.holds(table(6))).filter((x) => x.kind === 'reserved').every((x) => x.released_at));
+    const au = (await h.audit('manual.waitlist_release')).filter((x) => x.object_id === j.json.id);
+    assert.equal(au.length, 1);
+    assert.equal(au[0].reason, 'Гость у стойки');
+    assert.equal((await h.q("select * from bl.alarms where type = 'manual_action' and data->>'waitlist_id' = $1", [j.json.id])).length, 1);
+    assert.equal((await h.notifications(a.id, 'waitlist.released')).length, 1);
+    assert.equal((await h.request('POST', `/api/waitlist/offers/${j.json.id}/release`, { token: reception.token, club: CLUB_A, body: { reason: 'y' } })).json.error, 'offer_expired');
   });
 
   it('бронь сгорела или отменена — очередь получает стол; бронь ближе 30 минут — предложения нет', async () => {

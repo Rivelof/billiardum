@@ -2,7 +2,8 @@
 //
 // В 10:00 по времени клуба (clubs.settings.summary_time_local) — сводка за вчерашние рабочие
 // сутки (с clubs.settings.day_start_local, по умолчанию 06:00): выручка по способам оплаты
-// и возвраты, часы игры и загрузка, тревоги по уровням, ручные действия и хеш головы журнала.
+// и возвраты, часы игры и загрузка, тревоги по уровням, ручные действия (и автоматические действия
+// системы, если были) и хеш головы журнала.
 // Получатели — владелец и управляющий (уведомление по цепочке каналов). Отправка один раз:
 // строка bl.club_summaries (клуб, вид, рабочие сутки) пишется в той же транзакции.
 // Планировщик раз в минуту на ctx.clock — тесты двигают часы.
@@ -68,7 +69,9 @@ export async function buildMorningSummary(db, { clubId, day, timezone, dayStartL
     revenue: { by_method: revenue.by_method, total_kopecks: revenue.total_kopecks, refunds_kopecks: revenue.refunds.total_kopecks, net_kopecks: revenue.net_kopecks },
     play: { sessions: play.sessions, minutes: play.minutes, hours: play.hours, utilization_percent: play.utilization_percent, resources: play.resources },
     alarms,
-    manual_actions: { count: manual.count, by_action: manual.by_action },
+    // №125: «ручные» — manual.*; действия системы (сгорание предоплаты, автоматические возвраты
+    // и отмены) — отдельно, в automatic.
+    manual_actions: { count: manual.count, by_action: manual.by_action, automatic: { count: manual.automatic.count, by_action: manual.automatic.by_action } },
     journal: head ? { head_seq: Number(head.seq), head_hash: head.hash } : { head_seq: 0, head_hash: null },
   };
 }
@@ -85,6 +88,8 @@ export function summaryText(s) {
     `${s.alarms.total} ${plural(s.alarms.total, ['тревога', 'тревоги', 'тревог'])}${s.alarms.critical ? `, из них критичных ${s.alarms.critical}` : ''}`,
     `ручных действий: ${s.manual_actions.count}`,
   ];
+  const automatic = s.manual_actions.automatic?.count ?? 0;
+  if (automatic > 0) parts.push(`автоматических действий системы: ${automatic}`);
   const journal = s.journal.head_hash ? ` Журнал: запись ${s.journal.head_seq}, хеш ${s.journal.head_hash}.` : '';
   return `Сводка за ${formatDate(dayDate, 'UTC')}: ${parts.join('; ')}.${journal}`;
 }

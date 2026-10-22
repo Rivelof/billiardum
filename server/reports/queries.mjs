@@ -189,37 +189,63 @@ export async function serviceLight(db, { clubId, from, to }) {
   };
 }
 
-/** Ручные действия смены (инвариант 8): журнал с причиной и действия service.*, manual.*. */
+/** Действия системы, которые раньше попадали в «ручные» (сгорания, автовозвраты, отмены, оплаты после отмены). */
+export const AUTOMATIC_ACTIONS = Object.freeze(['payment.forfeited', 'payment.refunded', 'payment.canceled', 'pos.refund', 'pos.sale_canceled', 'booking.late_payment', 'reception.deposit_settled']);
+/** Действия персонала, которые журнал пишет не как manual.* (сервисный свет, возвраты, повтор чека). */
+const STAFF_ACTIONS = ['payment.refunded', 'pos.refund', 'kkt.receipt_retry'];
+
+/**
+ * Действия смены или суток из журнала (инвариант 8; decisions №125 с уточнением, дефект tester Д4).
+ * * «ручные» (count, by_action, items) — записи журнала manual.* и действия персонала (staff);
+ *   у записи items поле kind: 'manual' | 'staff'.
+ * * automatic — действия системы (actor_type не user): сгорание предоплаты, автоматические возвраты
+ *   (двойная и поздняя оплата, оплата после отмены), отмены платежей с причиной (в т. ч. по 404
+ *   ЮKassa), расчёт депозита; отдельной строкой «автоматические».
+ * * staff — разбивка: действия персонала, которые журнал пишет не как manual.* (сервисный свет
+ *   service.*, возвраты сотрудником, повтор чека ККТ, записи с причиной); входят в «ручные».
+ * @returns {Promise<{ count, by_action, items, automatic: { count, by_action, items }, staff: { count, by_action, items } }>}
+ */
 export async function manualActions(db, { clubId, from, to, limit = 100 }) {
   const { rows } = await db.query(
-    `select a.created_at, a.action, a.reason, a.actor_id, a.object_id, a.data, u.name as actor_name, r.id as res_id, r.number as resource_number
+    `select a.created_at, a.action, a.actor_type, a.reason, a.actor_id, a.object_id, a.data, u.name as actor_name, r.id as res_id, r.number as resource_number,
+            case when a.action like 'manual.%' then 'manual'
+                 when a.actor_type = 'user' then 'staff'
+                 else 'automatic' end as bucket
        from bl.audit_log a
        left join bl.users u on u.id = a.actor_id
        left join bl.resources r on r.club_id = a.club_id
              and r.id = case when a.object_type = 'resource' then a.object_id
                              when (a.data ->> 'resource_id') ~ '^[0-9a-f-]{36}$' then (a.data ->> 'resource_id')::uuid end
       where a.club_id = $1 and a.created_at >= $2 and a.created_at <= $3
-        and (a.action like 'service.%' or a.action like 'manual.%' or a.action in ('payment.refunded', 'pos.refund', 'kkt.receipt_retry')
-             or (a.reason is not null and a.action <> 'shift.close') or (a.action = 'pos.sale' and (a.data ->> 'discount_over_limit') = 'true'))
+        and (a.action like 'manual.%'
+             or (a.actor_type = 'user' and (a.action like 'service.%' or a.action = any($4::text[])
+                                            or (a.reason is not null and a.action <> 'shift.close')))
+             or (a.actor_type <> 'user' and (a.action = 'payment.forfeited'
+                                             or (a.action = any($5::text[]) and (a.reason is not null or a.action <> 'payment.canceled')))))
       order by a.seq`,
-    [clubId, from, to],
+    [clubId, from, to, STAFF_ACTIONS, AUTOMATIC_ACTIONS],
   );
-  const byAction = {};
-  for (const r of rows) byAction[r.action] = (byAction[r.action] ?? 0) + 1;
-  return {
-    count: rows.length,
-    by_action: byAction,
-    items: rows.slice(0, limit).map((r) => ({
-      at: new Date(r.created_at).toISOString(),
-      action: r.action,
-      actor_id: r.actor_id ?? null,
-      actor_name: r.actor_name ?? null,
-      reason: r.reason ?? null,
-      resource_id: r.res_id ?? null,
-      resource_number: r.resource_number ?? null,
-      amount_kopecks: Number.isSafeInteger(r.data?.amount_kopecks) ? r.data.amount_kopecks : null,
-    })),
+  const group = (list) => {
+    const byAction = {};
+    for (const r of list) byAction[r.action] = (byAction[r.action] ?? 0) + 1;
+    return {
+      count: list.length,
+      by_action: byAction,
+      items: list.slice(0, limit).map((r) => ({
+        at: new Date(r.created_at).toISOString(),
+        action: r.action,
+        kind: r.bucket,
+        actor_id: r.actor_id ?? null,
+        actor_name: r.actor_name ?? null,
+        reason: r.reason ?? null,
+        resource_id: r.res_id ?? null,
+        resource_number: r.resource_number ?? null,
+        amount_kopecks: Number.isSafeInteger(r.data?.amount_kopecks) ? r.data.amount_kopecks : null,
+      })),
+    };
   };
+  const manual = group(rows.filter((r) => r.bucket === 'manual' || r.bucket === 'staff'));
+  return { ...manual, automatic: group(rows.filter((r) => r.bucket === 'automatic')), staff: group(rows.filter((r) => r.bucket === 'staff')) };
 }
 
 /**

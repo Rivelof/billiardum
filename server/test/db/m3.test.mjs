@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
+import { userJson } from '../../auth/index.mjs';
 import { appendAudit } from '../../lib/audit.mjs';
 import { withContext } from '../../lib/store.mjs';
 import { createNotifier, send } from '../../notify/index.mjs';
@@ -127,6 +128,8 @@ describe('утренняя сводка (№110): 10:00 по времени кл
     );
     await t.admin.query("insert into bl.alarms (club_id, type, level, raised_at, last_raised_at) values ($1, 'bypass_detected', 'critical', $2, $2)", [CLUB_A, at(4)]);
     await inClub((db) => appendAudit(db, { action: 'manual.extend_free', reason: 'гость ждал', data: { minutes: 10 }, actorType: 'user', actorId: MANAGER_A }));
+    // №125: действие системы (сгорание предоплаты) — не «ручное», отдельной строкой.
+    await inClub((db) => appendAudit(db, { action: 'payment.forfeited', data: { amount_kopecks: 30000 }, actorType: 'system' }));
 
     const next = shiftDate(day, 1);
     const clock1 = { now: () => new Date(`${next}T00:30:00Z`) }; // Владивосток 10:30, Екатеринбург 05:30
@@ -143,6 +146,8 @@ describe('утренняя сводка (№110): 10:00 по времени кл
     assert.equal(s.play.minutes, 120);
     assert.equal(s.alarms.critical, 1);
     assert.ok(s.manual_actions.count >= 1);
+    assert.deepEqual(s.manual_actions.automatic, { count: 1, by_action: { 'payment.forfeited': 1 } });
+    assert.ok(!('payment.forfeited' in s.manual_actions.by_action), 'действие системы не считается ручным');
     const head = (await t.admin.query('select seq, hash from bl.audit_log where club_id = $1 order by seq desc limit 1', [CLUB_A])).rows[0];
     assert.equal(s.journal.head_hash, head.hash);
 
@@ -150,8 +155,10 @@ describe('утренняя сводка (№110): 10:00 по времени кл
     assert.deepEqual(notes.rows.map((n) => n.user_id).sort(), [OWNER_A, MANAGER_A].sort());
     assert.match(notes.rows[0].text.replace(/[\u00a0\u202f]/g, ' '), /^Сводка за \d+ [а-я]+: выручка 2 400 ₽ \(СБП 1 600 ₽, наличные 800 ₽\); игра 2 ч, загрузка/);
     assert.ok(notes.rows[0].text.includes(head.hash), 'полный хеш головы журнала в тексте, без маскировки цифр');
-    const bNotes = await t.admin.query("select user_id from bl.notifications where kind = 'summary.morning' and club_id = $1", [CLUB_B]);
+    assert.match(notes.rows[0].text, /; автоматических действий системы: 1\./);
+    const bNotes = await t.admin.query("select user_id, text from bl.notifications where kind = 'summary.morning' and club_id = $1", [CLUB_B]);
     assert.deepEqual(bNotes.rows.map((n) => n.user_id), [OWNER_B]);
+    assert.doesNotMatch(bNotes.rows[0].text, /автоматических/, 'при нуле строки нет');
   });
 });
 
@@ -255,10 +262,23 @@ describe('запросы frontend (№120)', () => {
     const keys = { p256dh: `B${'A'.repeat(86)}`, auth: 'A'.repeat(22) };
     await t.admin.query("insert into bl.push_subscriptions (user_id, endpoint, p256dh, auth) values ($1, 'https://fcm.googleapis.com/fcm/send/me', $2, $3)", [g.user.id, keys.p256dh, keys.auth]);
     await t.admin.query('update bl.users set telegram_user_id = 777001 where id = $1', [g.user.id]);
+    await t.admin.query("update bl.users set max_user_id = '900001', notify_channel = 'max', channels_order = '{max,telegram,webpush}' where id = $1", [g.user.id]);
     me = await t.request('GET', '/api/me', { token: g.token });
-    assert.deepEqual(me.json.user.channels, { max: false, telegram: true, webpush: true });
+    // №126: в тестовом приложении MAX — заглушка, Telegram без токена и прокси, VAPID не задан:
+    // привязанные мессенджеры не считаются подключёнными и не предлагаются; выбор гостя не тронут.
+    assert.deepEqual(me.json.user.channels, { max: false, telegram: false, webpush: true });
+    assert.deepEqual(me.json.user.channels_available, []);
+    assert.equal(me.json.user.notify_channel, 'max');
+    assert.deepEqual(me.json.user.channels_order, ['max', 'telegram', 'webpush']);
     await t.admin.query('update bl.push_subscriptions set revoked_at = now() where user_id = $1', [g.user.id]);
     assert.equal((await t.request('GET', '/api/me', { token: g.token })).json.user.channels.webpush, false);
+    // Настроенный Telegram (токен и прокси) — привязка видна и канал предлагается; MAX — нет.
+    const conf = createNotifier({ config: t.config, log: t.log, telegram: { configured: true, call: async () => ({}) }, max: createMaxBot({ token: 'x' }) }).configured();
+    assert.deepEqual(conf, { max: false, telegram: true, webpush: false });
+    const u = await withContext(t.pool, { clubId: null, userId: g.user.id, actorType: 'user' }, (db) => userJson(db, g.user.id, { configured: conf }));
+    assert.deepEqual(u.channels, { max: false, telegram: true, webpush: false });
+    assert.deepEqual(u.channels_available, ['telegram']);
+    assert.deepEqual(u.channels_order, ['max', 'telegram', 'webpush']);
   });
 
   it('SSE ?me=1: только свой канал user:{id}; по одноразовому токену тоже; с другим каналом — 400', async () => {

@@ -356,10 +356,12 @@ export class FakeController {
         break;
       case 'state.pending':
       case 'state.reserved':
-        if (!RUNNING.has(s.mode) && s.mode !== 'service') Object.assign(s, { mode: cmd.type.slice(6), until: this.time.t + b.until_ms });
+        // Как прошивка и симулятор: во время сессии и сервиса — wrong_session.
+        if (RUNNING.has(s.mode) || s.mode === 'service') error = 'wrong_session';
+        else Object.assign(s, { mode: cmd.type.slice(6), until: this.time.t + b.until_ms });
         break;
       case 'state.free':
-        if (!RUNNING.has(s.mode) && s.mode !== 'service') Object.assign(s, { mode: 'free', until: null });
+        Object.assign(s, { mode: 'free', session_id: null, endAt: null, until: null });
         break;
       case 'identify':
       case 'ping':

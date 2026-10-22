@@ -128,8 +128,12 @@ export function createDeviceLogic({ kit, log, withContext, pool }) {
         }
       }
       if (ds.session_id && RUNNING_MODES.has(ds.mode) && (!s || ds.session_id !== s.id)) {
-        // Контроллер ведёт сессию, которой нет в базе: свет без оплаты гасим (инвариант 4).
-        return { type: 'session.stop', body: { session_id: ds.session_id, reason_code: 'not_paid' } };
+        // Контроллер ведёт сессию, которая в базе уже не идёт (или которой нет): свет гасим
+        // (инвариант 4). Причина — по закрытию сессии, not_paid — только для неизвестной.
+        const known = await loadSession(db, ds.session_id);
+        const reasons = { stopped: 'guest_stop', expired: 'expired', refunded: 'refunded', cancelled: 'refunded' };
+        const reason = known?.status === 'interrupted' ? 'interrupted' : (reasons[known?.close_reason] ?? 'not_paid');
+        return { type: 'session.stop', body: { session_id: ds.session_id, reason_code: reason } };
       }
       const h = await activeHold(db, device.resource_id, t);
       if (h?.kind === 'service') return { type: 'service.start', body: {} };

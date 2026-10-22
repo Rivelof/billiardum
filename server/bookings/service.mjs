@@ -6,7 +6,7 @@
 // Пересечения броней стола запрещает база (exclude using gist), гонки — блокировка строки
 // стола (SELECT … FOR UPDATE) до проверки и вставки.
 
-import { formatDate, formatMoney, formatTime } from '@billiardum/shared/format';
+import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { afterCommit } from '../lib/store.mjs';
 import { BookingError, fail, isConflict } from './errors.mjs';
 import {
@@ -28,7 +28,7 @@ import {
   workdayAt,
   workdayWindow,
 } from './queries.mjs';
-import { bookingSettings, holdFor, prepaymentFor, refundFor, REMIND_BEFORE_MS, RESERVE_BEFORE_MS } from './settings.mjs';
+import { bookingSettings, EXTEND_GAP_MS, holdFor, prepaymentFor, refundFor, REMIND_BEFORE_MS, RESERVE_BEFORE_MS } from './settings.mjs';
 
 const MIN = 60_000;
 const iso = (d) => (d ? new Date(d).toISOString() : null);
@@ -179,6 +179,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
   const when = (b) => `${formatDate(b.starts_at, b.club_timezone)} в ${formatTime(b.starts_at, b.club_timezone)}`;
   const at = (b) => formatTime(b.starts_at, b.club_timezone);
   const bookingUrl = (b) => `/app/bookings/${b.id}`;
+  const holdText = (b) => `${b.hold_minutes} ${plural(b.hold_minutes, ['минуту', 'минуты', 'минут'])}`;
 
   async function updateBooking(db, id, fields) {
     const keys = Object.keys(fields);
@@ -190,7 +191,10 @@ export function createBookingService({ deps, log, clock, config = {} }) {
 
   async function checkTable(db, resourceId, from, to, t, { exceptBooking = null, userId = null } = {}) {
     const s = await openSession(db, resourceId);
-    if (s && ms(s.paid_until) + Number(s.grace_ms ?? 0) > ms(from)) fail('table_busy', 'идёт игра');
+    // Идёт игра: пересечение с оплаченным временем — table_busy; ближе 5 минут к его концу —
+    // booking_conflict (№123: иначе предел продления оказался бы в прошлом).
+    if (s && ms(s.paid_until) > ms(from)) fail('table_busy', 'идёт игра');
+    if (s && ms(s.paid_until) + EXTEND_GAP_MS > ms(from)) fail('booking_conflict', 'ближе 5 минут к концу игры');
     for (const h of await activeHolds(db, resourceId, t)) {
       if (ms(h.until) <= ms(from)) continue;
       if (h.kind === 'service') fail('table_service');
@@ -504,7 +508,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     if (ok) {
       await db.query('savepoint bl_booking_start');
       try {
-        const sessionId = await doStart(db, b, { userId: b.user_id, paymentIds, t });
+        const sessionId = await doStart(db, b, { userId: b.user_id, paymentIds });
         await db.query('release savepoint bl_booking_start');
         return { result: 'started', booking_id: b.id, session_id: sessionId };
       } catch (err) {
@@ -523,12 +527,12 @@ export function createBookingService({ deps, log, clock, config = {} }) {
 
   // Старт по брони ---------------------------------------------------------------------------
 
-  async function doStart(db, b, { userId, paymentIds, t }) {
-    const paidMinutes = Math.max(1, Math.ceil((ms(b.ends_at) - ms(t)) / MIN));
+  async function doStart(db, b, { userId, paymentIds }) {
+    // Игра кончается ровно в конце брони (№123): light ставит paid_until = paidUntil.
     const sessionId = await deps.light.startFromBooking(db, {
       booking: { id: b.id, club_id: b.club_id, resource_id: b.resource_id, starts_at: iso(b.starts_at), ends_at: iso(b.ends_at) },
       userId,
-      paidMinutes,
+      paidUntil: iso(b.ends_at),
       paymentIds: [...new Set(paymentIds.filter(isUuid))],
     });
     if (b.prepayment_id && b.prepaid_kopecks > 0) {
@@ -588,22 +592,23 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     let extra = 0;
     if (early) {
       if ((await overlapping(db, b.resource_id, t, b.starts_at, b.id)).length > 0) fail('booking_conflict', 'ранний приход');
-      extra = await priceOf(db, b.resource_id, t, Math.ceil((startMs - ms(t)) / MIN), false);
+      extra = await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((startMs - ms(t)) / MIN)), false);
     }
     // Опоздал (пришёл после начала) — цена только с прихода до конца брони (№113); иначе цена брони.
     const late = ms(t) > startMs;
-    const base = late ? await priceOf(db, b.resource_id, t, Math.max(1, Math.ceil((ms(b.ends_at) - ms(t)) / MIN)), false) : b.amount_kopecks;
+    // Минуты — вниз, в пользу гостя (№123, как №73).
+    const base = late ? await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((ms(b.ends_at) - ms(t)) / MIN)), false) : b.amount_kopecks;
     const due = Math.max(0, base - b.prepaid_kopecks) + extra;
     if (due === 0) {
-      const sessionId = await doStart(db, b, { userId, paymentIds: b.prepayment_id && b.prepaid_kopecks > 0 ? [b.prepayment_id] : [], t });
+      const sessionId = await doStart(db, b, { userId, paymentIds: b.prepayment_id && b.prepaid_kopecks > 0 ? [b.prepayment_id] : [] });
       return { status: 'started', session_id: sessionId, booking: await view(db, await loadBooking(db, b.id), { t }) };
     }
     // Доплата (ранний приход, остаток предоплаты, бронь без предоплаты — №113, №116): котировка money,
     // гость платит POST /api/quotes/{id}/pay, старт — по payment.confirmed {kind: 'booking_start'}.
-    const paidMinutes = Math.max(1, Math.ceil((ms(b.ends_at) - ms(t)) / MIN));
+    const paidMinutes = Math.max(1, Math.floor((ms(b.ends_at) - ms(t)) / MIN));
     const quote = await deps.payments.createBookingQuote(db, {
       clubId: b.club_id, bookingId: b.id, resourceId: b.resource_id, userId, from: t, minutes: paidMinutes, amountKopecks: due,
-      earlyMinutes: early ? Math.ceil((startMs - ms(t)) / MIN) : 0,
+      earlyMinutes: early ? Math.max(1, Math.floor((startMs - ms(t)) / MIN)) : 0,
     });
     const quoteId = quote?.quote_id ?? quote?.id;
     if (!isUuid(quoteId)) throw new Error('createBookingQuote: нет quote_id');
@@ -749,7 +754,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       }
       if (b.status === 'confirmed') {
         const until = new Date(startMs + b.hold_minutes * MIN);
-        const r = await deps.light.setReserved(db, { resourceId: b.resource_id, until, userId: b.user_id ?? null });
+        const r = await deps.light.setReserved(db, { resourceId: b.resource_id, until, userId: b.user_id ?? null, source: 'booking' });
         flags.reserved_hold = true;
         await updateBooking(db, b.id, { status: 'reserved', reserved_at: t, notified: flags, updated_at: t });
         const nb = await loadBooking(db, b.id);
@@ -787,8 +792,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         level: 'important',
         text:
           b.prepaid_kopecks > 0
-            ? `Бронь стола ${b.resource_number} на ${at(b)} сгорела: вы не пришли за ${b.hold_minutes} минут.${refund > 0 ? ` Вернём ${formatMoney(refund)}.` : ' Предоплата по правилам клуба не возвращается.'}`
-            : `Бронь стола ${b.resource_number} на ${at(b)} сгорела: вы не пришли за ${b.hold_minutes} минут.`,
+            ? `Бронь стола ${b.resource_number} на ${at(b)} сгорела: вы не пришли за ${holdText(b)}.${refund > 0 ? ` Вернём ${formatMoney(refund)}.` : ' Предоплата по правилам клуба не возвращается.'}`
+            : `Бронь стола ${b.resource_number} на ${at(b)} сгорела: вы не пришли за ${holdText(b)}.`,
       });
     }
     log.info('booking_expired', { booking_id: b.id, reason });

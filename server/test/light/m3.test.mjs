@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 import * as api from '../../sessions/api.mjs';
-import { CLUB, createTestDb, GUEST, makePayment, MIN, RECEPTION, RES, SKIP, startLight } from './harness.mjs';
+import { CLUB, createTestDb, DEV, GUEST, makePayment, MIN, RECEPTION, RES, SKIP, startLight } from './harness.mjs';
 
 const code = async (fn) => {
   try {
@@ -203,5 +203,79 @@ describe('M3: план зала — next_booking и deposit_kopecks', { skip: SK
     await h.until(() => h.sse.events.some((e) => e.event === 'hall' && e.data.resource.number === 2 && e.data.session?.deposit_kopecks === 40_000), 'SSE hall');
     const ev = h.sse.events.filter((e) => e.event === 'hall' && e.data.resource.number === 2).at(-1);
     assert.equal(ev.data.next_booking, null);
+  });
+});
+
+describe('M3: порядок очереди (Д1), конец брони (№123), удержание листа ожидания (№122)', { skip: SKIP }, () => {
+  let t;
+  let h;
+  before(async () => {
+    t = await createTestDb();
+    h = await startLight(t, { devices: [1, 2, 3] });
+  });
+  after(async () => {
+    await h?.stop();
+    await t?.drop();
+  });
+
+  it('Д1: стоп при ждущей брони — сначала session.stop (guest_stop), затем state.reserved; обе ok, без not_paid', async () => {
+    const c = h.ctl.get(1);
+    const pay = await makePayment(t, { resource: 1, user: GUEST(1), minutes: 60, at: h.time.now() });
+    const { session_id: sid } = await h.outbox.deliver('payment.confirmed', pay);
+    await h.until(() => c.lit, 'свет');
+    await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(1), until: new Date(h.time.t + 30 * MIN), userId: GUEST(2) }));
+    const before = c.received.length;
+    await h.advance(1_000);
+    await h.asUser(GUEST(1), (db) => h.st.service.stop(db, { sessionId: sid, userId: GUEST(1) }));
+    await h.until(() => c.received.length >= before + 2 && c.st.mode === 'reserved', 'stop и reserved');
+    const after = c.received.slice(before).map((x) => [x.type, x.body.reason_code ?? null]);
+    assert.deepEqual(after, [['session.stop', 'guest_stop'], ['state.reserved', null]]);
+    assert.ok(c.acks.slice(-2).every((a) => a.ok), 'обе команды приняты');
+    const dc = await t.q("select type, status, body->>'reason_code' as reason from bl.device_commands where device_id = $1 order by queue_no", [DEV(1)]);
+    assert.ok(!dc.rows.some((r) => r.reason === 'not_paid'));
+    assert.deepEqual(dc.rows.slice(-2).map((r) => [r.type, r.status]), [['session.stop', 'acked'], ['state.reserved', 'acked']]);
+  });
+
+  it('очередь устройства — по queue_no, а не по времени постановки', async () => {
+    const t0 = new Date(h.time.t);
+    await h.asSystem(CLUB, async (db) => {
+      await db.query(`insert into bl.device_commands (id, club_id, device_id, type, body, status, cause, created_at) values ($1, $2, $3, 'identify', '{"duration_ms":1000}', 'queued', 'staff', $4)`, [randomUUID(), CLUB, DEV(2), new Date(t0.getTime() + 5_000)]);
+      await db.query(`insert into bl.device_commands (id, club_id, device_id, type, body, status, cause, created_at) values ($1, $2, $3, 'ping', '{}', 'queued', 'staff', $4)`, [randomUUID(), CLUB, DEV(2), t0]);
+    });
+    const rows = await h.st.store.loadQueued({ clubId: CLUB, deviceId: DEV(2) });
+    assert.deepEqual(rows.map((r) => r.type), ['identify', 'ping']);
+    await h.st.bridge.wake(DEV(2));
+    await h.until(() => h.ctl.get(2).received.at(-1)?.type === 'ping', 'ping');
+  });
+
+  it('№123: startFromBooking с paidUntil — игра кончается ровно в конце брони', async () => {
+    const end = new Date(h.time.t + 47 * MIN + 30_000);
+    const booking = { id: randomUUID(), club_id: CLUB, resource_id: RES(3) };
+    const sid = await h.asUser(GUEST(3), (db) => api.startFromBooking(db, { booking, userId: GUEST(3), paidUntil: end }));
+    const s = (await t.q('select paid_until from bl.sessions where id = $1', [sid])).rows[0];
+    assert.equal(s.paid_until.toISOString(), end.toISOString());
+    await h.until(() => h.ctl.get(3).received.at(-1)?.type === 'session.start', 'свет');
+    assert.equal(h.ctl.get(3).received.at(-1).body.remaining_ms, 47 * MIN + 30_000);
+    assert.equal(await code(() => h.asUser(GUEST(3), (db) => api.startFromBooking(db, { booking: { ...booking, id: randomUUID() }, userId: GUEST(3), paidUntil: new Date(h.time.t - 1) }))), 'table_busy');
+    assert.equal(await code(() => h.asUser(GUEST(2), (db) => api.startFromBooking(db, { booking: { id: randomUUID(), club_id: CLUB, resource_id: RES(2) }, userId: GUEST(2), paidUntil: new Date(h.time.t - 1) }))), 'bad_request');
+  });
+
+  it('№122: удержание листа ожидания без брони — синий, чужой гость получает 409, предложенный гость занимает стол', async () => {
+    const c = h.ctl.get(2);
+    const r = await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(2), until: new Date(h.time.t + 5 * MIN), userId: GUEST(2), source: 'waitlist' }));
+    assert.equal(r.applied, true);
+    await h.until(() => c.st.mode === 'reserved', 'синий');
+    const hall = await h.asUser(RECEPTION, (db) => h.st.service.hall(db, { clubId: CLUB, userId: RECEPTION }), { clubId: CLUB });
+    const t2 = hall.find((x) => x.resource.number === 2);
+    assert.deepEqual([t2.status, t2.hold.kind, t2.hold.source], ['reserved', 'reserved', 'waitlist']);
+    assert.equal((await h.asSystem(CLUB, (db) => api.getResourceStatus(db, RES(2)))).status, 'reserved');
+    assert.equal(await code(() => h.asUser(GUEST(1), (db) => api.holdPending(db, { resourceId: RES(2), userId: GUEST(1), until: new Date(h.time.t + 3 * MIN) }))), 'table_busy');
+    const ok = await h.asUser(GUEST(2), (db) => api.holdPending(db, { resourceId: RES(2), userId: GUEST(2), until: new Date(h.time.t + 3 * MIN) }));
+    assert.equal(ok.ok, true);
+    await h.until(() => c.st.mode === 'pending', 'pending предложенного гостя');
+    await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(1), until: new Date(h.time.t + 30 * MIN), source: 'party' })).then(
+      () => assert.fail('неизвестный источник'),
+      (e) => assert.equal(e.code, 'bad_request'),
+    );
   });
 });

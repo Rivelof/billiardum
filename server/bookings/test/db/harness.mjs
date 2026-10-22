@@ -84,6 +84,7 @@ export async function setup({ settings = {} } = {}) {
   const money = Object.fromEntries(['createPrepayment', 'createBookingQuote', 'settlePrepayment', 'forfeitPrepayment', 'refund'].map((fn) => [fn, spy(fn)]));
 
   let lightService = null;
+  const lightCalls = [];
   const setupModule = {
     async init(ctx) {
       lightService = createLightService({
@@ -102,7 +103,10 @@ export async function setup({ settings = {} } = {}) {
         },
       });
       const light = {
-        startFromBooking: (d, a) => lightService.startFromBooking(d, a),
+        startFromBooking: (d, a) => {
+          lightCalls.push({ fn: 'startFromBooking', args: a });
+          return lightService.startFromBooking(d, a);
+        },
         setReserved: (d, a) => lightService.setReserved(d, a),
         clearReserved: (d, a) => lightService.clearReserved(d, a),
         holdPending: (d, a) => lightService.holdPending(d, a),
@@ -190,6 +194,7 @@ export async function setup({ settings = {} } = {}) {
     config,
     sseEvents,
     moneyCalls,
+    lightCalls,
     request,
     login,
     q,

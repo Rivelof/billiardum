@@ -100,6 +100,13 @@ describe('смена: открытие и закрытие, T16', () => {
         [CLUB_A, TABLE_2, GUEST, new Date(now - 90 * 60_000), new Date(now - 30 * 60_000)],
       );
       await appendAudit(db, { action: 'service.start', objectType: 'resource', objectId: TABLE_1, reason: 'Уборка', actorType: 'user', actorId: RECEPTION_A, data: { minutes: 70, reason_code: 'cleaning', resource_id: TABLE_1 } });
+      // №125 (дефект tester Д4): ручные — только manual.*; действия системы — «автоматические».
+      await appendAudit(db, { action: 'manual.extend_free', objectType: 'resource', objectId: TABLE_1, reason: 'Гость ждал', actorType: 'user', actorId: RECEPTION_A, data: { minutes: 10 } });
+      await appendAudit(db, { action: 'payment.forfeited', objectType: 'payment', objectId: GUEST, reason: 'Бронь сгорела', actorType: 'system', data: { amount_kopecks: 50000 } });
+      await appendAudit(db, { action: 'payment.refunded', objectType: 'payment', objectId: GUEST, reason: 'Платёж прошёл после отмены', actorType: 'system', data: { amount_kopecks: 30000 } });
+      await appendAudit(db, { action: 'payment.canceled', objectType: 'payment', objectId: GUEST, reason: 'not_found_at_provider', actorType: 'system', data: {} });
+      await appendAudit(db, { action: 'payment.canceled', objectType: 'payment', objectId: GUEST, actorType: 'system', data: {} });
+      await appendAudit(db, { action: 'session.start', objectType: 'session', objectId: GUEST, actorType: 'system', data: {} });
     });
     const expected = 500000 + 160000 + 30000 - 20000;
     const live = await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: await t.login('owner') });
@@ -172,7 +179,21 @@ describe('смена: открытие и закрытие, T16', () => {
     assert.equal(r.service_light.exceeded, true);
     assert.deepEqual(r.service_light.by_staff.map((s) => [s.user_id, s.name, s.minutes]), [[RECEPTION_A, 'Ресепшн (тест)', 70]]);
     assert.deepEqual(r.service_light.by_resource.map((x) => [x.number, x.minutes]), [[1, 70]]);
+    // Ручные — manual.* и действия персонала (staff, №125 с уточнением); система — automatic.
+    assert.equal(r.manual_actions.by_action['manual.extend_free'], 1);
     assert.ok(r.manual_actions.by_action['service.start'] >= 1);
+    assert.equal(r.manual_actions.count, r.manual_actions.items.length);
+    assert.equal(r.manual_actions.count, r.manual_actions.staff.count + r.manual_actions.items.filter((x) => x.kind === 'manual').length);
+    assert.equal(r.manual_actions.items.find((x) => x.action === 'manual.extend_free').kind, 'manual');
+    assert.equal(r.manual_actions.items.find((x) => x.action === 'service.start').kind, 'staff');
+    for (const k of ['payment.forfeited', 'payment.canceled', 'session.start']) assert.equal(r.manual_actions.by_action[k], undefined, k);
+    assert.ok(r.manual_actions.items.every((x) => x.kind === 'manual' || x.kind === 'staff'));
+    assert.ok(r.manual_actions.automatic.items.every((x) => x.kind === 'automatic'));
+    assert.equal(r.manual_actions.automatic.by_action['payment.forfeited'], 1);
+    assert.equal(r.manual_actions.automatic.by_action['payment.refunded'], 1);
+    assert.equal(r.manual_actions.automatic.by_action['payment.canceled'], 1, 'отмена без причины — не действие для отчёта');
+    assert.equal(r.manual_actions.automatic.by_action['session.start'], undefined);
+    assert.ok(r.manual_actions.staff.by_action['service.start'] >= 1);
     const light = r.manual_actions.items.find((x) => x.action === 'service.start');
     assert.equal(light.resource_number, 1);
     assert.equal(light.resource_id, TABLE_1);

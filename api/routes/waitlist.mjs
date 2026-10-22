@@ -41,4 +41,15 @@ export const routes = [
       return svc().accept(ctx.db, { userId: userId(req), id: req.params.id });
     },
   },
+  {
+    method: 'POST',
+    path: '/api/waitlist/offers/{id}/release',
+    auth: 'staff',
+    roles: ['owner', 'manager', 'reception'],
+    findClub: async (db, req) =>
+      (await db.query("select 1 from bl.waitlist where id = $1 and club_id = nullif(current_setting('app.club_id', true), '')::uuid", [req.params.id])).rowCount > 0,
+    async handler(ctx, req) {
+      return { status: 200, json: await svc().release(ctx.db, { id: req.params.id, clubId: ctx.club, reason: req.body?.reason }) };
+    },
+  },
 ];

@@ -99,6 +99,8 @@ export function reportText(r) {
   lines.push(`Игра ${String(r.play.hours).replace('.', ',')} ч, загрузка ${String(r.play.utilization_percent).replace('.', ',')} %.`);
   const m = r.manual_actions.count;
   lines.push(m > 0 ? `Ручных действий: ${m}.` : 'Ручных действий нет.');
+  const auto = r.manual_actions.automatic?.count ?? 0;
+  if (auto > 0) lines.push(`Автоматических действий системы: ${auto}.`);
   if (r.service_light.total_minutes > 0) {
     lines.push(`Сервисный свет: ${r.service_light.total_minutes} ${plural(r.service_light.total_minutes, ['минута', 'минуты', 'минут'])}${r.service_light.exceeded ? ' — больше порога' : ''}.`);
   }

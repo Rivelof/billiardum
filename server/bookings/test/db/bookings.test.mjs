@@ -157,6 +157,10 @@ describe('бронь', { skip }, () => {
     const r = await book(guest, { resource_id: table(8), starts_at: h.at(60), minutes: 60 });
     assert.equal(r.status, 409);
     assert.equal(r.json.error, 'table_busy');
+    // Ближе 5 минут к оплаченному концу игры (13:30) — booking_conflict (№123).
+    const close = await book(guest, { resource_id: table(8), starts_at: h.at(90), minutes: 60 });
+    assert.equal(close.status, 409);
+    assert.equal(close.json.error, 'booking_conflict');
     const later = await book(guest, { resource_id: table(8), starts_at: h.at(120), minutes: 60 });
     assert.equal(later.status, 201, later.text);
     await h.closeSession(s);
@@ -227,7 +231,7 @@ describe('бронь', { skip }, () => {
     }
     const n = await h.notifications(u.id, 'booking.expired');
     assert.equal(n.length, 1);
-    assert.match(n[0].text, /сгорела/);
+    assert.match(n[0].text, /сгорела: вы не пришли за 30 минут\./);
     assert.equal((await h.audit('booking.expire')).filter((a) => a.object_id === b.id).length, 1);
     // Повтор планировщика — ничего.
     await h.tick();
@@ -281,7 +285,7 @@ describe('бронь', { skip }, () => {
     const start = T0 + 3 * 24 * 60 * MIN + 120 * MIN;
     const u = await h.login('+79995000000');
     const p = await paidBooking(u, { resource: table(3), startMin: 3 * 24 * 60 + 120, minutes: 60 });
-    h.clock.set(start - 3 * MIN);
+    h.clock.set(start - 3 * MIN + 20_000); // не на границе минуты: конец игры всё равно ровно в конце брони
     const code = await h.code(table(3));
     // Чужой гость — не найдено; не тот код — forbidden.
     assert.equal((await h.request('POST', `/api/bookings/${p.id}/start`, { token: guest2.token, body: { code } })).status, 404);
@@ -295,6 +299,10 @@ describe('бронь', { skip }, () => {
     assert.equal(s.booking_id, p.id);
     assert.equal(s.payer_user_id, u.id);
     assert.equal(new Date(s.paid_until).getTime(), start + 60 * MIN);
+    // light получает конец брони (№123).
+    const lc = h.lightCalls.filter((c) => c.args.booking.id === p.id).at(-1).args;
+    assert.equal(lc.paidUntil, new Date(start + 60 * MIN).toISOString());
+    assert.equal(lc.paidMinutes, undefined);
     const settle = h.moneyCalls.filter((c) => c.fn === 'settlePrepayment' && c.args.paymentId === p.paymentId);
     assert.equal(settle.length, 1);
     assert.equal(settle[0].args.sessionId, s.id);
@@ -443,7 +451,7 @@ describe('бронь', { skip }, () => {
     assert.equal(h.moneyCalls.filter((x) => x.fn === 'forfeitPrepayment' && x.args.reason?.includes('Гость позвонил')).length, 0);
   });
 
-  it('опоздавший гость брони без предоплаты платит только с прихода до конца брони (№113)', async () => {
+  it('опоздавший гость брони без предоплаты платит только с прихода до конца брони, минуты вниз (№113, №123)', async () => {
     await h.setSettings({ booking_prepayment: 'none' });
     try {
       h.clock.set(T0 + 10 * 24 * 60 * MIN); // четверг 12:00
@@ -451,15 +459,16 @@ describe('бронь', { skip }, () => {
       const u = await h.login('+79997100000');
       const r = await book(u, { resource_id: table(3), starts_at: new Date(start).toISOString(), minutes: 60 });
       assert.equal(r.json.amount_kopecks, 50_000);
-      h.clock.set(start + 12 * MIN);
+      h.clock.set(start + 12 * MIN + 30_000);
       const st = await h.request('POST', `/api/bookings/${r.json.id}/start`, { token: u.token, body: { code: await h.code(table(3)) } });
       assert.equal(st.status, 200, st.text);
       assert.equal(st.json.status, 'payment_required');
-      assert.equal(st.json.amount_kopecks, 40_000); // 48 минут по 500 ₽/ч
+      // 47,5 минуты до конца → 47 минут вниз (№123) по 500 ₽/ч = 391,67 → 392 ₽.
+      assert.equal(st.json.amount_kopecks, 39_200);
       const call = h.moneyCalls.filter((x) => x.fn === 'createBookingQuote' && x.args.bookingId === r.json.id).at(-1);
-      assert.equal(call.args.amountKopecks, 40_000);
-      assert.equal(call.args.minutes, 48);
-      assert.equal(st.json.quote.amount_kopecks, 40_000);
+      assert.equal(call.args.amountKopecks, 39_200);
+      assert.equal(call.args.minutes, 47);
+      assert.equal(st.json.quote.amount_kopecks, 39_200);
     } finally {
       await h.setSettings({ booking_prepayment: 'full' });
     }

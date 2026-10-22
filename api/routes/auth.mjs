@@ -143,7 +143,7 @@ async function logout(ctx) {
 async function me(ctx) {
   const userId = ctx.user.id;
   await setContext(ctx.db, { clubId: null });
-  const user = await userJson(ctx.db, userId, { consentVersion: ctx.config.consentVersion });
+  const user = await userJson(ctx.db, userId, { consentVersion: ctx.config.consentVersion, configured: ctx.notify?.configured?.() ?? null });
   let clubs = (await myMemberships(ctx.db, userId)).map((m) => ({ club_id: m.club_id, role: m.role, name: m.club_name, timezone: m.timezone }));
   // Токен PIN действует только в клубе терминала.
   if (ctx.principal.kind === 'pin') clubs = clubs.filter((c) => c.club_id === ctx.principal.clubId);
@@ -188,7 +188,7 @@ async function updateMe(ctx, req) {
   sets.push(`updated_at = $${params.length}`);
   await setContext(ctx.db, { clubId: null });
   await ctx.db.query(`update bl.users set ${sets.join(', ')} where id = $1`, params);
-  return { status: 200, json: { user: await userJson(ctx.db, ctx.user.id, { consentVersion: ctx.config.consentVersion }) } };
+  return { status: 200, json: { user: await userJson(ctx.db, ctx.user.id, { consentVersion: ctx.config.consentVersion, configured: ctx.notify?.configured?.() ?? null }) } };
 }
 
 async function registerTerminal(ctx, req) {

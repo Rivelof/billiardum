@@ -45,4 +45,17 @@ describe('цепочка и сводка', () => {
     });
     assert.equal(text.replace(/[\u00a0\u202f]/g, ' '), 'Сводка за 21 октября: выручка 0 ₽; игра 0 ч, загрузка 0 %; 0 тревог; ручных действий: 0.');
   });
+
+  it('текст сводки: автоматические действия системы — отдельной строкой, только при M > 0 (№125)', () => {
+    const base = {
+      day: '2026-10-21',
+      revenue: { by_method: { sbp: 0, card: 0, cash: 0, card_terminal: 0 }, net_kopecks: 0, refunds_kopecks: 0 },
+      play: { hours: 0, utilization_percent: 0 },
+      alarms: { total: 0, critical: 0 },
+      journal: { head_seq: 0, head_hash: null },
+    };
+    const text = summaryText({ ...base, manual_actions: { count: 1, automatic: { count: 2, by_action: { 'payment.forfeited': 2 } } } });
+    assert.ok(text.endsWith('ручных действий: 1; автоматических действий системы: 2.'), text);
+    assert.doesNotMatch(summaryText({ ...base, manual_actions: { count: 1, automatic: { count: 0, by_action: {} } } }), /автоматических/);
+  });
 });

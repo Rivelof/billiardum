@@ -315,6 +315,10 @@ export function createNotifier({
     sendToClubStaff,
     deliver,
     vapidPublicKey: vapid?.publicKey ?? null,
+    /** Какие каналы настроены на сервере (№126): MAX — заглушка, Telegram — токен и прокси, Web Push — VAPID. */
+    configured() {
+      return { max: Boolean(max?.configured), telegram: Boolean(telegram?.configured), webpush: Boolean(vapid) };
+    },
     /** Подписать обработчик доставки на outbox. */
     register(outbox) {
       return outbox.subscribe(TOPIC, deliver, { name: 'core.notify.deliver' });

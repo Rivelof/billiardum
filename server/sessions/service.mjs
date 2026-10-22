@@ -592,10 +592,10 @@ export function createLightService(opts) {
    * доплатой при раннем приходе (paidMinutes). Команда свету — как при оплате; журнал
    * session.start, outbox session.started с booking_id. Идемпотентно по booking.id.
    */
-  async function startFromBooking(db, { booking, userId, paidMinutes, paymentIds = [] }) {
+  async function startFromBooking(db, { booking, userId, paidMinutes = null, paidUntil: paidUntilArg = null, paymentIds = [] }) {
     if (!booking || !isUuid(booking.id) || !isUuid(booking.club_id) || !isUuid(booking.resource_id)) fail('bad_request', 'booking');
     if (!isUuid(userId)) fail('bad_request', 'userId');
-    if (!intIn(paidMinutes, 1, 1440)) fail('bad_request', 'paidMinutes');
+    if (paidUntilArg === null && !intIn(paidMinutes, 1, 1440)) fail('bad_request', 'paidMinutes');
     if (!Array.isArray(paymentIds) || !paymentIds.every(isUuid)) fail('bad_request', 'paymentIds');
     await enterClub(db, booking.club_id);
     const t = now();
@@ -604,7 +604,10 @@ export function createLightService(opts) {
     const existing = await db.query('select id from bl.sessions where booking_id = $1', [booking.id]);
     if (existing.rowCount > 0) return existing.rows[0].id;
     const h = await assertFreeFor(db, res.id, userId, t);
-    const paidUntil = new Date(t.getTime() + paidMinutes * MINUTE);
+    // Игра по брони кончается ровно в конце брони (№123): booking передаёт paidUntil.
+    const paidUntil = paidUntilArg !== null ? new Date(paidUntilArg) : new Date(t.getTime() + paidMinutes * MINUTE);
+    if (Number.isNaN(paidUntil.getTime()) || paidUntil <= t || paidUntil.getTime() - t.getTime() > 24 * 3600_000) fail('bad_request', 'paidUntil');
+    const minutesPaid = Math.ceil((paidUntil.getTime() - t.getTime()) / MINUTE);
     const s = await insertSession(db, { clubId: booking.club_id, resourceId: res.id, payer: userId, unlimited: false, source: 'booking', paidUntil, t, bookingId: booking.id });
     for (const id of [...new Set(paymentIds)]) {
       const p = await paymentRow(db, id);
@@ -615,7 +618,7 @@ export function createLightService(opts) {
       await db.query(
         `insert into bl.session_payments (payment_id, club_id, session_id, kind, outcome, minutes, unlimited, amount_kopecks, method, confirmed_at, created_at)
          values ($1, $2, $3, 'start', 'applied', $4, false, $5, $6, $7, $8) on conflict (payment_id) do nothing`,
-        [id, booking.club_id, s.id, Math.min(1440, p.minutes ?? paidMinutes), p.amount_kopecks, typeof p.method === 'string' && /^[a-z_]{1,32}$/.test(p.method) ? p.method : null, p.confirmed_at, t],
+        [id, booking.club_id, s.id, Math.min(1440, p.minutes ?? minutesPaid), p.amount_kopecks, typeof p.method === 'string' && /^[a-z_]{1,32}$/.test(p.method) ? p.method : null, p.confirmed_at, t],
       );
       await linkPayment(db, id, s.id);
     }
@@ -626,12 +629,12 @@ export function createLightService(opts) {
       objectId: s.id,
       actorType: 'user',
       actorId: userId,
-      data: { session_id: s.id, paid_until: iso(paidUntil), booking_id: booking.id, payment_ids: paymentIds, minutes: paidMinutes, resource_id: res.id, source: 'booking' },
+      data: { session_id: s.id, paid_until: iso(paidUntil), booking_id: booking.id, payment_ids: paymentIds, minutes: minutesPaid, resource_id: res.id, source: 'booking' },
     });
     await emit(db, 'session.started', sessionEvent(s, { booking_id: booking.id }));
     await command(db, s, { type: 'session.start', body: { session_id: s.id }, cause: 'guest' });
     await changed(db, s);
-    log.info('session_started', { session_id: s.id, resource_id: res.id, minutes: paidMinutes, booking_id: booking.id });
+    log.info('session_started', { session_id: s.id, resource_id: res.id, minutes: minutesPaid, booking_id: booking.id });
     return s.id;
   }
 
@@ -641,7 +644,8 @@ export function createLightService(opts) {
    * стол освободится (а pending другим гостем стол не получит). Стол в pending — не трогаем.
    * @returns {{ ok: true, applied: boolean, until?: string, reason?: string }}
    */
-  async function setReserved(db, { resourceId, until, userId = null }) {
+  async function setReserved(db, { resourceId, until, userId = null, source = 'booking' }) {
+    if (!['booking', 'waitlist', 'staff'].includes(source)) fail('bad_request', 'source');
     const t = now();
     const u = new Date(until);
     if (Number.isNaN(u.getTime()) || u <= t || u.getTime() - t.getTime() > 24 * 3600_000) fail('bad_request', 'until');
@@ -652,12 +656,14 @@ export function createLightService(opts) {
     const busy = await openSessionOn(db, resourceId);
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'pending') return { ok: true, applied: false, reason: 'pending' };
-    if (h?.kind === 'reserved') {
+    if (h?.kind === 'reserved' && h.user_id === userId && h.source === source) {
       await db.query('update bl.resource_holds set until = $2 where id = $1', [h.id, u]);
     } else {
+      // Другое удержание reserved (другой гость, бронь вместо очереди) заменяется новым.
+      if (h?.kind === 'reserved') await releaseHold(db, h.id, t, 'replaced');
       await db.query(
-        `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, created_at) values ($1, $2, 'reserved', $3, $4, $5)`,
-        [res.club_id, resourceId, userId, u, t],
+        `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, source, created_at) values ($1, $2, 'reserved', $3, $4, $5, $6)`,
+        [res.club_id, resourceId, userId, u, source, t],
       );
     }
     const shown = !busy && h?.kind !== 'service';
@@ -1122,7 +1128,7 @@ export function createLightService(opts) {
       session: s && withSession ? sessionSummary(s, t) : null,
       busy_until: s ? iso(s.paid_until) : null,
       until: h ? iso(h.until) : null,
-      hold: h ? { kind: h.kind, until: iso(h.until), reason_code: h.reason_code ?? null } : null,
+      hold: h ? { kind: h.kind, until: iso(h.until), reason_code: h.reason_code ?? null, source: h.source ?? null } : null,
       next_booking: await nextBookingInfo(db, r.id),
       device: device
         ? { id: device.id, online, rssi: info?.rssi ?? null, fw: info?.fw ?? device.fw ?? null, caps: info?.caps ?? device.caps ?? [], mode: info?.mode ?? null }

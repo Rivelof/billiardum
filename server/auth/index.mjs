@@ -94,7 +94,14 @@ export function clearSessionCookie() {
  * Пользователь для ответа: без телефона целиком — только маска.
  * db — транзакция, где app.user_id = userId (своя строка users видна по RLS).
  */
-export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VERSION } = {}) {
+/** Каналы, которые можно предложить гостю (№126), в порядке по умолчанию. */
+const CHANNEL_NAMES = ['max', 'telegram', 'webpush'];
+
+/**
+ * configured — какие каналы настроены на сервере ({max, telegram, webpush}, из notify.configured()).
+ * Без него (null) считается, что настроены все.
+ */
+export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VERSION, configured = null } = {}) {
   const { rows } = await db.query(
     `select u.id, u.phone, u.name, u.notify_channel, u.channels_order, u.telegram_user_id is not null as telegram, u.max_user_id is not null as max,
             exists (select 1 from bl.consents c where c.user_id = u.id and c.version = $2) as consent,
@@ -104,6 +111,7 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
   );
   const u = rows[0];
   if (!u) return null;
+  const conf = { max: true, telegram: true, webpush: true, ...(configured ?? {}) };
   return {
     id: u.id,
     name: u.name,
@@ -112,10 +120,15 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
     // §14: принятая текущая версия согласия или null; требуемая версия — consent.version.
     consent_version: u.consent ? consentVersion : null,
     consent: { version: consentVersion, accepted: u.consent },
+    // Сохранённые гостем основной канал и порядок отдаются как есть (№126); ненастроенные
+    // каналы пропускаются при доставке и не предлагаются (channels_available).
     notify_channel: u.notify_channel,
     channels_order: u.channels_order,
-    // Какие каналы реально подключены (№120): мессенджер привязан, у Web Push — хотя бы одна подписка.
-    channels: { max: u.max, telegram: u.telegram, webpush: u.webpush },
+    // Какие каналы реально подключены (№120, №126): мессенджер привязан и его адаптер настроен
+    // на сервере; у Web Push — хотя бы одна подписка.
+    channels: { max: u.max && conf.max, telegram: u.telegram && conf.telegram, webpush: u.webpush },
+    // Какие каналы можно предлагать в выборе основного канала и порядка (настроены на сервере).
+    channels_available: CHANNEL_NAMES.filter((c) => conf[c]),
   };
 }
 
@@ -168,7 +181,7 @@ export async function completeLogin(ctx, userId, { via }) {
   const { acceptInvites } = await import('../staff/index.mjs');
   await acceptInvites(db, userId);
   await auditStaffLogin(db, userId, { via });
-  const user = await userJson(db, userId, { consentVersion: ctx.config.consentVersion });
+  const user = await userJson(db, userId, { consentVersion: ctx.config.consentVersion, configured: ctx.notify?.configured?.() ?? null });
   ctx.setCookie(sessionCookie(issued.token, issued.expiresAt, now));
   ctx.log.info('auth_login', { via, user_id: userId });
   return { token: issued.token, expires_at: issued.expiresAt.toISOString(), user, needs_phone: user.needs_phone };
