@@ -20,7 +20,7 @@ import {
   userJson,
 } from '../../server/auth/index.mjs';
 import { createLink, handleTelegramUpdate, NONCE, NONCE_TTL_MS, pollLink, secretMatches } from '../../server/auth/botlink.mjs';
-import { hashPin, LOCK_MS, MAX_FAILURES, PIN, verifyPin } from '../../server/auth/pin.mjs';
+import { checkStaffPin, hashPin, PIN, PIN_SWITCH_ROLES } from '../../server/auth/pin.mjs';
 import { InitDataError, verifyInitData } from '../../server/auth/telegram.mjs';
 import { HttpError } from '../../server/http/errors.mjs';
 import { parseCookies, serializeCookie } from '../../server/http/request.mjs';
@@ -214,7 +214,7 @@ async function terminalInfo(ctx) {
        from bl.club_members m join bl.users u on u.id = m.user_id
       where m.club_id = $1 and m.active and m.role = any($2::text[])
       order by m.role, m.user_id`,
-    [ctx.club, ['owner', 'manager', 'reception']],
+    [ctx.club, PIN_SWITCH_ROLES],
   );
   return {
     status: 200,
@@ -230,35 +230,26 @@ async function pinSwitch(ctx, req) {
   if (!isUuid(userId) || typeof pin !== 'string' || !PIN.test(pin)) throw new HttpError(400, 'bad_request');
   const terminalId = ctx.principal.terminalId;
   const now = ctx.clock.now();
-  const { rows } = await ctx.db.query(
-    `select id, role, pin_hash, pin_failed_count, pin_locked_until from bl.club_members
-      where club_id = $1 and user_id = $2 and active for update`,
-    [ctx.club, userId],
-  );
-  const m = rows[0];
-  if (!m || !['owner', 'manager', 'reception'].includes(m.role) || !m.pin_hash) {
-    ctx.log.warn('pin_rejected', { terminal_id: terminalId, reason: 'no_pin' });
+  // Проверка и счётчик ошибок — в своей транзакции (общая блокировка PIN, checkStaffPin).
+  const check = await checkStaffPin({
+    pool: ctx.pool,
+    withContext: ctx.withContext,
+    clubId: ctx.club,
+    userId,
+    pin,
+    roles: PIN_SWITCH_ROLES,
+    pepper: ctx.config.pinPepper,
+    now,
+  });
+  if (!check.ok) {
+    ctx.log.warn(check.locked ? 'pin_locked' : 'pin_rejected', { terminal_id: terminalId, user_id: userId, code: check.code });
+    if (check.code === 'rate_limited') {
+      return { status: 429, json: { error: 'rate_limited' }, headers: { 'retry-after': String(check.retryAfterSec) } };
+    }
+    // Роль без входа по PIN — как неверный PIN: терминал не узнаёт, чья учётка есть.
     return { status: 401, json: { error: 'unauthorized' } };
   }
-  if (m.pin_locked_until && m.pin_locked_until > now) {
-    ctx.log.warn('pin_locked', { terminal_id: terminalId, user_id: userId });
-    const retry = Math.ceil((m.pin_locked_until.getTime() - now.getTime()) / 1000);
-    return { status: 429, json: { error: 'rate_limited' }, headers: { 'retry-after': String(retry) } };
-  }
-  const ok = await verifyPin(pin, m.pin_hash, ctx.config.pinPepper);
-  if (!ok) {
-    const failed = m.pin_failed_count + 1;
-    const locked = failed >= MAX_FAILURES;
-    await ctx.db.query('update bl.club_members set pin_failed_count = $2, pin_locked_until = $3 where id = $1', [
-      m.id,
-      locked ? 0 : failed,
-      locked ? new Date(now.getTime() + LOCK_MS) : null,
-    ]);
-    ctx.log.warn(locked ? 'pin_locked' : 'pin_rejected', { terminal_id: terminalId, user_id: userId, failed });
-    // Ошибка возвращается, а не бросается: счётчик неудач должен закоммититься.
-    return { status: 401, json: { error: 'unauthorized' } };
-  }
-  await ctx.db.query('update bl.club_members set pin_failed_count = 0, pin_locked_until = null where id = $1', [m.id]);
+  const m = { role: check.role };
   // Предыдущий сотрудник на этом терминале выходит.
   await ctx.db.query(
     "update bl.auth_tokens set revoked_at = $2 where terminal_id = $1 and kind = 'pin' and revoked_at is null",
@@ -320,7 +311,7 @@ export const routes = [
   { method: 'POST', path: '/api/staff/terminal', auth: 'staff', roles: ['owner', 'manager'], clubFromBody: true, handler: registerTerminal },
   { method: 'GET', path: '/api/staff/terminal', auth: 'terminal', handler: terminalInfo },
   { method: 'POST', path: '/api/staff/pin', auth: 'terminal', rateLimit: { max: 20, windowMs: MINUTE }, handler: pinSwitch },
-  { method: 'PUT', path: '/api/staff/pin', auth: 'staff', roles: ['owner', 'manager', 'reception'], clubFromBody: true, rateLimit: { max: 10, windowMs: MINUTE }, handler: pinSet },
+  { method: 'PUT', path: '/api/staff/pin', auth: 'staff', roles: PIN_SWITCH_ROLES, clubFromBody: true, rateLimit: { max: 10, windowMs: MINUTE }, handler: pinSet },
 ];
 
 // Для тестов и документации.

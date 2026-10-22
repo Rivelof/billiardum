@@ -29,6 +29,7 @@ import { PosError } from './errors.mjs';
 import { allocate, discountKopecks, overLimit, receiptLines, refundAmount, rub } from './money.mjs';
 import { offlinePayment, onlinePayment, receiptCustomer, refundPayment } from './payments.mjs';
 import { posSettings } from './settings.mjs';
+import { useApproval } from './approvals.mjs';
 import {
   hasRole,
   insertOrder,
@@ -141,8 +142,8 @@ export async function saleView(db, saleId, { confirmation = null } = {}) {
     const p = (await db.query('select confirmation_url, method from bl.payments where id = $1', [s.payment_id])).rows[0];
     if (p?.confirmation_url) conf = s.channel === 'pos' ? { type: 'qr', confirmation_data: p.confirmation_url } : { type: 'redirect', url: p.confirmation_url };
   }
-  let receiptStatus = null;
-  if (s.receipt_id) receiptStatus = (await db.query('select status from bl.receipts where id = $1', [s.receipt_id])).rows[0]?.status ?? null;
+  // Чек продажи бара: статус и фискальные признаки ККТ (fd, fp — после пробития, server/kkt).
+  const receipt = s.receipt_id ? (await db.query('select status, fd, fp from bl.receipts where id = $1', [s.receipt_id])).rows[0] ?? null : null;
   return {
     sale_id: s.id,
     channel: s.channel,
@@ -160,7 +161,9 @@ export async function saleView(db, saleId, { confirmation = null } = {}) {
     change_kopecks: s.change_kopecks === null ? null : Number(s.change_kopecks),
     refunded_kopecks: Number(s.refunded_kopecks),
     receipt_id: s.receipt_id,
-    receipt_status: receiptStatus,
+    receipt_status: receipt?.status ?? null,
+    receipt_fd: receipt?.fd == null ? null : Number(receipt.fd),
+    receipt_fp: receipt?.fp ?? null,
     items: items.map((i) => ({
       id: i.id,
       order_id: i.order_id,
@@ -253,11 +256,18 @@ export async function createSale(db, deps, info) {
   } catch {
     throw bad('discount');
   }
-  const reason = typeof b.discount?.reason === 'string' ? b.discount.reason.trim() : '';
+  let reason = typeof b.discount?.reason === 'string' ? b.discount.reason.trim() : '';
   if (reason.length > 2000) throw bad('discount.reason');
   const over = overLimit(discount, barSubtotal, pos.discount_limit_percent);
-  if (over) {
-    // Скидка выше лимита клуба — только управляющий и выше, с причиной; тревога владельцу (№82).
+  // Подтверждение PIN управляющего на этом терминале (№95): та же скидка, одноразовое, 5 минут.
+  let approval = null;
+  if (b.discount?.approval_id !== undefined && b.discount?.approval_id !== null) {
+    if (discount <= 0) throw bad('discount.approval_id без скидки');
+    approval = await useApproval(db, { approvalId: b.discount.approval_id, discount: b.discount, at });
+    reason = approval.reason_text;
+  }
+  if (over && !approval) {
+    // Скидка выше лимита клуба — только управляющий и выше (сам на кассе или PIN), с причиной (№82).
     if (!hasRole(info.roles, MANAGER_ROLES)) throw new PosError('limit_exceeded', 'скидка выше лимита ресепшена');
     if (!reason) throw new PosError('reason_required', 'скидка выше лимита');
   }
@@ -367,22 +377,28 @@ export async function createSale(db, deps, info) {
   }
 
   if (discount > 0) {
+    if (approval) await approval.mark(saleId);
+    // Подтверждённая скидка — действие управляющего (журнал от его имени, №95).
     await deps.audit.appendAudit(db, {
       action: over ? 'manual.discount' : 'pos.discount',
       objectType: 'pos_sale',
       objectId: saleId,
       reason: reason || null,
-      data: { sale_id: saleId, discount_kopecks: discount, subtotal_kopecks: barSubtotal, limit_percent: pos.discount_limit_percent, over_limit: over },
+      data: {
+        sale_id: saleId, discount_kopecks: discount, subtotal_kopecks: barSubtotal, limit_percent: pos.discount_limit_percent, over_limit: over,
+        ...(approval ? { approval_id: approval.id, reason_code: approval.reason_code, cashier_id: staffId } : {}),
+      },
       actorType: 'user',
-      actorId: staffId,
+      actorId: approval ? approval.approver_id : staffId,
     });
     if (over) {
+      const who = approval ? `, подтвердил ${await operatorName(db, approval.approver_id)} (PIN)` : '';
       await deps.alarms.raise(db, clubId, {
         type: 'discount_over_limit',
         level: 'important',
         manual: true,
-        data: { sale_id: saleId, discount_kopecks: discount, subtotal_kopecks: barSubtotal },
-        text: `Скидка ${rub(discount)} из ${rub(barSubtotal)} выше лимита ${pos.discount_limit_percent} %: ${reason}`.slice(0, 900),
+        data: { sale_id: saleId, discount_kopecks: discount, subtotal_kopecks: barSubtotal, ...(approval ? { approval_id: approval.id } : {}) },
+        text: `Скидка ${rub(discount)} из ${rub(barSubtotal)} выше лимита ${pos.discount_limit_percent} %${who}: ${reason}`.slice(0, 900),
       });
     }
   }
@@ -598,8 +614,12 @@ async function refundDuplicates(db, deps, s, items, at) {
   });
 }
 
-/** Платёж продажи отменён в ЮKassa: продажа отменена, заказы, ждавшие этой оплаты, — тоже. */
-export async function cancelSale(db, deps, sale, { at = deps.clock.now() } = {}) {
+/**
+ * Отмена продажи: платёж отменён в ЮKassa (система) или кассир снял QR неоплаченной СБП-продажи
+ * (№98). Заказы, ждавшие этой оплаты, отменяются; оплата, пришедшая после отмены, возвращается
+ * (settleSale → refundLate).
+ */
+export async function cancelSale(db, deps, sale, { at = deps.clock.now(), actorId = null, reason = null } = {}) {
   const { rows: locked } = await db.query('select * from bl.pos_sales where id = $1 for update', [sale.id]);
   const s = locked[0];
   if (!s || s.status !== 'pending') return { result: 'already' };
@@ -611,13 +631,21 @@ export async function cancelSale(db, deps, sale, { at = deps.clock.now() } = {})
       where id = any($1::uuid[]) and committed_at is null and status <> 'canceled' returning id`,
     [orderIds, at],
   );
+  await recordReturns(db, {
+    items: items.filter((i) => waiting.some((w) => w.id === i.order_id))
+      .map((i) => ({ order_item_id: i.order_item_id, product_id: i.product_id, qty: i.item_qty, stock_factor: i.stock_factor, track_stock: i.track_stock })),
+    at,
+    userId: actorId,
+    reason: reason ?? 'payment_canceled',
+  });
   await deps.audit.appendAudit(db, {
     action: 'pos.sale_canceled',
     objectType: 'pos_sale',
     objectId: s.id,
-    data: { sale_id: s.id, payment_id: s.payment_id, method: s.method, orders_canceled: waiting.length },
-    actorType: 'system',
-    actorId: null,
+    reason,
+    data: { sale_id: s.id, payment_id: s.payment_id, method: s.method, orders_canceled: waiting.length, by: actorId ? 'staff' : 'payment' },
+    actorType: actorId ? 'user' : 'system',
+    actorId,
   });
   for (const o of await loadOrders(db, waiting.map((r) => r.id))) await publishOrder(db, deps, o);
   await publishClub(db, deps, s.club_id, 'pos_sale', { sale_id: s.id, status: 'canceled', method: s.method });
@@ -628,7 +656,14 @@ export async function cancelSale(db, deps, sale, { at = deps.clock.now() } = {})
 export async function settleSale(db, deps, saleId, { sync = false } = {}) {
   const { rows } = await db.query('select * from bl.pos_sales where id = $1', [saleId]);
   const s = rows[0];
-  if (!s || s.status !== 'pending' || !s.payment_id) return { result: 'already' };
+  if (!s || !s.payment_id) return { result: 'already' };
+  if (s.status === 'canceled' && s.channel === 'pos' && Number(s.refunded_kopecks) === 0) {
+    // Кассир отменил продажу, а гость всё же оплатил QR — вернуть деньги (№98).
+    const { rows: paid } = await db.query('select status from bl.payments where id = $1', [s.payment_id]);
+    if (paid[0]?.status === 'succeeded') return refundLate(db, deps, s);
+    return { result: 'already' };
+  }
+  if (s.status !== 'pending') return { result: 'already' };
   const { rows: pr } = await db.query('select * from bl.payments where id = $1', [s.payment_id]);
   let p = pr[0];
   if (sync && p?.status === 'pending' && p.provider === 'yookassa') {
@@ -645,6 +680,71 @@ export async function settleSale(db, deps, saleId, { sync = false } = {}) {
   if (p?.status === 'succeeded') return completeSale(db, deps, s);
   if (p?.status === 'canceled') return cancelSale(db, deps, s);
   return { result: 'pending' };
+}
+
+async function refundLate(db, deps, sale, { at = deps.clock.now() } = {}) {
+  const { rows: locked } = await db.query('select * from bl.pos_sales where id = $1 for update', [sale.id]);
+  const s = locked[0];
+  if (!s || s.status !== 'canceled' || Number(s.refunded_kopecks) > 0) return { result: 'already' };
+  const items = await loadSaleItems(db, s.id);
+  const amount = Number(s.bar_total_kopecks);
+  if (amount <= 0 || items.length === 0) return { result: 'already' };
+  const reason = 'Оплата после отмены продажи на кассе';
+  const phone = (await db.query("select customer_phone from bl.receipts where payment_id = $1 and kind = 'sale' and customer_phone is not null limit 1", [s.payment_id])).rows[0]?.customer_phone ?? null;
+  const pos = await posSettings(db, s.club_id);
+  const refund = await refundPayment(db, deps, {
+    paymentId: s.payment_id,
+    amount,
+    lines: linesFor(items),
+    customer: receiptCustomer({ phone, email: pos.receipt_email }),
+    reason,
+    key: `barl-${s.id}`,
+    description: 'Возврат: оплата после отмены',
+  });
+  await db.query(
+    `insert into bl.pos_refunds (club_id, sale_id, refund_id, kind, amount_kopecks, reason, items, created_at)
+     values ($1, $2, $3, 'late', $4, $5, $6::jsonb, $7)`,
+    [s.club_id, s.id, refund.refund_id, amount, reason, JSON.stringify(items.map((i) => ({ sale_item_id: i.id, qty: i.qty, amount_kopecks: i.amount_kopecks }))), at],
+  );
+  await db.query('update bl.pos_sale_items set refunded_qty = qty, refunded_kopecks = amount_kopecks where sale_id = $1', [s.id]);
+  await db.query('update bl.pos_sales set refunded_kopecks = $2, updated_at = $3 where id = $1', [s.id, amount, at]);
+  await deps.audit.appendAudit(db, {
+    action: 'pos.refund',
+    objectType: 'pos_sale',
+    objectId: s.id,
+    reason,
+    data: { sale_id: s.id, refund_id: refund.refund_id, amount_kopecks: amount, method: s.method, kind: 'late' },
+    actorType: 'system',
+    actorId: null,
+  });
+  await deps.alarms.raise(db, s.club_id, {
+    type: 'bar_late_payment',
+    level: 'important',
+    data: { sale_id: s.id, amount_kopecks: amount },
+    text: `Оплата СБП ${rub(amount)} пришла после отмены продажи на кассе — деньги возвращены`,
+  });
+  return { result: 'refunded', refund_id: refund.refund_id };
+}
+
+/**
+ * POST /api/pos/sales/{id}/cancel — ресепшн и выше: снять QR неоплаченной СБП-продажи (№98).
+ * Платёж ЮKassa в pending через API не отменяется (QR истечёт сам); если гость всё же заплатит,
+ * деньги вернутся автоматически. Оплаченная продажа — 409 already_paid (только возврат).
+ */
+export async function cancelSaleByStaff(db, deps, info) {
+  const id = info.params.id;
+  const b = info.body ?? {};
+  const reason = typeof b.reason === 'string' && b.reason.trim() ? b.reason.trim().slice(0, 2000) : null;
+  const { rows } = await db.query('select * from bl.pos_sales where id = $1 for update', [id]);
+  const s = rows[0];
+  if (!s || s.channel !== 'pos') throw new PosError('not_found', 'sale');
+  if (s.status === 'canceled') return saleView(db, id);
+  // Перед отменой — свежий статус платежа: вдруг гость уже оплатил.
+  await settleSale(db, deps, id, { sync: true });
+  const fresh = (await db.query('select * from bl.pos_sales where id = $1', [id])).rows[0];
+  if (fresh.status === 'completed') throw new PosError('already_paid', 'продажа оплачена — только возврат');
+  if (fresh.status === 'pending') await cancelSale(db, deps, fresh, { actorId: info.userId, reason });
+  return saleView(db, id);
 }
 
 /**

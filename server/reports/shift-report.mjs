@@ -7,7 +7,7 @@
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { sendToClubStaff } from '../notify/index.mjs';
 import { shiftView } from '../shifts/service.mjs';
-import { manualActions, playStats, revenueOf, serviceLight, shiftPayments, shiftRefunds } from './queries.mjs';
+import { manualActions, playStats, revenueOf, serviceLight, shiftLinks, shiftPayments, shiftRefunds } from './queries.mjs';
 import { reconcileKkt, reconcileOnline } from './reconcile.mjs';
 
 export const DEFAULT_SERVICE_LIGHT_ALARM_MINUTES = 60;
@@ -39,11 +39,12 @@ export async function buildShiftReport(db, { shiftId, now, online = true, moneyC
   const payments = await shiftPayments(db, { clubId, from, to });
   const refunds = await shiftRefunds(db, { clubId, from, to });
   const revenue = revenueOf(payments, refunds);
-  const play = await playStats(db, { clubId, from, to });
+  const play = await playStats(db, { clubId, from, to, payments: payments.filter((p) => p.category === 'tables'), refunds: refunds.filter((f) => f.category === 'tables') });
   const light = await serviceLight(db, { clubId, from, to });
   const limit = Number.isInteger(s.club_settings?.service_light_alarm_minutes) ? s.club_settings.service_light_alarm_minutes : DEFAULT_SERVICE_LIGHT_ALARM_MINUTES;
   const manual = await manualActions(db, { clubId, from, to });
   const kkt = await reconcileKkt(db, { clubId, payments, refunds });
+  const links = await shiftLinks(db, { clubId, shiftId: s.id, from, to });
   let onlineCheck;
   if (!online) onlineCheck = { ok: null, status: 'skipped' };
   else if (!moneyConfig) onlineCheck = { ok: null, status: 'not_configured' };
@@ -78,7 +79,7 @@ export async function buildShiftReport(db, { shiftId, now, online = true, moneyC
     },
     manual_actions: manual,
     cash,
-    reconciliation: { kkt, online: onlineCheck },
+    reconciliation: { kkt, online: onlineCheck, shift_links: links },
     generated_at: now.toISOString(),
   };
 }

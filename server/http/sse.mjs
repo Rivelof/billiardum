@@ -40,12 +40,14 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
     /**
      * Подключить ответ HTTP как поток событий. Заголовки пишет сам.
      * @param {import('node:http').ServerResponse} res
-     * @param {{ channels: string[], userId?: string|null, revalidate?: () => Promise<boolean>, revalidateMs?: number }} options
+     * @param {{ channels: string[], userId?: string|null, revalidate?: () => Promise<boolean>, revalidateMs?: number,
+     *           only?: Record<string, string[]> }} options
      * revalidate — периодическая проверка (токен не отозван, права на канал не отняты);
-     * false — поток закрывается.
+     * false — поток закрывается. only — канал → разрешённые события (бармену из club:{id}
+     * только события бара, decisions №97); каналы без записи — все события.
      * @returns {{ ok: true, client: object } | { ok: false, reason: string }}
      */
-    attach(res, { channels, userId = null, revalidate = null, revalidateMs = 60_000 }) {
+    attach(res, { channels, userId = null, revalidate = null, revalidateMs = 60_000, only = null }) {
       if (!channels.every(isChannel)) throw new Error('bad channel');
       if (clients.size >= maxClients) return { ok: false, reason: 'too_many_clients' };
       if (userId) {
@@ -68,6 +70,7 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
         res,
         userId,
         channels: new Set(channels),
+        only: only ? new Map(Object.entries(only).map(([ch, evs]) => [ch, new Set(evs)])) : null,
         close() {
           if (!clients.delete(client)) return;
           timers.clearInterval(keepAlive);
@@ -100,10 +103,11 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
       const text = formatEvent(event, data);
       let n = 0;
       for (const c of clients) {
-        if (c.channels.has(channel)) {
-          write(c, text);
-          n += 1;
-        }
+        if (!c.channels.has(channel)) continue;
+        const allowed = c.only?.get(channel);
+        if (allowed && !allowed.has(event)) continue;
+        write(c, text);
+        n += 1;
       }
       return n;
     },

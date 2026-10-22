@@ -8,6 +8,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const isUuid = (v) => typeof v === 'string' && UUID.test(v);
 export const STAFF_ROLES = Object.freeze(['owner', 'manager', 'reception']);
 export const MANAGER_ROLES = Object.freeze(['owner', 'manager']);
+/** Экран бара, статусы заказов, стоп-лист (№97): бармен (роль bar) и ресепшн и выше. */
+export const BAR_ROLES = Object.freeze(['owner', 'manager', 'reception', 'bar']);
 /** Роли маршрутов (как ROLES в api/router.mjs). */
 export const ROLES = Object.freeze({
   OWNER: Object.freeze(['owner']),

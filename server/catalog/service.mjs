@@ -5,6 +5,7 @@
 //
 // db — транзакция роутера с контекстом клуба; info = { userId, clubId, body, params }.
 
+import { afterCommit } from '../lib/store.mjs';
 import { PosError } from '../orders/errors.mjs';
 import { csvToProducts, validPhoto } from './csv.mjs';
 import { isUuid } from './api.mjs';
@@ -300,7 +301,19 @@ export async function updateProduct(db, deps, info) {
   if (Object.keys(changes).length > 0) {
     await audit(db, deps, info, 'catalog.product_update', 'product', id, { product_id: id, changes });
   }
+  if (changes.stop_list || changes.active) await publishStopList(db, deps, row);
   return { ...productView(row), modifier_group_ids: groupIds };
+}
+
+/** SSE stop_list в club:{id} после коммита — экраны бара и кассы (бармен получает только bar и stop_list). */
+async function publishStopList(db, deps, p) {
+  await afterCommit(db, () => {
+    try {
+      deps.sse.publish(`club:${p.club_id}`, 'stop_list', { product_id: p.id, stop_list: p.stop_list, active: p.active });
+    } catch (err) {
+      deps.log?.warn?.('sse_publish_failed', { error: err.message });
+    }
+  });
 }
 
 /**
@@ -317,6 +330,7 @@ export async function setStopList(db, deps, info) {
   if (cur.stop_list === v) return productView(cur);
   const row = (await db.query('update bl.products set stop_list = $2, updated_at = $3 where id = $1 returning *', [id, v, now(deps)])).rows[0];
   await audit(db, deps, info, 'catalog.stop_list', 'product', id, { product_id: id, name: cur.name, stop_list: v });
+  await publishStopList(db, deps, row);
   return productView(row);
 }
 

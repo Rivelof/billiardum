@@ -8,12 +8,17 @@
 //   GET   /api/pos/sales/{id}           — ресепшн и выше: продажа (СБП ждёт — сверка с ЮKassa)
 //   POST  /api/pos/sales/{id}/refund    — управляющий и выше, Idempotency-Key: {reason, items?: [{order_item_id, qty}]}
 //   GET   /api/clubs/{club}/pos/sales   — ресепшн и выше: продажи (?from&to&limit)
-//   GET   /api/clubs/{club}/pos/settings   — ресепшн и выше: настройки кассы клуба
+//   POST  /api/pos/sales/{id}/cancel    — ресепшн и выше: снять QR неоплаченной СБП-продажи (№98) {reason?}
+//   GET   /api/clubs/{club}/staff/approvers — ресепшн и выше: кто подтверждает скидку PIN [{user_id, name, role}]
+//   POST  /api/pos/discount-approvals   — ресепшн и выше: {user_id, pin, reason_code, reason_text, percent | amount_kopecks}
+//                                         → {approval_id, expires_at} (5 минут, одноразовое; №95); в продаже discount.approval_id
+//   GET   /api/clubs/{club}/pos/settings   — ресепшн и выше (чтение: лимит скидки): настройки кассы клуба
 //   PATCH /api/clubs/{club}/pos/settings   — владелец: {discount_limit_percent?, stop_at_zero?, tab_limit_kopecks?, receipt_email?}
 
 import { ROLES } from '../../server/orders/core.mjs';
 import { PosError } from '../../server/orders/errors.mjs';
-import { createSale, listSales, refundSale, saleView, settleSale } from '../../server/orders/pos.mjs';
+import { cancelSaleByStaff, createSale, listSales, refundSale, saleView, settleSale } from '../../server/orders/pos.mjs';
+import { createApproval, listApprovers } from '../../server/orders/approvals.mjs';
 import { inClub, posRoute } from '../../server/orders/route.mjs';
 import { loadClub, readPosSettings, validatePosSettingsPatch } from '../../server/orders/settings.mjs';
 
@@ -57,6 +62,30 @@ export const routes = [
     idempotent: true,
     findClub: inClub('pos_sales'),
     handler: posRoute(({ db, deps, info }) => refundSale(db, deps, info), { status: 201 }),
+  },
+  {
+    method: 'POST',
+    path: '/api/pos/sales/{id}/cancel',
+    auth: 'staff',
+    roles: RECEPTION,
+    findClub: inClub('pos_sales'),
+    handler: posRoute(({ db, deps, info }) => cancelSaleByStaff(db, deps, info)),
+  },
+  {
+    method: 'GET',
+    path: '/api/clubs/{club}/staff/approvers',
+    auth: 'staff',
+    roles: RECEPTION,
+    handler: posRoute(({ db, info }) => listApprovers(db, { clubId: info.clubId })),
+  },
+  {
+    method: 'POST',
+    path: '/api/pos/discount-approvals',
+    auth: 'staff',
+    roles: RECEPTION,
+    rateLimit: { max: 20, windowMs: 60_000 },
+    handler: posRoute(({ db, deps, info, ctx }) =>
+      createApproval(db, deps, info, { pool: ctx.pool, withContext: ctx.withContext, pepper: ctx.config.pinPepper }), { status: 201 }),
   },
   {
     method: 'GET',

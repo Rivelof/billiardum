@@ -13,7 +13,7 @@ const SKIP = !process.env.DATABASE_ADMIN_URL;
 const TABLES = [
   'product_categories', 'products', 'modifier_groups', 'modifiers', 'product_modifier_groups',
   'orders', 'order_items', 'pos_sales', 'pos_sale_items', 'pos_sale_requests', 'pos_refunds',
-  'stock_movements', 'stock_audits',
+  'stock_movements', 'stock_audits', 'pos_discount_approvals',
 ];
 const ID = {};
 let db;
@@ -49,6 +49,8 @@ async function seedPosB(pool) {
     insert into bl.pos_refunds (id, club_id, sale_id, refund_id, kind, amount_kopecks, reason, items, created_by, created_at)
       values ('${ID.posRefund}', '${CLUB_B}', '${ID.sale}', '${ID.refund}', 'staff', 1000, 'тест', '[]', '${OWNER_B}', now());
     insert into bl.stock_audits (id, club_id, created_by, lines, total_diff_kopecks, created_at) values ('${ID.audit}', '${CLUB_B}', '${OWNER_B}', '[]', 0, now());
+    insert into bl.pos_discount_approvals (club_id, approver_id, requested_by, reason_code, reason_text, percent, expires_at, created_at)
+      values ('${CLUB_B}', '${OWNER_B}', '${OWNER_B}', 'other', 'тест', 20, now() + interval '5 minutes', now());
     insert into bl.stock_movements (club_id, product_id, kind, qty, cost_kopecks, created_at) values ('${CLUB_B}', '${ID.prod}', 'arrival', 10, 50000, now());
     insert into bl.stock_movements (club_id, product_id, kind, qty, cost_kopecks, order_item_id, created_at) values ('${CLUB_B}', '${ID.prod}', 'sale', -1, -5000, '${ID.item}', now());
   `);

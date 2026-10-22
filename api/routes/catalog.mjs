@@ -8,7 +8,7 @@
 //                                                       payment_subject?, unit?, stop_list?, track_stock?, photo?,
 //                                                       sku?, description?, sort?, modifier_group_ids?}
 //   PATCH /api/catalog/products/{id}                  — те же поля, частично; active: false — снять с продажи
-//   POST  /api/catalog/products/{id}/stop-list        — ресепшн и выше: {stop_list: boolean} (№88; цены и состав — нет)
+//   POST  /api/catalog/products/{id}/stop-list        — бармен, ресепшн и выше: {stop_list: boolean} (№88; цены и состав — нет)
 //   POST  /api/clubs/{club}/catalog/modifier-groups   — {name, min_select?, max_select?, sort?, modifiers?: [...]}
 //   PATCH /api/catalog/modifier-groups/{id}           — {name?, min_select?, max_select?, sort?, active?}
 //   POST  /api/catalog/modifier-groups/{id}/modifiers — {name, price_delta_kopecks?, stock_factor?, is_default?, sort?}
@@ -16,6 +16,7 @@
 //   POST  /api/clubs/{club}/catalog/import            — {csv, dry_run?}: импорт меню из CSV (PRODUCT §16.4)
 // Каждое изменение — журнал catalog.*.
 
+import { ALL_ROLES } from '../router.mjs';
 import { ROLES } from '../../server/orders/core.mjs';
 import { menuFor } from '../../server/catalog/api.mjs';
 import {
@@ -36,6 +37,8 @@ import { inClub, posRoute } from '../../server/orders/route.mjs';
 
 const MANAGER = [...ROLES.MANAGER_UP];
 const RECEPTION = [...ROLES.RECEPTION_UP];
+// Бармен (№97): экран бара, статусы, стоп-лист — когда роль bar есть у core (api/router.mjs ALL_ROLES).
+const BAR = ALL_ROLES.includes('bar') ? [...RECEPTION, 'bar'] : RECEPTION;
 
 export const routes = [
   {
@@ -46,7 +49,7 @@ export const routes = [
     handler: posRoute(async ({ db, info }) => {
       const { rowCount } = await db.query('select 1 from bl.clubs where id = $1', [info.clubId]);
       if (rowCount === 0) throw new PosError('not_found', 'club');
-      const staff = info.roles.some((r) => RECEPTION.includes(r));
+      const staff = info.roles.some((r) => BAR.includes(r));
       return menuFor(db, { clubId: info.clubId, audience: staff ? 'staff' : 'guest' });
     }),
   },
@@ -91,7 +94,7 @@ export const routes = [
     method: 'POST',
     path: '/api/catalog/products/{id}/stop-list',
     auth: 'staff',
-    roles: RECEPTION,
+    roles: BAR,
     findClub: inClub('products'),
     handler: posRoute(({ db, deps, info }) => setStopList(db, deps, info)),
   },

@@ -4,7 +4,7 @@
 //   path      — '/api/clubs/{club}/audit'; параметры club, id и *_id проверяются как UUID (иначе 404);
 //   auth      — 'none' | 'guest' (любой вошедший пользователь) | 'staff' (роль в клубе из roles)
 //               | 'terminal' (токен терминала ресепшена) | 'any' (пользователь или терминал);
-//   roles     — роли в клубе для 'staff': owner, manager, reception, installer;
+//   roles     — роли в клубе для 'staff': owner, manager, reception, installer, bar;
 //   requires  — ['phone', 'consent']: без телефона — 403 phone_required, без согласия — 403 consent_required;
 //   idempotent: true — заголовок Idempotency-Key (UUID) обязателен; повтор с тем же ключом
 //               (пользователь, ключ, маршрут) 24 часа возвращает тот же ответ, с другим телом — 409;
@@ -42,8 +42,10 @@ export const ROLES = Object.freeze({
   MANAGER_UP: Object.freeze(['owner', 'manager']),
   RECEPTION_UP: Object.freeze(['owner', 'manager', 'reception']),
   INSTALLER: Object.freeze(['owner', 'installer']),
+  // Бармен (№97): экран бара, статусы заказов, стоп-лист; без кассы, денег и зала.
+  BAR: Object.freeze(['owner', 'manager', 'bar']),
 });
-export const ALL_ROLES = ['owner', 'manager', 'reception', 'installer'];
+export const ALL_ROLES = ['owner', 'manager', 'reception', 'installer', 'bar'];
 export const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
 
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);

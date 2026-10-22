@@ -45,7 +45,7 @@
 
 ## Отчёт смены (`server/reports/`)
 
-`GET /api/shifts/{id}/report?online=0` (владелец, управляющий; у открытой смены — «на сейчас»): `revenue` (столы — `kind start/extend`, бар — `kind bar` (0410 pos); по способам `cash`, `card_terminal`, `sbp`, `card`; возвраты; заморозки отдельно), `play` (сессии, минуты, часы, загрузка = минуты игры / (столы × длительность смены)), `service_light` (минуты по сотрудникам и столам, порог), `manual_actions` (журнал с причиной, `service.*`, `manual.*`, возвраты, скидка выше лимита), `cash`, `reconciliation.kkt` (наличные и терминал против пробитых чеков ККТ по типу оплаты, возвраты против чеков возврата, платежи без чека, чеки в очереди, с ошибкой, с неизвестным исходом; `ok` — разница 0 и все пробиты), `reconciliation.online` (каждый платёж и возврат ЮKassa смены — `GET /v3/payments/{id}`, `/v3/refunds/{id}` ключами клуба через `loadPaymentSettings`/`clientFor` money: статус и сумма; ЮKassa не ответила — `unavailable`). При закрытии смены снимок пишется в `bl.shifts.report`, текст — владельцам (`notify.sendToClubStaff`, `kind shift.report`, без персональных данных), один раз.
+`GET /api/shifts/{id}/report?online=0` (владелец, управляющий; у открытой смены — «на сейчас»): `revenue` (столы — `kind start/extend`, бар — `kind bar` (0410 pos); по способам `cash`, `card_terminal`, `sbp`, `card`; возвраты; заморозки отдельно), `play` (сессии, минуты, часы, загрузка = минуты игры / (столы × длительность смены); `by_resource` — по каждому столу минуты, часы, загрузка, выручка и возвраты столов), `service_light` (минуты по сотрудникам и столам, порог), `manual_actions` (журнал с причиной, `service.*`, `manual.*`, возвраты, скидка выше лимита; у записи `resource_number`), `cash`, `reconciliation.kkt` (наличные и терминал против пробитых чеков ККТ по типу оплаты, возвраты против чеков возврата, платежи без чека, чеки в очереди, с ошибкой, с неизвестным исходом; `ok` — разница 0 и все пробиты), `reconciliation.online` (каждый платёж и возврат ЮKassa смены — `GET /v3/payments/{id}`, `/v3/refunds/{id}` ключами клуба через `loadPaymentSettings`/`clientFor` money: статус и сумма; ЮKassa не ответила — `unavailable`), `reconciliation.shift_links` (№92: продажи и возвраты кассы смены со ссылкой `shift_id` на несуществующую смену клуба — `dangling`; таблиц кассы нет — `skipped`). При закрытии смены снимок пишется в `bl.shifts.report`, текст — владельцам (`notify.sendToClubStaff`, `kind shift.report`, без персональных данных), один раз.
 
 ## Маршруты
 
@@ -59,8 +59,8 @@
 | `POST /api/kkt/receipts/{id}/retry` | управляющий и выше | `{reason}` — `failed` или исход неизвестен → в очередь с новым UUID |
 | `POST /api/kkt/receipts/{id}/mark-printed` | управляющий и выше | `{fd, fp, fn?, reason}` — только исход неизвестен; ручное действие |
 | `POST /api/clubs/{club}/shifts` | ресепшн и выше | `{float_kopecks}` → `201` смена |
-| `GET /api/clubs/{club}/shifts/current` | ресепшн и выше | `{shift}` или `{shift: null}` |
-| `GET /api/clubs/{club}/shifts?limit&before` | управляющий и выше | `{items, next_cursor}` |
+| `GET /api/clubs/{club}/shifts/current` | ресепшн и выше | `{shift}` или `{shift: null}`; закрытие вслепую (№94): `expected_cash_kopecks`, `cash_sales_kopecks`, `cash_refunds_kopecks` — только управляющему и владельцу |
+| `GET /api/clubs/{club}/shifts?limit&before` | управляющий и выше | `{items, next_cursor}`, у смены `revenue_total_kopecks` |
 | `GET /api/shifts/{id}` | ресепшн и выше | смена |
 | `POST /api/shifts/{id}/close` | ресепшн и выше | `{actual_cash_kopecks, comment?}` → смена с `expected_cash_kopecks`, `discrepancy_kopecks` |
 | `GET /api/shifts/{id}/report` | владелец, управляющий | отчёт и сверка |

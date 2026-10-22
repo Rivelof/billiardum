@@ -20,7 +20,7 @@ function categoryOf(kind) {
 /** Платежи смены (для выручки и сверок). */
 export async function shiftPayments(db, { clubId, from, to }) {
   const { rows } = await db.query(
-    `select id, kind, provider, method, status, capture, amount_kopecks, captured_kopecks, provider_payment_id, confirmed_at
+    `select id, kind, provider, method, status, capture, amount_kopecks, captured_kopecks, provider_payment_id, confirmed_at, resource_id
        from bl.payments
       where club_id = $1 and confirmed_at >= $2 and confirmed_at <= $3 and status in ('succeeded', 'waiting_for_capture')
       order by confirmed_at, id`,
@@ -36,7 +36,7 @@ export async function shiftPayments(db, { clubId, from, to }) {
 /** Возвраты смены. */
 export async function shiftRefunds(db, { clubId, from, to }) {
   const { rows } = await db.query(
-    `select f.id, f.payment_id, f.provider_refund_id, f.status, f.amount_kopecks, f.created_at, p.kind, p.method, p.provider
+    `select f.id, f.payment_id, f.provider_refund_id, f.status, f.amount_kopecks, f.created_at, p.kind, p.method, p.provider, p.resource_id
        from bl.refunds f join bl.payments p on p.id = f.payment_id
       where f.club_id = $1 and f.created_at >= $2 and f.created_at <= $3 and f.status in ('succeeded', 'manual')
       order by f.created_at, f.id`,
@@ -75,27 +75,60 @@ export function revenueOf(payments, refunds) {
   return out;
 }
 
-/** Часы игры и загрузка: сессии, пересекающие смену. */
-export async function playStats(db, { clubId, from, to }) {
+/**
+ * Часы игры и загрузка: сессии, пересекающие смену; по столам — минуты игры и выручка столов
+ * (платежи смены за стол и возвраты по ним).
+ * @param {{ clubId: string, from: Date, to: Date, payments?: object[], refunds?: object[] }} args
+ */
+export async function playStats(db, { clubId, from, to, payments = [], refunds = [] }) {
   const { rows } = await db.query(
-    `select count(*)::int as sessions,
+    `select s.resource_id, count(*)::int as sessions,
             coalesce(sum(greatest(0, extract(epoch from (least(coalesce(s.ended_at, s.interrupted_at, $3), $3) - greatest(s.started_at, $2))))), 0)::float8 as secs
        from bl.sessions s
       where s.club_id = $1 and s.started_at <= $3 and coalesce(s.ended_at, s.interrupted_at, $3) >= $2
-        and s.status <> 'cancelled'`,
+        and s.status <> 'cancelled'
+      group by s.resource_id`,
     [clubId, from, to],
   );
-  const res = await db.query('select count(*)::int as n from bl.resources where club_id = $1 and active', [clubId]);
-  const minutes = Math.round(rows[0].secs / 60);
+  const res = await db.query('select id, number, title, active from bl.resources where club_id = $1 order by number', [clubId]);
+  const byId = new Map(
+    res.rows.map((r) => [r.id, { resource_id: r.id, number: r.number, title: r.title ?? null, sessions: 0, secs: 0, revenue_kopecks: 0, refunds_kopecks: 0, active: r.active }]),
+  );
+  let secs = 0;
+  let sessions = 0;
+  for (const r of rows) {
+    secs += r.secs;
+    sessions += r.sessions;
+    const t = byId.get(r.resource_id);
+    if (t) {
+      t.sessions += r.sessions;
+      t.secs += r.secs;
+    }
+  }
+  for (const p of payments) if (p.resource_id && byId.has(p.resource_id)) byId.get(p.resource_id).revenue_kopecks += p.counted_kopecks;
+  for (const f of refunds) if (f.resource_id && byId.has(f.resource_id)) byId.get(f.resource_id).refunds_kopecks += f.amount_kopecks;
+  const active = res.rows.filter((r) => r.active).length;
+  const minutes = Math.round(secs / 60);
   const shiftMinutes = Math.max(0, (new Date(to).getTime() - new Date(from).getTime()) / 60_000);
-  const capacity = res.rows[0].n * shiftMinutes;
+  const capacity = active * shiftMinutes;
   return {
-    sessions: rows[0].sessions,
+    sessions,
     minutes,
     hours: Math.round((minutes / 60) * 10) / 10,
-    resources: res.rows[0].n,
+    resources: active,
     shift_minutes: Math.round(shiftMinutes),
-    utilization_percent: capacity > 0 ? Math.round((rows[0].secs / 60 / capacity) * 1000) / 10 : 0,
+    utilization_percent: capacity > 0 ? Math.round((secs / 60 / capacity) * 1000) / 10 : 0,
+    by_resource: [...byId.values()]
+      .filter((t) => t.active || t.sessions > 0 || t.revenue_kopecks > 0 || t.refunds_kopecks > 0)
+      .map(({ secs: tSecs, active: _active, ...t }) => {
+        const m = Math.round(tSecs / 60);
+        return {
+          ...t,
+          minutes: m,
+          hours: Math.round((m / 60) * 10) / 10,
+          utilization_percent: shiftMinutes > 0 ? Math.round((tSecs / 60 / shiftMinutes) * 1000) / 10 : 0,
+        };
+      }),
   };
 }
 
@@ -136,8 +169,12 @@ export async function serviceLight(db, { clubId, from, to }) {
 /** Ручные действия смены (инвариант 8): журнал с причиной и действия service.*, manual.*. */
 export async function manualActions(db, { clubId, from, to, limit = 100 }) {
   const { rows } = await db.query(
-    `select a.created_at, a.action, a.reason, a.actor_id, a.object_id, a.data, u.name as actor_name
-       from bl.audit_log a left join bl.users u on u.id = a.actor_id
+    `select a.created_at, a.action, a.reason, a.actor_id, a.object_id, a.data, u.name as actor_name, r.id as res_id, r.number as resource_number
+       from bl.audit_log a
+       left join bl.users u on u.id = a.actor_id
+       left join bl.resources r on r.club_id = a.club_id
+             and r.id = case when a.object_type = 'resource' then a.object_id
+                             when (a.data ->> 'resource_id') ~ '^[0-9a-f-]{36}$' then (a.data ->> 'resource_id')::uuid end
       where a.club_id = $1 and a.created_at >= $2 and a.created_at <= $3
         and (a.action like 'service.%' or a.action like 'manual.%' or a.action in ('payment.refunded', 'pos.refund', 'kkt.receipt_retry')
              or (a.reason is not null and a.action <> 'shift.close') or (a.action = 'pos.sale' and (a.data ->> 'discount_over_limit') = 'true'))
@@ -155,8 +192,44 @@ export async function manualActions(db, { clubId, from, to, limit = 100 }) {
       actor_id: r.actor_id ?? null,
       actor_name: r.actor_name ?? null,
       reason: r.reason ?? null,
-      resource_id: typeof r.data?.resource_id === 'string' ? r.data.resource_id : null,
+      resource_id: r.res_id ?? null,
+      resource_number: r.resource_number ?? null,
       amount_kopecks: Number.isSafeInteger(r.data?.amount_kopecks) ? r.data.amount_kopecks : null,
     })),
   };
 }
+
+/**
+ * Ссылки кассы на смену (decisions №92: pos_sales.shift_id и pos_refunds.shift_id — мягкие, без
+ * внешнего ключа): продажи и возвраты кассы за смену, чья ссылка не ведёт на смену клуба.
+ * Таблиц кассы нет — status skipped.
+ */
+export async function shiftLinks(db, { clubId, shiftId, from, to }) {
+  const { rows: t } = await db.query("select to_regclass('bl.pos_sales') is not null as sales, to_regclass('bl.pos_refunds') is not null as refunds");
+  if (!t[0].sales && !t[0].refunds) return { ok: null, status: 'skipped' };
+  const out = { ok: true, status: 'checked', linked: 0, dangling: [], unlinked: 0 };
+  for (const [table, kind] of [['pos_sales', 'sale'], ['pos_refunds', 'refund']]) {
+    if (!t[0][kind === 'sale' ? 'sales' : 'refunds']) continue;
+    const { rows } = await db.query(
+      `select x.id, x.shift_id, (x.shift_id = $2) as mine, exists (select 1 from bl.shifts s where s.club_id = x.club_id and s.id = x.shift_id) as found
+         from bl.${table} x
+        where x.club_id = $1 and (x.shift_id = $2 or (x.created_at >= $3 and x.created_at <= $4))`,
+      [clubId, shiftId, from, to],
+    );
+    for (const r of rows) {
+      if (r.mine) out.linked += 1;
+      if (r.shift_id === null) out.unlinked += 1;
+      else if (!r.found) out.dangling.push({ kind, id: r.id, shift_id: r.shift_id });
+    }
+  }
+  out.ok = out.dangling.length === 0;
+  out.dangling = out.dangling.slice(0, 100);
+  return out;
+}
+
+/** Выручка смены одним числом (список смен): платежи, подтверждённые в смене, как revenue.total_kopecks. */
+export const REVENUE_TOTAL_SQL = `(select coalesce(sum(case when p.status = 'succeeded'
+                     then case when p.capture then p.amount_kopecks else coalesce(p.captured_kopecks, 0) end else 0 end), 0)::bigint
+          from bl.payments p
+         where p.club_id = s.club_id and p.status in ('succeeded', 'waiting_for_capture')
+           and p.confirmed_at >= s.opened_at and p.confirmed_at <= coalesce(s.closed_at, $NOW))`;

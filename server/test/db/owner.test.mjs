@@ -460,6 +460,31 @@ describe('SSE: права на каналы', () => {
     assert.equal((await open(`/api/stream?club=${CLUB_A}&token=${'A'.repeat(43)}`)).status, 401);
   });
 
+  it('бармену (№97) из канала клуба — только события бара, без кассы, тревог и зала', async () => {
+    const BAR = 'a1000000-0000-4000-8000-000000000006';
+    await t.admin.query("insert into bl.users (id, phone) values ($1, '+70000000006') on conflict do nothing", [BAR]);
+    await t.admin.query("insert into bl.club_members (club_id, user_id, role) values ($1, $2, 'bar') on conflict do nothing", [CLUB_A, BAR]);
+    const bar = await t.login('+70000000006');
+    const s = await openStream(`/api/stream?club=${CLUB_A}`, bar.token);
+    assert.equal(s.status, 200);
+    await s.next('ready');
+    t.sse.publish(`club:${CLUB_A}`, 'pos_sale', { total_kopecks: 100 });
+    t.sse.publish(`club:${CLUB_A}`, 'hall', { status: 'busy' });
+    t.sse.publish(`club:${CLUB_A}`, 'alarm', { type: 'x' });
+    t.sse.publish(`club:${CLUB_A}`, 'bar', { id: 'order-1' });
+    assert.deepEqual(await s.next('bar'), { id: 'order-1' });
+    await assert.rejects(s.next('pos_sale', 300), /нет события/);
+    s.close();
+    // Ресепшн получает все события клуба.
+    const r = await openStream(`/api/stream?club=${CLUB_A}`, reception.token);
+    await r.next('ready');
+    t.sse.publish(`club:${CLUB_A}`, 'pos_sale', { total_kopecks: 200 });
+    assert.deepEqual(await r.next('pos_sale'), { total_kopecks: 200 });
+    r.close();
+    // Канал сессии бармену закрыт.
+    assert.equal((await openStream(`/api/stream?session=${sessionId}`, bar.token)).status, 403);
+  });
+
   it('после закрытия клиента хаб забывает подписчика', async () => {
     await waitFor(() => t.sse.size === 0, { timeoutMs: 2000 });
   });

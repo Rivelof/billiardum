@@ -340,6 +340,57 @@ describe('терминал ресепшена и PIN', () => {
     assert.equal((await t.request('POST', '/api/staff/pin', { token: terminalToken, body: { user_id: RECEPTION_A, pin: '4821' } })).status, 200);
   });
 
+  it('бармен (роль bar, №97): /api/me, свой PIN, вход по PIN на терминале', async () => {
+    const BAR = 'a1000000-0000-4000-8000-000000000005';
+    await t.admin.query("insert into bl.users (id, phone, name) values ($1, '+70000000005', 'Бармен (тест)') on conflict do nothing", [BAR]);
+    await t.admin.query("insert into bl.club_members (club_id, user_id, role) values ($1, $2, 'bar') on conflict do nothing", [CLUB_A, BAR]);
+    const bar = await t.login('+70000000005');
+    const me = await t.request('GET', '/api/me', { token: bar.token });
+    assert.deepEqual(me.json.clubs.map((c) => c.role), ['bar']);
+    assert.deepEqual((await t.request('PUT', '/api/staff/pin', { token: bar.token, body: { club_id: CLUB_A, pin: '2580' } })).json, { ok: true });
+    const info = await t.request('GET', '/api/staff/terminal', { token: terminalToken });
+    assert.ok(info.json.staff.some((s) => s.user_id === BAR && s.role === 'bar'));
+    const sw = await t.request('POST', '/api/staff/pin', { token: terminalToken, body: { user_id: BAR, pin: '2580' } });
+    assert.equal(sw.status, 200);
+    assert.equal(sw.json.role, 'bar');
+    // Бармену закрыты маршруты владельца.
+    assert.equal((await t.request('GET', `/api/clubs/${CLUB_A}/now`, { token: bar.token })).status, 403);
+    const { rows } = await t.admin.query("select count(*)::int as n from bl.audit_log where action = 'auth.staff_login' and actor_id = $1", [BAR]);
+    assert.equal(rows[0].n, 1, 'вход бармена — в журнале клуба');
+  });
+
+  it('checkStaffPin (№95): одобрение PIN управляющего без смены пользователя; блок общий со сменой по PIN', async () => {
+    const { checkStaffPin } = await import('../../auth/index.mjs');
+    const manager = await t.login('+70000000003');
+    await t.request('PUT', '/api/staff/pin', { token: manager.token, body: { club_id: CLUB_A, pin: '13579' } });
+    const base = { pool: t.pool, clubId: CLUB_A, pepper: t.config.pinPepper, roles: ['owner', 'manager'] };
+    assert.deepEqual(await checkStaffPin({ ...base, userId: MANAGER_A, pin: '13579' }), { ok: true, role: 'manager' });
+    // Ресепшн не одобряет скидки: forbidden без проверки и счёта PIN.
+    assert.deepEqual(await checkStaffPin({ ...base, userId: RECEPTION_A, pin: '4821' }), { ok: false, code: 'forbidden' });
+    assert.deepEqual(await checkStaffPin({ ...base, userId: MANAGER_A, pin: '12' }), { ok: false, code: 'bad_request' });
+    // Ошибки считаются, даже если транзакция вызывающего откатывается.
+    const { withContext } = await import('../../lib/store.mjs');
+    for (let i = 1; i <= 4; i += 1) {
+      await assert.rejects(
+        withContext(t.pool, { clubId: CLUB_A, actorType: 'user' }, async () => {
+          const r = await checkStaffPin({ ...base, userId: MANAGER_A, pin: '00000' });
+          assert.deepEqual(r, { ok: false, code: 'unauthorized', locked: false });
+          throw new Error('откат вызывающего');
+        }),
+      );
+    }
+    assert.equal((await t.admin.query('select pin_failed_count from bl.club_members where user_id = $1', [MANAGER_A])).rows[0].pin_failed_count, 4);
+    assert.deepEqual(await checkStaffPin({ ...base, userId: MANAGER_A, pin: '00000' }), { ok: false, code: 'unauthorized', locked: true });
+    const locked = await checkStaffPin({ ...base, userId: MANAGER_A, pin: '13579' });
+    assert.equal(locked.code, 'rate_limited');
+    assert.ok(locked.retryAfterSec > 14 * 60 && locked.retryAfterSec <= 15 * 60);
+    // Тот же блок — у смены сотрудника на терминале.
+    assert.equal((await t.request('POST', '/api/staff/pin', { token: terminalToken, body: { user_id: MANAGER_A, pin: '13579' } })).status, 429);
+    await t.admin.query("update bl.club_members set pin_locked_until = now() - interval '1 second' where user_id = $1", [MANAGER_A]);
+    assert.equal((await checkStaffPin({ ...base, userId: MANAGER_A, pin: '13579' })).ok, true);
+    assert.equal((await t.admin.query('select pin_failed_count from bl.club_members where user_id = $1', [MANAGER_A])).rows[0].pin_failed_count, 0);
+  });
+
   it('токен PIN не действует в другом клубе (X-Club-Id чужого клуба — 403)', async () => {
     const res = await t.request('POST', '/api/staff/pin', { token: terminalToken, body: { user_id: RECEPTION_A, pin: '4821' } });
     const other = await t.request('GET', '/api/me', { token: res.json.token, headers: { 'x-club-id': 'c9000000-0000-4000-8000-000000000009' } });

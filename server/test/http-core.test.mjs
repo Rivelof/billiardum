@@ -285,6 +285,16 @@ describe('хаб SSE', () => {
     assert.equal(hub.size, 0);
   });
 
+  it('only: на канале — только разрешённые события (бармену — события бара)', () => {
+    const hub = createSseHub({ timers: { setInterval: () => ({ unref() {} }), clearInterval() {} } });
+    const a = fakeRes();
+    hub.attach(a, { channels: [`club:${CLUB}`, `user:${USER}`], only: { [`club:${CLUB}`]: ['bar'] } });
+    assert.equal(hub.publish(`club:${CLUB}`, 'pos_sale', {}), 0);
+    assert.equal(hub.publish(`club:${CLUB}`, 'bar', { id: 1 }), 1);
+    assert.equal(hub.publish(`user:${USER}`, 'reception_request', {}), 1, 'другие каналы — без фильтра');
+    assert.ok(!a.chunks.some((c) => c.includes('pos_sale')));
+  });
+
   it('медленный клиент с большим хвостом отключается', () => {
     const hub = createSseHub({ timers: { setInterval: () => ({ unref() {} }), clearInterval() {} } });
     const a = fakeRes();

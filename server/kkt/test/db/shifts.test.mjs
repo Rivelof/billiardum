@@ -57,6 +57,12 @@ describe('смена: открытие и закрытие, T16', () => {
     assert.equal(again.json.error, 'shift_open');
     const cur = await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: reception });
     assert.equal(cur.json.shift.id, shift.id);
+    // Закрытие вслепую (№94): ресепшн ожидаемых наличных не видит, управляющий — видит.
+    assert.equal('expected_cash_kopecks' in cur.json.shift, false);
+    assert.equal('cash_sales_kopecks' in cur.json.shift, false);
+    const curManager = await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: await t.login('manager') });
+    assert.equal(curManager.json.shift.expected_cash_kopecks, 500000);
+    assert.equal(curManager.json.shift.cash_sales_kopecks, 0);
     const viaApi = await t.asClub(CLUB_A, (db) => currentShift(db, CLUB_A));
     assert.equal(viaApi.id, shift.id);
     assert.equal(await t.asClub(CLUB_B, (db) => currentShift(db, CLUB_B)), null);
@@ -96,6 +102,10 @@ describe('смена: открытие и закрытие, T16', () => {
       await appendAudit(db, { action: 'service.start', objectType: 'resource', objectId: TABLE_1, reason: 'Уборка', actorType: 'user', actorId: RECEPTION_A, data: { minutes: 70, reason_code: 'cleaning', resource_id: TABLE_1 } });
     });
     const expected = 500000 + 160000 + 30000 - 20000;
+    const live = await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: await t.login('owner') });
+    assert.equal(live.json.shift.expected_cash_kopecks, expected);
+    assert.equal(live.json.shift.cash_sales_kopecks, 190000);
+    assert.equal('expected_cash_kopecks' in (await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: reception })).json.shift, false);
     const res = await t.request('POST', `/api/shifts/${shift.id}/close`, { token: reception, body: { actual_cash_kopecks: expected - 50000, comment: 'Пересчитали дважды' } });
     assert.equal(res.status, 200);
     assert.equal(res.json.status, 'closed');
@@ -153,11 +163,20 @@ describe('смена: открытие и закрытие, T16', () => {
     assert.equal(r.play.sessions, 1);
     assert.equal(r.play.minutes, 60);
     assert.ok(r.play.utilization_percent > 0);
+    const byTable = Object.fromEntries(r.play.by_resource.map((x) => [x.number, x]));
+    assert.equal(r.play.by_resource.length, 8, 'все столы клуба');
+    assert.deepEqual([byTable[2].minutes, byTable[2].hours, byTable[2].sessions, byTable[2].revenue_kopecks], [60, 1, 1, 80000]);
+    assert.deepEqual([byTable[1].minutes, byTable[1].revenue_kopecks, byTable[1].refunds_kopecks], [0, 160000, 20000]);
+    assert.equal(byTable[3].revenue_kopecks, 0);
     assert.equal(r.service_light.total_minutes, 70);
     assert.equal(r.service_light.exceeded, true);
     assert.deepEqual(r.service_light.by_staff.map((s) => [s.user_id, s.name, s.minutes]), [[RECEPTION_A, 'Ресепшн (тест)', 70]]);
     assert.deepEqual(r.service_light.by_resource.map((x) => [x.number, x.minutes]), [[1, 70]]);
     assert.ok(r.manual_actions.by_action['service.start'] >= 1);
+    const light = r.manual_actions.items.find((x) => x.action === 'service.start');
+    assert.equal(light.resource_number, 1);
+    assert.equal(light.resource_id, TABLE_1);
+    assert.deepEqual([r.reconciliation.shift_links.status, r.reconciliation.shift_links.ok], ['checked', true]);
     assert.equal(r.cash.discrepancy_kopecks, -50000);
     assert.equal(r.reconciliation.kkt.ok, true, JSON.stringify(r.reconciliation.kkt));
     assert.equal(r.reconciliation.kkt.diff_kopecks, 0);
@@ -172,6 +191,7 @@ describe('смена: открытие и закрытие, T16', () => {
     assert.equal((await t.request('GET', `/api/clubs/${CLUB_A}/shifts`, { token: reception })).status, 403);
     const list = await t.request('GET', `/api/clubs/${CLUB_A}/shifts`, { token: await t.login('manager') });
     assert.equal(list.json.items[0].id, shift.id);
+    assert.equal(list.json.items[0].revenue_total_kopecks, 270000);
   });
 
   it('закрыть ещё раз — 409 shift_closed; новую смену без факта наличных не закрыть (400)', async () => {
@@ -186,6 +206,15 @@ describe('смена: открытие и закрытие, T16', () => {
       const res = await t.request('POST', `/api/shifts/${open.json.id}/close`, { token: reception, body });
       assert.equal(res.status, 400, JSON.stringify(body));
     }
+    // Мягкая ссылка кассы на смену (№92): продажа со ссылкой на несуществующую смену видна в сверке.
+    await t.admin.query(
+      `insert into bl.pos_sales (club_id, channel, method, status, created_by, shift_id, table_kopecks, received_kopecks, change_kopecks, created_at, completed_at, updated_at)
+       values ($1, 'pos', 'cash', 'completed', $2, gen_random_uuid(), 100, 100, 0, now(), now(), now())`,
+      [CLUB_A, RECEPTION_A],
+    );
+    const rep2 = await t.request('GET', `/api/shifts/${open.json.id}/report?online=0`, { token: await t.login('manager') });
+    assert.equal(rep2.json.reconciliation.shift_links.ok, false);
+    assert.equal(rep2.json.reconciliation.shift_links.dangling.length, 1);
     // Без расхождения — тревоги нет.
     const ok = await t.request('POST', `/api/shifts/${open.json.id}/close`, { token: reception, body: { actual_cash_kopecks: 0 } });
     assert.equal(ok.json.discrepancy_kopecks, 0);

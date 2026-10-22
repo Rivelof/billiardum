@@ -5,6 +5,7 @@
 
 import { createHmac, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
+import { isUuid, withContext as storeWithContext } from '../lib/store.mjs';
 
 const scrypt = promisify(scryptCb);
 
@@ -45,4 +46,55 @@ export async function verifyPin(pin, stored, pepper) {
   if (expected.length !== KEY_LEN) return false;
   const key = await scrypt(prepare(pin, pepper), salt, KEY_LEN, { N, r, p, maxmem: 256 * N * r });
   return timingSafeEqual(key, expected);
+}
+
+/** Роли, которым можно входить по PIN на терминале (смена сотрудника). */
+export const PIN_SWITCH_ROLES = ['owner', 'manager', 'reception', 'bar'];
+
+/**
+ * Проверка PIN сотрудника клуба (смена сотрудника на терминале, одобрение скидки
+ * управляющим — decisions №95) без смены активного пользователя терминала.
+ *
+ * Работает в СВОЕЙ транзакции (контекст клуба clubId): счётчик ошибок коммитится, даже если
+ * вызывающий потом откатит свою транзакцию. Блокировка общая для всех проверок PIN этого
+ * сотрудника в клубе: 5 ошибок подряд — 15 минут; успех сбрасывает счётчик.
+ * Порядок: нет участника или PIN не задан — unauthorized (без счёта); блок — rate_limited;
+ * роль не из roles — forbidden (PIN не проверяется и не считается); неверный PIN — unauthorized.
+ *
+ * @param {{ pool: import('pg').Pool, clubId: string, userId: string, pin: string, roles: string[],
+ *           pepper: Buffer, now?: Date, withContext?: Function }} args
+ * @returns {Promise<{ ok: true, role: string }
+ *   | { ok: false, code: 'bad_request'|'unauthorized'|'forbidden'|'rate_limited', retryAfterSec?: number, locked?: boolean }>}
+ */
+export async function checkStaffPin({ pool, clubId, userId, pin, roles, pepper, now = new Date(), withContext = storeWithContext }) {
+  if (!isUuid(clubId) || !isUuid(userId) || typeof pin !== 'string' || !PIN.test(pin) || !Array.isArray(roles) || roles.length === 0) {
+    return { ok: false, code: 'bad_request' };
+  }
+  return withContext(pool, { clubId, actorType: 'system' }, async (db) => {
+    const { rows } = await db.query(
+      `select id, role, pin_hash, pin_failed_count, pin_locked_until from bl.club_members
+        where club_id = $1 and user_id = $2 and active for update`,
+      [clubId, userId],
+    );
+    const m = rows[0];
+    if (!m || !m.pin_hash) return { ok: false, code: 'unauthorized' };
+    if (m.pin_locked_until && m.pin_locked_until > now) {
+      return { ok: false, code: 'rate_limited', locked: true, retryAfterSec: Math.ceil((m.pin_locked_until.getTime() - now.getTime()) / 1000) };
+    }
+    if (!roles.includes(m.role)) return { ok: false, code: 'forbidden' };
+    if (!(await verifyPin(pin, m.pin_hash, pepper))) {
+      const failed = m.pin_failed_count + 1;
+      const locked = failed >= MAX_FAILURES;
+      await db.query('update bl.club_members set pin_failed_count = $2, pin_locked_until = $3 where id = $1', [
+        m.id,
+        locked ? 0 : failed,
+        locked ? new Date(now.getTime() + LOCK_MS) : null,
+      ]);
+      return { ok: false, code: 'unauthorized', locked };
+    }
+    if (m.pin_failed_count !== 0 || m.pin_locked_until) {
+      await db.query('update bl.club_members set pin_failed_count = 0, pin_locked_until = null where id = $1', [m.id]);
+    }
+    return { ok: true, role: m.role };
+  });
 }

@@ -150,6 +150,13 @@ describe('пользователь платформы', () => {
     }
   });
 
+  it('роль bar (№97) допустима в club_members, неизвестная — нет', async () => {
+    await asRole(db.pool, 'app_api', { clubId: CLUB_A, actorType: 'user' }, async (c) => {
+      assert.equal(await tryQuery(c, "insert into bl.club_members (club_id, user_id, role) values ($1, $2, 'bar')", [CLUB_A, GUEST]), null);
+      assert.equal((await tryQuery(c, "insert into bl.club_members (club_id, user_id, role) values ($1, $2, 'cashier')", [CLUB_A, GUEST2]))?.code, '23514');
+    });
+  });
+
   it('согласия: свои видны и пишутся, чужие — нет', async () => {
     await asRole(db.pool, 'app_api', { userId: GUEST, actorType: 'user' }, async (c) => {
       assert.equal(await count(c, 'consents'), 1);

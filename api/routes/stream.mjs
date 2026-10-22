@@ -11,6 +11,8 @@ import { streamTarget, streamTokens as defaultTokens } from '../../server/http/s
 import { isUuid, withContext } from '../../server/lib/store.mjs';
 
 const CLUB_ROLES = ['owner', 'manager', 'reception'];
+/** Бармену (№97) из канала клуба — только события бара: без кассы, денег и зала. */
+export const BAR_EVENTS = ['bar', 'stop_list'];
 
 async function stream(ctx, req) {
   const userId = ctx.user.id;
@@ -18,10 +20,16 @@ async function stream(ctx, req) {
   const sessionId = req.query.session;
   if (req.query.club === undefined && sessionId === undefined) throw new HttpError(400, 'bad_request');
   let club = null;
+  let only = null;
+  let barOnly = false;
   if (req.query.club !== undefined) {
-    if (!ctx.roles.some((r) => CLUB_ROLES.includes(r))) throw new HttpError(403, 'forbidden');
+    if (!ctx.roles.some((r) => CLUB_ROLES.includes(r))) {
+      if (!ctx.roles.includes('bar')) throw new HttpError(403, 'forbidden');
+      barOnly = true;
+    }
     club = ctx.club;
     channels.push(`club:${club}`);
+    if (barOnly) only = { [`club:${club}`]: BAR_EVENTS };
   }
   if (sessionId !== undefined) {
     if (!isUuid(sessionId)) throw new HttpError(400, 'bad_request');
@@ -45,13 +53,13 @@ async function stream(ctx, req) {
       if (t.rowCount === 0) return false;
       if (!club) return true;
       const r = await db.query('select role from bl.club_members where club_id = $1 and user_id = $2 and active', [club, userId]);
-      return r.rows.some((x) => CLUB_ROLES.includes(x.role));
+      return r.rows.some((x) => CLUB_ROLES.includes(x.role) || (barOnly && x.role === 'bar'));
     });
   const sse = ctx.sse ?? hub;
   return {
     status: 200,
     stream: async (res) => {
-      const attached = sse.attach(res, { channels, userId, revalidate });
+      const attached = sse.attach(res, { channels, userId, revalidate, only });
       if (!attached.ok) {
         const text = JSON.stringify({ error: 'rate_limited' });
         res.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(text) });

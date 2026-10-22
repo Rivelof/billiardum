@@ -14,7 +14,7 @@ import { formatMoney } from '@billiardum/shared/format';
 import { afterCommit } from '../lib/store.mjs';
 import { HttpError } from '../http/errors.mjs';
 import { ensureOp } from '../kkt/queue.mjs';
-import { serviceLight } from '../reports/queries.mjs';
+import { REVENUE_TOTAL_SQL, serviceLight } from '../reports/queries.mjs';
 import { currentShift } from './api.mjs';
 
 export const MAX_FLOAT = 100_000_000;
@@ -99,17 +99,39 @@ export async function getShift(db, id) {
   return s ? shiftView(s) : null;
 }
 
-export async function listShifts(db, { clubId, limit = 30, before = null }) {
+/** Список смен (управляющий и выше): с выручкой смены revenue_total_kopecks (у открытой — на сейчас). */
+export async function listShifts(db, { clubId, limit = 30, before = null, now = new Date() }) {
   const lim = Math.min(Math.max(Number(limit) || 30, 1), 100);
   const { rows } = await db.query(
     `select s.*, (select u.name from bl.users u where u.id = s.opened_by) as opened_by_name,
-            (select u.name from bl.users u where u.id = s.closed_by) as closed_by_name
+            (select u.name from bl.users u where u.id = s.closed_by) as closed_by_name,
+            ${REVENUE_TOTAL_SQL.replace('$NOW', '$4::timestamptz')} as revenue_total_kopecks
        from bl.shifts s
       where s.club_id = $1 and ($2::integer is null or s.number < $2)
       order by s.number desc limit $3`,
-    [clubId, before, lim],
+    [clubId, before, lim, now],
   );
-  return { items: rows.map(shiftView), next_cursor: rows.length === lim ? rows[rows.length - 1].number : null };
+  return {
+    items: rows.map((r) => ({ ...shiftView(r), revenue_total_kopecks: Number(r.revenue_total_kopecks) })),
+    next_cursor: rows.length === lim ? rows[rows.length - 1].number : null,
+  };
+}
+
+/**
+ * Открытая смена для экрана смены. Закрытие вслепую (№94): ресепшну ожидаемые наличные не
+ * отдаются; управляющему и владельцу — ожидаемые наличные и наличные продажи на сейчас.
+ */
+export async function currentShiftFor(db, { clubId, roles, now }) {
+  const shift = await currentShift(db, clubId);
+  if (!shift) return null;
+  if (!roles.some((r) => r === 'owner' || r === 'manager')) return shift;
+  const cash = await cashTotals(db, { clubId, from: new Date(shift.opened_at), to: now });
+  return {
+    ...shift,
+    cash_sales_kopecks: cash.salesKopecks,
+    cash_refunds_kopecks: cash.refundsKopecks,
+    expected_cash_kopecks: shift.float_kopecks + cash.salesKopecks - cash.refundsKopecks,
+  };
 }
 
 function publishShift(db, deps, clubId, data) {

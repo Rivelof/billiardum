@@ -49,6 +49,13 @@
 - Стоп-лист переключает ресепшн и выше: `POST /api/catalog/products/{id}/stop-list {stop_list}` (№88, журнал `catalog.stop_list`); цены и состав — управляющий.
 - `GET /api/pos/sales/{id}`, `GET /api/clubs/{club}/pos/sales` — продажа и список; `GET|PATCH /api/clubs/{club}/pos/settings` — настройки (изменение — владелец, журнал `pos.settings`).
 
+## Волна B (decisions №95, №97, №98)
+
+- **Скидка по PIN управляющего (№95):** `GET /api/clubs/{club}/staff/approvers` → `[{user_id, name, role}]` (управляющие и владельцы с PIN); `POST /api/pos/discount-approvals {user_id, pin, reason_code, reason_text, percent | amount_kopecks}` → `201 {approval_id, expires_at}` — PIN проверяет core `checkStaffPin` (своя транзакция, общая блокировка 5 ошибок → 15 минут; 401/403/429). Подтверждение одноразовое, 5 минут, таблица `bl.pos_discount_approvals` (миграция 0440); в продаже `discount: {percent|amount_kopecks, approval_id}` — та же скидка, иначе `403 forbidden`; журнал `pos.discount_approval` и `manual.discount` — от имени управляющего с его причиной, тревога `discount_over_limit` владельцу.
+- **Отмена неоплаченной СБП-продажи (№98):** `POST /api/pos/sales/{id}/cancel {reason?}` (ресепшн и выше) — продажа и ждавшие её заказы отменены, QR снят (платёж ЮKassa в `pending` через API не отменяется — истечёт сам); оплата, пришедшая после отмены, возвращается автоматически (`refund` money, `pos_refunds.kind = late`, тревога `bar_late_payment`; планировщик `bl.pos_due` — подстраховка). Оплаченная — `409 already_paid`.
+- **Ответ продажи:** `receipt_status`, `receipt_fd`, `receipt_fp` из `bl.receipts` (после пробития ККТ).
+- **Роль `bar` (№97):** очередь бара, статусы заказов (без отмены), стоп-лист (SSE `stop_list` в `club:{id}`), меню персонала; без кассы, возвратов, счетов, настроек.
+
 ## Возврат (`POST /api/pos/sales/{id}/refund`, управляющий и выше, `Idempotency-Key`)
 
 `{reason, items?: [{order_item_id, qty}]}` (без `items` — всё оставшееся). Сумма единиц — доли строки после скидки (`money.mjs`, все возвраты строки в сумме дают строку до копейки). Деньги — функция `refund` money с позициями чека возврата: наличные и терминал — `bl.refunds` `manual` и чек возврата ККТ (`receipt_pending`), СБП и карта — возврат ЮKassa с чеком; журнал и outbox `payment.refunded`, уведомление — у money. Склад — `return`; журнал `pos.refund` с причиной; тревога `pos_refund` (критично, владельцу сразу). Ресепшн — `403`, без причины — `reason_required`, больше проданного — `limit_exceeded`, всё возвращено — `already_paid`.

@@ -16,9 +16,11 @@ export const PIN_TTL_MS = 12 * 3600_000;
 export const TERMINAL_TTL_MS = 365 * 24 * 3600_000;
 /** Версия текста согласия (docs/legal/consent.md); меняется вместе с текстом. */
 export const DEFAULT_CONSENT_VERSION = '2026-10-21';
+// Проверка PIN сотрудника без смены пользователя терминала (одобрение скидки, №95).
+export { checkStaffPin, PIN_SWITCH_ROLES } from './pin.mjs';
 
 export const TOKEN = /^[A-Za-z0-9_-]{43}$/;
-export const STAFF_ROLES = ['owner', 'manager', 'reception', 'installer'];
+export const STAFF_ROLES = ['owner', 'manager', 'reception', 'installer', 'bar'];
 
 export function newToken() {
   return randomBytes(32).toString('base64url');

@@ -37,6 +37,7 @@ import {
   requireUser,
   rolesIn,
   STAFF_ROLES,
+  BAR_ROLES,
 } from './core.mjs';
 
 const bad = (detail) => new PosError('bad_request', detail);
@@ -192,7 +193,7 @@ export async function getOrder(db, deps, info) {
   await enterClub(db, clubId);
   let o = await loadOrder(db, id);
   if (!o) throw new PosError('not_found', 'order');
-  const staff = hasRole(await rolesIn(db, clubId, userId), STAFF_ROLES);
+  const staff = hasRole(await rolesIn(db, clubId, userId), BAR_ROLES);
   if (!staff && o.user_id !== userId && !(o.session_id && (await isParticipant(db, o.session_id, userId)))) throw new PosError('not_found', 'order');
   // Онлайн-оплата ещё идёт — проверить платёж (подтверждение могло прийти без нас).
   if (!o.committed_at && o.status !== 'canceled' && o.payment_id) {
@@ -212,9 +213,11 @@ const FORWARD = { new: ['preparing', 'ready', 'served'], preparing: ['ready', 's
 export async function setOrderStatus(db, deps, info) {
   const id = info.params.id;
   const staffId = requireUser(info);
-  if (!hasRole(info.roles, STAFF_ROLES)) throw new PosError('forbidden');
+  if (!hasRole(info.roles, BAR_ROLES)) throw new PosError('forbidden');
   const { status, reason } = info.body ?? {};
   if (!['preparing', 'ready', 'served', 'canceled'].includes(status)) throw bad('status');
+  // Отмена — деньги счёта стола: ресепшн и выше, не бармен (№97).
+  if (status === 'canceled' && !hasRole(info.roles, STAFF_ROLES)) throw new PosError('forbidden', 'отмена — ресепшн и выше');
   const o = await loadOrder(db, id, { lock: true });
   if (!o) throw new PosError('not_found', 'order');
   const at = deps.clock.now();
