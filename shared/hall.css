@@ -1,5 +1,7 @@
 /*
- * Бильярдум — рисунок стола из hall.mjs (tableSvg). Только токены --hall-* и --lamp: зал всегда тёмный.
+ * Бильярдум — рисунок стола из hall.mjs (tableSvg) и план зала. Только токены --hall-* и --lamp: зал всегда тёмный.
+ * Редакция №127: пол — тёмный орех с паркетом, борт — полированный орех с бликом, латунные накладки у луз,
+ * сукно зелёное: свободный стол приглушённый, занятый — яркий в тёплом конусе лампы, тени мягкие.
  * Свет — переменная --lit на любом предке: 0 — стол тёмный, 1 — лампа горит. Переход 0,6 с (DESIGN §6),
  * при prefers-reduced-motion мгновенно (длительность из tokens.css).
  */
@@ -15,17 +17,30 @@
   width: 100%;
   height: auto;
   overflow: visible;
+  /* мягкая тень стола на полу; под горящей лампой — тёплый ореол */
+  filter:
+    drop-shadow(0 6px 10px color-mix(in oklab, var(--hall-bg) 80%, transparent))
+    drop-shadow(0 0 calc(var(--lit) * 22px) color-mix(in oklab, var(--lamp) calc(var(--lit) * 45%), transparent));
 }
 
-.ta-rail { fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 24%), var(--hall-rail)); }
-.ta-cloth { fill: color-mix(in oklab, var(--hall-cloth-on) calc(var(--lit) * 100%), var(--hall-cloth-off)); }
-.ta-stop { stop-color: color-mix(in oklab, var(--lamp) 40%, var(--hall-text)); }
+/* Борт: полированный орех — диагональный блик, под лампой теплеет */
+.ta-r1 { stop-color: color-mix(in oklab, var(--lamp) calc(var(--lit) * 20%), var(--hall-rail-hi)); }
+.ta-r2 { stop-color: color-mix(in oklab, var(--lamp) calc(var(--lit) * 12%), var(--hall-rail)); }
+.ta-r3 { stop-color: color-mix(in oklab, var(--hall-bg) 35%, var(--hall-rail)); }
+.ta-rail-hi { fill: none; stroke: var(--hall-rail-hi); stroke-opacity: 0.55; stroke-width: 14; }
+/* Латунные накладки у луз */
+.ta-brass { fill: var(--hall-brass); opacity: 0.92; }
+/* Сукно: свободный стол приглушён, занятый — ярко-зелёный; мягкая виньетка к бортам */
+.ta-c1 { stop-color: color-mix(in oklab, var(--hall-cloth-on) calc(var(--lit) * 100%), var(--hall-cloth-off)); }
+.ta-c2 { stop-color: color-mix(in oklab, var(--hall-bg) 30%, color-mix(in oklab, var(--hall-cloth-on) calc(var(--lit) * 100%), var(--hall-cloth-off))); }
+/* Конус лампы на сукне */
+.ta-stop { stop-color: color-mix(in oklab, var(--lamp) 70%, var(--hall-text)); }
 .ta-spot { opacity: var(--lit); }
-.ta-cushion { fill: none; stroke: var(--hall-bg); stroke-opacity: 0.35; stroke-width: 50; }
-.ta-pockets { fill: var(--hall-bg); }
-.ta-diamonds { fill: var(--hall-text-2); opacity: 0.6; }
-.ta-bar { fill: var(--hall-line); stroke: var(--hall-bg); stroke-width: 24; }
-.ta-lamps { fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 100%), var(--hall-bg)); }
+.ta-cushion { fill: none; stroke: var(--hall-bg); stroke-opacity: 0.4; stroke-width: 46; }
+.ta-pockets { fill: var(--hall-bg); stroke: color-mix(in oklab, var(--hall-brass) 50%, var(--hall-bg)); stroke-width: 10; }
+.ta-diamonds { fill: var(--hall-text); opacity: 0.7; }
+.ta-bar { fill: var(--hall-floor); stroke: var(--hall-bg); stroke-width: 24; }
+.ta-lamps { fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 100%), var(--hall-line)); }
 
 /* Элемент, который держит свет: transition переменной --lit, чтобы лампа загоралась плавно */
 .lit-host {
@@ -41,7 +56,11 @@
 /* ---------- план зала: программа клуба и бронь гостя (как в shared/styleguide.html) ---------- */
 
 .hall {
-  background: var(--hall-bg);
+  /* Пол: тёмный орех, паркетные доски полосами — только градиенты, без картинок */
+  background:
+    repeating-linear-gradient(90deg, transparent 0 46px, color-mix(in oklab, var(--hall-bg) 70%, transparent) 46px 47px),
+    repeating-linear-gradient(0deg, transparent 0 13px, color-mix(in oklab, var(--hall-line) 45%, transparent) 13px 14px),
+    linear-gradient(160deg, var(--hall-floor), var(--hall-bg));
   color: var(--hall-text);
   border-radius: var(--radius-sm);
   border: 1px solid var(--hall-line);
@@ -71,10 +90,6 @@
 .hall__floor { padding: 0 4px 48px; }
 .plan {
   position: relative;
-  background-image:
-    linear-gradient(to right, color-mix(in oklab, var(--hall-line) 70%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in oklab, var(--hall-line) 70%, transparent) 1px, transparent 1px);
-  background-size: 6% 7.7%;
 }
 
 .tbl {

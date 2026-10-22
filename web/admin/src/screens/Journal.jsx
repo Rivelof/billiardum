@@ -180,7 +180,7 @@ export function Journal({ ctx }) {
         </ErrorNote>
 
         {items === null ? (
-          <p class="muted">Загружаем журнал…</p>
+          <p class="muted loading">Загружаем журнал…</p>
         ) : views.length ? (
           <>
             <p class="small" aria-live="polite">

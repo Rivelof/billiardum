@@ -183,7 +183,7 @@ export function Reception({ ctx }) {
             </button>
           </ErrorNote>
           {requests === null ? (
-            <p class="muted">Загружаем заявки…</p>
+            <p class="muted loading">Загружаем заявки…</p>
           ) : visible.length ? (
             <ul class="queue__list">
               {visible.map((r) => {
@@ -234,7 +234,7 @@ export function Reception({ ctx }) {
           <h2 class="section-title visually-hidden" id="hall-title">
             Зал
           </h2>
-          {hall ? <HallPlan items={hall} timeZone={timeZone} onSelect={setTable} selected={table?.resource?.id} /> : <p class="muted">Загружаем зал…</p>}
+          {hall ? <HallPlan items={hall} timeZone={timeZone} onSelect={setTable} selected={table?.resource?.id} /> : <p class="muted loading">Загружаем зал…</p>}
           <p class="hint hall-hint">Нажмите на стол, чтобы увидеть игру или включить сервисный свет.</p>
         </section>
       </div>

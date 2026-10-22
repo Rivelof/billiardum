@@ -32,11 +32,32 @@ export function Home() {
   }, [status]);
 
   const active = (sessions ?? []).filter((s) => !['closed', 'cancelled'].includes(s.status));
+  // «Разбой при прокрутке» (DESIGN §6) — отдельным чанком; пока грузится, стоит обычный стол
+  const [Break, setBreak] = useState(null);
+  useEffect(() => {
+    if (active.length || Break) return;
+    import('../components/BreakTable.jsx')
+      .then((m) => setBreak(() => m.BreakTable))
+      .catch(() => {});
+  }, [active.length]);
 
   return (
     <div class="screen">
-      <Stage variant="table" kind={tableKind(active[0]?.resource?.type)} lit={active.length ? 'true' : 'false'} tone={active.length ? 'play' : 'idle'} label="Бильярдум">
-        <h1 class="stage__title stage__title--md display">{active.length ? 'Ваша игра' : 'Отсканируйте QR-код на столе'}</h1>
+      <Stage
+        variant={active.length ? 'table' : 'home'}
+        kind={tableKind(active[0]?.resource?.type)}
+        lit={active.length ? 'true' : 'false'}
+        tone={active.length ? 'play' : 'idle'}
+        label="Бильярдум"
+        art={!active.length && Break ? <Break class="stage__art" /> : null}
+      >
+        <h1 class="stage__title stage__title--md display">{active.length ? (
+            'Ваша игра'
+          ) : (
+            <>
+              Отсканируйте <span class="nowrap">QR-код</span> на столе
+            </>
+          )}</h1>
         {!active.length ? <p class="stage__sub">Выберите время, оплатите — и свет над столом загорится сам.</p> : null}
       </Stage>
       <main class="wrap content">

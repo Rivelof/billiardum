@@ -66,7 +66,7 @@ export function ShiftReport({ ctx }) {
             Загрузить снова
           </button>
         </ErrorNote>
-        {!report && !error ? <p class="muted">Загружаем отчёт…</p> : null}
+        {!report && !error ? <p class="muted loading">Загружаем отчёт…</p> : null}
         {report ? (
           <>
             <header class="report__head">

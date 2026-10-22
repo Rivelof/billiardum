@@ -1,8 +1,7 @@
 // Тема до первой отрисовки, чтобы экран не мигал. Отдельный файл: CSP запрещает встроенные скрипты.
-// Выбор живёт только в этом браузере: 'light', 'dark' или нет записи — как в системе.
+// По умолчанию тёмная (DESIGN §2, №127); светлая — только если её выбрали в этом браузере.
 try {
-  const saved = localStorage.getItem('bl-theme');
-  if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+  if (localStorage.getItem('bl-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light');
 } catch {
-  // хранилище недоступно — тема по системе
+  // хранилище недоступно — тёмная тема
 }

@@ -115,7 +115,7 @@ export function Bookings({ ctx }) {
             Обновить
           </button>
         </ErrorNote>
-        {!day && !error ? <p class="muted">Загружаем брони…</p> : null}
+        {!day && !error ? <p class="muted loading">Загружаем брони…</p> : null}
 
         {day ? (
           <div class="tl" role="region" aria-label="Лента броней по столам" tabIndex={0} ref={tlRef}>

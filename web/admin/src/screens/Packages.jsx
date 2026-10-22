@@ -57,7 +57,7 @@ export function Packages({ ctx }) {
             <span class="note__title">{notice}</span>
           </p>
         ) : null}
-        {list === null && !error ? <p class="muted">Загружаем пакеты…</p> : null}
+        {list === null && !error ? <p class="muted loading">Загружаем пакеты…</p> : null}
         {list?.length === 0 ? (
           <p class="empty-queue">
             <span class="empty-queue__title">Пакетов в продаже нет</span>

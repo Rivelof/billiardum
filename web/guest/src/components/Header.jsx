@@ -6,7 +6,7 @@ import { BASE } from '../lib/env.js';
 
 const THEME_ICON = { auto: 'auto', light: 'sun', dark: 'moon' };
 
-/** Шапка: знак «Бильярдум» ведёт на главную, справа переключатель темы (как в системе → светлая → тёмная). */
+/** Шапка: знак «Бильярдум» ведёт на главную, справа переключатель темы (тёмная ↔ светлая, №127). */
 export function Header({ children, back }) {
   const [theme, setThemeState] = useState(getTheme);
   const next = THEME_NEXT[theme];

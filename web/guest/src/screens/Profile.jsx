@@ -110,7 +110,7 @@ export function ProfileScreen({ search }) {
                   Пакет оплачен — часы появятся здесь через несколько секунд.
                 </p>
               ) : null}
-              {balance === null ? <p class="muted">Загружаем…</p> : null}
+              {balance === null ? <p class="muted loading">Загружаем…</p> : null}
               {balance?.minutes > 0 ? (
                 <div class="balance">
                   <span class="balance__hours display">{minutesWords(balance.minutes)}</span>

@@ -79,7 +79,7 @@ export function Pin() {
         <h1 class="signin__title">{who ? `PIN: ${staffLabel(who)}` : `Кто работает? Терминал «${terminal.name}»`}</h1>
         {!who ? (
           <>
-            {users === null && !error ? <p class="muted">Загружаем сотрудников…</p> : null}
+            {users === null && !error ? <p class="muted loading">Загружаем сотрудников…</p> : null}
             <ul class="staff">
               {(users ?? []).map((u) => (
                 <li key={u.user_id}>

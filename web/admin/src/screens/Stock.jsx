@@ -76,7 +76,7 @@ export function Stock({ ctx }) {
             Обновить
           </button>
         </ErrorNote>
-        {items === null && !error ? <p class="muted">Загружаем склад…</p> : null}
+        {items === null && !error ? <p class="muted loading">Загружаем склад…</p> : null}
         {items ? (
           <>
             {tab === 'left' ? <Left items={items} /> : null}

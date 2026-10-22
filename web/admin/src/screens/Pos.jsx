@@ -297,7 +297,7 @@ export function Pos({ ctx }) {
             </button>
           </ErrorNote>
 
-          {menu === null && !error ? <p class="muted">Загружаем меню…</p> : null}
+          {menu === null && !error ? <p class="muted loading">Загружаем меню…</p> : null}
 
           {activeCategory === TABLES && !query ? (
             <TableTiles requests={requests} tabs={tabs} cart={cart} timeZone={timeZone} onAdd={(item) => setCart((c) => addFixed(c, item))} />

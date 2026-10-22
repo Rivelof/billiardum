@@ -5,12 +5,12 @@ import { TableArt } from './TableArt.jsx';
  * Сцена «Свет над столом»: тёмный зал (всегда тёмный в обеих темах, DESIGN §2), стол сверху,
  * над ним лампа. tone управляет рамкой и цветом таймера: idle, play, warn, grace.
  */
-export function Stage({ kind = 'pyramid', lit = 'false', tone = 'idle', compact = false, variant, back, children, label }) {
+export function Stage({ kind = 'pyramid', lit = 'false', tone = 'idle', compact = false, variant, back, children, label, art, pulse = false, ring = null }) {
   return (
     <section class={`stage stage--${tone}${compact ? ' stage--compact' : ''}${variant ? ` stage--${variant}` : ''}`} data-theme="dark" aria-label={label}>
       <Header back={back} />
       <div class="stage__body">
-        <TableArt kind={kind} lit={lit} class="stage__art" />
+        {art ?? <TableArt kind={kind} lit={lit} pulse={pulse} ring={ring} class="stage__art" />}
         <div class="stage__text">{children}</div>
       </div>
     </section>

@@ -46,14 +46,14 @@ const find = (...chain) => {
 };
 
 const base = find(':root');
-const light = find(':root,[data-theme="light"]');
-const darkMedia = find('@media (prefers-color-scheme: dark)', ':root:not([data-theme="light"])');
-const darkAttr = find('[data-theme="dark"]');
+// Редакция №127: тёмная тема по умолчанию (:root), светлая — только по выбору
+const darkAttr = find(':root,[data-theme="dark"]');
+const light = find('[data-theme="light"]');
 const reduced = find('@media (prefers-reduced-motion: reduce)', ':root');
 
 const themes = {
-  light: { ...base, ...light },
-  dark: { ...base, ...light, ...darkAttr },
+  light: { ...base, ...darkAttr, ...light },
+  dark: { ...base, ...darkAttr },
 };
 
 function resolve(theme, value, depth = 0) {
@@ -83,14 +83,21 @@ const ratio = (n) => `${n.toFixed(2)}:1`;
 
 // ---------- токены совпадают с DESIGN.md ----------
 
-const ADDED_BY_FRONTEND = []; // цвета вне DESIGN.md; сейчас таких нет
+const ADDED_BY_FRONTEND = []; // цвета тем вне DESIGN.md; сейчас таких нет
+/** Подогнанные под AA значения (DESIGN.md §2: «frontend подгоняет их под тест контраста AA»). */
+const ADJUSTED = { 'light|--ball-red': '#B03524', 'light|--free': '#1A6E43' };
 
 test('tokens.css совпадает с таблицами DESIGN.md §2', { skip: !existsSync(designPath) && 'нет docs/DESIGN.md' }, () => {
   const md = readFileSync(designPath, 'utf8');
   const section = md.slice(md.indexOf('## 2. Цвет'), md.indexOf('## 3.'));
-  const lightPart = section.slice(section.indexOf('Светлая тема'), section.indexOf('Тёмная тема'));
-  const darkPart = section.slice(section.indexOf('Тёмная тема'), section.indexOf('Зал (план зала'));
-  const hallPart = section.slice(section.indexOf('Зал (план зала'));
+  const at = (re) => section.search(re);
+  const darkStart = at(/Тёмная тема \(по умолчанию\):/);
+  const lightStart = at(/Светлая тема \(«слоновая кость»\):/);
+  const hallStart = at(/Зал \(план зала/);
+  assert.ok(darkStart >= 0 && lightStart > darkStart && hallStart > lightStart, 'в DESIGN.md §2 таблицы тёмной и светлой темы и описание зала');
+  const darkPart = section.slice(darkStart, lightStart);
+  const lightPart = section.slice(lightStart, hallStart);
+  const hallPart = section.slice(hallStart);
   const rows = (s) => Object.fromEntries([...s.matchAll(/\|\s*`(--[a-z0-9-]+)`\s*\|\s*`(#[0-9a-f]{6})`/gi)].map((m) => [m[1], m[2]]));
   const designLight = rows(lightPart);
   const designDark = rows(darkPart);
@@ -101,14 +108,16 @@ test('tokens.css совпадает с таблицами DESIGN.md §2', { skip
   // Каждый токен темы из tokens.css описан в DESIGN.md, и наоборот
   const cssThemeColors = Object.keys(light).filter((t) => t.startsWith('--')).sort();
   assert.deepEqual(cssThemeColors, Object.keys(designLight).sort(), 'набор токенов темы совпадает с DESIGN.md');
-  assert.equal(Object.keys(designHall).length, 7, 'в DESIGN.md 7 токенов зала');
-
-  for (const [t, v] of Object.entries(designLight)) assert.equal(light[t]?.toUpperCase(), v.toUpperCase(), `светлая ${t}`);
-  for (const [t, v] of Object.entries(designDark)) assert.equal(darkAttr[t]?.toUpperCase(), v.toUpperCase(), `тёмная ${t}`);
+  // Зал в редакции №127 описан словами (орех, паркет, латунь, сукно); если в DESIGN.md есть значения — сверяем
   for (const [t, v] of Object.entries(designHall)) assert.equal(base[t]?.toUpperCase(), v.toUpperCase(), `зал ${t}`);
 
-  // Лишних цветов, которых нет в DESIGN.md, кроме согласуемых вспомогательных
-  const known = new Set([...Object.keys(designLight), ...Object.keys(designHall), ...ADDED_BY_FRONTEND]);
+  const want = (theme, t, v) => (ADJUSTED[`${theme}|${t}`] ?? v).toUpperCase();
+  for (const [t, v] of Object.entries(designLight)) assert.equal(light[t]?.toUpperCase(), want('light', t, v), `светлая ${t}`);
+  for (const [t, v] of Object.entries(designDark)) assert.equal(darkAttr[t]?.toUpperCase(), want('dark', t, v), `тёмная ${t}`);
+
+  // Лишних цветов, которых нет в DESIGN.md, кроме согласуемых вспомогательных и токенов зала
+  const hallTokens = Object.keys(base).filter((k) => k.startsWith('--hall-'));
+  const known = new Set([...Object.keys(designLight), ...hallTokens, ...ADDED_BY_FRONTEND]);
   for (const theme of ['light', 'dark']) {
     for (const [t, v] of Object.entries(themes[theme])) {
       const isColor = t.startsWith('--') && /^#[0-9a-f]{3,8}$/i.test(resolve(themes[theme], v));
@@ -122,16 +131,17 @@ test('tokens.css совпадает с таблицами DESIGN.md §2', { skip
   for (const n of scale) assert.equal(base[`--fs-${n}`], `${n}px`, `--fs-${n}`);
 });
 
-test('тёмная тема одинакова по системе и вручную, зал одинаков в обеих темах', () => {
-  assert.deepEqual(darkMedia, darkAttr);
+test('тёмная тема по умолчанию, светлая только по выбору, зал одинаков в обеих темах', () => {
   for (const t of Object.keys(base).filter((k) => k.startsWith('--hall-'))) {
     assert.ok(!(t in light) && !(t in darkAttr), `${t} не должен меняться с темой`);
   }
-  assert.equal(Object.keys(base).filter((k) => k.startsWith('--hall-')).length, 7);
+  assert.ok(Object.keys(base).filter((k) => k.startsWith('--hall-')).length >= 7, 'токены зала');
   assert.equal(light['color-scheme'], 'light');
   assert.equal(darkAttr['color-scheme'], 'dark');
-  // Все токены светлой темы переопределены в тёмной
-  assert.deepEqual(Object.keys(darkAttr).sort(), Object.keys(light).sort());
+  // Системная светлая тема не включает светлую сама: только data-theme="light" (№127)
+  assert.ok(!blocks.some((b) => b.chain.some((c) => /prefers-color-scheme/.test(c))), 'нет переключения по prefers-color-scheme');
+  // Все токены тёмной темы переопределены в светлой
+  assert.deepEqual(Object.keys(light).sort(), Object.keys(darkAttr).sort());
 });
 
 test('скругления, шрифты, движение и prefers-reduced-motion', () => {
@@ -177,6 +187,8 @@ const COMPONENTS = [
   ...SURFACES.map((bg) => ['--free', bg, '«свободно» текстом', AA]),
   ...SURFACES.map((bg) => ['--ball-red', bg, 'тревога, ошибка, льгота', AA]),
   ...SURFACES.map((bg) => ['--line-strong', bg, 'граница поля ввода', NON_TEXT]),
+  ...SURFACES.map((bg) => ['--brass', bg, 'латунь: рамки и значки', NON_TEXT]),
+  ['--hall-brass', '--hall-bg', 'латунные уголки в зале', NON_TEXT],
 ];
 
 /**

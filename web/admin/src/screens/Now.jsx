@@ -82,14 +82,14 @@ export function Now({ ctx }) {
             Тревоги
             {alarms?.length ? <span class="count count--alert">{alarms.length}</span> : null}
           </h2>
-          {alarms ? <AlarmList alarms={alarms} timeZone={timeZone} role={role} onAck={(id) => setAlarms((l) => l.filter((x) => x.id !== id))} /> : <p class="muted">Загружаем…</p>}
+          {alarms ? <AlarmList alarms={alarms} timeZone={timeZone} role={role} onAck={(id) => setAlarms((l) => l.filter((x) => x.id !== id))} /> : <p class="muted loading">Загружаем…</p>}
         </section>
 
         <section class="now__hall" aria-labelledby="now-hall-title">
           <h2 class="section-title" id="now-hall-title">
             Зал
           </h2>
-          {data ? <HallPlan items={hall} timeZone={timeZone} onSelect={setTable} perRow={narrow ? 4 : undefined} selected={table?.resource?.id} /> : <p class="muted">Загружаем зал…</p>}
+          {data ? <HallPlan items={hall} timeZone={timeZone} onSelect={setTable} perRow={narrow ? 4 : undefined} selected={table?.resource?.id} /> : <p class="muted loading">Загружаем зал…</p>}
         </section>
 
         <section class="now__money" aria-labelledby="money-title">

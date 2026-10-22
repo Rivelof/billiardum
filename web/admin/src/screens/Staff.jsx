@@ -67,7 +67,7 @@ export function Staff({ ctx }) {
             <span class="note__title">{notice}</span>
           </p>
         ) : null}
-        {data === null && !error ? <p class="muted">Загружаем персонал…</p> : null}
+        {data === null && !error ? <p class="muted loading">Загружаем персонал…</p> : null}
 
         {staff.length ? (
           <section aria-labelledby="st-list">

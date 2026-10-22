@@ -63,7 +63,7 @@
   grid-auto-columns: 1fr;
   padding: 6px max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
   background: var(--card);
-  box-shadow: 0 -1px 0 var(--line), 0 -8px 24px rgb(5 8 14 / 0.08);
+  box-shadow: 0 -1px 0 var(--line), 0 -8px 24px rgb(12 8 4 / 0.08);
 }
 .nav__item {
   display: grid;

@@ -96,7 +96,7 @@ export function MenuAdmin({ ctx }) {
             Обновить
           </button>
         </ErrorNote>
-        {!menu && !error ? <p class="muted">Загружаем меню…</p> : null}
+        {!menu && !error ? <p class="muted loading">Загружаем меню…</p> : null}
         {menu ? (
           <>
             <div class="pills" role="radiogroup" aria-label="Категория">

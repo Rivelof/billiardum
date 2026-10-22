@@ -102,6 +102,7 @@ export function WaitPayment({ paymentId }) {
       </Stage>
       <main class="wrap content">
         <div class="step">
+          {paid ? <PocketDrop /> : null}
           <p class="lead" aria-live="polite">
             {text}
           </p>
@@ -248,6 +249,22 @@ export function WaitReception({ requestId }) {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+/** Оплата прошла (DESIGN §6): шар закатывается в лузу, над ней загорается свет. Декоративно — скрыт от диктора. */
+function PocketDrop() {
+  return (
+    <div class="pocket-drop" aria-hidden="true">
+      <svg viewBox="0 0 132 66" focusable="false">
+        <rect class="pocket-drop__rail" x="0" y="20" width="132" height="46" rx="10" />
+        <rect class="pocket-drop__cloth" x="0" y="30" width="132" height="36" />
+        <circle class="pocket-drop__glow" cx="108" cy="30" r="26" />
+        <circle class="pocket-drop__brass" cx="108" cy="30" r="17" />
+        <circle class="pocket-drop__hole" cx="108" cy="30" r="11" />
+        <circle class="pocket-drop__ball" cx="108" cy="30" r="9" />
+      </svg>
     </div>
   );
 }

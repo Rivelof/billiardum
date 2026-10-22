@@ -592,7 +592,7 @@
 .aline__diff { grid-area: diff; display: flex; flex-wrap: wrap; gap: 4px 14px; font-weight: 600; min-height: 22px; }
 .aline--short .aline__diff { color: var(--ball-red); }
 .aline__ok { color: var(--free); }
-.audit__foot { position: sticky; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: 2; justify-items: stretch; box-shadow: inset 0 0 0 1px var(--line), 0 -8px 24px rgb(5 8 14 / 0.12); }
+.audit__foot { position: sticky; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: 2; justify-items: stretch; box-shadow: inset 0 0 0 1px var(--line), 0 -8px 24px rgb(12 8 4 / 0.12); }
 .audit__foot { gap: 10px; padding: 14px 16px; }
 .audit__foot > .btn { justify-self: stretch; }
 .audit__sum { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 16px; }

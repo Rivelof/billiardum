@@ -79,7 +79,7 @@ export function BookClubs() {
         <h1 class="page-title display">Бронь стола</h1>
         <p class="lead">Выберите клуб, день и время — стол на плане зала будет ждать вас.</p>
         <ErrorNote error={error} />
-        {clubs === null && !error ? <p class="muted">Загружаем клубы…</p> : null}
+        {clubs === null && !error ? <p class="muted loading">Загружаем клубы…</p> : null}
         {clubs?.length === 0 ? <p class="empty">Клубов с бронью пока нет.</p> : null}
         {clubs?.length ? (
           <ul class="clublist">
@@ -269,7 +269,7 @@ export function BookScreen({ clubId }) {
             Время начала
             {resource ? <span class="step__aside">для стола {resource.number}</span> : null}
           </h2>
-          {!ready ? <p class="muted">Загружаем свободное время…</p> : <BoardScale slots={slots} selected={slot} minutes={chosenMinutes ?? minLen} onPick={pickSlot} tz={tz} date={date} tableChosen={Boolean(resource)} total={day.resources.length} />}
+          {!ready ? <p class="muted loading">Загружаем свободное время…</p> : <BoardScale slots={slots} selected={slot} minutes={chosenMinutes ?? minLen} onPick={pickSlot} tz={tz} date={date} tableChosen={Boolean(resource)} total={day.resources.length} />}
         </section>
 
         {ready && slot ? (
@@ -617,7 +617,7 @@ export function MyBookings() {
         <h1 class="page-title display">Мои брони</h1>
         {status === 'anon' ? <SignIn title="Войдите, чтобы увидеть брони" /> : null}
         <ErrorNote error={error} />
-        {status === 'user' && list === null && !error ? <p class="muted">Загружаем брони…</p> : null}
+        {status === 'user' && list === null && !error ? <p class="muted loading">Загружаем брони…</p> : null}
         {list && !open.length ? <p class="empty">Ближайших броней нет. Забронируйте стол — он будет ждать вас в выбранное время.</p> : null}
         {open.length ? <BookingList list={open} title="Ближайшие" /> : null}
         <a class="btn btn--primary btn--block btn--lg" href={`${BASE}book`} onClick={linkHandler}>
@@ -739,7 +739,7 @@ export function BookingScreen({ id }) {
         <Header back={{ href: `${BASE}bookings`, label: 'Мои брони' }} />
         <main class="wrap content">
           <ErrorNote error={error} />
-          {!error ? <p class="muted">Загружаем бронь…</p> : null}
+          {!error ? <p class="muted loading">Загружаем бронь…</p> : null}
         </main>
       </div>
     );
@@ -971,7 +971,7 @@ export function WaitlistOffer({ id }) {
       <main class="wrap content book">
         {status === 'anon' ? <SignIn title="Войдите, чтобы занять стол" /> : null}
         <ErrorNote error={error} />
-        {entry === undefined && status === 'user' && !error ? <p class="muted">Проверяем стол…</p> : null}
+        {entry === undefined && status === 'user' && !error ? <p class="muted loading">Проверяем стол…</p> : null}
         {entry === null ? <p class="empty">Этой записи в очереди уже нет: стол заняли или вы вышли из очереди.</p> : null}
         {entry ? (
           <section class={`offer${v.state === 'offered' ? '' : ' offer--quiet'}`} aria-labelledby="wo-title">

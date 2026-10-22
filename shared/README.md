@@ -4,11 +4,11 @@
 
 | Файл | Что внутри |
 |---|---|
-| `tokens.css` | цвета `docs/DESIGN.md` §2 (светлая, тёмная, зал), шрифтовые стеки и шкала §3, скругления и сетка §5, длительность лампы §6 |
+| `tokens.css` | цвета `docs/DESIGN.md` §2, редакция №127: тёмная тема по умолчанию (эспрессо, орех, слоновая кость, зелёное сукно, янтарь, латунь), светлая — только `data-theme="light"`; токены зала `--hall-*` (орех, паркет, латунь, сукно); шрифты и шкала §3, скругления §5, движение §6 (`--lamp-duration`, `--motion-screen`, `--cue-easing`) |
 | `fonts.css`, `fonts/` | Dela Gothic One, Geologica 300–700 (вариативный), JetBrains Mono 500 и 700; WOFF2, кириллица и латиница; лицензии `fonts/OFL-*.txt` |
 | `format.mjs` | `plural`, `formatMoney`, `formatTime`, `formatDate`, `formatDuration` |
 | `ui.css` | базовые стили интерфейса: сброс, кнопки, поля, флажок, плитки выбора, бейджи, сообщения, диалог (лист снизу на телефоне), чек |
-| `hall.mjs`, `hall.css` | зал: `tableSvg` (стол сверху, пирамида и пул в настоящих пропорциях, лампа через `--lit`), `planLayout` (расстановка на плане), `tableState` (статус словом), `tableKind`, `typeLabel` |
+| `hall.mjs`, `hall.css` | зал: `tableSvg` (стол сверху, пирамида и пул в настоящих пропорциях: ореховый борт с бликом, латунные накладки у луз, сукно с виньеткой, лампа и её конус через `--lit`), пол плана — паркет на CSS-градиентах, `planLayout` (расстановка на плане), `tableState` (статус словом), `tableKind`, `typeLabel` |
 | `api.mjs` | клиент API по контракту: `createClient` (JSON, cookie, `Bearer`, `Idempotency-Key`), `ApiError` с кодом, `openStream` (SSE с переподключением), `newIdempotencyKey` |
 | `errors.mjs` | тексты ошибок API для людей: `errorMessage(err, { audience: 'guest' \| 'staff', busyUntil })` → что случилось и что делать |
 | `reasons.mjs` | коды причин ручных действий: отклонение заявки, сервисный свет, скидка выше лимита, списание со склада |

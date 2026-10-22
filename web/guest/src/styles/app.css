@@ -230,7 +230,7 @@
   margin: 0;
   padding: 12px max(var(--gutter), env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
   background: var(--paper);
-  box-shadow: 0 -1px 0 var(--line), 0 -10px 24px rgb(5 8 14 / 0.08);
+  box-shadow: 0 -1px 0 var(--line), 0 -10px 24px rgb(12 8 4 / 0.08);
 }
 .actionbar--fixed > * { width: 100%; max-width: 528px; margin-inline: auto; }
 .actionbar__note { text-align: center; }
@@ -526,3 +526,73 @@
 
 .queue-me { display: grid; gap: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
 .queue-me .step__label { display: flex; align-items: center; gap: 8px; }
+
+/* Главная: «разбой при прокрутке» — стол шире, canvas держит пропорции стола 12 футов */
+.stage--home .stage__art { width: min(100%, 460px); }
+.break { display: block; width: 100%; aspect-ratio: 3890 / 2115; filter: drop-shadow(0 10px 18px rgb(0 0 0 / 0.45)); }
+
+/* ---------- движение (DESIGN §6, №127) ---------- */
+
+/* Кольцо оставшегося времени на сукне — вокруг лампы, тает плавно */
+.table-art { isolation: isolate; }
+.time-ring {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  width: 38%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  overflow: visible;
+  pointer-events: none;
+}
+.time-ring__track { fill: none; stroke: color-mix(in oklab, var(--hall-bg) 45%, transparent); stroke-width: 3; }
+.time-ring__arc {
+  fill: none;
+  stroke: var(--lamp);
+  stroke-width: 3;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px color-mix(in oklab, var(--lamp) 70%, transparent));
+  transition: stroke-dasharray 1s linear;
+}
+.stage--warn .time-ring__arc { stroke-width: 4; }
+
+/* За 10 минут до конца лампа мягко пульсирует */
+@keyframes lamp-pulse {
+  0%, 100% { --lit: 1; }
+  50% { --lit: 0.62; }
+}
+.lit-host[data-pulse="true"][data-lit="true"] { animation: lamp-pulse 2.6s ease-in-out infinite; }
+
+/* Переход экранов — короткое появление; только прозрачность, чтобы не сбивать нижние панели position: fixed */
+.screen { animation: screen-in var(--motion-screen) ease-out both; }
+
+/* Оплата прошла: шар закатывается в лузу, затем загорается лампа */
+.pocket-drop { display: grid; justify-items: center; padding: 4px 0 8px; }
+.pocket-drop svg { width: 132px; height: 66px; overflow: visible; }
+.pocket-drop__rail { fill: var(--hall-rail); }
+.pocket-drop__cloth { fill: var(--hall-cloth-on); }
+.pocket-drop__brass { fill: var(--hall-brass); }
+.pocket-drop__hole { fill: var(--hall-bg); }
+.pocket-drop__ball { fill: var(--hall-text); animation: ball-roll 0.9s cubic-bezier(0.25, 0.6, 0.35, 1) both; transform-box: fill-box; transform-origin: center; }
+.pocket-drop__glow { fill: var(--lamp); opacity: 0; animation: pocket-glow 0.6s var(--lamp-easing) 0.85s both; }
+@keyframes ball-roll {
+  0% { transform: translate(-78px, 0) scale(1); opacity: 1; }
+  78% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(0, 0) scale(0.35); opacity: 0; }
+}
+@keyframes pocket-glow { from { opacity: 0; } to { opacity: 0.55; } }
+
+/* Нижний край сцены — полированный ореховый борт с латунной нитью: зал переходит в страницу как край стола */
+.stage::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5px;
+  background: linear-gradient(var(--hall-rail-hi), var(--hall-rail));
+  box-shadow: 0 -1px 0 color-mix(in oklab, var(--hall-brass) 55%, transparent);
+  pointer-events: none;
+}
+.nowrap { white-space: nowrap; }

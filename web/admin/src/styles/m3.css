@@ -252,3 +252,6 @@
 @media (max-width: 639px) {
   .bar__tools .bar__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
+
+/* Переход экранов (DESIGN §6): содержимое страницы коротко появляется */
+.page { animation: screen-in var(--motion-screen) ease-out both; }

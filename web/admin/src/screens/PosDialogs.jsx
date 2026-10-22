@@ -276,7 +276,7 @@ export function DiscountDialog({ open, clubId, base, limit, current, bigAllowed,
               <div class="approve">
                 <fieldset>
                   <legend class="field__label">Кто подтверждает</legend>
-                  {approvers === null ? <p class="muted">Загружаем управляющих…</p> : null}
+                  {approvers === null ? <p class="muted loading">Загружаем управляющих…</p> : null}
                   {approvers?.length === 0 ? <p class="hint">Не нашли управляющих клуба. Попросите владельца добавить управляющего или дать скидку в пределах лимита.</p> : null}
                   <div class="pills">
                     {(approvers ?? []).map((u) => (

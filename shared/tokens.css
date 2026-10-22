@@ -1,26 +1,29 @@
 /*
- * Бильярдум — токены дизайна (docs/DESIGN.md §2, §3, §5, §6). Цвета в интерфейсе только через эти переменные.
+ * Бильярдум — токены дизайна (docs/DESIGN.md §2, §3, §5, §6; редакция №127 «темнее и теплее»).
+ * Цвета в интерфейсе только через эти переменные.
  *
  * Темы:
- *   - по умолчанию светлая;
- *   - тёмная по prefers-color-scheme: dark;
- *   - вручную: <html data-theme="dark"> или <html data-theme="light"> (светлая даже при тёмной системе);
- *   - data-theme работает и на любом элементе: поддерево получает тему целиком (превью, образцы).
- * Токены зала --hall-* одинаковы в обеих темах: зал всегда тёмный.
+ *   - по умолчанию тёмная: вечерний зал — эспрессо, орех, слоновая кость, зелёное сукно, янтарь лампы, латунь;
+ *   - светлая («слоновая кость») — только по выбору: <html data-theme="light">; выбор запоминает theme-init.js;
+ *   - data-theme работает и на любом элементе: поддерево получает тему целиком (превью, зал).
+ * Токены зала --hall-* одинаковы в обеих темах: зал всегда тёмный (орех, паркет, латунь, сукно).
  *
- * Значения цветов совпадают с DESIGN.md §2 (с правками decisions №36); это проверяет test/tokens.test.mjs.
- * Менять значения — только вместе с DESIGN.md и с согласия Андрея.
+ * Значения совпадают с таблицами DESIGN.md §2, кроме подогнанных под AA (test/tokens.test.mjs, ADJUSTED).
  */
 
 :root {
-  /* Зал: план зала и ТВ-экраны, всегда тёмный */
-  --hall-bg: #0A0E16;
-  --hall-line: #1A2232;
-  --hall-cloth-off: #1B3F7A;
-  --hall-cloth-on: #2F6FD6;
-  --hall-rail: #3B2A21;
-  --hall-text: #DDE4EF;
-  --hall-text-2: #8C97AB;
+  /* Зал: план зала и ТВ-экраны, всегда тёмный. Пол — тёмный орех с паркетом, борта — полированный орех,
+     латунные уголки, сукно свободного стола приглушённое, занятого — яркое в конусе лампы */
+  --hall-bg: #15100C;
+  --hall-floor: #1D1611;
+  --hall-line: #33271D;
+  --hall-cloth-off: #1E4A34;
+  --hall-cloth-on: #2F9A63;
+  --hall-rail: #4A2F1C;
+  --hall-rail-hi: #8A5B34;
+  --hall-brass: #C99A55;
+  --hall-text: #F0E6D6;
+  --hall-text-2: #BCAB92;
 
   /* Шрифты (§3). Dela Gothic One без знака ₽: он берётся из Geologica следующей в стеке */
   --font-display: 'Dela Gothic One', 'Geologica', system-ui, sans-serif;
@@ -54,77 +57,57 @@
   --lamp-duration: 0.6s;
   --lamp-easing: cubic-bezier(0.3, 0, 0.2, 1);
   --motion-fast: 0.15s;
+  --motion-screen: 0.18s;
+  --cue-easing: cubic-bezier(0.2, 0.9, 0.3, 1.3);
 }
 
-/* Светлая тема — по умолчанию и принудительно */
+/* Тёмная тема — по умолчанию и принудительно */
 :root,
-[data-theme="light"] {
-  color-scheme: light;
-  --paper: #F3F5F8;
-  --card: #FFFFFF;
-  --card-2: #E8EDF3;
-  --line: #D4DCE6;
-  --line-strong: #7A869A;
-  --ink: #0C1424;
-  --ink-2: #46536A;
-  --ink-3: #616C7F;
-  --cloth: #1F56B8;
-  --cloth-deep: #163F8A;
-  --cloth-tint: #DCE6F7;
-  --lamp: #F5A623;
-  --lamp-tint: #FDF0D8;
-  --ball-red: #C6362A;
-  --free: #1A7A4D;
-  --on-cloth: #FFFFFF;
-  --on-lamp: #0C1424;
-}
-
-/* Тёмная тема по системе, если светлая не выбрана вручную. Блок совпадает с [data-theme="dark"] ниже */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --paper: #0B1019;
-    --card: #121A27;
-    --card-2: #182234;
-    --line: #253047;
-    --line-strong: #677387;
-    --ink: #E9EEF6;
-    --ink-2: #A3AEC2;
-    --ink-3: #7E899C;
-    --cloth: #5186E9;
-    --cloth-deep: #7FA6F0;
-    --cloth-tint: #16264A;
-    --lamp: #FFB938;
-    --lamp-tint: #33270F;
-    --ball-red: #F0604F;
-    --free: #3CC283;
-    /* Текст на кнопке тёмный: белый на синем не набирает 4,5:1 (DESIGN §2) */
-    --on-cloth: #0B1019;
-    --on-lamp: #0C1424;
-  }
-}
-
-/* Тёмная тема вручную */
 [data-theme="dark"] {
   color-scheme: dark;
-  --paper: #0B1019;
-  --card: #121A27;
-  --card-2: #182234;
-  --line: #253047;
-  --line-strong: #677387;
-  --ink: #E9EEF6;
-  --ink-2: #A3AEC2;
-  --ink-3: #7E899C;
-  --cloth: #5186E9;
-  --cloth-deep: #7FA6F0;
-  --cloth-tint: #16264A;
-  --lamp: #FFB938;
-  --lamp-tint: #33270F;
-  --ball-red: #F0604F;
-  --free: #3CC283;
-  /* Текст на кнопке тёмный: белый на синем не набирает 4,5:1 (DESIGN §2) */
-  --on-cloth: #0B1019;
-  --on-lamp: #0C1424;
+  --paper: #120E0B;
+  --card: #1C1612;
+  --card-2: #261E18;
+  --line: #3A2E24;
+  --line-strong: #86735F;
+  --ink: #F3EADB;
+  --ink-2: #C7B69E;
+  --ink-3: #A09079;
+  --cloth: #3FA373;
+  --cloth-deep: #5CBD8C;
+  --cloth-tint: #17301F;
+  --lamp: #F4B860;
+  --lamp-tint: #3A2A12;
+  --brass: #C99A55;
+  --ball-red: #EE6A50;
+  --free: #6CCB97;
+  /* Текст на зелёной кнопке тёмный: слоновая кость на --cloth не набирает 4,5:1 */
+  --on-cloth: #0E0B08;
+  --on-lamp: #1A120A;
+}
+
+/* Светлая тема («слоновая кость») — только по выбору */
+[data-theme="light"] {
+  color-scheme: light;
+  --paper: #F5EEE3;
+  --card: #FFFBF4;
+  --card-2: #EDE3D4;
+  --line: #DDCFBC;
+  --line-strong: #8A7761;
+  --ink: #1E150E;
+  --ink-2: #5A4A3A;
+  --ink-3: #6E5E4C;
+  --cloth: #1F6B4A;
+  --cloth-deep: #16523A;
+  --cloth-tint: #DCEBDF;
+  --lamp: #E39A2B;
+  --lamp-tint: #F8E7C8;
+  --brass: #9A6B2C;
+  /* Подогнаны под AA на --card-2 (DESIGN: #B83A2A, #1F7A4B) */
+  --ball-red: #B03524;
+  --free: #1A6E43;
+  --on-cloth: #FFFBF4;
+  --on-lamp: #1E150E;
 }
 
 /* Без анимаций по просьбе системы: переходы мгновенные, данные обновляются как обычно */
@@ -132,5 +115,6 @@
   :root {
     --lamp-duration: 0s;
     --motion-fast: 0s;
+    --motion-screen: 0s;
   }
 }

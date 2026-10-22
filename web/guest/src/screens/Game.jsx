@@ -9,7 +9,7 @@ import { useNow } from '../components/hooks.js';
 import { PushOffer } from '../components/PushOffer.jsx';
 import { Pay } from './Pay.jsx';
 import { api, streamSession } from '../lib/api.js';
-import { clockSkew, gameView, timerTexts, maxExtendMinutes, lampState } from '../lib/game.js';
+import { clockSkew, gameView, timerTexts, maxExtendMinutes, lampState, pulseLamp, timeLeftShare } from '../lib/game.js';
 import { durationWords, minutesWords, optionLabel, tableName } from '../lib/words.js';
 import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -125,7 +125,7 @@ export function GameScreen({ id }) {
 
   return (
     <div class={`screen screen--game screen--${phase}`}>
-      <Stage kind={kind} lit={lampState(phase)} tone={tone} label={`${tableName(number)}, игра`}>
+      <Stage kind={kind} lit={lampState(phase)} tone={tone} label={`${tableName(number)}, игра`} pulse={pulseLamp(view, session)} ring={timeLeftShare(view, session)}>
         <p class="stage__kicker">
           {tableName(number)}
           {live !== 'open' ? <span class="stage__live"> · обновляем…</span> : null}

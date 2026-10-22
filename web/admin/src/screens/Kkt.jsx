@@ -93,7 +93,7 @@ export function Kkt({ ctx }) {
             Мосты
             {active.length ? <span class="count">{active.length}</span> : null}
           </h2>
-          {bridges === null && !error ? <p class="muted">Загружаем…</p> : null}
+          {bridges === null && !error ? <p class="muted loading">Загружаем…</p> : null}
           {bridges && !active.length && !issued ? (
             <p class="hint">Мост ещё не подключён. Пока его нет, чеки за наличные и карту на ресепшене ждут в очереди и пробьются после подключения.</p>
           ) : null}

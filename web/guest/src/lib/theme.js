@@ -1,21 +1,19 @@
 import { local } from './store.js';
 
-/** Тема: 'auto' (как в системе), 'light', 'dark'. Выбор хранится только в этом браузере. */
+/**
+ * Тема (DESIGN §2, №127): тёмная по умолчанию, светлая («слоновая кость») — по выбору.
+ * Выбор хранится только в этом браузере; theme-init.js применяет его до первой отрисовки.
+ */
 export function getTheme() {
-  const saved = local.get('bl-theme');
-  return saved === 'light' || saved === 'dark' ? saved : 'auto';
+  return local.get('bl-theme') === 'light' ? 'light' : 'dark';
 }
 
 export function setTheme(theme) {
   const root = document.documentElement;
-  if (theme === 'light' || theme === 'dark') {
-    root.dataset.theme = theme;
-    local.set('bl-theme', theme);
-  } else {
-    delete root.dataset.theme;
-    local.set('bl-theme', null);
-  }
+  if (theme === 'light') root.dataset.theme = 'light';
+  else delete root.dataset.theme;
+  local.set('bl-theme', theme === 'light' ? 'light' : 'dark');
 }
 
-export const THEME_NEXT = { auto: 'light', light: 'dark', dark: 'auto' };
-export const THEME_LABEL = { auto: 'как в системе', light: 'светлая', dark: 'тёмная' };
+export const THEME_NEXT = { dark: 'light', light: 'dark' };
+export const THEME_LABEL = { light: 'светлая', dark: 'тёмная' };

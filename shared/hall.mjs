@@ -64,8 +64,9 @@ const ART = {
 let uidCounter = 0;
 
 /**
- * Стол сверху: сукно, борт с прицельными метками, лузы, лампа над столом.
- * Свет управляется CSS-переменной --lit (0 — темно, 1 — горит) на предке; классы в hall.css.
+ * Стол сверху (DESIGN §1, §2 — редакция №127): полированный ореховый борт с бликом, латунные накладки у луз,
+ * сукно с мягкой виньеткой, прицельные метки, лампа над столом и её тёплый конус на сукне.
+ * Свет управляется CSS-переменной --lit (0 — темно, 1 — горит) на предке; цвета — классы в hall.css.
  * @param {'pyramid' | 'pool'} kind
  * @param {{ horizontal?: boolean, uid?: string, className?: string }} [options]
  * @returns {string} разметка SVG, только константы — безопасно для innerHTML
@@ -82,9 +83,12 @@ export function tableSvg(kind, options = {}) {
   const fieldW = a.w - 2 * a.rail;
   const fieldH = a.h - 2 * a.rail;
   const [bx, by, bw, bh, brx] = a.bar;
+  const edge = Math.round(a.rail * 0.18);
   const body =
-    `<rect class="ta-rail" width="${a.w}" height="${a.h}" rx="${a.rx}"/>` +
-    `<rect class="ta-cloth" x="${a.rail}" y="${a.rail}" width="${fieldW}" height="${fieldH}"/>` +
+    `<rect class="ta-rail" width="${a.w}" height="${a.h}" rx="${a.rx}" fill="url(#${uid}-r)"/>` +
+    `<rect class="ta-rail-hi" x="${edge}" y="${edge}" width="${a.w - 2 * edge}" height="${a.h - 2 * edge}" rx="${a.rx - edge}"/>` +
+    `<g class="ta-brass">${a.pockets.map(([x, y, r]) => c(x, y, Math.round(r * 1.55))).join('')}</g>` +
+    `<rect class="ta-cloth" x="${a.rail}" y="${a.rail}" width="${fieldW}" height="${fieldH}" fill="url(#${uid}-c)"/>` +
     `<ellipse class="ta-spot" cx="${a.spot[0]}" cy="${a.spot[1]}" rx="${a.spot[2]}" ry="${a.spot[3]}" fill="url(#${uid})"/>` +
     `<rect class="ta-cushion" x="${a.rail + 25}" y="${a.rail + 25}" width="${fieldW - 50}" height="${fieldH - 50}"/>` +
     `<g class="ta-pockets">${a.pockets.map(([x, y, r]) => c(x, y, r)).join('')}</g>` +
@@ -92,11 +96,19 @@ export function tableSvg(kind, options = {}) {
     `<rect class="ta-bar" x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="${brx}"/>` +
     `<g class="ta-lamps">${a.lamps.ys.map((y) => c(a.lamps.x, y, a.lamps.r)).join('')}</g>`;
   const defs =
-    `<defs><radialGradient id="${uid}">` +
-    '<stop offset="0" class="ta-stop" stop-opacity="0.34"/>' +
-    '<stop offset="0.6" class="ta-stop" stop-opacity="0.12"/>' +
+    '<defs>' +
+    `<radialGradient id="${uid}">` +
+    '<stop offset="0" class="ta-stop" stop-opacity="0.42"/>' +
+    '<stop offset="0.55" class="ta-stop" stop-opacity="0.16"/>' +
     '<stop offset="1" class="ta-stop" stop-opacity="0"/>' +
-    '</radialGradient></defs>';
+    '</radialGradient>' +
+    `<linearGradient id="${uid}-r" x1="0" y1="0" x2="1" y2="1">` +
+    '<stop offset="0" class="ta-r1"/><stop offset="0.45" class="ta-r2"/><stop offset="1" class="ta-r3"/>' +
+    '</linearGradient>' +
+    `<radialGradient id="${uid}-c" cx="0.5" cy="0.5" r="0.72">` +
+    '<stop offset="0" class="ta-c1"/><stop offset="1" class="ta-c2"/>' +
+    '</radialGradient>' +
+    '</defs>';
   const cls = `ta ta--${kind}${options.className ? ` ${options.className}` : ''}`;
   if (options.horizontal) {
     return (

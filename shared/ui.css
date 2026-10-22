@@ -14,7 +14,10 @@ body {
   margin: 0;
   min-height: 100vh;
   min-height: 100dvh;
-  background: var(--paper);
+  /* Вечерний зал: сверху — отсвет ламп, к краям — глубже (№127) */
+  background:
+    radial-gradient(120% 70% at 50% -12%, color-mix(in oklab, var(--lamp) 7%, var(--paper)), transparent 62%) no-repeat,
+    var(--paper);
   color: var(--ink);
   font-family: var(--font-text);
   font-size: var(--fs-body);
@@ -100,17 +103,25 @@ span.mono, b.mono { white-space: nowrap; }
   line-height: 1.2;
   text-align: center;
   text-decoration: none;
-  transition: background-color var(--motion-fast), box-shadow var(--motion-fast), color var(--motion-fast);
+  transition: background-color var(--motion-fast), box-shadow var(--motion-fast), color var(--motion-fast), transform var(--motion-fast) var(--cue-easing);
   touch-action: manipulation;
 }
+/* «Удар кия» (DESIGN §6): нажатие — короткий сдвиг вперёд и отдача */
+.btn:not([disabled]):active { transform: translateY(1px) scale(0.985); transition-duration: 0.06s; }
 .btn:focus-visible { outline: 2px solid var(--cloth); outline-offset: 3px; }
 .btn[disabled], .btn[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
 
-.btn--primary { background: var(--cloth); color: var(--on-cloth); }
+.btn--primary {
+  background: var(--cloth);
+  color: var(--on-cloth);
+  /* сукно: тонкий блик сверху и мягкая тень под кнопкой */
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--ink) 18%, transparent), 0 6px 18px -8px color-mix(in oklab, var(--cloth) 70%, transparent);
+}
 .btn--primary:not([disabled]):hover, .btn--primary:not([disabled]):active { background: var(--cloth-deep); color: var(--on-cloth); }
-.btn--secondary { background: var(--cloth-tint); color: var(--ink); }
+.btn--secondary { background: var(--cloth-tint); color: var(--ink); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--cloth) 35%, transparent); }
 .btn--secondary:not([disabled]):hover { box-shadow: inset 0 0 0 1.5px var(--cloth); }
 .btn--quiet { box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+.btn--quiet:not([disabled]):hover { box-shadow: inset 0 0 0 1.5px var(--brass); }
 .btn--quiet:not([disabled]):hover { background: var(--card-2); }
 .btn--lamp { background: var(--lamp); color: var(--on-lamp); }
 .btn--lamp:not([disabled]):hover { box-shadow: inset 0 0 0 2px var(--on-lamp); }
@@ -156,7 +167,7 @@ span.mono, b.mono { white-space: nowrap; }
 }
 textarea.field__input { min-height: 96px; resize: vertical; line-height: 1.45; }
 select.field__input { appearance: auto; }
-.field__input:hover { border-color: var(--ink-3); }
+.field__input:hover { border-color: var(--brass); }
 .field__input:focus-visible { outline: 2px solid var(--cloth); outline-offset: 1px; border-color: var(--cloth); }
 .field__input[aria-invalid="true"] { border-color: var(--ball-red); }
 .field__hint { font-size: var(--fs-13); color: var(--ink-3); line-height: 1.4; }
@@ -202,13 +213,15 @@ select.field__input { appearance: auto; }
   border-radius: var(--radius-md);
   background: var(--card);
   box-shadow: inset 0 0 0 1.5px var(--line-strong);
-  transition: box-shadow var(--motion-fast), background-color var(--motion-fast);
+  transition: box-shadow var(--motion-fast), background-color var(--motion-fast), transform var(--motion-fast) var(--cue-easing);
 }
+.choice__item:hover input:not(:checked):not(:disabled) + .choice__box { box-shadow: inset 0 0 0 1.5px var(--brass); }
+.choice__item input:active + .choice__box { transform: scale(0.985); }
 .choice__title { font-weight: 600; font-size: var(--fs-17); line-height: 1.25; }
 .choice__sub { font-size: var(--fs-13); color: var(--ink-2); line-height: 1.35; }
 .choice__item input:checked + .choice__box {
   background: var(--lamp-tint);
-  box-shadow: inset 0 0 0 2.5px var(--lamp);
+  box-shadow: inset 0 0 0 2.5px var(--lamp), 0 0 22px -10px var(--lamp);
 }
 .choice__item input:focus-visible + .choice__box { outline: 2px solid var(--cloth); outline-offset: 2px; }
 .choice__item input:disabled + .choice__box { opacity: 0.55; cursor: not-allowed; }
@@ -269,13 +282,14 @@ select.field__input { appearance: auto; }
   margin: auto 0 0;
   padding: 0;
   border: 0;
+  border-top: 2px solid var(--brass);
   border-radius: var(--radius-md) var(--radius-md) 0 0;
   background: var(--card);
   color: var(--ink);
   box-shadow: 0 -8px 32px rgb(0 0 0 / 0.28);
   overflow: auto;
 }
-.dialog::backdrop { background: rgb(5 8 14 / 0.62); }
+.dialog::backdrop { background: rgb(10 7 4 / 0.7); }
 .dialog__inner {
   display: grid;
   gap: 16px;
@@ -309,7 +323,7 @@ select.field__input { appearance: auto; }
 .receipt__row:first-child { border-top: 0; }
 .receipt__sum { font-family: var(--font-mono); font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .receipt__sub { grid-column: 1 / -1; font-size: var(--fs-13); color: var(--ink-2); margin-top: -2px; }
-.receipt__row--total { border-top: 1.5px solid var(--ink); font-size: var(--fs-20); font-weight: 600; padding-top: 12px; }
+.receipt__row--total { border-top: 1.5px solid var(--brass); font-size: var(--fs-20); font-weight: 600; padding-top: 12px; }
 .receipt__row--total .receipt__sum { font-weight: 700; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -319,4 +333,24 @@ select.field__input { appearance: auto; }
     transition-duration: 0s !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Загрузка — тёплое мерцание сукна вместо серых полос (DESIGN §6) */
+.loading { display: grid; gap: 10px; }
+.loading::before {
+  content: '';
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--cloth-tint), color-mix(in oklab, var(--lamp) 30%, var(--cloth-tint)), var(--cloth-tint)) 0 0 / 200% 100%;
+  animation: felt-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes felt-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+/* Переход экранов — короткое появление 150–200 мс (DESIGN §6); приложения вешают его на корень экрана */
+@keyframes screen-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

@@ -68,7 +68,7 @@ export function Devices({ ctx }) {
             Обновить
           </button>
         </ErrorNote>
-        {hall === null ? <p class="muted">Загружаем контроллеры…</p> : null}
+        {hall === null ? <p class="muted loading">Загружаем контроллеры…</p> : null}
         <ul class="devlist">
           {tables.map((t) => {
             const d = t.device ?? {};

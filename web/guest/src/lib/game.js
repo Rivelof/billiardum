@@ -123,3 +123,21 @@ export function lampState(phase) {
   if (phase === 'grace') return 'dim';
   return 'false';
 }
+
+/** За 10 минут до конца лампа мягко пульсирует (DESIGN §6); в «Без лимита» — нет. */
+export function pulseLamp(view, session) {
+  if (!view || session?.unlimited) return false;
+  return (view.phase === 'play' || view.phase === 'warn') && view.ms <= 10 * 60 * 1000;
+}
+
+/**
+ * Доля оставшегося оплаченного времени для кольца на столе (0…1): от начала игры до paid_until.
+ * В «Без лимита» и вне игры кольца нет — null.
+ */
+export function timeLeftShare(view, session) {
+  if (!view || session?.unlimited || !['play', 'warn'].includes(view.phase)) return null;
+  const start = Date.parse(session?.started_at ?? '');
+  const end = Date.parse(session?.paid_until ?? '');
+  if (!(end > start)) return null;
+  return Math.min(1, Math.max(0, view.ms / (end - start)));
+}

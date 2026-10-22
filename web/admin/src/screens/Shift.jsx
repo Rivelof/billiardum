@@ -60,7 +60,7 @@ export function Shift({ ctx }) {
           </button>
         </ErrorNote>
 
-        {shift === undefined && !error ? <p class="muted">Загружаем смену…</p> : null}
+        {shift === undefined && !error ? <p class="muted loading">Загружаем смену…</p> : null}
 
         {closed ? (
           <ClosedSummary shift={closed} role={role} clubId={clubId} onNew={() => (setClosed(null), load())} fmtT={fmtT} />
@@ -355,7 +355,7 @@ function History({ list, clubId, timeZone }) {
       <h2 class="section-title" id="history-title">
         Отчёты смен
       </h2>
-      {list === null ? <p class="muted">Загружаем…</p> : null}
+      {list === null ? <p class="muted loading">Загружаем…</p> : null}
       {list?.length === 0 ? <p class="hint">Закрытых смен пока нет. Отчёт появится здесь после закрытия первой смены.</p> : null}
       {list?.length ? (
         <ul class="shifts">
