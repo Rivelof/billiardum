@@ -17,6 +17,7 @@ import { BASE } from '../lib/env.js';
 import { optionLabel, optionMinutes, tableName } from '../lib/words.js';
 import { getFlow, rememberClub, setFlow } from '../lib/flow.js';
 import { MyBooking, Waitlist, startableBooking, useMyWaitlist } from '../components/TableExtras.jsx';
+import { waitlistView } from '@billiardum/shared/booking';
 
 const STEPS = ['choose', 'signin', 'consent', 'pay'];
 
@@ -215,6 +216,12 @@ export function TableScreen({ code, search }) {
 
       <main class="wrap content">
         {step === 'choose' && myBooking ? <MyBooking table={table} booking={myBooking} code={code} onReload={load} /> : null}
+        {waitEntry?.status === 'expired' && waitlistView(waitEntry).note ? (
+          <p class="note note--lamp" role="status">
+            <Icon name="info" />
+            <span class="note__title">{waitlistView(waitEntry).note}</span>
+          </p>
+        ) : null}
         {step === 'choose' && !myBooking && held ? (
           <p class="note note--lamp" role="status">
             <Icon name="clock" />

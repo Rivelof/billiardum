@@ -230,20 +230,29 @@ export function extendLimitText(session, formatTime) {
  * Лист ожидания: оставшиеся секунды предложения (5 минут, №109) и слова о месте в очереди.
  * @param {{ status: string, position?: number, offer_until?: string | null }} entry
  */
+/** Причина закрытия или возврата записи очереди (close_reason сервера) словами для гостя. */
+export const WAITLIST_NOTE = Object.freeze({
+  released: 'Стол отдали гостю у стойки, вы можете снова встать в очередь',
+  expired: 'Вы не ответили за 5 минут',
+  table_taken: 'Стол успели занять, вы остаётесь в очереди на своём месте',
+});
+
 export function waitlistView(entry, now = Date.now()) {
-  if (!entry) return { state: 'none', left: 0, text: '' };
+  if (!entry) return { state: 'none', left: 0, text: '', note: null };
+  const note = WAITLIST_NOTE[entry.close_reason] ?? null;
   if (entry.status === 'offered') {
     const left = Math.max(0, ms(entry.offer_until) - now);
-    return { state: left > 0 ? 'offered' : 'missed', left, text: left > 0 ? 'Стол свободен — он ваш на 5 минут' : 'Время предложения вышло' };
+    return { state: left > 0 ? 'offered' : 'missed', left, text: left > 0 ? 'Стол свободен — он ваш на 5 минут' : 'Время предложения вышло', note: left > 0 ? null : WAITLIST_NOTE.expired };
   }
   if (entry.status === 'waiting') {
     const n = entry.position ?? 1;
-    return { state: 'waiting', left: 0, text: n <= 1 ? 'Вы первый в очереди' : `Вы ${n}-й в очереди` };
+    // table_taken: принять не успели — стол заняли, гость остаётся в очереди на своём месте
+    return { state: 'waiting', left: 0, text: n <= 1 ? 'Вы первый в очереди' : `Вы ${n}-й в очереди`, note: entry.close_reason === 'table_taken' ? note : null };
   }
-  if (entry.status === 'accepted') return { state: 'accepted', left: 0, text: 'Стол ваш' };
-  // Истекло или клуб снял удержание (№122) — сервер не различает их в записи: общий текст
-  if (entry.status === 'expired') return { state: 'missed', left: 0, text: 'Предложение закончилось' };
-  return { state: 'none', left: 0, text: '' };
+  if (entry.status === 'accepted') return { state: 'accepted', left: 0, text: 'Стол ваш', note: null };
+  // Истекло (expired) или клуб снял удержание (released, №122) — причина в close_reason
+  if (entry.status === 'expired') return { state: 'missed', left: 0, text: 'Предложение закончилось', note: note ?? 'Время вышло или клуб отдал стол гостю у стойки. Можно снова встать в очередь.' };
+  return { state: 'none', left: 0, text: '', note: null };
 }
 
 /**

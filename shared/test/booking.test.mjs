@@ -133,6 +133,11 @@ test('лист ожидания: место в очереди и предлож�
   assert.equal(offer.left, 4 * MIN);
   assert.equal(waitlistView({ status: 'offered', offer_until: new Date(now - 1).toISOString() }, now).state, 'missed');
   assert.equal(waitlistView(null).state, 'none');
+  // close_reason сервера — точный текст гостю
+  assert.equal(waitlistView({ status: 'expired', close_reason: 'released' }, now).note, 'Стол отдали гостю у стойки, вы можете снова встать в очередь');
+  assert.equal(waitlistView({ status: 'expired', close_reason: 'expired' }, now).note, 'Вы не ответили за 5 минут');
+  assert.equal(waitlistView({ status: 'waiting', position: 1, close_reason: 'table_taken' }, now).note, 'Стол успели занять, вы остаётесь в очереди на своём месте');
+  assert.equal(waitlistView({ status: 'waiting', position: 1, close_reason: null }, now).note, null);
 });
 
 test('баланс пакета часов в котировке (use_balance): полностью или с доплатой', () => {

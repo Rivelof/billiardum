@@ -130,7 +130,7 @@ export function m3Routes(ctx) {
 
   function waitlistView(w) {
     if (w.status === 'offered' && now() > w.offer_until) {
-      w.status = 'expired';
+      Object.assign(w, { status: 'expired', close_reason: 'expired' });
       const t = ctx.tables().find((x) => x.code === w.code);
       if (t?.pending_by === 'waitlist') Object.assign(t, { status: 'free', pending_by: null });
       ctx.emitMe('waitlist', { type: 'waitlist.updated', ...waitlistView(w) });
@@ -144,6 +144,8 @@ export function m3Routes(ctx) {
       position: w.position,
       offer_until: w.status === 'offered' ? iso(w.offer_until) : null,
       hold_until: w.status === 'accepted' ? iso(w.hold_until) : null,
+      // Причина закрытия или возврата в очередь (сервер): expired | released | declined | canceled | accepted | table_taken | null
+      close_reason: w.close_reason ?? null,
       created_at: iso(w.created),
     };
   }
@@ -161,7 +163,7 @@ export function m3Routes(ctx) {
         const s = t.session_id && ctx.state().sessions[t.session_id];
         if (s) Object.assign(s, { status: 'closed', ended_at: now() });
         // №122: предложение держит стол за гостем (reserved до конца предложения) — гость «с улицы» его не займёт
-        Object.assign(w, { status: 'offered', position: 1, offer_until: now() + 5 * MIN });
+        Object.assign(w, { status: 'offered', position: 1, offer_until: now() + 5 * MIN, close_reason: null });
         Object.assign(t, { status: 'reserved', pending_by: 'waitlist', busy_until: w.offer_until, session_id: null });
         ctx.emitMe('waitlist', { type: 'waitlist.offered', offer_id: w.id, resource: wlResource(w), expires_at: iso(w.offer_until) });
       }
@@ -352,7 +354,7 @@ export function m3Routes(ctx) {
     ['DELETE', /^\/api\/waitlist\/([^/]+)$/, (m) => {
       const w = S().waitlist[m[1]];
       if (!w) return err(404, 'not_found');
-      w.status = 'canceled';
+      Object.assign(w, { close_reason: w.status === 'offered' ? 'declined' : 'canceled', status: 'canceled' });
       const t = ctx.tables().find((x) => x.code === w.code);
       if (t?.pending_by === 'waitlist') Object.assign(t, { status: 'free', pending_by: null });
       ctx.emitMe('waitlist', { type: 'waitlist.updated', ...waitlistView(w) });
@@ -366,7 +368,7 @@ export function m3Routes(ctx) {
       if (w.status === 'accepted' && w.hold_until > now()) return ok(accepted());
       if (waitlistView(w).status !== 'offered') return err(409, 'offer_expired');
       // Стол держится за гостем 3 минуты (как котировка), дальше — обычная котировка и оплата
-      Object.assign(w, { status: 'accepted', hold_until: now() + 3 * MIN });
+      Object.assign(w, { status: 'accepted', hold_until: now() + 3 * MIN, close_reason: 'accepted' });
       const t = ctx.tables().find((x) => x.code === w.code);
       Object.assign(t, { status: 'pending', pending_by: userId(), pending_until: now() + 3 * MIN });
       ctx.emitMe('waitlist', { type: 'waitlist.accepted', offer_id: w.id, resource: wlResource(w), hold_until: iso(w.hold_until) });

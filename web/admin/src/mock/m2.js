@@ -191,7 +191,13 @@ function reportSeed(shift, x) {
     manual_actions: {
       count: items.length,
       by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1 },
-      items: items.map((it) => ({ kind: it.action.startsWith('manual.') ? 'manual' : 'staff', ...it })),
+      items: items.map((it) => ({ kind: it.action.startsWith('manual.') ? 'manual' : 'staff', linked: [], ...it })),
+      // Действия гостей (отмена брони гостем с возвратом) — отдельно, свёрнуто
+      guests: {
+        count: 1,
+        by_action: { 'booking.cancel': 1 },
+        items: [{ at: new Date(opened + 180 * MIN).toISOString(), action: 'booking.cancel', kind: 'guest', actor_id: null, actor_name: null, reason: 'Бронь отменена гостем поздно', resource_id: id('00000000', 4), resource_number: 4, amount_kopecks: 31500, linked: ['payment.refunded'] }],
+      },
       automatic: {
         count: 2,
         by_action: { 'payment.forfeited': 1, 'payment.refunded': 1 },

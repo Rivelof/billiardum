@@ -978,10 +978,16 @@ export function WaitlistOffer({ id }) {
                 </div>
               </>
             ) : null}
+            {v.state === 'waiting' && v.note ? (
+              <p class="note note--lamp" role="status">
+                <Icon name="info" />
+                <span class="note__title">{v.note}</span>
+              </p>
+            ) : null}
             {v.state === 'waiting' ? <p class="hint">Когда стол освободится, пришлём уведомление. Стол будет ваш 5 минут.</p> : null}
             {v.state === 'missed' ? (
               <>
-                <p class="hint">Время вышло или клуб отдал стол гостю у стойки. Можно снова встать в очередь — когда стол освободится, предложим его вам.</p>
+                <p class="lead">{v.note}</p>
                 <button type="button" class="btn btn--secondary btn--block btn--lg" disabled={busy} onClick={rejoin}>
                   <Icon name="bell" />
                   {busy ? 'Ставим в очередь…' : 'Встать в очередь снова'}

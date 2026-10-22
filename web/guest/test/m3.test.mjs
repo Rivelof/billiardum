@@ -106,6 +106,7 @@ test('заглушка: очередь на занятый стол, предл�
   assert.ok(acc.hold_until && acc.resource_id && acc.resource.number);
   assert.ok(!('code' in acc) && !('code' in acc.resource), 'кода стола нет (№119)');
   assert.ok(events.some(([n, d]) => n === 'waitlist' && d.type === 'waitlist.accepted'));
+  assert.ok('close_reason' in mine, 'причина закрытия в записи очереди');
 
   // Пакет: покупка, баланс партиями, котировка use_balance, оплата balance
   await b.handle('POST', '/api/auth/consent', { version: 'x' });

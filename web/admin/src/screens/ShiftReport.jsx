@@ -427,10 +427,6 @@ function Service({ light }) {
 function Manual({ manual, timeZone }) {
   const items = Array.isArray(manual) ? manual : Array.isArray(manual?.items) ? manual.items : [];
   const count = Number.isInteger(manual?.count) ? manual.count : items.length;
-  // №125: действия системы (сгорание предоплаты, автовозвраты, отмены платежей, расчёт депозита) — отдельной строкой
-  const auto = manual?.automatic ?? null;
-  const autoItems = Array.isArray(auto?.items) ? auto.items : [];
-  const autoCount = Number.isInteger(auto?.count) ? auto.count : autoItems.length;
   return (
     <section class="rcard rcard--wide" aria-labelledby="r-man">
       <h3 class="rcard__title" id="r-man">
@@ -448,29 +444,42 @@ function Manual({ manual, timeZone }) {
         <p class="hint">Ручных действий за смену не было: ни сервисного света, ни скидок выше лимита, ни возвратов.</p>
       )}
       {count > items.length ? <p class="small">Показаны первые {items.length}. Остальные — в журнале.</p> : null}
-      {autoCount ? (
-        <details class="auto">
-          <summary class="auto__summary">
-            Автоматические действия системы: <b>{autoCount}</b>
-            {auto?.by_action ? <span class="auto__by"> — {Object.entries(auto.by_action).map(([k, n]) => `${(ACTION_LABEL[k] ?? k).toLowerCase()} ${n}`).join(', ')}</span> : null}
-          </summary>
-          {autoItems.length ? (
-            <ul class="log">
-              {autoItems.map((a, i) => (
-                <LogItem a={a} timeZone={timeZone} key={`${a.at}-${i}`} />
-              ))}
-            </ul>
-          ) : null}
-        </details>
-      ) : null}
+      {/* №125: действия системы и гостей — свёрнутыми строками, в ручные не входят */}
+      <Folded title="Действия гостей" group={manual?.guests} timeZone={timeZone} />
+      <Folded title="Автоматические действия системы" group={manual?.automatic} timeZone={timeZone} />
     </section>
   );
 }
 
-function LogItem({ a, timeZone }) {
-  const system = a.kind === 'automatic';
+function Folded({ title, group, timeZone }) {
+  const list = Array.isArray(group?.items) ? group.items : [];
+  const n = Number.isInteger(group?.count) ? group.count : list.length;
+  if (!n) return null;
   return (
-    <li class={`log__item${system ? '' : ' log__item--manual'}`}>
+    <details class="auto">
+      <summary class="auto__summary">
+        {title}: <b>{n}</b>
+        {group?.by_action ? <span class="auto__by"> — {Object.entries(group.by_action).map(([k, c]) => `${(ACTION_LABEL[k] ?? k).toLowerCase()} ${c}`).join(', ')}</span> : null}
+      </summary>
+      {list.length ? (
+        <ul class="log">
+          {list.map((a, i) => (
+            <LogItem a={a} timeZone={timeZone} key={`${a.at}-${i}`} />
+          ))}
+        </ul>
+      ) : null}
+    </details>
+  );
+}
+
+const WHO = { automatic: 'Система', guest: 'Гость' };
+
+function LogItem({ a, timeZone }) {
+  const other = a.kind === 'automatic' || a.kind === 'guest';
+  // Денежные записи той же операции сервер склеил с этой строкой (linked) — подпись мелко
+  const linked = Array.isArray(a.linked) ? [...new Set(a.linked)].map((x) => (ACTION_LABEL[x] ?? x).toLowerCase()) : [];
+  return (
+    <li class={`log__item${other ? '' : ' log__item--manual'}`}>
       <span class="log__time mono">{formatTime(a.at, timeZone)}</span>
       <div class="log__body">
         <p class="log__title">
@@ -480,7 +489,10 @@ function LogItem({ a, timeZone }) {
           {Number.isSafeInteger(a.amount_kopecks) ? `, ${formatMoney(a.amount_kopecks)}` : ''}
         </p>
         {a.reason ? <p class="log__reason">«{a.reason}»</p> : null}
-        <p class="log__meta">{system ? 'Система' : (a.actor_name ?? 'Сотрудник')}</p>
+        <p class="log__meta">
+          {WHO[a.kind] ?? a.actor_name ?? 'Сотрудник'}
+          {linked.length ? ` · вместе с: ${linked.join(', ')}` : ''}
+        </p>
       </div>
     </li>
   );

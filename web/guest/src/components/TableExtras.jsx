@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { formatDuration, formatMoney, formatTime } from '@billiardum/shared/format';
 import { waitlistView } from '@billiardum/shared/booking';
 import { Icon } from './Icon.jsx';
@@ -195,6 +195,12 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
           <Icon name="hourglass" />
           {v.text}
         </h2>
+        {v.note ? (
+          <p class="note note--lamp" role="status">
+            <Icon name="info" />
+            <span class="note__title">{v.note}</span>
+          </p>
+        ) : null}
         <p class="hint">
           Когда стол освободится, пришлём уведомление{table.busy_until ? ` — ориентировочно в ${formatTime(table.busy_until, tz)}` : ''}. Стол будет ваш 5 минут.
         </p>
@@ -237,12 +243,17 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
  */
 export function useMyWaitlist(resourceId, enabled, onAccepted) {
   const [entry, setEntry] = useState(null);
+  const current = useRef(null);
+  current.current = entry;
   const on = Boolean(enabled && resourceId);
   const load = async () => {
     try {
       const list = await api.myWaitlist();
-      const mine = (Array.isArray(list) ? list : []).find((w) => w.resource?.id === resourceId && ['waiting', 'offered', 'accepted'].includes(w.status));
-      setEntry(mine ?? null);
+      const all = Array.isArray(list) ? list : [];
+      const mine = all.find((w) => w.resource?.id === resourceId && ['waiting', 'offered', 'accepted'].includes(w.status));
+      // Своё предложение закончилось (истекло, клуб снял удержание) — показать причину (close_reason)
+      const ended = !mine && current.current ? all.find((w) => w.id === current.current.id && w.status === 'expired') : null;
+      setEntry(mine ?? ended ?? null);
       if (mine?.status === 'accepted') onAccepted?.(mine);
     } catch {
       // нет связи — повторим
