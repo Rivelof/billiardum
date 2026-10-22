@@ -284,3 +284,9 @@
 .lots { display: grid; gap: 2px; margin: 4px 0; font-size: var(--fs-15); }
 .lots li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px dashed color-mix(in oklab, var(--lamp) 45%, transparent); }
 .lots__until { color: var(--ink-2); }
+
+/* Принятое предложение очереди (№119): стол держим, игра — сканированием QR на столе */
+.held { display: grid; gap: 10px; }
+.held__title { margin: 0; font-size: var(--fs-20); font-weight: 700; font-variant-numeric: tabular-nums; }
+.held__body { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; margin: 0; color: var(--ink); }
+.held__body svg { width: 24px; height: 24px; margin-top: 1px; color: var(--ink-2); }

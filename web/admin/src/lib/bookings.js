@@ -1,6 +1,7 @@
 /**
- * Брони в программе клуба (M3): лента дня по столам, ближайшая бронь на плане зала, права на отмену (№115).
- * Ответы — server/bookings/README.md: GET /api/clubs/{club}/bookings?date= → { date, from, to, bookings },
+ * Брони в программе клуба (M3): лента дня по столам. Ближайшая бронь на плане зала — next_booking в ответе зала,
+ * право отмены (№115) — can_cancel в брони (сервер, №120). Ответы — server/bookings/README.md:
+ * GET /api/clubs/{club}/bookings?date= → { date, from, to, bookings },
  * GET /api/clubs/{club}/availability?date= → занятость столов (игры, сервис, закрытые часы).
  */
 
@@ -53,30 +54,6 @@ export function lanes(day, bookings) {
     bookings: bookings.filter((b) => b.resource?.id === r.id && b.status !== 'canceled').sort((a, b) => ms(a.starts_at) - ms(b.starts_at)),
     busy: (r.busy ?? []).filter((x) => x.kind !== 'booking'),
   }));
-}
-
-/**
- * Ближайшая живая бронь сегодня для стола на плане зала: hall item + next_booking { starts_at, guest } (янтарная рамка).
- * Идущие брони (started) и прошедшие не показываем.
- */
-export function withNextBooking(hall, bookings, now = Date.now()) {
-  if (!Array.isArray(hall)) return hall;
-  return hall.map((item) => {
-    const next = (bookings ?? [])
-      .filter((b) => b.resource?.id === item.resource.id && OPEN.includes(b.status) && ms(b.hold_until ?? b.ends_at) > now)
-      .sort((a, b) => ms(a.starts_at) - ms(b.starts_at))[0];
-    return next ? { ...item, next_booking: { starts_at: next.starts_at, id: next.id } } : item;
-  });
-}
-
-/**
- * Может ли роль отменить бронь (№115): управляющий и владелец — любую живую, ресепшн — только phone/staff без предоплаты.
- */
-export function canCancel(role, b) {
-  if (!OPEN.includes(b?.status)) return false;
-  if (role === 'owner' || role === 'manager') return true;
-  if (role !== 'reception') return false;
-  return ['phone', 'staff'].includes(b.source) && !(b.prepayment_kopecks > 0) && !(b.paid_kopecks > 0);
 }
 
 /** «Гость пришёл» — для брони по телефону, пока не сгорела. */

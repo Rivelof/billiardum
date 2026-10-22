@@ -156,16 +156,21 @@ export function planLayout(resources, options = {}) {
   return { width, height, items };
 }
 
+/** Бронь дальше этого срока на плане зала не показываем: стол свободен для игры сейчас. */
+export const BOOKED_HORIZON_MS = 12 * 60 * 60_000;
+
 /**
  * Состояние стола на плане зала словами (DESIGN §2: статус никогда не передаётся только цветом).
  * @param {{ status: string, session?: { status?: string, paid_until?: string, grace_until?: string | null, unlimited?: boolean } | null, until?: string | null, busy_until?: string | null, device?: { online?: boolean } }} item элемент `GET /api/clubs/{club}/hall`
- * @param {{ formatTime?: (iso: string) => string }} [options]
+ * @param {{ formatTime?: (iso: string) => string, now?: number }} [options]
  * word — коротко для подписи на плане, spoken (если есть) — полностью для экранного диктора.
- * item.next_booking — { starts_at } ближайшей брони сегодня (M3), стол с ней получает янтарную рамку.
+ * item.next_booking — { id, starts_at, ends_at, source, status } | null ближайшей живой брони стола (сервер, M3 №120):
+ * свободный стол с бронью в ближайшие 12 часов получает янтарную рамку и время брони; дальняя бронь план не красит.
  * @returns {{ tone: 'free' | 'pending' | 'reserved' | 'booked' | 'play' | 'ending' | 'grace' | 'service' | 'offline', lit: boolean, word: string, spoken?: string }}
  */
 export function tableState(item, options = {}) {
   const fmt = options.formatTime ?? ((iso) => iso);
+  const now = options.now ?? Date.now();
   const session = item.session ?? null;
   const sStatus = session?.status;
   const until = item.until ?? item.busy_until ?? null;
@@ -186,7 +191,7 @@ export function tableState(item, options = {}) {
   if (item.status === 'reserved') {
     return { tone: 'reserved', lit: false, word: booking?.starts_at ? `Бронь ${fmt(booking.starts_at)}` : 'Бронь', spoken: booking?.starts_at ? `ждёт гостя по брони на ${fmt(booking.starts_at)}` : 'забронирован' };
   }
-  if ((item.status === 'free' || !item.status) && booking?.starts_at) {
+  if ((item.status === 'free' || !item.status) && booking?.starts_at && Date.parse(booking.starts_at) - now <= BOOKED_HORIZON_MS) {
     return { tone: 'booked', lit: false, word: `Бронь ${fmt(booking.starts_at)}`, spoken: `свободен, бронь на ${fmt(booking.starts_at)}` };
   }
   switch (item.status) {

@@ -38,3 +38,22 @@ export function maskTail(phone) {
 export function packageItems(cart) {
   return cart.lines.filter((l) => l.kind === 'package').map((l) => ({ kind: 'package', package_id: l.package_id, phone: l.phone }));
 }
+
+/**
+ * Партия пакета гостя для экрана возврата (№118): вернуть можно только целиком и пока часы не тратили.
+ * Пакет из приложения — POST /api/packages/lots/{id}/refund (деньги — ЮKassa), с кассы — возврат продажи
+ * POST /api/pos/sales/{sale_id}/refund { packages: [idx] } (деньги — тем же способом, что при продаже).
+ * @returns {{ refundable: boolean, word: string, why: string | null, via: 'app' | 'pos' }}
+ */
+export function lotView(lot) {
+  const via = lot?.source === 'pos' ? 'pos' : 'app';
+  if (lot?.refunded_at) return { refundable: false, word: 'Возвращён', why: null, via };
+  if ((lot?.minutes_left ?? 0) < (lot?.minutes_total ?? 0)) return { refundable: false, word: 'Часы тратили', why: 'Часы уже начали тратить — пакет не возвращается.', via };
+  if (via === 'pos' && (!lot.sale_id || !Number.isInteger(lot.idx))) return { refundable: false, word: 'Не начислен', why: 'Продажа на кассе ещё не завершена.', via };
+  return { refundable: true, word: 'Не тронут', why: null, via };
+}
+
+/** Тело запроса возврата партии: для кассы — только этот пакет из продажи. */
+export function lotRefundCall(lot, reason) {
+  return lot.source === 'pos' ? { kind: 'sale', id: lot.sale_id, body: { reason, packages: [lot.idx] } } : { kind: 'lot', id: lot.id, body: { reason } };
+}

@@ -1,7 +1,8 @@
 /*
  * BL_MOCK_MARKER — заглушка M3 гостя только для разработки (VITE_MOCK=1). Вид ответов — как у сервера:
  * server/bookings (availability, бронь, старт), server/waitlist, server/packages (пакеты, баланс), server/payments/quotes.mjs
- * (use_balance, extend_limit_until), PATCH /api/me (notify_channel, channels_order). Коды ошибок — серверные.
+ * (use_balance, extend_limit_until), PATCH /api/me (notify_channel, channels_order), GET /api/clubs и поток гостя ?me=1
+ * (№120: события booking и waitlist, вид — в data.type). Коды ошибок — серверные.
  *
  * Сценарии: book (брони и баланс) | mybooking (стол 4: ваша бронь через 10 минут) | early (бронь через 50 минут — ранний приход
  * с доплатой) | waitlist (стол 7 занят, вы в очереди — через 8 секунд предложение на 5 минут) | balance (5 часов на балансе)
@@ -23,7 +24,7 @@ const PACKAGES = [
 /**
  * @param {{ state: () => object, now: () => number, club: object, tables: () => object[], resourceId: (n: number) => string,
  *   amountFor: (from: number, minutes: number) => { amount_kopecks: number }, createSession: (o: object) => string,
- *   err: Function, ok: Function, needUser: Function }} ctx
+ *   err: Function, ok: Function, needUser: Function, emitMe: (name: string, data: object) => void }} ctx
  */
 export function m3Routes(ctx) {
   const { err, ok, now, club } = ctx;
@@ -76,11 +77,24 @@ export function m3Routes(ctx) {
     return { allowed, refund_kopecks: allowed ? b.paid - kept : 0, free_until: b.paid > 0 ? iso(freeUntil) : null };
   }
 
+  /** Событие брони гостю в потоке user:{id} (№120): { type: 'booking.<status>', id, status, starts_at, ends_at, resource }. */
+  function bookingEvent(b) {
+    const t = tableById(b.resource_id);
+    ctx.emitMe('booking', { type: `booking.${b.status}`, id: b.id, status: b.status, starts_at: iso(b.starts), ends_at: iso(b.ends), resource: { id: b.resource_id, number: t.number } });
+  }
+
+  /** Бронь со временем: подтверждённая за 15 минут до начала — reserved, после удержания — expired. */
+  function advance(b) {
+    const was = b.status;
+    if (b.status === 'confirmed' && now() >= b.starts - 15 * MIN) b.status = 'reserved';
+    if (b.status === 'reserved' && now() > b.starts + b.hold * MIN) b.status = 'expired';
+    if (b.status !== was && b.user_id) bookingEvent(b);
+  }
+
   /** Бронь как view() server/bookings/service.mjs. */
   function view(b) {
     const t = tableById(b.resource_id);
-    if (b.status === 'confirmed' && now() >= b.starts - 15 * MIN) b.status = 'reserved';
-    if (b.status === 'reserved' && now() > b.starts + b.hold * MIN) b.status = 'expired';
+    advance(b);
     return {
       id: b.id,
       club: { id: club.id, name: club.name, timezone: tz },
@@ -119,6 +133,7 @@ export function m3Routes(ctx) {
       w.status = 'expired';
       const t = ctx.tables().find((x) => x.code === w.code);
       if (t?.pending_by === 'waitlist') Object.assign(t, { status: 'free', pending_by: null });
+      ctx.emitMe('waitlist', { type: 'waitlist.updated', ...waitlistView(w) });
     }
     const t = ctx.tables().find((x) => x.code === w.code);
     return {
@@ -133,16 +148,29 @@ export function m3Routes(ctx) {
     };
   }
 
-  /** Стол освободился, очередь есть (T20): первому — предложение на 5 минут, стол держим за ним. */
+  const wlResource = (w) => {
+    const t = ctx.tables().find((x) => x.code === w.code);
+    return { id: ctx.resourceId(t.number), number: t.number, title: t.title };
+  };
+
+  /** Стол освободился, очередь есть (T20): игра на нём закончилась, первому — предложение на 5 минут, стол держим за ним. */
   function tick() {
     for (const w of Object.values(S().waitlist)) {
       if (w.status === 'waiting' && w.offer_at && now() >= w.offer_at) {
         const t = ctx.tables().find((x) => x.code === w.code);
+        const s = t.session_id && ctx.state().sessions[t.session_id];
+        if (s) Object.assign(s, { status: 'closed', ended_at: now() });
         Object.assign(t, { status: 'pending', pending_by: 'waitlist', busy_until: null, session_id: null });
         Object.assign(w, { status: 'offered', position: 1, offer_until: now() + 5 * MIN });
+        ctx.emitMe('waitlist', { type: 'waitlist.offered', offer_id: w.id, resource: wlResource(w), expires_at: iso(w.offer_until) });
       }
-      if (w.status === 'waiting' && w.position > 1 && now() - w.created > 12_000) w.position = 1;
+      if (w.status === 'waiting' && w.position > 1 && now() - w.created > 12_000) {
+        w.position = 1;
+        ctx.emitMe('waitlist', { type: 'waitlist.updated', ...waitlistView(w) });
+      }
+      if (w.status === 'offered') waitlistView(w);
     }
+    for (const b of Object.values(S().bookings)) advance(b);
   }
 
   function balanceOf() {
@@ -188,6 +216,7 @@ export function m3Routes(ctx) {
     if (p.kind === 'booking') {
       const b = S().bookings[p.booking_id];
       Object.assign(b, { status: 'confirmed', paid: b.prepay });
+      bookingEvent(b);
     }
     if (p.kind === 'booking_start') {
       const b = S().bookings[p.booking_id];
@@ -202,6 +231,7 @@ export function m3Routes(ctx) {
     const minutes = Math.round((b.ends - Math.min(now(), b.starts)) / MIN);
     p.session_id = ctx.createSession({ code: table.code, minutes, unlimited: false, paymentId: p.id, amount: b.paid, method: p.method ?? 'booking' });
     Object.assign(b, { status: 'started', session_id: p.session_id });
+    bookingEvent(b);
     return p.session_id;
   }
 
@@ -210,7 +240,12 @@ export function m3Routes(ctx) {
     return b && b.user_id === userId() ? b : null;
   };
 
+  /** return_url оплаты (№120): только путь своего сайта /app/…, иначе 400 — как ownReturnUrl сервера. */
+  const ownPath = (v) => (v === undefined ? null : typeof v === 'string' && /^\/app\/[^\s<>"\\]*$/.test(v) && !v.includes('..') ? v : false);
+
   const routes = [
+    // Публичный список клубов (№120): без входа и без персональных данных
+    ['GET', /^\/api\/clubs$/, () => ok([{ id: club.id, name: club.name, city: 'Екатеринбург', address: 'ул. Малышева, 1 (разработка)', timezone: tz, plan: { width_cm: 1800, height_cm: 1200 } }])],
     ['GET', /^\/api\/clubs\/([^/]+)\/availability$/, (m, _b, q) => {
       const date = q?.get('date') || localDate(now(), tz);
       const { open, close } = dayBounds(date);
@@ -259,9 +294,11 @@ export function m3Routes(ctx) {
       if (!b) return err(404, 'not_found');
       if (b.status !== 'pending_payment') return err(409, 'booking_not_active');
       if (!['sbp', 'card'].includes(body.method)) return err(400, 'bad_request');
+      const back = ownPath(body.return_url);
+      if (back === false) return err(400, 'bad_request');
       const id = uuid();
       b.payment_id = id;
-      ctx.state().payments[id] = { id, kind: 'booking', booking_id: b.id, method: body.method, status: 'pending', amount_kopecks: b.prepay };
+      ctx.state().payments[id] = { id, kind: 'booking', booking_id: b.id, method: body.method, status: 'pending', amount_kopecks: b.prepay, return_url: back ?? `/app/wait/${id}` };
       return ok({ booking: view(b), payment_id: id, confirmation: { type: 'redirect', url: `/app/mock-pay/${id}` } });
     }],
     ['POST', /^\/api\/bookings\/([^/]+)\/cancel$/, (m) => {
@@ -270,6 +307,7 @@ export function m3Routes(ctx) {
       const c = cancelInfo(b);
       if (!c.allowed) return err(409, 'booking_not_active');
       b.status = 'canceled';
+      bookingEvent(b);
       return ok({ ...view(b), refund_kopecks: c.refund_kopecks, money: { refunded_kopecks: c.refund_kopecks } });
     }],
     ['POST', /^\/api\/bookings\/([^/]+)\/start$/, (m, body) => {
@@ -314,18 +352,22 @@ export function m3Routes(ctx) {
       w.status = 'canceled';
       const t = ctx.tables().find((x) => x.code === w.code);
       if (t?.pending_by === 'waitlist') Object.assign(t, { status: 'free', pending_by: null });
+      ctx.emitMe('waitlist', { type: 'waitlist.updated', ...waitlistView(w) });
       return ok(waitlistView(w));
     }],
     ['POST', /^\/api\/waitlist\/([^/]+)\/accept$/, (m) => {
       const w = S().waitlist[m[1]];
       if (!w) return err(404, 'not_found');
-      if (w.status === 'accepted' && w.hold_until > now()) return ok({ ...waitlistView(w), resource_id: ctx.resourceId(ctx.tables().find((x) => x.code === w.code).number) });
+      // Ответ сервера: { status: 'accepted', resource, resource_id, hold_until } — кода стола нет (№119)
+      const accepted = () => ({ status: 'accepted', resource: wlResource(w), resource_id: wlResource(w).id, hold_until: iso(w.hold_until) });
+      if (w.status === 'accepted' && w.hold_until > now()) return ok(accepted());
       if (waitlistView(w).status !== 'offered') return err(409, 'offer_expired');
       // Стол держится за гостем 3 минуты (как котировка), дальше — обычная котировка и оплата
       Object.assign(w, { status: 'accepted', hold_until: now() + 3 * MIN });
       const t = ctx.tables().find((x) => x.code === w.code);
       Object.assign(t, { status: 'pending', pending_by: userId(), pending_until: now() + 3 * MIN });
-      return ok({ ...waitlistView(w), resource_id: ctx.resourceId(t.number) });
+      ctx.emitMe('waitlist', { type: 'waitlist.accepted', offer_id: w.id, resource: wlResource(w), hold_until: iso(w.hold_until) });
+      return ok(accepted());
     }],
 
     // ---------- пакеты часов и баланс ----------
@@ -336,8 +378,10 @@ export function m3Routes(ctx) {
       const pk = PACKAGES.find((x) => x.id === m[1]);
       if (!pk) return err(404, 'not_found');
       if (!['sbp', 'card'].includes(body.method)) return err(400, 'bad_request');
+      const back = ownPath(body.return_url);
+      if (back === false) return err(400, 'bad_request');
       const id = uuid();
-      ctx.state().payments[id] = { id, kind: 'package', package_id: pk.id, method: body.method, status: 'pending', amount_kopecks: pk.price_kopecks };
+      ctx.state().payments[id] = { id, kind: 'package', package_id: pk.id, method: body.method, status: 'pending', amount_kopecks: pk.price_kopecks, return_url: back ?? `/app/wait/${id}` };
       return ok({ payment_id: id, status: 'pending', confirmation: { type: 'redirect', url: `/app/mock-pay/${id}` } });
     }],
     ['GET', /^\/api\/clubs\/([^/]+)\/balance$/, () => ctx.needUser() ?? ok(balanceOf())],
@@ -362,7 +406,7 @@ export function m3Routes(ctx) {
   ];
 
   function meView(user) {
-    return { ...user, notify_channel: user.notify_channel ?? null, channels_order: user.channels_order ?? null, channels: { telegram: Boolean(user.telegram_linked), max: user.max_linked !== false } };
+    return { ...user, notify_channel: user.notify_channel ?? null, channels_order: user.channels_order ?? null, channels: { max: user.max_linked !== false, telegram: Boolean(user.telegram_linked), webpush: Boolean(user.push_linked) } };
   }
 
   /** Котировка с use_balance (№112): balance_minutes покрыто балансом, amount_kopecks — доплата за остальное. */

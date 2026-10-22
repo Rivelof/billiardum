@@ -16,7 +16,7 @@ import { minutesWords, perHour } from '../lib/words.js';
 import { isIos, isStandalone, pushAvailability } from '../lib/platform.js';
 import { subscribePush } from '../lib/push.js';
 import { safeRedirectUrl } from '../lib/urls.js';
-import { lastClub, setFlow } from '../lib/flow.js';
+import { getFlow, lastClub, setFlow } from '../lib/flow.js';
 import '../styles/m3.css';
 
 const DAYS = ['день', 'дня', 'дней'];
@@ -51,10 +51,13 @@ export function ProfileScreen({ search }) {
 
   useEffect(() => {
     if (status !== 'user') return;
-    // Клуб: список клубов (предложение frontend) или тот, где гость открывал стол
+    // Клуб: тот, где гость открывал стол, если он в списке клубов (GET /api/clubs, №120), иначе первый
     api
       .clubs()
-      .then((list) => (Array.isArray(list) && list[0]) || lastClub())
+      .then((list) => {
+        const all = Array.isArray(list) ? list : [];
+        return all.find((c) => c.id === lastClub()?.id) ?? all[0] ?? lastClub();
+      })
       .catch(() => lastClub())
       .then(async (c) => {
         setClub(c ?? null);
@@ -67,13 +70,16 @@ export function ProfileScreen({ search }) {
       });
   }, [status]);
 
-  // Вернулись с оплаты пакета: часы появляются после подтверждения ЮKassa — опрашиваем полминуты
+  // Вернулись с оплаты пакета (return_url /app/me?paid=package): часы появляются после подтверждения ЮKassa —
+  // опрашиваем полминуты, пока баланс не вырастет относительно того, что был до оплаты
   useEffect(() => {
     if (!paidReturn || status !== 'user' || !club) return undefined;
     const before = Date.now();
+    const was = getFlow().balanceBefore ?? 0;
     const t = setInterval(async () => {
       const b = await loadBalance(club);
-      if ((b?.minutes ?? 0) > 0 || Date.now() - before > 30000) {
+      if ((b?.minutes ?? 0) > was || Date.now() - before > 30000) {
+        setFlow({ balanceBefore: null });
         clearInterval(t);
         setWaiting(false);
       }
@@ -174,12 +180,12 @@ export function ProfileScreen({ search }) {
           </>
         ) : null}
       </main>
-      <BuyDialog pack={buying} onClose={() => setBuying(null)} />
+      <BuyDialog pack={buying} balanceBefore={balance?.minutes ?? 0} onClose={() => setBuying(null)} />
     </div>
   );
 }
 
-function BuyDialog({ pack, onClose }) {
+function BuyDialog({ pack, balanceBefore = 0, onClose }) {
   const [method, setMethod] = useState('sbp');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -194,8 +200,8 @@ function BuyDialog({ pack, onClose }) {
       const res = await api.buyPackage(pack.id, method);
       const url = safeRedirectUrl(res?.confirmation?.url ?? res?.confirmation?.confirmation_url);
       if (!url) throw Object.assign(new Error('confirmation'), { code: 'payment_failed' });
-      // return_url ЮKassa — /app/wait/{payment_id}: оттуда вернёмся в профиль
-      setFlow({ kind: 'package', paymentId: res.payment_id });
+      // return_url ЮKassa — /app/me?paid=package: профиль дождётся часов на балансе
+      setFlow({ kind: 'package', paymentId: res.payment_id, balanceBefore });
       window.location.assign(url);
     } catch (err) {
       setError(err);
@@ -239,8 +245,9 @@ function BuyDialog({ pack, onClose }) {
  */
 export function NotifyScreen() {
   const { status, user } = useStore(auth);
-  // MAX и Telegram — из профиля сервера; Web Push — подписка этого устройства (сервер её флагом не отдаёт)
-  const [pushOn, setPushOn] = useState(() => pushAvailability() === 'granted');
+  // Подключённые каналы — user.channels { max, telegram, webpush } из GET /api/me (№120); Web Push, включённый
+  // только что на этом устройстве, — сразу, не дожидаясь перечитывания профиля
+  const [pushOn, setPushOn] = useState(false);
   const linked = { ...(user?.channels ?? {}), webpush: pushOn || Boolean(user?.channels?.webpush) };
   const [primary, setPrimary] = useState(user?.notify_channel ?? 'max');
   const [order, setOrder] = useState(() => channelsOrder(user?.channels_order, user?.notify_channel ?? 'max'));

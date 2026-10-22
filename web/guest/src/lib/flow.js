@@ -37,7 +37,7 @@ export function clubTimeZone(fromApi) {
 
 const CLUB_KEY = 'bl-club';
 
-/** Клуб, где гость был (стол по QR): для брони и пакетов, пока нет списка клубов. Без персональных данных. */
+/** Клуб, где гость был (стол по QR): первым в списке брони и для пакетов в профиле. Без персональных данных. */
 export function rememberClub(club) {
   if (club?.id) local.set(CLUB_KEY, JSON.stringify({ id: club.id, name: club.name ?? null, timezone: club.timezone ?? null }));
 }
@@ -47,28 +47,6 @@ export function lastClub() {
   try {
     const v = JSON.parse(local.get(CLUB_KEY) ?? 'null');
     return v?.id ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-const TABLES_KEY = 'bl-tables';
-
-/** Код стола по id ресурса (стол открывали по QR): для «Занять стол» из уведомления листа ожидания. */
-export function rememberTable(resourceId, code) {
-  if (!resourceId || !code) return;
-  try {
-    const map = JSON.parse(local.get(TABLES_KEY) ?? '{}');
-    map[resourceId] = code;
-    local.set(TABLES_KEY, JSON.stringify(Object.fromEntries(Object.entries(map).slice(-20))));
-  } catch {
-    // нет хранилища — откроют стол по QR
-  }
-}
-
-export function tableCode(resourceId) {
-  try {
-    return JSON.parse(local.get(TABLES_KEY) ?? '{}')[resourceId] ?? null;
   } catch {
     return null;
   }

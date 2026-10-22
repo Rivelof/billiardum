@@ -1,5 +1,6 @@
 import { createClient, newIdempotencyKey, openStream } from '@billiardum/shared/api';
 import { session } from './store.js';
+import { BASE } from './env.js';
 
 /**
  * Вызовы API гостя по контракту M1 (§4–§7). Транспорт подменяется заглушкой в режиме VITE_MOCK.
@@ -21,25 +22,21 @@ export function configureApi({ fetch, EventSource, onUnauthorized } = {}) {
 }
 
 /**
- * Живые обновления сессии: SSE GET /api/stream?session={id}, событие `session` (контракт §7).
- * @param {string} id
- * @param {{ onEvent: (name: string, data: unknown) => void, onOpen?: () => void, onState?: (s: string) => void }} handlers
+ * Поток SSE по каналу: { session: id } или { me: 1 }. В PWA — cookie; в мини-приложении EventSource не передаёт
+ * Bearer — одноразовый токен потока на 60 с (POST /api/stream/token, §14).
  */
-export function streamSession(id, handlers) {
-  // M2: в канале сессии ещё `order` — статус заказа бара (контракт m2 §5)
-  const opts = { ...handlers, events: handlers.events ?? ['session'], EventSource: EventSourceImpl };
-  if (!hasBearer()) return openStream(api.streamUrl(id), opts);
-  // Мини-приложение: EventSource не передаёт Bearer — одноразовый токен потока на 60 с
+function streamChannel(query, tokenBody, opts) {
+  const url = client.url('/stream', query);
+  if (!hasBearer()) return openStream(url, opts);
   let inner = null;
   let closed = false;
   api
-    .streamToken({ session: id })
+    .streamToken(tokenBody)
     .then((t) => t?.token)
     .catch(() => null)
     .then((token) => {
       if (closed) return;
-      const url = token ? `${api.streamUrl(id)}&token=${encodeURIComponent(token)}` : api.streamUrl(id);
-      inner = openStream(url, opts);
+      inner = openStream(token ? `${url}&token=${encodeURIComponent(token)}` : url, opts);
     });
   return {
     close() {
@@ -47,6 +44,25 @@ export function streamSession(id, handlers) {
       inner?.close();
     },
   };
+}
+
+/**
+ * Живые обновления сессии: SSE GET /api/stream?session={id}, событие `session` (контракт §7).
+ * @param {string} id
+ * @param {{ onEvent: (name: string, data: unknown) => void, onOpen?: () => void, onState?: (s: string) => void }} handlers
+ */
+export function streamSession(id, handlers) {
+  // M2: в канале сессии ещё `order` — статус заказа бара (контракт m2 §5)
+  return streamChannel({ session: id }, { session: id }, { ...handlers, events: handlers.events ?? ['session'], EventSource: EventSourceImpl });
+}
+
+/**
+ * Свой канал гостя без сессии (№120): GET /api/stream?me=1, события `booking` и `waitlist`, вид — в data.type
+ * (booking.confirmed|reserved|started|expired|canceled; waitlist.offered|accepted|updated).
+ * @param {{ onEvent: (name: string, data: any) => void, onOpen?: () => void, onState?: (s: string) => void }} handlers
+ */
+export function streamMe(handlers) {
+  return streamChannel({ me: 1 }, { me: true }, { ...handlers, events: ['booking', 'waitlist'], EventSource: EventSourceImpl });
 }
 
 /** Токен для мини-приложений, где cookie в WebView ненадёжны. */
@@ -125,8 +141,6 @@ export const api = {
   pushSubscribe: (subscription) => client.post('/push/subscribe', subscription),
   streamToken: (query) => client.post('/stream/token', query),
 
-  streamUrl: (sessionId) => client.url('/stream', { session: sessionId }),
-
   // ---------- M2: бар со стола (backend-pos, server/orders/README.md) ----------
   /** Меню гостя: алкоголь сервер не отдаёт (№76). */
   menu: (clubId) => client.get(`/clubs/${encodeURIComponent(clubId)}/menu`),
@@ -144,7 +158,7 @@ export const api = {
     once(tabKeys, `${sessionId}:${method}:${total}`, (key) => client.post(`/sessions/${encodeURIComponent(sessionId)}/tab/pay`, { method }, { idempotencyKey: key })),
 
   // ---------- M3: бронь, лист ожидания, пакеты часов, каналы уведомлений (docs/contracts/m3.md §4) ----------
-  /** Клубы для брони — предложение frontend (GET /api/clubs); пока его нет, клуб берём со стола, где гость был. */
+  /** Клубы (без входа, №120): [{ id, name, city, address, timezone, plan }]. */
   clubs: () => client.get('/clubs'),
   /** Свободные интервалы столов на рабочий день клуба (без входа, server/bookings/availability.mjs). */
   availability: (clubId, date) => client.get(`/clubs/${e(clubId)}/availability`, { query: { date } }),
@@ -152,8 +166,9 @@ export const api = {
   createBooking: (body) => once(bookingKeys, JSON.stringify(body), (key) => client.post('/bookings', body, { idempotencyKey: key })),
   booking: (id) => client.get(`/bookings/${e(id)}`),
   myBookings: () => client.get('/me/bookings'),
-  /** Предоплата брони: { method } → { booking, payment_id, confirmation }. */
-  payBooking: (id, method) => once(moneyKeys, `booking:${id}:${method}`, (key) => client.post(`/bookings/${e(id)}/pay`, { method }, { idempotencyKey: key })),
+  /** Предоплата брони: { method, return_url } → { booking, payment_id, confirmation }; с ЮKassa — обратно на экран брони. */
+  payBooking: (id, method) =>
+    once(moneyKeys, `booking:${id}:${method}`, (key) => client.post(`/bookings/${e(id)}/pay`, { method, return_url: `${BASE}bookings/${e(id)}?paid=1` }, { idempotencyKey: key })),
   cancelBooking: (id) => client.post(`/bookings/${e(id)}/cancel`, {}),
   /**
    * Старт по брони у стола: { code } — код стола с QR (+ method для доплаты) →
@@ -165,13 +180,17 @@ export const api = {
   /** Свои записи в очереди: [{ id, resource, status, position, offer_until, hold_until }]. */
   myWaitlist: () => client.get('/me/waitlist'),
   leaveWaitlist: (id) => client.request('DELETE', `/waitlist/${e(id)}`),
-  /** Занять стол по предложению (5 минут, №109): стол держится за гостем 3 минуты, дальше — обычная котировка и оплата. */
+  /**
+   * Занять стол по предложению (5 минут, №109) → { status: 'accepted', resource, resource_id, hold_until }: стол держится
+   * за гостем 3 минуты; кода стола нет (№119) — игра начинается сканированием QR.
+   */
   acceptWaitlist: (id) => client.post(`/waitlist/${e(id)}/accept`),
 
   /** Пакеты часов клуба: [{ id, title, hours, minutes, price_kopecks, valid_days, active }]. */
   packages: (clubId) => client.get(`/clubs/${e(clubId)}/packages`),
-  /** Покупка пакета: { method } → { payment_id, status, confirmation }. */
-  buyPackage: (id, method) => once(moneyKeys, `package:${id}:${method}`, (key) => client.post(`/packages/${e(id)}/buy`, { method }, { idempotencyKey: key })),
+  /** Покупка пакета: { method, return_url } → { payment_id, status, confirmation }; с ЮKassa — в профиль. */
+  buyPackage: (id, method) =>
+    once(moneyKeys, `package:${id}:${method}`, (key) => client.post(`/packages/${e(id)}/buy`, { method, return_url: `${BASE}me?paid=package` }, { idempotencyKey: key })),
   /** Часы на балансе в клубе: { minutes, lots: [{ id, package_id, minutes_left, expires_at }] }. */
   balance: (clubId) => client.get(`/clubs/${e(clubId)}/balance`),
 

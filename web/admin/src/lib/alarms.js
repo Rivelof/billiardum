@@ -34,6 +34,14 @@ const TEXT = {
   kkt_offline: ['Касса ККТ не на связи', 'Мост на ПК ресепшена не отвечает. Продажи сохраняются, чеки пробьются позже.'],
   discount_over_limit: ['Скидка больше лимита', 'Управляющий подтвердил скидку выше лимита клуба с причиной. Подробности — в журнале.'],
   service_light_limit: ['Много сервисного света за смену', 'Минут сервисного света больше порога клуба. Разбивка по сотрудникам — в отчёте смены.'],
+  // M3 волна B (server/payments/pay.mjs onProviderNotFound): data.action — canceled (ждал оплаты, отменён) или kept (у нас проведён)
+  payment_not_found_at_provider: ['Платёж не найден в ЮKassa — отменён', 'ЮKassa не знает этот платёж: деньги с гостя не списаны, у нас он отменён. Подробности — в журнале.'],
+};
+
+/** Варианты текста по data тревоги. */
+const BY_DATA = {
+  payment_not_found_at_provider: (data) =>
+    data?.action === 'kept' ? ['Платёж не найден в ЮKassa', 'У нас платёж проведён, а в ЮKassa его нет. Сверьте выписку ЮKassa и журнал — при расхождении напишите в поддержку.'] : null,
 };
 
 /** Момент тревоги: последний раз поднята (last_raised_at), иначе raised_at / created_at. */
@@ -47,7 +55,7 @@ export function alarmTime(alarm) {
  */
 export function alarmView(alarm) {
   // Неизвестный нам тип — текст сервера (alarms.text), иначе код мелко
-  const [title, text] = TEXT[alarm.type] ?? [alarm.text || 'Тревога', alarm.text ? 'Подробности — в журнале.' : `Тип: ${alarm.type}. Подробности — в журнале.`];
+  const [title, text] = BY_DATA[alarm.type]?.(alarm.data) ?? TEXT[alarm.type] ?? [alarm.text || 'Тревога', alarm.text ? 'Подробности — в журнале.' : `Тип: ${alarm.type}. Подробности — в журнале.`];
   const level = LEVEL_WORD[alarm.level] ? alarm.level : 'important';
   const number = alarm.resource_number ?? alarm.data?.resource_number;
   const repeats = Number.isInteger(alarm.count) && alarm.count > 1 ? alarm.count : 0;

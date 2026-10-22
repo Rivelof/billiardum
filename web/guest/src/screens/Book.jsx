@@ -31,7 +31,8 @@ import { linkHandler, navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { minutesWords, tableName } from '../lib/words.js';
 import { safeRedirectUrl } from '../lib/urls.js';
-import { clubTimeZone, getFlow, lastClub, setFlow, tableCode } from '../lib/flow.js';
+import { clubTimeZone, getFlow, lastClub, setFlow } from '../lib/flow.js';
+import { useMeStream } from '../lib/live.js';
 import '../styles/m3.css';
 
 const MIN = 60_000;
@@ -52,19 +53,22 @@ const PAY_METHODS = [
   ['card', 'card', 'Картой', 'На странице ЮKassa'],
 ];
 
-/** Выбор клуба для брони (пока один тестовый клуб). */
+/** Выбор клуба для брони: GET /api/clubs (без входа, №120); клуб, где гость уже был, — первым. */
 export function BookClubs() {
   const [clubs, setClubs] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => {
-    // Списка клубов в API пока нет (предложено GET /api/clubs) — тогда клуб, где гость открывал стол по QR
     api
       .clubs()
-      .then((list) => setClubs(Array.isArray(list) ? list : []))
+      .then((list) => {
+        const here = lastClub()?.id;
+        const all = Array.isArray(list) ? list : [];
+        setClubs([...all.filter((c) => c.id === here), ...all.filter((c) => c.id !== here)]);
+      })
       .catch((err) => {
+        // Нет связи со списком — хотя бы клуб, где гость открывал стол по QR
         const c = lastClub();
         if (c) setClubs([c]);
-        else if (['not_found', 'method_not_allowed'].includes(err?.code)) setClubs([]);
         else setError(err);
       });
   }, []);
@@ -76,7 +80,7 @@ export function BookClubs() {
         <p class="lead">Выберите клуб, день и время — стол на плане зала будет ждать вас.</p>
         <ErrorNote error={error} />
         {clubs === null && !error ? <p class="muted">Загружаем клубы…</p> : null}
-        {clubs?.length === 0 ? <p class="empty">Отсканируйте QR-код на столе клуба — после этого здесь можно будет бронировать в нём столы.</p> : null}
+        {clubs?.length === 0 ? <p class="empty">Клубов с бронью пока нет.</p> : null}
         {clubs?.length ? (
           <ul class="clublist">
             {clubs.map((c) => (
@@ -84,7 +88,7 @@ export function BookClubs() {
                 <a class="clublist__item" href={`${BASE}book/${encodeURIComponent(c.id)}`} onClick={linkHandler}>
                   <span class="clublist__name">{c.name}</span>
                   <span class="clublist__sub">
-                    {[c.city, c.tables ? `${c.tables} ${plural(c.tables, TABLES)}` : null].filter(Boolean).join(' · ')}
+                    {[c.city, c.address].filter(Boolean).join(', ')}
                   </span>
                   <Icon name="forward" />
                 </a>
@@ -194,7 +198,7 @@ export function BookScreen({ clubId }) {
           const res = await api.payBooking(b.id, method);
           const url = safeRedirectUrl(res?.confirmation?.url ?? res?.confirmation?.confirmation_url);
           if (url) {
-            // return_url ЮKassa — /app/wait/{payment_id}: оттуда вернёмся к брони
+            // return_url ЮKassa — /app/bookings/{id}?paid=1: экран брони дождётся подтверждения
             setFlow({ kind: 'booking', bookingId: b.id, paymentId: res.payment_id });
             window.location.assign(url);
             return;
@@ -561,13 +565,16 @@ export function MyBookings() {
   const { status } = useStore(auth);
   const [list, setList] = useState(null);
   const [error, setError] = useState(null);
-  useEffect(() => {
-    if (status !== 'user') return;
+  const load = () =>
     api
       .myBookings()
       .then((l) => setList(sortBookings(Array.isArray(l) ? l : [])))
       .catch(setError);
+  useEffect(() => {
+    if (status === 'user') load();
   }, [status]);
+  // Подтвердилась, сгорела, отменена — поток гостя (№120)
+  useMeStream((name) => name === 'booking' && load(), status === 'user');
   const open = (list ?? []).filter(bookingOpen);
   const past = (list ?? []).filter((b) => !bookingOpen(b));
   return (
@@ -633,25 +640,32 @@ export function BookingScreen({ id }) {
   const [busy, setBusy] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [refund, setRefund] = useState(null);
-  // Вернулись с оплаты предоплаты: подтверждение ЮKassa приходит через несколько секунд — опрашиваем
-  const watching = useRef(getFlow().bookingId === id);
+  // Вернулись с оплаты предоплаты (return_url /app/bookings/{id}?paid=1): подтверждение ЮKassa приходит через
+  // несколько секунд — событие booking в потоке гостя (№120), без потока — опрос раз в 2,5 секунды
+  const watching = useRef(getFlow().bookingId === id || new URLSearchParams(location.search).has('paid'));
+  const load = async () => {
+    try {
+      const next = await api.booking(id);
+      setB(next);
+      setError(null);
+      if (next.status !== 'pending_payment' && watching.current) {
+        watching.current = false;
+        setFlow({ bookingId: null });
+      }
+    } catch (err) {
+      setError(err);
+    }
+  };
+  const live = useMeStream((name, data) => {
+    if (name === 'open' || (name === 'booking' && data?.id === id)) load();
+  });
   usePoll(
     async () => {
-      if (b && !(b.status === 'pending_payment' && watching.current)) return;
-      try {
-        const next = await api.booking(id);
-        setB(next);
-        setError(null);
-        if (next.status !== 'pending_payment') {
-          watching.current = false;
-          setFlow({ bookingId: null });
-        }
-      } catch (err) {
-        setError(err);
-      }
+      if (b && (live || !(b.status === 'pending_payment' && watching.current))) return;
+      await load();
     },
     2500,
-    [id],
+    [id, live],
   );
   const tz = b?.club?.timezone ?? 'Europe/Moscow';
   const fmtT = (x) => formatTime(x, tz);
@@ -843,9 +857,9 @@ export function WaitlistOffer({ id }) {
   const [entry, setEntry] = useState(undefined);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [tz, setTz] = useState(() => clubTimeZone(lastClub()?.timezone));
   const now = useNow(0, entry?.status === 'offered');
   const v = waitlistView(entry, now);
-  const code = entry?.resource?.id ? tableCode(entry.resource.id) : null;
 
   const load = useCallback(async () => {
     try {
@@ -856,20 +870,36 @@ export function WaitlistOffer({ id }) {
       setError(err);
     }
   }, [id]);
+  // Поток гостя (№120): предложение, удержание, очередь сдвинулась; без потока — опрос раз в 5 секунд
+  const live = useMeStream((name, data) => {
+    if (name === 'open' || (name === 'waitlist' && (data?.offer_id ?? data?.id) === id)) load();
+  }, status === 'user');
   useEffect(() => {
-    if (status !== 'user') return undefined;
+    if (status !== 'user' || live) return undefined;
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
-  }, [id, status]);
+  }, [id, status, live]);
+  // Время «держим до» — по часовому поясу клуба записи
+  const clubId = entry?.club_id;
+  useEffect(() => {
+    if (!clubId) return;
+    api
+      .clubs()
+      .then((list) => {
+        const c = (Array.isArray(list) ? list : []).find((x) => x.id === clubId);
+        if (c?.timezone) setTz(c.timezone);
+      })
+      .catch(() => {});
+  }, [clubId]);
 
   const take = async () => {
     setBusy(true);
     setError(null);
     try {
+      // Кода стола в ответе нет (№119): стол держим за гостем, игра — сканированием QR на столе
       const w = await api.acceptWaitlist(id);
-      setEntry(w);
-      if (code) navigate(`${BASE}t/${encodeURIComponent(code)}`, { replace: true });
+      setEntry((e) => ({ ...e, ...w, id, status: 'accepted' }));
     } catch (err) {
       setError(err);
       load();
@@ -924,16 +954,15 @@ export function WaitlistOffer({ id }) {
             ) : null}
             {v.state === 'waiting' ? <p class="hint">Когда стол освободится, пришлём уведомление. Стол будет ваш 5 минут.</p> : null}
             {v.state === 'accepted' ? (
-              code ? (
-                <a class="btn btn--primary btn--block btn--lg" href={`${BASE}t/${encodeURIComponent(code)}`} onClick={linkHandler}>
-                  Выбрать время и оплатить
-                </a>
-              ) : (
-                <p class="lead">
-                  Стол держим за вами {entry.hold_until ? `до ${formatTime(entry.hold_until, clubTimeZone(lastClub()?.timezone))}` : '3 минуты'}: отсканируйте QR-код на столе {entry.resource?.number}, выберите время и
-                  оплатите.
+              <div class="held">
+                <p class="held__title">{entry.hold_until ? `Стол держим до ${formatTime(entry.hold_until, tz)}` : 'Стол держим 3 минуты'}</p>
+                <p class="held__body">
+                  <Icon name="qr" />
+                  <span>
+                    Отсканируйте QR-код на столе {entry.resource?.number}, выберите время и оплатите — свет включится сам.
+                  </span>
                 </p>
-              )
+              </div>
             ) : null}
           </section>
         ) : null}

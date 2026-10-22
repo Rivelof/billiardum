@@ -46,9 +46,17 @@ test('заглушка брони держит вид ответов server/book
   for (const k of ['id', 'club', 'resource', 'status', 'source', 'starts_at', 'ends_at', 'minutes', 'hold_until', 'amount_kopecks', 'prepayment_kopecks', 'paid_kopecks', 'pay_until', 'cancel']) assert.ok(k in bk, k);
   assert.equal(bk.status, 'pending_payment');
   assert.equal((await b.handle('POST', '/api/bookings', { resource_id: r.id, starts_at: bk.starts_at, minutes })).body.error, 'booking_conflict', 'пересечение — booking_conflict');
-  const pay = (await b.handle('POST', `/api/bookings/${bk.id}/pay`, { method: 'sbp' })).body;
+  assert.equal((await b.handle('POST', `/api/bookings/${bk.id}/pay`, { method: 'sbp', return_url: 'https://evil.example/x' })).status, 400, 'return_url — только путь /app/…');
+  const pay = (await b.handle('POST', `/api/bookings/${bk.id}/pay`, { method: 'sbp', return_url: `/app/bookings/${bk.id}?paid=1` })).body;
   assert.ok(pay.booking && pay.payment_id && pay.confirmation.url, '{ booking, payment_id, confirmation }');
+  assert.equal(b.payment(pay.payment_id).return_url, `/app/bookings/${bk.id}?paid=1`);
+  // Поток гостя ?me=1 (№120): событие booking с type
+  const events = [];
+  const off = b.subscribe('me', (data, name) => events.push([name, data]));
   b.confirm(pay.payment_id, true);
+  off();
+  assert.deepEqual(events.map(([n, d]) => [n, d.type, d.id]), [['booking', 'booking.confirmed', bk.id]]);
+  for (const k of ['status', 'starts_at', 'ends_at', 'resource']) assert.ok(k in events[0][1], `booking event ${k}`);
   const paid = (await b.handle('GET', `/api/bookings/${bk.id}`)).body;
   assert.equal(paid.status, 'confirmed');
   assert.equal(paid.paid_kopecks, paid.prepayment_kopecks);
@@ -72,6 +80,10 @@ test('заглушка: очередь на занятый стол, предл�
   let now = Date.parse('2026-10-22T12:00:00Z');
   const b = createBackend({ ...memory(), now: () => now });
   b.scenario('user');
+  const clubs = (await b.handle('GET', '/api/clubs')).body;
+  for (const k of ['id', 'name', 'city', 'address', 'timezone', 'plan']) assert.ok(k in clubs[0], `clubs.${k}`);
+  const events = [];
+  b.subscribe('me', (data, name) => events.push([name, data]));
   const busy = (await b.handle('GET', '/api/t/7H3D2RT9QF')).body;
   const free = (await b.handle('GET', '/api/t/4K7P9QW2XM')).body;
   assert.equal((await b.handle('POST', '/api/waitlist', { resource_id: free.resource.id })).body.error, 'table_free');
@@ -82,15 +94,21 @@ test('заглушка: очередь на занятый стол, предл�
   const mine = (await b.handle('GET', '/api/me/waitlist')).body.find((x) => x.id === w.id);
   assert.equal(mine.status, 'offered');
   assert.ok(Date.parse(mine.offer_until) - now <= 5 * MIN);
+  const offered = events.find(([n, d]) => n === 'waitlist' && d.type === 'waitlist.offered')?.[1];
+  assert.equal(offered.offer_id, w.id);
+  assert.ok(offered.resource.number && offered.expires_at);
   const acc = (await b.handle('POST', `/api/waitlist/${w.id}/accept`)).body;
   assert.equal(acc.status, 'accepted');
-  assert.ok(acc.hold_until && acc.resource_id);
+  assert.ok(acc.hold_until && acc.resource_id && acc.resource.number);
+  assert.ok(!('code' in acc) && !('code' in acc.resource), 'кода стола нет (№119)');
+  assert.ok(events.some(([n, d]) => n === 'waitlist' && d.type === 'waitlist.accepted'));
 
   // Пакет: покупка, баланс партиями, котировка use_balance, оплата balance
   await b.handle('POST', '/api/auth/consent', { version: 'x' });
   const packs = (await b.handle('GET', `/api/clubs/${CLUB}/packages`)).body;
   for (const k of ['id', 'title', 'hours', 'minutes', 'price_kopecks', 'valid_days', 'active']) assert.ok(k in packs[0], k);
-  const buy = (await b.handle('POST', `/api/packages/${packs[0].id}/buy`, { method: 'sbp' })).body;
+  const buy = (await b.handle('POST', `/api/packages/${packs[0].id}/buy`, { method: 'sbp', return_url: '/app/me?paid=package' })).body;
+  assert.equal(b.payment(buy.payment_id).return_url, '/app/me?paid=package');
   b.confirm(buy.payment_id, true);
   const bal = (await b.handle('GET', `/api/clubs/${CLUB}/balance`)).body;
   assert.equal(bal.minutes, packs[0].minutes);
@@ -106,5 +124,6 @@ test('заглушка: очередь на занятый стол, предл�
   assert.equal((await b.handle('PATCH', '/api/me', { channels_order: ['push'] })).status, 400);
   const me = (await b.handle('PATCH', '/api/me', { notify_channel: 'webpush', channels_order: ['webpush', 'max', 'telegram'] })).body.user;
   assert.equal(me.notify_channel, 'webpush');
+  assert.deepEqual(Object.keys(me.channels).sort(), ['max', 'telegram', 'webpush']);
   assert.deepEqual(me.channels_order, ['webpush', 'max', 'telegram']);
 });

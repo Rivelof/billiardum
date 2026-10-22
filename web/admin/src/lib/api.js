@@ -184,6 +184,15 @@ export const api = {
   /** { title, hours, price_kopecks, valid_days, reason } — управляющий, владельцу уходит уведомление. */
   createPackage: (club, body) => client.post(`/clubs/${e(club)}/packages`, body),
   archivePackage: (id, reason) => client.post(`/packages/${e(id)}/archive`, { reason }),
+  /**
+   * Партии пакетов гостя в клубе по точному телефону (управляющий+, money):
+   * [{ id, package_id, title, source: 'app' | 'pos', sale_id, idx, price_kopecks, minutes_total, minutes_left, created_at, expires_at, refunded_at, guest: { name, phone_masked } }].
+   */
+  packageLots: (club, phone) => client.get(`/clubs/${e(club)}/package-lots`, { query: { phone } }),
+  /** Возврат пакета из приложения целиком (№118): { reason } → { lot_id, payment_id, amount_kopecks, refund_id }; 409 package_used, already_refunded. */
+  refundLot: (id, reason, idempotencyKey) => client.post(`/packages/lots/${e(id)}/refund`, { reason }, { idempotencyKey }),
+  /** Возврат по продаже кассы: { reason, items?, packages?: [idx] } (управляющий+, №118) → { pos_refund_id, amount_kopecks, status, receipt_status, … }. */
+  refundSale: (id, body, idempotencyKey) => client.post(`/pos/sales/${e(id)}/refund`, body, { idempotencyKey }),
 
   /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
   deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),

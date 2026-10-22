@@ -221,3 +221,10 @@
 .tile--pack:not([disabled]):hover { box-shadow: inset 0 0 0 2.5px var(--lamp); }
 
 .recon__extra { margin: 6px 0 0; color: var(--ink-2); }
+
+/* Возврат пакета (№118): поиск по телефону и партии гостя списком */
+.refund { display: grid; gap: 12px; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+.refund .section-title { margin: 0; }
+.refund .hint { margin: 0; max-width: 62ch; }
+.refund__search { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; }
+.refund__search .field { flex: 1 1 16rem; max-width: 22rem; margin: 0; }

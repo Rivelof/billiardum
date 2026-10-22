@@ -480,6 +480,8 @@ export function createBackend(storage) {
     err,
     ok,
     needUser,
+    // Свой канал гостя user:{id} (№120): GET /api/stream?me=1
+    emitMe: (name, data) => emit('me', data, name),
   });
   routes.unshift(...m3.routes);
 

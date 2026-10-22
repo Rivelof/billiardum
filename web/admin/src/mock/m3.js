@@ -1,7 +1,8 @@
 /*
  * BL_MOCK_MARKER — заглушка M3 программы клуба только для разработки (VITE_MOCK=1). Вид ответов — как у сервера:
  * server/bookings (availability, брони клуба, бронь по телефону, отмена №115, «гость пришёл»), server/staff (персонал),
- * server/packages (пакеты), server/reception createDeposit (депозит наличными, нужна смена).
+ * server/packages (пакеты, партии гостя по телефону и возврат №118), server/reception createDeposit (депозит наличными,
+ * нужна смена). Волна B (№120): next_booking у стола в зале, can_cancel в брони, событие booking с полем type.
  */
 
 const MIN = 60_000;
@@ -49,8 +50,18 @@ export function m3State(scenario, t, hall) {
         bk(3, round(t - 3 * 60 * MIN), 90, { status: 'completed', source: 'app' }),
         bk(7, atLocal(today, 23 * 60), 120, { status: 'pending_payment', prepay: 160000, guest: { name: null, phone_masked: '+7 *** ***-56-31', user: true } }),
       ];
+  // Партии пакетов гостей (money: bl.balance_lots): из приложения и с кассы; телефон +79123456789 — у гостя три пакета
+  const lot = (over) => ({ id: uuid(), package_id: PACKAGES[0].id, title: PACKAGES[0].title, source: 'app', sale_id: null, idx: null, price_kopecks: 300000, minutes_total: 300, minutes_left: 300, created: t - 3 * 24 * 60 * MIN, expires: t + 27 * 24 * 60 * MIN, refunded: null, phone: '+79123456789', name: 'Павел', ...over });
+  const lots = empty
+    ? []
+    : [
+        lot({}),
+        lot({ package_id: PACKAGES[1].id, title: PACKAGES[1].title, price_kopecks: 550000, minutes_total: 600, minutes_left: 420, created: t - 10 * 24 * 60 * MIN, expires: t + 50 * 24 * 60 * MIN }),
+        lot({ package_id: PACKAGES[2].id, title: PACKAGES[2].title, source: 'pos', sale_id: uuid(), idx: 0, price_kopecks: 320000, minutes_total: 480, minutes_left: 480, created: t - 26 * 60 * MIN, expires: t + 29 * 24 * 60 * MIN }),
+      ];
   return {
     bookings,
+    lots,
     packages: PACKAGES.map((p) => ({ ...p })),
     staff: [
       { user_id: 'u-owner-0001', name: 'Андрей', phone: '+79000000001', role: 'owner', active: true, pin_set: true },
@@ -73,6 +84,13 @@ export function m3Routes(ctx) {
   const iso = (x) => new Date(x).toISOString();
   const hall = () => ctx.state().hall;
   const byRid = (id) => hall().find((x) => x.resource.id === id);
+
+  /** Может ли запрашивающий отменить (№115) — как can_cancel сервера: управляющий и владелец — любую живую, ресепшн — phone/staff без предоплаты. */
+  function canCancel(b) {
+    if (!['pending_payment', 'confirmed', 'reserved'].includes(b.status)) return false;
+    if (can('owner', 'manager')) return true;
+    return can('reception') && ['phone', 'staff'].includes(b.source) && !(b.prepay > 0) && !(b.paid > 0);
+  }
 
   function view(b) {
     const t = byRid(b.resource_id);
@@ -103,7 +121,47 @@ export function m3Routes(ctx) {
       guest: b.guest,
       created_by: null,
       cancel_reason: b.cancel_reason ?? null,
+      can_cancel: canCancel(b),
     };
+  }
+
+  /** Зал с ближайшей живой бронью стола (server/bookings nextBooking): { id, starts_at, ends_at, source, status } | null. */
+  function withNextBooking(items) {
+    return items.map((h) => {
+      const next = S()
+        .bookings.filter((b) => b.resource_id === h.resource.id && ['pending_payment', 'confirmed', 'reserved'].includes(b.status) && b.ends > now())
+        .sort((a, b) => a.starts - b.starts)[0];
+      return { ...h, next_booking: next ? { id: next.id, starts_at: iso(next.starts), ends_at: iso(next.ends), source: next.source, status: next.status } : null };
+    });
+  }
+
+  const bookingEvent = (b, type) => ctx.emit('booking', { type, booking_id: b.id, resource_id: b.resource_id, status: b.status, starts_at: iso(b.starts), ends_at: iso(b.ends) });
+
+  function lotView(l) {
+    return {
+      id: l.id,
+      package_id: l.package_id,
+      title: l.title,
+      source: l.source,
+      sale_id: l.sale_id,
+      idx: l.idx,
+      price_kopecks: l.price_kopecks,
+      minutes_total: l.minutes_total,
+      minutes_left: l.minutes_left,
+      created_at: iso(l.created),
+      expires_at: iso(l.expires),
+      refunded_at: l.refunded ? iso(l.refunded) : null,
+      guest: { name: l.name ?? null, phone_masked: mask(l.phone) },
+    };
+  }
+
+  /** Отзыв партии (№118): только целиком и нетронутую; журнал manual.package_refund, тревога владельцу. */
+  function revokeLot(l, reason) {
+    if (l.refunded) return err(409, 'already_refunded');
+    if (l.minutes_left < l.minutes_total) return err(409, 'package_used');
+    l.refunded = now();
+    ctx.audit('manual.package_refund', { reason, data: { lot_id: l.id, amount_kopecks: l.price_kopecks } });
+    return null;
   }
 
   /** Рабочий день клуба 12:00–02:00, занятость — игры и сервис зала, брони, закрытые часы. */
@@ -172,7 +230,7 @@ export function m3Routes(ctx) {
       const nb = { id: uuid(), resource_id: b.resource_id, starts, ends, status: 'confirmed', source: b.source ?? 'phone', guest: { name: b.name.trim(), phone_masked: mask(b.phone), user: false }, amount: Math.round((b.minutes / 60) * 80000), prepay: 0, paid: 0, created: now() };
       S().bookings.push(nb);
       ctx.audit('booking.create', { resource_number: t.resource.number, data: { source: nb.source } });
-      ctx.emit('booking', { booking_id: nb.id, status: 'confirmed' });
+      bookingEvent(nb, 'booking.created');
       return { status: 201, body: view(nb) };
     })],
     ['POST', /^\/api\/bookings\/([^/]+)\/cancel$/, staffOnly((m, b) => {
@@ -181,11 +239,11 @@ export function m3Routes(ctx) {
       if (!String(b.reason ?? '').trim()) return err(400, 'reason_required');
       if (!['pending_payment', 'confirmed', 'reserved'].includes(view(bk).status)) return err(409, 'booking_not_active');
       // №115: ресепшн — только брони phone/staff без предоплаты
-      if (can('reception') && (!['phone', 'staff'].includes(bk.source) || bk.prepay > 0)) return err(403, 'forbidden');
+      if (!canCancel(bk)) return err(403, 'forbidden');
       const refund = bk.paid;
       Object.assign(bk, { status: 'canceled', cancel_reason: b.reason.trim() });
       ctx.audit('manual.booking_cancel', { resource_number: byRid(bk.resource_id)?.resource.number, reason: b.reason.trim() });
-      ctx.emit('booking', { booking_id: bk.id, status: 'canceled' });
+      bookingEvent(bk, 'booking.canceled');
       return ok({ ...view(bk), refund_kopecks: refund });
     })],
     ['POST', /^\/api\/bookings\/([^/]+)\/arrive$/, staffOnly((m) => {
@@ -196,7 +254,7 @@ export function m3Routes(ctx) {
       if (!['confirmed', 'reserved'].includes(v.status)) return err(409, 'booking_not_active');
       bk.status = 'started';
       ctx.audit('booking.arrive', { resource_number: byRid(bk.resource_id)?.resource.number });
-      ctx.emit('booking', { booking_id: bk.id, status: 'started' });
+      bookingEvent(bk, 'booking.started');
       return ok(view(bk));
     })],
 
@@ -266,6 +324,34 @@ export function m3Routes(ctx) {
       return ok({ ok: true });
     })],
 
+    // ---------- возврат пакета (№118): партии по точному телефону, из приложения — /lots/{id}/refund, с кассы — возврат продажи
+    ['GET', /^\/api\/clubs\/([^/]+)\/package-lots$/, managerOnly((_m, _b, q) => {
+      const phone = q.get('phone') ?? '';
+      if (!/^\+7\d{10}$/.test(phone)) return err(400, 'bad_request');
+      return ok(S().lots.filter((l) => l.phone === phone).sort((a, b) => b.created - a.created).map(lotView));
+    })],
+    ['POST', /^\/api\/packages\/lots\/([^/]+)\/refund$/, managerOnly((m, b) => {
+      const l = S().lots.find((x) => x.id === m[1]);
+      if (!l) return err(404, 'not_found');
+      if (!String(b.reason ?? '').trim()) return err(400, 'reason_required');
+      if (l.source !== 'app') return err(400, 'bad_request');
+      const bad = revokeLot(l, b.reason.trim());
+      if (bad) return bad;
+      return ok({ lot_id: l.id, payment_id: uuid(), amount_kopecks: l.price_kopecks, refund_id: uuid() });
+    })],
+    ['POST', /^\/api\/pos\/sales\/([^/]+)\/refund$/, managerOnly((m, b) => {
+      if (!String(b.reason ?? '').trim()) return err(400, 'reason_required');
+      const picked = (b.packages ?? []).map((idx) => S().lots.find((x) => x.sale_id === m[1] && x.idx === idx));
+      if (!picked.length || picked.some((x) => !x)) return err(404, 'not_found');
+      for (const l of picked) {
+        const bad = revokeLot(l, b.reason.trim());
+        if (bad) return bad;
+      }
+      const amount = picked.reduce((a, l) => a + l.price_kopecks, 0);
+      if (ctx.state().m2.shift) ctx.state().m2.shift.cash_refunds_kopecks += amount;
+      return { status: 201, body: { pos_refund_id: uuid(), sale_id: m[1], refund_id: uuid(), status: 'succeeded', amount_kopecks: amount, items: picked.map((l) => ({ idx: l.idx, package_id: l.package_id, lot_id: l.id, amount_kopecks: l.price_kopecks })), receipt_id: uuid(), receipt_status: 'pending', created_at: iso(now()) } };
+    })],
+
     // ---------- депозит наличными для «Без лимита» (№87, №112) ----------
     ['POST', /^\/api\/reception\/deposits$/, staffOnly((_m, b) => {
       const t = byRid(b.resource_id);
@@ -286,5 +372,5 @@ export function m3Routes(ctx) {
     })],
   ];
 
-  return { routes, packages: () => S().packages };
+  return { routes, packages: () => S().packages, withNextBooking };
 }

@@ -10,7 +10,6 @@ import { DeclineDialog } from './DeclineDialog.jsx';
 import { TableDialog } from './TableDialog.jsx';
 import { api, streamClub } from '../lib/api.js';
 import { mergeHall } from '../lib/hall.js';
-import { withNextBooking } from '../lib/bookings.js';
 import { expiresOf, minutesLeft } from '../lib/reception.js';
 import { audioState, chime, unlockAudio } from '../lib/sound.js';
 import { agoWords, minutesShort, minutesWords } from '../lib/words.js';
@@ -71,17 +70,13 @@ export function Reception({ ctx }) {
     }
   }, [clubId]);
 
-  const [bookings, setBookings] = useState([]); // M3: брони сегодня — янтарная рамка и время на плане
+  // Ближайшая бронь стола — next_booking в ответе зала (№120): янтарная рамка и время на плане
   const loadHall = useCallback(async () => {
     try {
       setHall(await api.hall(clubId));
     } catch (err) {
       setError(err);
     }
-    api
-      .bookings(clubId)
-      .then((r) => setBookings(Array.isArray(r) ? r : (r?.bookings ?? [])))
-      .catch(() => {});
   }, [clubId]);
 
   useEffect(() => {
@@ -238,7 +233,7 @@ export function Reception({ ctx }) {
           <h2 class="section-title visually-hidden" id="hall-title">
             Зал
           </h2>
-          {hall ? <HallPlan items={withNextBooking(hall, bookings)} timeZone={timeZone} onSelect={setTable} selected={table?.resource?.id} /> : <p class="muted">Загружаем зал…</p>}
+          {hall ? <HallPlan items={hall} timeZone={timeZone} onSelect={setTable} selected={table?.resource?.id} /> : <p class="muted">Загружаем зал…</p>}
           <p class="hint hall-hint">Нажмите на стол, чтобы увидеть игру или включить сервисный свет.</p>
         </section>
       </div>

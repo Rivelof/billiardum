@@ -10,6 +10,7 @@ import { navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { tableName } from '../lib/words.js';
 import { setFlow } from '../lib/flow.js';
+import { useMeStream } from '../lib/live.js';
 export { startableBooking } from '../lib/booking.js';
 import { safeRedirectUrl } from '../lib/urls.js';
 
@@ -231,31 +232,30 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
 }
 
 /**
- * Своё место в очереди на этот стол: GET /api/me/waitlist раз в 5 секунд (живого канала гостя без сессии пока нет).
- * Принятое предложение — onAccepted: стол удержан за гостем, дальше выбор времени и оплата.
+ * Своё место в очереди на этот стол: поток гостя (№120, событие waitlist) — перечитываем GET /api/me/waitlist;
+ * без потока (обрыв) — опрос раз в 5 секунд. Принятое предложение — onAccepted: стол удержан, дальше время и оплата.
  */
 export function useMyWaitlist(resourceId, enabled, onAccepted) {
   const [entry, setEntry] = useState(null);
+  const on = Boolean(enabled && resourceId);
+  const load = async () => {
+    try {
+      const list = await api.myWaitlist();
+      const mine = (Array.isArray(list) ? list : []).find((w) => w.resource?.id === resourceId && ['waiting', 'offered', 'accepted'].includes(w.status));
+      setEntry(mine ?? null);
+      if (mine?.status === 'accepted') onAccepted?.(mine);
+    } catch {
+      // нет связи — повторим
+    }
+  };
+  const live = useMeStream((name, data) => {
+    if (name === 'open' || (name === 'waitlist' && (!data?.resource?.id || data.resource.id === resourceId))) load();
+  }, on);
   useEffect(() => {
-    if (!enabled || !resourceId) return undefined;
-    let stop = false;
-    const load = async () => {
-      try {
-        const list = await api.myWaitlist();
-        if (stop) return;
-        const mine = (Array.isArray(list) ? list : []).find((w) => w.resource?.id === resourceId && ['waiting', 'offered', 'accepted'].includes(w.status));
-        setEntry(mine ?? null);
-        if (mine?.status === 'accepted') onAccepted?.(mine);
-      } catch {
-        // нет связи — повторим
-      }
-    };
+    if (!on || live) return undefined;
     load();
     const t = setInterval(load, 5000);
-    return () => {
-      stop = true;
-      clearInterval(t);
-    };
-  }, [resourceId, enabled]);
+    return () => clearInterval(t);
+  }, [resourceId, on, live]);
   return [entry, setEntry];
 }

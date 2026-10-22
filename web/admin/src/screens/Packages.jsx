@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
-import { formatMoney, plural } from '@billiardum/shared/format';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { Dialog } from '../components/Dialog.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
-import { api } from '../lib/api.js';
+import { api, newIdempotencyKey } from '../lib/api.js';
+import { normalizePhone } from '../lib/auth.js';
 import { parseRubles } from '../lib/cash.js';
-import { packagePerHour } from '../lib/packages.js';
+import { lotRefundCall, lotView, packagePerHour } from '../lib/packages.js';
+import { minutesShort } from '../lib/words.js';
 
 const HOURS = ['час', 'часа', 'часов'];
 const DAYS = ['день', 'дня', 'дней'];
@@ -14,6 +16,7 @@ const DAYS = ['день', 'дня', 'дней'];
 /**
  * Пакеты часов (управляющий, №112): «N часов за X ₽ на M дней». Создать и снять с продажи — с причиной:
  * журнал tariff.package_*, владельцу уходит уведомление. Купленные часы у гостей остаются до конца срока.
+ * Возврат пакета гостю (№118) — целиком и пока часы не тратили, с причиной: поиск партий по точному телефону.
  */
 export function Packages({ ctx }) {
   const { club, role, user, timeZone } = ctx;
@@ -79,6 +82,7 @@ export function Packages({ ctx }) {
             ))}
           </ul>
         ) : null}
+        <RefundSection clubId={clubId} timeZone={timeZone} />
       </div>
       <CreateDialog
         open={creating}
@@ -244,6 +248,177 @@ function ArchiveDialog({ pack, onClose, onDone }) {
           </button>
           <button type="button" class="btn btn--quiet btn--lg" onClick={onClose}>
             Оставить
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+/** Возврат пакета (№118): партии гостя по телефону, вернуть нетронутую целиком с причиной. */
+function RefundSection({ clubId, timeZone }) {
+  const [phone, setPhone] = useState('');
+  const [tried, setTried] = useState(false);
+  const [lots, setLots] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [refunding, setRefunding] = useState(null);
+  const [done, setDone] = useState(null);
+  const e164 = normalizePhone(phone);
+
+  const search = async (number = e164) => {
+    if (!number) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const l = await api.packageLots(clubId, number);
+      setLots(Array.isArray(l) ? l : []);
+    } catch (err) {
+      setError(err);
+      setLots(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section class="refund" aria-labelledby="pk-refund">
+      <h2 class="section-title" id="pk-refund">
+        Возврат пакета
+      </h2>
+      <p class="hint">Вернуть можно только целиком и пока гость не потратил ни минуты. Причина уйдёт в журнал и владельцу.</p>
+      <form
+        class="refund__search"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setTried(true);
+          setDone(null);
+          search();
+        }}
+        noValidate
+      >
+        <div class="field">
+          <label class="field__label" for="rf-phone">
+            Телефон гостя
+          </label>
+          <input id="rf-phone" class="field__input mono" type="tel" inputMode="tel" autoComplete="off" placeholder="+7 900 000-00-00" value={phone} aria-invalid={tried && !e164 ? 'true' : undefined} onInput={(e) => setPhone(e.currentTarget.value)} />
+          {tried && !e164 ? <p class="field__error">Номер из 10 цифр после +7 — ищем только по точному номеру.</p> : null}
+        </div>
+        <button type="submit" class="btn btn--secondary" disabled={busy}>
+          <Icon name="search" />
+          {busy ? 'Ищем…' : 'Найти пакеты'}
+        </button>
+      </form>
+      <ErrorNote error={error} />
+      {done ? (
+        <p class="note note--free" role="status">
+          <Icon name="check" />
+          <span class="note__title">Пакет «{done.title}» возвращён: {formatMoney(done.amount)}</span>
+          <span class="note__body">{done.via === 'pos' ? 'Деньги — тем же способом, что при продаже на кассе; чек возврата пробьётся сам.' : 'Деньги вернутся гостю через ЮKassa на карту или счёт СБП, чек возврата придёт ему сам.'}</span>
+        </p>
+      ) : null}
+      {lots?.length === 0 ? <p class="muted">У гостя с этим номером нет пакетов в клубе.</p> : null}
+      {lots?.length ? (
+        <ul class="people" aria-label="Пакеты гостя">
+          {lots.map((l) => {
+            const v = lotView(l);
+            return (
+              <li class="person" key={l.id}>
+                <div class="person__main">
+                  <span class="person__name">
+                    {l.title ?? 'Пакет часов'}
+                    <span class="person__tag">{v.word}</span>
+                  </span>
+                  <span class="person__sub">
+                    {v.via === 'pos' ? 'На кассе' : 'В приложении'} {formatDate(l.created_at, timeZone)} · {formatMoney(l.price_kopecks)} · осталось {minutesShort(l.minutes_left)} из {minutesShort(l.minutes_total)} · до {formatDate(l.expires_at, timeZone)}
+                  </span>
+                  {l.guest?.phone_masked ? (
+                    <span class="person__sub">
+                      {l.guest.name ? `${l.guest.name} · ` : ''}
+                      <span class="mono">{l.guest.phone_masked}</span>
+                    </span>
+                  ) : null}
+                  {v.why ? <span class="person__sub">{v.why}</span> : null}
+                </div>
+                <div class="person__tools">
+                  {v.refundable ? (
+                    <button type="button" class="btn btn--quiet btn--sm person__revoke" onClick={() => setRefunding(l)}>
+                      Вернуть {formatMoney(l.price_kopecks)}
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      <RefundDialog
+        lot={refunding}
+        onClose={() => setRefunding(null)}
+        onDone={(lot, amount) => {
+          setRefunding(null);
+          setDone({ title: lot.title ?? 'Пакет часов', amount, via: lotView(lot).via });
+          search();
+        }}
+      />
+    </section>
+  );
+}
+
+function RefundDialog({ lot, onClose, onDone }) {
+  const [reason, setReason] = useState('');
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  // Один ключ идемпотентности на этот возврат: повтор после обрыва связи не вернёт деньги дважды
+  const key = useRef(null);
+  useEffect(() => {
+    setReason('');
+    setTried(false);
+    setError(null);
+    key.current = lot ? newIdempotencyKey() : null;
+  }, [lot?.id]);
+  if (!lot) return <Dialog open={false} onClose={onClose} title="" />;
+  return (
+    <Dialog open onClose={onClose} title={`Вернуть «${lot.title ?? 'Пакет часов'}»?`} labelledBy="rf-title">
+      <form
+        class="form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setTried(true);
+          if (reason.trim().length < 3) return;
+          setBusy(true);
+          setError(null);
+          try {
+            const call = lotRefundCall(lot, reason.trim());
+            const res = call.kind === 'sale' ? await api.refundSale(call.id, call.body, key.current) : await api.refundLot(call.id, call.body.reason, key.current);
+            onDone(lot, res?.amount_kopecks ?? lot.price_kopecks);
+          } catch (err) {
+            setError(err);
+          } finally {
+            setBusy(false);
+          }
+        }}
+        noValidate
+      >
+        <p class="hint">
+          Часы {minutesShort(lot.minutes_total)} снимутся с баланса гостя сразу, {formatMoney(lot.price_kopecks)} вернутся{' '}
+          {lot.source === 'pos' ? 'тем же способом, что при продаже на кассе' : 'через ЮKassa'}.
+        </p>
+        <div class="field">
+          <label class="field__label" for="rf-reason">
+            Причина
+          </label>
+          <input id="rf-reason" class="field__input" maxLength={300} value={reason} aria-invalid={tried && reason.trim().length < 3 ? 'true' : undefined} onInput={(e) => setReason(e.currentTarget.value)} />
+          {tried && reason.trim().length < 3 ? <p class="field__error">Напишите причину — её увидит владелец.</p> : <p class="field__hint">Например: «Гость переезжает, просит вернуть».</p>}
+        </div>
+        <ErrorNote error={error} />
+        <div class="dialog__actions dialog__actions--row">
+          <button type="submit" class="btn btn--danger btn--lg" disabled={busy}>
+            {busy ? 'Возвращаем…' : `Вернуть ${formatMoney(lot.price_kopecks)}`}
+          </button>
+          <button type="button" class="btn btn--quiet btn--lg" onClick={onClose}>
+            Не возвращать
           </button>
         </div>
       </form>

@@ -15,7 +15,7 @@ import { useStore } from '../lib/store.js';
 import { navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { optionLabel, optionMinutes, tableName } from '../lib/words.js';
-import { getFlow, rememberClub, rememberTable, setFlow } from '../lib/flow.js';
+import { getFlow, rememberClub, setFlow } from '../lib/flow.js';
 import { MyBooking, Waitlist, startableBooking, useMyWaitlist } from '../components/TableExtras.jsx';
 
 const STEPS = ['choose', 'signin', 'consent', 'pay'];
@@ -47,7 +47,6 @@ export function TableScreen({ code, search }) {
       setTable(t);
       setLoadError(null);
       rememberClub(t.club);
-      rememberTable(t.resource?.id, code);
       if (auth.get().status === 'user') {
         api
           .myBookings()

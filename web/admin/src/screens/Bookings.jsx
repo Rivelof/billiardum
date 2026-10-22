@@ -7,7 +7,7 @@ import { Dialog } from '../components/Dialog.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { useNow } from '../components/hooks.js';
 import { api, streamClub } from '../lib/api.js';
-import { BOOKING_STAFF_WORD, SOURCE_LABEL, canArrive, canCancel, lanes, place, startOptions, timelineWindow } from '../lib/bookings.js';
+import { BOOKING_STAFF_WORD, SOURCE_LABEL, canArrive, lanes, place, startOptions, timelineWindow } from '../lib/bookings.js';
 import { minutesShort } from '../lib/words.js';
 
 const MIN = 60_000;
@@ -196,7 +196,8 @@ function BookingDialog({ booking: b, role, timeZone, onClose, onChanged }) {
   }, [b?.id]);
   if (!b) return <Dialog open={false} onClose={onClose} title="" />;
   const fmtT = (x) => formatTime(x, timeZone);
-  const cancelOk = canCancel(role, b);
+  // Право отмены по №115 решает сервер: can_cancel в ответе списка броней для запрашивающего
+  const cancelOk = b.can_cancel === true;
 
   const run = async (fn) => {
     setBusy(true);

@@ -50,7 +50,9 @@ export function install(configureApi) {
       this.url = url;
       this.readyState = 0;
       this.handlers = new Map();
-      const id = new URL(url, location.origin).searchParams.get('session');
+      const q = new URL(url, location.origin).searchParams;
+      // ?session={id} — канал сессии; ?me=1 — свой канал гостя (№120)
+      const id = q.get('me') === '1' ? 'me' : q.get('session');
       this.unsubscribe = backend.subscribe(id, (data, name = 'session') => this.dispatch(name, data));
       // Бар готовит заказы сам — статусы двигаются раз в 3 секунды
       this.timer = setInterval(() => backend.handle('GET', '/api/__tick'), 3000);

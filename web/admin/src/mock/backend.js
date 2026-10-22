@@ -125,7 +125,7 @@ export function createBackend(storage, now = () => Date.now()) {
   let state = storage.load() ?? freshState('reception', now());
   // Состояние из sessionStorage до M2 — дополняем данными кассы, бара и смен
   if (!state.m2?.catalog) state.m2 = m2State(state.scenario, now(), state.hall);
-  if (!state.m3?.packages) state.m3 = m3State(state.scenario, now(), state.hall);
+  if (!state.m3?.lots) state.m3 = m3State(state.scenario, now(), state.hall);
   const listeners = new Set();
   const save = () => storage.save(state);
   const emit = (name, data) => {
@@ -196,7 +196,8 @@ export function createBackend(storage, now = () => Date.now()) {
       audit('auth.pin_switch', {});
       return ok({ token: 'mock-pin' });
     }],
-    ['GET', /^\/api\/clubs\/([^/]+)\/hall$/, () => (me() ? ok(state.hall) : err(401, 'unauthorized'))],
+    // next_booking у стола (№120) — ближайшая живая бронь, как в ответе зала сервера
+    ['GET', /^\/api\/clubs\/([^/]+)\/hall$/, () => (me() ? ok(m3.withNextBooking(state.hall)) : err(401, 'unauthorized'))],
     ['GET', /^\/api\/clubs\/([^/]+)\/reception\/requests$/, () => (me() ? ok(state.requests) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/reception\/requests\/([^/]+)\/accept$/, (m, b) => {
       const r = state.requests.find((x) => x.id === m[1]);
@@ -256,7 +257,7 @@ export function createBackend(storage, now = () => Date.now()) {
       emit('hall', t);
       return ok(t.session);
     }],
-    ['GET', /^\/api\/clubs\/([^/]+)\/now$/, () => ok({ hall: state.hall, revenue_today_kopecks: state.revenue, alarms_open: state.alarms.length })],
+    ['GET', /^\/api\/clubs\/([^/]+)\/now$/, () => ok({ hall: m3.withNextBooking(state.hall), revenue_today_kopecks: state.revenue, alarms_open: state.alarms.length })],
     ['GET', /^\/api\/clubs\/([^/]+)\/alarms$/, () => ok(state.alarms)],
     ['POST', /^\/api\/alarms\/([^/]+)\/ack$/, (m) => {
       const a = state.alarms.find((x) => x.id === m[1]);
@@ -306,7 +307,8 @@ export function createBackend(storage, now = () => Date.now()) {
     packages: () => state.m3.packages,
   };
   routes.push(...m2Routes(m2ctx));
-  routes.push(...m3Routes({ state: () => state, now, me, err, ok, emit, audit }).routes);
+  const m3 = m3Routes({ state: () => state, now, me, err, ok, emit, audit });
+  routes.push(...m3.routes);
 
   async function handle(method, url) {
     tick();
