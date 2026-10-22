@@ -5,6 +5,7 @@
 // оплаты — минуты на балансе гостя (creditPackageForSale), повтор — без второго начисления.
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 import { guestLookupGuard } from '../../guest-lookup.mjs';
 import { linesTotal } from '../../money.mjs';
@@ -309,6 +310,30 @@ describe('касса: поиск гостя — лимит и тревога о 
     assert.equal(alarms[0].club_id, CLUB_A);
     assert.ok(!JSON.stringify(alarms[0]).includes('+7999555'), 'телефонов в тревоге нет');
     // Ресепшн — свой счёт: его промахов нет.
+    assert.equal(guestLookupGuard.missesInHour(reception.id, new Date()), 0);
+  });
+
+  it('гость ищется последним (pentester L1): ошибка корзины одинакова для существующего и несуществующего телефона, в лимит и промахи не идёт', async () => {
+    guestLookupGuard.reset();
+    const pkg = (phone) => ({ kind: 'package', package_id: pkgA, phone });
+    const bodies = [
+      (phone) => ({ items: [pkg(phone)], method: 'card_terminal', tabs: [randomUUID()] }),
+      (phone) => ({ items: [pkg(phone)], method: 'card_terminal', requests: [randomUUID()] }),
+      (phone) => ({ items: [pkg(phone)], method: 'cash', received_kopecks: 1 }),
+      (phone) => ({ items: [pkg(phone)], method: 'card_terminal', discount: { amount_kopecks: 100 } }),
+      (phone) => ({ items: [pkg(phone), { product_id: '0d4e7a5c-1111-4222-8333-944455556661', qty: 1 }], method: 'card_terminal' }),
+    ];
+    for (const make of bodies) {
+      const hit = await sale(make('+79990000077'));
+      const miss = await sale(make('+79998887766'));
+      assert.notEqual(hit.json.error, 'guest_not_found', JSON.stringify(make('x')));
+      assert.deepEqual([hit.status, hit.json], [miss.status, miss.json], JSON.stringify(make('x')));
+    }
+    // 25 таких запросов подряд — не 429: поиска не было.
+    for (let i = 0; i < 25; i += 1) {
+      const r = await sale(bodies[0](`+7999888${String(1000 + i)}`));
+      assert.notEqual(r.status, 429);
+    }
     assert.equal(guestLookupGuard.missesInHour(reception.id, new Date()), 0);
   });
 

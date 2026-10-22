@@ -315,7 +315,7 @@ export async function confirmPayment(db, deps, payment, { status, now, actorType
  * Сверяет id, сумму, валюту и metadata; расхождение — тревога и никаких действий.
  * @returns {Promise<{ result: 'confirmed'|'already'|'pending'|'canceled'|'captured'|'mismatch', payment: object }>}
  */
-export async function applyRemote(db, deps, payment, remote, { source = 'webhook' } = {}) {
+export async function applyRemote(db, deps, payment, remote, { source = 'webhook', client = null } = {}) {
   const now = deps.clock.now();
   const amount = amountKopecks(remote?.amount);
   const meta = remote?.metadata ?? {};
@@ -343,6 +343,14 @@ export async function applyRemote(db, deps, payment, remote, { source = 'webhook
 
   await db.query('update bl.payments set checked_at = $2 where id = $1', [payment.id, now]);
   await updateReceiptStatus(db, payment.id, remote.receipt_registration, now);
+
+  // B-L1: у нас платёж отменён, а у ЮKassa оплачен — игру не запускаем, деньги возвращаем (late.mjs).
+  if (payment.status === 'canceled' && (remote.status === 'succeeded' || remote.status === 'waiting_for_capture')) {
+    const { handleLatePayment } = await import('./late.mjs');
+    if (client) return handleLatePayment(db, deps, payment, remote, { client, source });
+    deps.log?.error?.('payment_paid_after_cancel_no_client', { payment_id: payment.id, source });
+    return { result: 'already', payment };
+  }
 
   switch (remote.status) {
     case 'pending':
@@ -441,10 +449,10 @@ export async function syncPayment(db, deps, config, payment, { source = 'sync' }
   try {
     remote = await client.getPayment(payment.provider_payment_id);
   } catch (err) {
-    if (err instanceof YooKassaError && err.status === 404) return onProviderNotFound(db, deps, payment, { source });
+    if (err instanceof YooKassaError && err.status === 404) return onProviderNotFound(db, deps, payment, { source, client });
     throw err;
   }
-  return applyRemote(db, deps, payment, remote, { source });
+  return applyRemote(db, deps, payment, remote, { source, client });
 }
 
 /** Через сколько pending-платёж, которого ЮKassa не знает, отменяется. */
@@ -454,11 +462,11 @@ export const NOT_FOUND_REASON = 'not_found_at_provider';
 /**
  * ЮKassa ответила 404 на GET платежа: сбой при создании, чужой магазин, перезапущенный эмулятор.
  * * Первый 404 — отметка provider_missing_at и одна запись в логе (дальше сверка молчит).
- * * pending старше часа — отмена (причина not_found_at_provider): payment.canceled, pending со стола
+ * * pending старше часа — повторный запрос; снова 404 — отмена (причина not_found_at_provider): payment.canceled, pending со стола
  *   снимается, сессия и бронь не запускаются; тревога владельцу один раз.
  * * Платёж у нас уже оплачен (succeeded / waiting_for_capture) — не трогаем, только тревога (один раз).
  */
-export async function onProviderNotFound(db, deps, payment, { source = 'reconcile' } = {}) {
+export async function onProviderNotFound(db, deps, payment, { source = 'reconcile', client = null } = {}) {
   const now = deps.clock.now();
   const { rows } = await db.query('select * from bl.payments where id = $1 for update', [payment.id]);
   const p = rows[0];
@@ -481,6 +489,16 @@ export async function onProviderNotFound(db, deps, payment, { source = 'reconcil
   }
   if (first) deps.log?.warn?.('payment_not_found_at_provider', { payment_id: p.id, club_id: p.club_id, status: p.status, source });
   if (now.getTime() - new Date(p.created_at).getTime() < NOT_FOUND_CANCEL_AFTER_MS) return { result: 'pending', payment: p };
+  // Перед отменой — ещё один запрос (B-L1): платёж мог найтись (сбой ЮKassa, смена ключей).
+  // Нашёлся — обычный путь applyRemote; снова 404 — отменяем; другой сбой — откат, сверка повторит.
+  if (client) {
+    try {
+      const remote = await client.getPayment(p.provider_payment_id);
+      return applyRemote(db, deps, p, remote, { source: `${source}_recheck`, client });
+    } catch (err) {
+      if (!(err instanceof YooKassaError && err.status === 404)) throw err;
+    }
+  }
   const r = await cancelLocal(db, deps, p, { reason: NOT_FOUND_REASON, now });
   if (r.result === 'canceled') await alarm('important', 'canceled');
   return r;

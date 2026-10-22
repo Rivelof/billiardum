@@ -162,14 +162,24 @@ async function raiseLookupAlarm(deps, { clubId, staffId, misses }) {
   }
 }
 
-/** Пакеты корзины: позиция чека и цена (money), гость. */
-async function resolvePackages(db, deps, packages, who) {
+/** Пакеты корзины: позиция чека и цена (money); гость — позже, resolvePackageGuests. */
+async function resolvePackages(db, packages) {
   const out = [];
   for (const p of packages) {
     const sale = await packageLine(db, p.package_id);
-    out.push({ package_id: p.package_id, user_id: await resolveGuest(db, deps, p, who), amount_kopecks: sale.amount_kopecks, line: sale.line, title: sale.package.title });
+    out.push({ ...p, user_id: null, amount_kopecks: sale.amount_kopecks, line: sale.line, title: sale.package.title });
   }
   return out;
+}
+
+/**
+ * Гости пакетов — последний шаг проверки корзины (pentester L1, №121): после счетов, товаров,
+ * пакетов, заявок стола, скидки, смены и способа оплаты, до записи и платежей. Любая другая ошибка
+ * корзины отвечает раньше и одинаково для существующего и несуществующего гостя — сверка номеров
+ * по виду ошибки невозможна, а такие запросы не идут в лимит и промахи.
+ */
+async function resolvePackageGuests(db, deps, packages, who) {
+  for (const p of packages) p.user_id = await resolveGuest(db, deps, { user_id: p.user_id_in ?? null, phone: p.phone ?? null }, who);
 }
 
 async function loadSalePackages(db, saleId) {
@@ -348,7 +358,7 @@ export async function createSale(db, deps, info) {
   const pos = await posSettings(db, clubId);
 
   const lines = hasItems ? await resolveItems(db, { clubId, items: cart.products, audience: 'staff', defaultVat: settings.vat_code }) : [];
-  const packages = await resolvePackages(db, deps, cart.packages, { clubId, staffId, at });
+  const packages = await resolvePackages(db, cart.packages.map((p) => ({ package_id: p.package_id, user_id_in: p.user_id, phone: p.phone })));
   const packageTotal = packages.reduce((sum, p) => sum + p.amount_kopecks, 0);
   const tabOrders = await lockOpenTabOrders(db, tabs);
   if (tabs.length > 0 && tabOrders.length === 0) throw new PosError('already_paid', 'счёт стола пуст или оплачен');
@@ -362,6 +372,9 @@ export async function createSale(db, deps, info) {
     const { rows } = await db.query('select id, amount_kopecks, status, expires_at from bl.reception_requests where id = $1 for update', [id]);
     const r = rows[0];
     if (!r) throw new PosError('not_found', `request ${id}`);
+    // Те же проверки, что у приёма заявки money (acceptRequest), — до поиска гостя пакета.
+    if (r.status === 'accepted') throw new PosError('quote_used', `request ${id}`);
+    if (r.status !== 'waiting' || new Date(r.expires_at).getTime() <= at.getTime()) throw new PosError('quote_expired', `request ${id}`);
     reqRows.push({ id, amount: Number(r.amount_kopecks) });
   }
 
@@ -405,8 +418,20 @@ export async function createSale(db, deps, info) {
     throw bad('received_kopecks для безналичной оплаты');
   }
 
-  const saleId = randomUUID();
   const sbp = method === 'sbp';
+  // Раскладка скидки по строкам (только суммы и количества) и контакт для чека СБП — проверить до
+  // поиска гостя: позже корзина падать не должна.
+  splitDiscount([...lines, ...tabOrders.flatMap((o) => o.items)], discount);
+  let sbpCustomer = null;
+  if (sbp && saleTotal > 0) {
+    sbpCustomer = receiptCustomer({ phone: b.customer_phone ?? null, email: pos.receipt_email });
+    if (b.customer_phone !== undefined && b.customer_phone !== null && !receiptCustomer({ phone: b.customer_phone })) throw bad('customer_phone');
+    if (!sbpCustomer) throw new PosError('phone_required', 'нет контакта для чека ЮKassa');
+  }
+  // Гости пакетов — последней проверкой, до записи и платежей (pentester L1).
+  await resolvePackageGuests(db, deps, packages, { clubId, staffId, at });
+
+  const saleId = randomUUID();
   // Заказ кассы: сразу выдан или на экран бара (to_bar). При СБП — после оплаты.
   let posOrder = null;
   if (lines.length > 0) {
@@ -432,9 +457,7 @@ export async function createSale(db, deps, info) {
   let confirmation = null;
   if (saleTotal > 0) {
     if (sbp) {
-      const customer = receiptCustomer({ phone: b.customer_phone ?? null, email: pos.receipt_email });
-      if (b.customer_phone !== undefined && b.customer_phone !== null && !receiptCustomer({ phone: b.customer_phone })) throw bad('customer_phone');
-      if (!customer) throw new PosError('phone_required', 'нет контакта для чека ЮKassa');
+      const customer = sbpCustomer;
       // Позиции чека — из строк продажи после раскладки скидки (в базе их ещё нет: считаем здесь).
       const preview = saleOrderItems.map((i, k) => ({ name: i.name, qty: i.qty, amount_kopecks: amounts[k] - parts[k], vat_code: i.vat_code, payment_subject: i.payment_subject }));
       const r = await onlinePayment(db, deps, {

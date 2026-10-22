@@ -26,6 +26,8 @@ export const STATUS_BY_CODE = Object.freeze({
   guest_required: 400,
   guest_not_found: 409,
   rate_limited: 429,
+  quote_used: 409,
+  quote_expired: 409,
   package_used: 409,
   already_refunded: 409,
 });

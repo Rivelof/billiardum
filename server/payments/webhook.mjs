@@ -69,9 +69,9 @@ async function paymentWebhook(db, deps, client, { clubId, objectId }) {
   if (payment.status === 'succeeded' && payment.confirmed_at && (payment.capture || payment.captured_at)) {
     return OK; // уже обработан: повтор вебхука без запросов к ЮKassa
   }
-  if (payment.status === 'canceled') return OK;
+  // Отменённый у нас платёж тоже перепроверяем: если ЮKassa его всё-таки провела — автовозврат (B-L1).
   const remote = await client.getPayment(objectId);
-  const r = await applyRemote(db, deps, payment, remote, { source: 'webhook' });
+  const r = await applyRemote(db, deps, payment, remote, { source: 'webhook', client });
   deps.log?.info?.('webhook_payment', { club_id: clubId, payment_id: payment.id, result: r.result });
   return OK;
 }
