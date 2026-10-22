@@ -14,7 +14,7 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { req, guest, devLogin, sql, clearHolds, uuid, ORIGIN, TABLE7, TABLE8, CLUB, CODE7, CODE8 } from './helper.mjs';
+import { req, guest, devLogin, sql, clearHolds, uuid, ORIGIN, TABLE7, TABLE8, CLUB } from './helper.mjs';
 
 const openSessions = (resourceId) =>
   sql("select id from bl.sessions where resource_id = $1 and status in ('active','ending','grace','interrupted')", [resourceId]);
