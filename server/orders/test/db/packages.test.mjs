@@ -247,6 +247,34 @@ describe('касса: пакет часов', { skip: SKIP }, () => {
       assert.equal(bar.json.amount_kopecks, 9000);
     });
 
+    it('отмена возврата ЮKassa (payment.refund_canceled): партия из lots_restored — отметка возврата пакета снята; без неё — остаётся, тревога «начислите»', async () => {
+      const fire = async (event) => {
+        await h.q('insert into bl.outbox (club_id, topic, payload) values ($1, $2, $3::jsonb)', [CLUB_A, 'payment.refund_canceled', JSON.stringify(event)]);
+        await waitFor(async () => (await h.q("select count(*)::int as n from bl.outbox where topic = 'payment.refund_canceled' and processed_at is null"))[0].n === 0);
+      };
+      for (const restoredByMoney of [true, false]) {
+        const s = await buy();
+        const r = await refund(s.sale_id, { packages: [0], reason: 'Ошибка продажи' });
+        assert.equal(r.status, 201, JSON.stringify(r.json));
+        const lot = s.packages[0].lot_id;
+        await fire({ refund_id: r.json.refund_id, payment_id: s.payment_id, club_id: CLUB_A, amount_kopecks: 500000, pos_refund_id: r.json.pos_refund_id, lots_restored: restoredByMoney ? [lot] : [] });
+        const [sp] = await h.q('select * from bl.pos_sale_packages where sale_id = $1 and idx = 0', [s.sale_id]);
+        const [pr] = await h.q('select * from bl.pos_refunds where id = $1', [r.json.pos_refund_id]);
+        assert.ok(pr.canceled_at);
+        const [ps] = await h.q('select refunded_kopecks from bl.pos_sales where id = $1', [s.sale_id]);
+        assert.equal(Number(ps.refunded_kopecks), 0);
+        const alarm = (await h.alarms('pos_refund_canceled')).find((x) => x.data.pos_refund_id === pr.id);
+        assert.ok(alarm);
+        if (restoredByMoney) {
+          assert.deepEqual([sp.refunded_at, sp.pos_refund_id], [null, null], 'пакет снова действует — отметка снята');
+          assert.deepEqual([alarm.data.packages_restored, alarm.data.packages_lost], [1, 0], 'начислять вручную не нужно');
+        } else {
+          assert.ok(sp.refunded_at, 'партия не восстановлена — отметка остаётся');
+          assert.deepEqual([alarm.data.packages_restored, alarm.data.packages_lost], [0, 1], 'тревога просит начислить вручную');
+        }
+      }
+    });
+
     it('пакет и товар одним возвратом (терминал): сумма = бар + пакет', async () => {
       const s = await buy('card_terminal');
       const water = s.items[0].order_item_id;

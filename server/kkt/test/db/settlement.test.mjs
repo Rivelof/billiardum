@@ -8,10 +8,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 import { creditPackageForSale, debitBalance, packageSaleLine, settleDeposit, takeDeposit } from '../../../payments/api.mjs';
+import { issueQueuedCashRefund, queueCashRefund } from '../../../payments/cash-refunds.mjs';
 import { resolveDeps } from '../../../payments/deps.mjs';
 import * as shiftsApi from '../../../shifts/api.mjs';
 import * as kktApi from '../../api.mjs';
-import { CLUB_A, GUEST, RECEPTION_A, setupKkt, TABLE_1, TABLE_2 } from './harness.mjs';
+import { CLUB_A, GUEST, RECEPTION_A, setupKkt, TABLE_1, TABLE_2, waitFor } from './harness.mjs';
 
 let t;
 let inj;
@@ -212,7 +213,12 @@ describe('пакет часов на кассе: чек покупки и зач
     const sid = await session(TABLE_2);
     const debit = await asClub((db) => debitBalance(db, { clubId: CLUB_A, userId: GUEST, minutes: 90, sessionId: sid }, inj));
     assert.equal(debit.value_kopecks, 75000, '90/600 × 5 000 ₽');
-    const settle = (await t.admin.query('select * from bl.receipts where settles_payment_id = $1', [sale.paymentId])).rows;
+    // Чек зачёта ставит money (сейчас — в той же транзакции; ждём, а не читаем сразу: так тест не
+    // зависит от того, синхронно ли money ставит чек или через свою очередь outbox).
+    const settle = await waitFor(async () => {
+      const rows = (await t.admin.query('select * from bl.receipts where settles_payment_id = $1', [sale.paymentId])).rows;
+      return rows.length > 0 ? rows : null;
+    });
     assert.equal(settle.length, 1);
     assert.deepEqual({ p: settle[0].payment_id, c: settle[0].channel, k: Number(settle[0].settlement_kopecks) }, { p: debit.payment_id, c: 'kkt', k: 75000 });
     await t.waitPrinted([sale.receiptId, settle[0].id]);
@@ -229,5 +235,38 @@ describe('пакет часов на кассе: чек покупки и зач
     const list = await t.request('GET', `/api/clubs/${CLUB_A}/shifts`, { token: manager });
     const mine = list.json.items.find((s) => s.id === shiftId);
     assert.equal(mine.revenue_total_kopecks, 500000);
+  });
+
+  it('возвраты по видам (0657 money): release и balance — вне отчёта, late — «поздняя оплата возвращена» вне чистой выручки; наличный возврат из очереди — в кассе новой смены', async () => {
+    const before = (await t.request('GET', `/api/shifts/${shiftId}/report?online=0`, { token: manager })).json;
+    const ins = (kind, amount, status = 'succeeded') =>
+      t.admin.query(
+        `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, kind, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, 'тест', $6, now(), now())`,
+        [CLUB_A, sale.paymentId, `k-${kind}-${randomUUID()}`.slice(0, 64), amount, status, kind],
+      );
+    await ins('release', 11100);
+    await ins('balance', 22200);
+    await ins('late', 33300);
+    // Наличный возврат по депозиту прошлой смены ждал открытия смены и выдан в этой.
+    const depPay = (await t.admin.query("select * from bl.payments where club_id = $1 and deposit order by created_at limit 1", [CLUB_A])).rows[0];
+    const line = { description: 'Депозит за игру', quantity: 1, amount: { value: '300.00', currency: 'RUB' }, vat_code: 1, payment_mode: 'full_prepayment', payment_subject: 'service' };
+    const q = await asClub((db) => queueCashRefund(db, inj.deps, { clubId: CLUB_A, payment: depPay, key: `q-${randomUUID()}`, amountKopecks: 30000, reason: 'Остаток депозита', lines: [line], now: new Date() }));
+    const issued = await asClub((db) => issueQueuedCashRefund(db, inj.deps, q.pending.id));
+    assert.equal(issued.result, 'issued', JSON.stringify(issued));
+    const rec = (await t.admin.query("select id from bl.receipts where refund_id = $1 and kind = 'refund'", [issued.refund_id])).rows[0];
+    await t.waitPrinted(rec.id);
+    const r = (await t.request('GET', `/api/shifts/${shiftId}/report?online=0`, { token: manager })).json;
+    assert.equal(r.revenue.refunds.total_kopecks, before.revenue.refunds.total_kopecks + 30000, 'release, balance и late — не возвраты денег смены');
+    assert.equal(r.revenue.refunds.by_method.cash, before.revenue.refunds.by_method.cash + 30000);
+    assert.equal(r.revenue.late_returned.total_kopecks, 33300);
+    assert.equal(r.revenue.late_returned.by_method.card_terminal, 33300);
+    assert.equal(r.revenue.net_kopecks, before.revenue.net_kopecks - 30000, 'поздняя оплата — вне чистой выручки');
+    assert.equal(r.cash.cash_refunds_kopecks, before.cash.cash_refunds_kopecks + 30000);
+    assert.equal(r.cash.expected_cash_kopecks, before.cash.expected_cash_kopecks - 30000, 'наличный возврат из очереди — в кассе этой смены');
+    assert.equal(r.reconciliation.kkt.ok, true, JSON.stringify(r.reconciliation.kkt));
+    assert.equal(r.reconciliation.kkt.by_method.cash.kkt_refunds_kopecks, 30000);
+    const live = await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: manager });
+    assert.equal(live.json.shift.cash_refunds_kopecks, 30000);
   });
 });

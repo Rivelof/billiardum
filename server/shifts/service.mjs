@@ -69,7 +69,10 @@ async function hasBridge(db, clubId) {
   return rows.length > 0;
 }
 
-/** Наличные за интервал: платежи и возвраты по наличным платежам. */
+/**
+ * Наличные за интервал: платежи и возвраты по наличным платежам (только деньги гостю, refunds.kind
+ * = 'refund'; возврат из очереди cash_refunds_pending — в смене, где его выдали).
+ */
 export async function cashTotals(db, { clubId, from, to }) {
   const sales = await db.query(
     `select coalesce(sum(amount_kopecks), 0)::bigint as total, count(*)::int as n
@@ -80,7 +83,8 @@ export async function cashTotals(db, { clubId, from, to }) {
   const refunds = await db.query(
     `select coalesce(sum(f.amount_kopecks), 0)::bigint as total, count(*)::int as n
        from bl.refunds f join bl.payments p on p.id = f.payment_id
-      where f.club_id = $1 and p.method = 'cash' and f.status in ('manual', 'succeeded') and f.created_at >= $2 and f.created_at <= $3`,
+      where f.club_id = $1 and p.method = 'cash' and f.status in ('manual', 'succeeded') and f.kind = 'refund'
+        and f.created_at >= $2 and f.created_at <= $3`,
     [clubId, from, to],
   );
   return {

@@ -1109,9 +1109,10 @@ export async function refundSale(db, deps, info) {
  * outbox payment.refund_canceled (money; ревью денег п. 4): ЮKassa отменила возврат — деньги гостю не
  * вернулись. Учёт возврата продажи кассы откатывается: refunded_kopecks продажи и строк, склад —
  * обратным движением (writeoff по каждому возврату на склад этого возврата), возврат кассы помечается
- * отменённым, журнал pos.refund_canceled, тревога владельцу. Пакеты часов в возврате остаются
- * отмеченными (партию минут money уже отозвал) — тревога говорит восстановить вручную.
- * Нагрузка: { refund_id, payment_id, amount_kopecks, pos_refund_id? }. Повтор — already.
+ * отменённым, журнал pos.refund_canceled, тревога владельцу. Пакеты часов: партии из lots_restored
+ * money уже восстановил — с их строк снимается отметка возврата (пакет снова действует, его можно
+ * вернуть ещё раз); пакет без восстановленной партии остаётся отмеченным — тревога просит начислить вручную.
+ * Нагрузка: { refund_id, payment_id, club_id, amount_kopecks, pos_refund_id?, lots_restored: [lot_id] }. Повтор — already.
  */
 export async function onRefundCanceled(db, deps, payload) {
   if (!payload || (!isUuid(payload.refund_id) && !isUuid(payload.pos_refund_id))) return { result: 'ignored' };
@@ -1155,21 +1156,33 @@ export async function onRefundCanceled(db, deps, payload) {
   }
   await db.query('update bl.pos_refunds set canceled_at = $2, cancel_reason = $3 where id = $1', [r.id, at, why]);
   const packages = items.filter((i) => isUuid(i.sale_package_id));
+  const restored = new Set(Array.isArray(payload.lots_restored) ? payload.lots_restored.filter(isUuid) : []);
+  let lost = 0;
+  for (const p of packages) {
+    if (isUuid(p.lot_id) && restored.has(p.lot_id)) {
+      await db.query('update bl.pos_sale_packages set refunded_at = null, pos_refund_id = null where id = $1 and pos_refund_id = $2', [p.sale_package_id, r.id]);
+    } else {
+      lost += 1;
+    }
+  }
   await deps.audit.appendAudit(db, {
     action: 'pos.refund_canceled',
     objectType: 'pos_sale',
     objectId: r.sale_id,
     reason: why,
-    data: { sale_id: r.sale_id, pos_refund_id: r.id, refund_id: r.refund_id, amount_kopecks: amount, items: items.length - packages.length, packages: packages.length },
+    data: {
+      sale_id: r.sale_id, pos_refund_id: r.id, refund_id: r.refund_id, amount_kopecks: amount, items: items.length - packages.length,
+      packages: packages.length, packages_restored: packages.length - lost,
+    },
     actorType: 'system',
   });
   await deps.alarms.raise(db, r.club_id, {
     type: 'pos_refund_canceled',
     level: 'critical',
-    data: { sale_id: r.sale_id, pos_refund_id: r.id, refund_id: r.refund_id, amount_kopecks: amount },
+    data: { sale_id: r.sale_id, pos_refund_id: r.id, refund_id: r.refund_id, amount_kopecks: amount, packages_restored: packages.length - lost, packages_lost: lost },
     dedupeKey: `pos_refund:${r.id}`,
     text: (`Возврат ${rub(amount)} на кассе отменён ЮKassa — деньги гостю не вернулись, верните вручную` +
-      (packages.length > 0 ? '; минуты пакета часов отозваны — начислите гостю заново' : '')).slice(0, 900),
+      (lost > 0 ? '; минуты пакета часов отозваны — начислите гостю заново' : packages.length > 0 ? '; пакет часов снова действует' : '')).slice(0, 900),
   });
   await publishClub(db, deps, r.club_id, 'pos_sale', { sale_id: r.sale_id, status: 'completed', refund_canceled: r.id });
   deps.log?.warn?.('pos_refund_canceled', { sale_id: r.sale_id, pos_refund_id: r.id, amount_kopecks: amount });

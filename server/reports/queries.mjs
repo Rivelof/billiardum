@@ -53,20 +53,37 @@ export async function shiftPayments(db, { clubId, from, to }) {
   });
 }
 
-/** Возвраты смены. */
+/**
+ * Возвраты смены — деньги гостю (refunds.kind = 'refund', 0657 money). Не входят: release
+ * (несписанная часть заморозки — деньги не списывались), balance (вернулись минуты, не деньги) и late
+ * (автовозврат оплаты после отмены — в выручку не входила; см. shiftLateRefunds). Наличный возврат из
+ * очереди bl.cash_refunds_pending — строка manual, созданная при выдаче в новой смене: входит в неё.
+ */
 export async function shiftRefunds(db, { clubId, from, to }) {
+  return refundsOfKind(db, { clubId, from, to, kind: 'refund' });
+}
+
+/** Поздняя оплата возвращена (refunds.kind = 'late'): отдельной строкой, вне чистой выручки. */
+export async function shiftLateRefunds(db, { clubId, from, to }) {
+  return refundsOfKind(db, { clubId, from, to, kind: 'late' });
+}
+
+async function refundsOfKind(db, { clubId, from, to, kind }) {
   const { rows } = await db.query(
     `select f.id, f.payment_id, f.provider_refund_id, f.status, f.amount_kopecks, f.created_at, p.kind, p.method, p.provider, p.resource_id
        from bl.refunds f join bl.payments p on p.id = f.payment_id
-      where f.club_id = $1 and f.created_at >= $2 and f.created_at <= $3 and f.status in ('succeeded', 'manual')
+      where f.club_id = $1 and f.created_at >= $2 and f.created_at <= $3 and f.status in ('succeeded', 'manual') and f.kind = $4
       order by f.created_at, f.id`,
-    [clubId, from, to],
+    [clubId, from, to, kind],
   );
   return rows.map((f) => ({ ...f, amount_kopecks: Number(f.amount_kopecks), category: categoryOf(f.kind) }));
 }
 
-/** Выручка смены по столам и бару и способам оплаты. */
-export function revenueOf(payments, refunds) {
+/**
+ * Выручка смены по столам и бару и способам оплаты. lateRefunds — поздняя оплата возвращена
+ * (late_returned: отдельной строкой, в выручку и чистую выручку не входит).
+ */
+export function revenueOf(payments, refunds, lateRefunds = []) {
   const out = {
     tables: { by_method: zero() },
     bar: { by_method: zero() },
@@ -95,6 +112,9 @@ export function revenueOf(payments, refunds) {
   out.total_kopecks = sum(out.by_method);
   out.refunds.total_kopecks = sum(out.refunds.by_method);
   out.net_kopecks = out.total_kopecks - out.refunds.total_kopecks;
+  out.late_returned = { by_method: zero(), count: lateRefunds.length };
+  for (const f of lateRefunds) if (METHODS.includes(f.method)) out.late_returned.by_method[f.method] += f.amount_kopecks;
+  out.late_returned.total_kopecks = sum(out.late_returned.by_method);
   return out;
 }
 

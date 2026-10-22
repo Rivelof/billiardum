@@ -7,7 +7,7 @@
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { sendToClubStaff } from '../notify/index.mjs';
 import { shiftView, signedMoney } from '../shifts/service.mjs';
-import { manualActions, playStats, revenueOf, serviceLight, shiftLinks, shiftPayments, shiftRefunds } from './queries.mjs';
+import { manualActions, playStats, revenueOf, serviceLight, shiftLateRefunds, shiftLinks, shiftPayments, shiftRefunds } from './queries.mjs';
 import { reconcileKkt, reconcileOnline } from './reconcile.mjs';
 
 export const DEFAULT_SERVICE_LIGHT_ALARM_MINUTES = 60;
@@ -38,7 +38,7 @@ export async function buildShiftReport(db, { shiftId, now, online = true, moneyC
   const to = s.closed_at ? new Date(s.closed_at) : now;
   const payments = await shiftPayments(db, { clubId, from, to });
   const refunds = await shiftRefunds(db, { clubId, from, to });
-  const revenue = revenueOf(payments, refunds);
+  const revenue = revenueOf(payments, refunds, await shiftLateRefunds(db, { clubId, from, to }));
   const play = await playStats(db, { clubId, from, to, payments: payments.filter((p) => p.category === 'tables'), refunds: refunds.filter((f) => f.category === 'tables') });
   const light = await serviceLight(db, { clubId, from, to });
   const limit = Number.isInteger(s.club_settings?.service_light_alarm_minutes) ? s.club_settings.service_light_alarm_minutes : DEFAULT_SERVICE_LIGHT_ALARM_MINUTES;
@@ -96,6 +96,7 @@ export function reportText(r) {
     `Наличные ${formatMoney(v.by_method.cash)}, терминал ${formatMoney(v.by_method.card_terminal)}, СБП ${formatMoney(v.by_method.sbp)}, карта онлайн ${formatMoney(v.by_method.card)}.`,
   ];
   if (v.refunds.total_kopecks > 0) lines.push(`Возвраты ${formatMoney(v.refunds.total_kopecks)}.`);
+  if (v.late_returned?.total_kopecks > 0) lines.push(`Поздняя оплата возвращена: ${formatMoney(v.late_returned.total_kopecks)} (в выручку не входила).`);
   lines.push(`Игра ${String(r.play.hours).replace('.', ',')} ч, загрузка ${String(r.play.utilization_percent).replace('.', ',')} %.`);
   const m = r.manual_actions.count;
   lines.push(m > 0 ? `Ручных действий: ${m}.` : 'Ручных действий нет.');
