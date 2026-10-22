@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
+import { guestLookupGuard } from '../../guest-lookup.mjs';
 import { linesTotal } from '../../money.mjs';
 import { CLUB_A, CLUB_B, newKey, P, PHONES, setup, waitFor } from './harness.mjs';
 
@@ -284,3 +285,45 @@ describe('касса: пакет часов', { skip: SKIP }, () => {
     }
   });
 });
+
+describe('касса: поиск гостя — лимит и тревога о промахах (№121)', { skip: SKIP }, () => {
+  let manager;
+  const missSale = (token, phone) =>
+    h.request('POST', '/api/pos/sales', { token, body: { items: [{ kind: 'package', package_id: pkgA, phone }], method: 'card_terminal' }, key: newKey(), club: CLUB_A });
+  before(async () => {
+    manager = await h.login(PHONES.manager);
+    guestLookupGuard.reset();
+  });
+
+  it('10 промахов за час — одна тревога guest_lookup_misses владельцу (ключ — сотрудник), в ответе только guest_not_found', async () => {
+    for (let i = 0; i < 9; i += 1) {
+      const r = await missSale(manager.token, `+7999555${String(1000 + i)}`);
+      assert.deepEqual([r.status, r.json], [409, { error: 'guest_not_found' }]);
+    }
+    assert.equal((await h.alarms('guest_lookup_misses')).length, 0);
+    await missSale(manager.token, '+79995552000');
+    await missSale(manager.token, '+79995552001');
+    const alarms = await h.alarms('guest_lookup_misses');
+    assert.equal(alarms.length, 1, 'одна тревога, хотя транзакции запросов откатились');
+    assert.equal(alarms[0].data.staff_id, manager.id);
+    assert.equal(alarms[0].club_id, CLUB_A);
+    assert.ok(!JSON.stringify(alarms[0]).includes('+7999555'), 'телефонов в тревоге нет');
+    // Ресепшн — свой счёт: его промахов нет.
+    assert.equal(guestLookupGuard.missesInHour(reception.id, new Date()), 0);
+  });
+
+  it('больше 20 поисков гостя в минуту на сотрудника — 429 rate_limited, поиск не выполняется', async () => {
+    guestLookupGuard.reset();
+    for (let i = 0; i < 20; i += 1) {
+      const r = await sale({ items: [{ kind: 'package', package_id: pkgA, user_id: '0d4e7a5c-1111-4222-8333-944455556661' }], method: 'card_terminal' });
+      assert.equal(r.status, 409, `поиск ${i + 1}`);
+    }
+    const over = await sale({ items: [{ kind: 'package', package_id: pkgA, user_id: GUEST }], method: 'card_terminal' });
+    assert.deepEqual([over.status, over.json], [429, { error: 'rate_limited' }]);
+    // Лимит — на сотрудника: управляющий ищет дальше.
+    const other = await missSale(manager.token, '+79995553000');
+    assert.equal(other.status, 409);
+    guestLookupGuard.reset();
+  });
+});
+

@@ -101,5 +101,8 @@ export async function resolveDeps(ctx = {}) {
   out.money = await resolveMoneyDeps(ctx);
   out.moneyConfig = moneyConfig(ctx);
   out.publicHost = ctx.config?.publicHost ?? process.env.PUBLIC_HOST ?? 'localhost:8443';
+  // Своя транзакция вне транзакции запроса (тревога о промахах поиска гостя, №121).
+  out.pool = ctx.pool ?? null;
+  out.withContext = ctx.withContext ?? null;
   return out;
 }

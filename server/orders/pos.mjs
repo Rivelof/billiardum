@@ -31,6 +31,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { maskPhone } from '../lib/log.mjs';
+import { withContext as storeWithContext } from '../lib/store.mjs';
+import { ALARM_TEXT as LOOKUP_ALARM_TEXT, ALARM_TYPE as LOOKUP_ALARM_TYPE, guestLookupGuard } from './guest-lookup.mjs';
 import { acceptRequest } from '../reception/index.mjs';
 import { stableUuid } from '../payments/records.mjs';
 import { syncPayment } from '../payments/pay.mjs';
@@ -131,19 +133,41 @@ export function splitCart(items) {
 /**
  * Гость пакета — только существующий (№117): учётка по id или телефону, не влитая, с телефоном и
  * согласием (bl.pos_guest; учётку не создаёт). Нет — 409 guest_not_found, телефон в лог — маской.
+ * №121: не больше 20 поисков в минуту на сотрудника (429 rate_limited); 10 промахов за час —
+ * тревога владельцу guest_lookup_misses (своей транзакцией: транзакция запроса откатится).
  */
-async function resolveGuest(db, p) {
+async function resolveGuest(db, deps, p, { clubId, staffId, at }) {
+  const guard = deps.guestLookup ?? guestLookupGuard;
+  guard.lookup(staffId, at);
   const { rows } = await db.query('select bl.pos_guest($1, $2) as id', [p.user_id ?? null, p.user_id ? null : p.phone]);
-  if (!rows[0]?.id) throw new PosError('guest_not_found', p.user_id ? `user ${p.user_id}` : `phone ${maskPhone(p.phone)}`);
-  return rows[0].id;
+  if (rows[0]?.id) return rows[0].id;
+  if (guard.miss(staffId, at)) await raiseLookupAlarm(deps, { clubId, staffId, misses: guard.missesInHour(staffId, at) });
+  throw new PosError('guest_not_found', p.user_id ? `user ${p.user_id}` : `phone ${maskPhone(p.phone)}`);
+}
+
+async function raiseLookupAlarm(deps, { clubId, staffId, misses }) {
+  const raise = (db) =>
+    deps.alarms.raise(db, clubId, {
+      type: LOOKUP_ALARM_TYPE,
+      level: 'important',
+      data: { staff_id: staffId, misses },
+      text: LOOKUP_ALARM_TEXT,
+      dedupeKey: `staff:${staffId}`,
+    });
+  try {
+    if (deps.pool) await (deps.withContext ?? storeWithContext)(deps.pool, { clubId, actorType: 'system' }, raise);
+    else deps.log?.error?.('guest_lookup_alarm_unrouted', { club_id: clubId, staff_id: staffId, misses });
+  } catch (err) {
+    deps.log?.error?.('guest_lookup_alarm_failed', { club_id: clubId, staff_id: staffId, error: err.message });
+  }
 }
 
 /** Пакеты корзины: позиция чека и цена (money), гость. */
-async function resolvePackages(db, packages) {
+async function resolvePackages(db, deps, packages, who) {
   const out = [];
   for (const p of packages) {
     const sale = await packageLine(db, p.package_id);
-    out.push({ package_id: p.package_id, user_id: await resolveGuest(db, p), amount_kopecks: sale.amount_kopecks, line: sale.line, title: sale.package.title });
+    out.push({ package_id: p.package_id, user_id: await resolveGuest(db, deps, p, who), amount_kopecks: sale.amount_kopecks, line: sale.line, title: sale.package.title });
   }
   return out;
 }
@@ -324,7 +348,7 @@ export async function createSale(db, deps, info) {
   const pos = await posSettings(db, clubId);
 
   const lines = hasItems ? await resolveItems(db, { clubId, items: cart.products, audience: 'staff', defaultVat: settings.vat_code }) : [];
-  const packages = await resolvePackages(db, cart.packages);
+  const packages = await resolvePackages(db, deps, cart.packages, { clubId, staffId, at });
   const packageTotal = packages.reduce((sum, p) => sum + p.amount_kopecks, 0);
   const tabOrders = await lockOpenTabOrders(db, tabs);
   if (tabs.length > 0 && tabOrders.length === 0) throw new PosError('already_paid', 'счёт стола пуст или оплачен');
