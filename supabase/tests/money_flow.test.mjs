@@ -10,7 +10,7 @@ import { routes as quoteRoutes } from '../../api/routes/quotes.mjs';
 import { routes as paymentRoutes } from '../../api/routes/payments.mjs';
 import { routes as receptionRoutes } from '../../api/routes/reception.mjs';
 import { routes as webhookRoutes } from '../../api/routes/webhooks.mjs';
-import { receiptStatus, refund } from '../../server/payments/api.mjs';
+import { createOnlinePayment, receiptStatus, recordOfflinePayment, refund } from '../../server/payments/api.mjs';
 import { onSessionClosed } from '../../server/payments/capture.mjs';
 import { tick } from '../../server/payments/index.mjs';
 import { resolveDeps } from '../../server/payments/deps.mjs';
@@ -358,6 +358,12 @@ describe('оплата СБП и картой', () => {
     assert.equal(after.cancellation_reason, 'general_decline');
     assert.equal(h.sessions.holds.get(t), undefined);
     assert.equal((await h.audit('payment.canceled')).filter((a) => a.object_id === p.id).length, 1);
+    const canceled = (await h.outbox('payment.canceled')).filter((e) => e.payload.payment_id === p.id);
+    assert.equal(canceled.length, 1);
+    assert.deepEqual(
+      { k: canceled[0].payload.kind, m: canceled[0].payload.method, s: canceled[0].payload.previous_status, r: canceled[0].payload.reason, c: canceled[0].club_id },
+      { k: 'start', m: 'card', s: 'pending', r: 'general_decline', c: CLUB_A },
+    );
     assert.equal((await h.outbox('payment.confirmed')).filter((e) => e.payload.payment_id === p.id).length, 0);
   });
 });
@@ -593,6 +599,26 @@ describe('ресепшн', () => {
     assert.equal((await h.call(ACCEPT, { user: RECEPTION_A, params: { id: req }, body: { method: 'cash', received_kopecks: 99900 }, idempotencyKey: newKey() })).json.error, 'bad_request');
   });
 
+  it('без открытой смены деньги на ресепшене не принимаются — shift_closed (№93)', async () => {
+    for (const body of [{ method: 'cash', received_kopecks: 150000 }, { method: 'card_terminal' }]) {
+      const r = await h.call(ACCEPT, { user: RECEPTION_A, params: { id: req }, body, idempotencyKey: newKey() });
+      assert.equal(r.status, 409);
+      assert.deepEqual(r.json, { error: 'shift_closed' });
+    }
+    // Закрытая смена — тоже не смена.
+    await h.pool.query(
+      `insert into bl.shifts (club_id, number, opened_by, opened_at, float_kopecks, closed_by, closed_at,
+                              expected_cash_kopecks, actual_cash_kopecks, discrepancy_kopecks)
+       values ($1, 1, $2, $3, 0, $2, $3, 0, 0, 0)`,
+      [CLUB_A, RECEPTION_A, START],
+    );
+    assert.equal((await h.call(ACCEPT, { user: RECEPTION_A, params: { id: req }, body: { method: 'card_terminal' }, idempotencyKey: newKey() })).json.error, 'shift_closed');
+    assert.equal((await h.q('select status from bl.reception_requests where id = $1', [req]))[0].status, 'waiting');
+    assert.equal((await h.q("select count(*)::int as n from bl.payments where provider = 'reception'"))[0].n, 0);
+    // Открытая смена — дальше как в M1.
+    await h.pool.query('insert into bl.shifts (club_id, number, opened_by, opened_at, float_kopecks) values ($1, 2, $2, $3, 500000)', [CLUB_A, RECEPTION_A, START]);
+  });
+
   it('наличные со сдачей: платёж, задание на чек ККТ (receipt_pending), журнал, outbox', async () => {
     const key = newKey();
     const r = await h.call(ACCEPT, { user: RECEPTION_A, params: { id: req }, body: { method: 'cash', received_kopecks: 150000 }, idempotencyKey: key });
@@ -750,11 +776,142 @@ describe('статус чеков (receiptStatus для light, §14)', () => {
       [canceled]: 'canceled',
       [foreign]: 'none',
     });
+    // Чек ККТ пробит (printed, M2) — для чека сессии это succeeded.
+    await h.pool.query("update bl.receipts set status = 'printed', fd = 101, fp = '1234567890', printed_at = now() where payment_id = $1 and channel = 'kkt' and kind = 'sale'", [cash]);
+    const printed = await h.tx({ clubId: CLUB_A, actorType: 'system' }, (db) => receiptStatus(db, { paymentIds: [cash] }));
+    assert.deepEqual(printed, { [cash]: 'succeeded' });
     // В контексте клуба Б платежи клуба А не видны.
     const other = await h.tx({ clubId: CLUB_B, actorType: 'system' }, (db) => receiptStatus(db, { paymentIds: [sbp, cash] }));
     assert.deepEqual(other, { [sbp]: 'none', [cash]: 'none' });
     assert.deepEqual(await h.tx({ clubId: CLUB_A }, (db) => receiptStatus(db, { paymentIds: [] })), {});
     await assert.rejects(h.tx({ clubId: CLUB_A }, (db) => receiptStatus(db, { paymentIds: 'x' })), (e) => e.code === 'bad_request');
+  });
+});
+
+describe('касса и бар (M2): платежи через money', () => {
+  const sale = () => newKey();
+  const items = (value, qty = 1) => [{ description: 'Чай чёрный', quantity: qty, amount: { value, currency: 'RUB' }, vat_code: 1, payment_mode: 'full_payment', payment_subject: 'commodity' }];
+  const inj = async () => ({ deps: await resolveDeps(h.ctx), config: h.config });
+  const asStaff = (fn) => h.tx({ clubId: CLUB_A, userId: RECEPTION_A }, fn);
+
+  it('СБП по QR на экране кассы: платёж kind bar без стола и гостя, вебхук → payment.confirmed (kind bar)', async () => {
+    const saleId = sale();
+    const args = { clubId: CLUB_A, saleId, method: 'sbp', amountKopecks: 36000, items: items('120.00', 3), customer: { email: 'kassa@club.test' }, confirmation: 'qr', description: 'Бар, касса' };
+    const r = await asStaff(async (db) => createOnlinePayment(db, args, await inj()));
+    assert.equal(r.confirmation.type, 'qr');
+    const p = await payment(r.payment.id);
+    assert.equal(r.confirmation.confirmation_data, `${h.emuBase}/pay/${p.provider_payment_id}`);
+    assert.deepEqual({ k: p.kind, res: p.resource_id, u: p.user_id, q: p.quote_id, m: p.minutes, st: p.status }, { k: 'bar', res: null, u: null, q: null, m: null, st: 'pending' });
+    assert.equal(p.idempotence_key, `bar-${saleId}`);
+    const emuP = await (await fetch(`${h.emuBase}/__emu/payments/${p.provider_payment_id}`)).json();
+    assert.deepEqual(emuP.metadata, { sale_id: saleId, club_id: CLUB_A, kind: 'bar', payment_id: p.id });
+    assert.deepEqual(emuP.receipt.customer, { email: 'kassa@club.test' });
+    assert.equal(emuP.receipt.items[0].quantity, 3);
+    // Повтор продажи — тот же платёж без второго запроса в ЮKassa.
+    const before = (await (await fetch(`${h.emuBase}/__emu/requests`)).json()).length;
+    const again = await asStaff(async (db) => createOnlinePayment(db, args, await inj()));
+    assert.equal(again.payment.id, p.id);
+    assert.deepEqual(again.confirmation, r.confirmation);
+    assert.equal((await (await fetch(`${h.emuBase}/__emu/requests`)).json()).length, before);
+    await emuSucceed(p.id);
+    assert.equal((await payment(p.id)).status, 'succeeded');
+    const ev = (await h.outbox('payment.confirmed')).filter((e) => e.payload.payment_id === p.id);
+    assert.equal(ev.length, 1);
+    assert.deepEqual({ k: ev[0].payload.kind, r: ev[0].payload.resource_id, u: ev[0].payload.user_id, a: ev[0].payload.amount_kopecks }, { k: 'bar', r: null, u: null, a: 36000 });
+    const st = await h.tx({ clubId: CLUB_A }, (db) => receiptStatus(db, { paymentIds: [p.id] }));
+    assert.equal(st[p.id], 'succeeded');
+  });
+
+  it('отказ гостя от СБП по QR — outbox payment.canceled (kind bar), pending столов не трогается', async () => {
+    const r = await asStaff(async (db) =>
+      createOnlinePayment(db, { clubId: CLUB_A, saleId: sale(), method: 'sbp', amountKopecks: 12000, items: items('120.00'), customer: { phone: '79990000001' }, confirmation: 'qr', description: 'Бар' }, await inj()),
+    );
+    const calls = h.sessions.calls.length;
+    const p = await payment(r.payment.id);
+    await fetch(`${h.emuBase}/__emu/payments/${p.provider_payment_id}/cancel?wait=1`, { method: 'POST' });
+    await h.emu.settle();
+    assert.equal((await payment(p.id)).status, 'canceled');
+    const ev = (await h.outbox('payment.canceled')).filter((e) => e.payload.payment_id === p.id);
+    assert.equal(ev.length, 1);
+    assert.deepEqual({ k: ev[0].payload.kind, s: ev[0].payload.previous_status, res: ev[0].payload.resource_id }, { k: 'bar', s: 'pending', res: null });
+    assert.equal(h.sessions.calls.slice(calls).filter((c) => c[0] === 'releasePending').length, 0);
+  });
+
+  it('карта гостем (redirect); проверки: QR только для СБП, сумма позиций, контакт покупателя', async () => {
+    const ok = await asStaff(async (db) =>
+      createOnlinePayment(db, { clubId: CLUB_A, saleId: sale(), method: 'card', amountKopecks: 24000, items: items('120.00', 2), customer: { phone: '79990000001' }, phone: '+79990000001', userId: GUEST_1, confirmation: 'redirect', returnUrl: 'https://billiardum.test/app/bar', description: 'Бар со стола' }, await inj()),
+    );
+    assert.equal(ok.confirmation.type, 'redirect');
+    assert.match(ok.confirmation.url, /\/pay\//);
+    assert.equal((await payment(ok.payment.id)).user_id, GUEST_1);
+    const bad = async (patch) =>
+      asStaff(async (db) =>
+        createOnlinePayment(db, { clubId: CLUB_A, saleId: sale(), method: 'sbp', amountKopecks: 12000, items: items('120.00'), customer: { email: 'a@b.c' }, confirmation: 'qr', description: 'Бар', ...patch }, await inj()),
+      ).then(() => null, (e) => e.code);
+    assert.equal(await bad({ method: 'card' }), 'bad_request');
+    assert.equal(await bad({ amountKopecks: 13000 }), 'bad_request');
+    assert.equal(await bad({ customer: {} }), 'bad_request');
+    assert.equal(await bad({ method: 'cash' }), 'bad_request');
+    assert.equal(await bad({ confirmation: 'redirect', returnUrl: 'javascript:alert(1)' }), 'bad_request');
+  });
+
+  it('наличные на кассе: сдача, повтор — тот же платёж, другие данные — конфликт', async () => {
+    const saleId = sale();
+    const deps = await inj();
+    const p = await asStaff((db) => recordOfflinePayment(db, { clubId: CLUB_A, saleId, method: 'cash', amountKopecks: 36000, receivedKopecks: 50000, staffId: RECEPTION_A }, deps));
+    assert.deepEqual(
+      { k: p.kind, pr: p.provider, s: p.status, rc: Number(p.received_kopecks), ch: Number(p.change_kopecks), by: p.accepted_by, conf: Boolean(p.confirmed_at) },
+      { k: 'bar', pr: 'reception', s: 'succeeded', rc: 50000, ch: 14000, by: RECEPTION_A, conf: true },
+    );
+    assert.equal((await asStaff((db) => recordOfflinePayment(db, { clubId: CLUB_A, saleId, method: 'cash', amountKopecks: 36000, receivedKopecks: 50000, staffId: RECEPTION_A }, deps))).id, p.id);
+    await assert.rejects(asStaff((db) => recordOfflinePayment(db, { clubId: CLUB_A, saleId, method: 'card_terminal', amountKopecks: 36000, staffId: RECEPTION_A }, deps)), (e) => e.code === 'idempotency_conflict');
+    await assert.rejects(asStaff((db) => recordOfflinePayment(db, { clubId: CLUB_A, saleId: sale(), method: 'cash', amountKopecks: 36000, receivedKopecks: 100, staffId: RECEPTION_A }, deps)), (e) => e.code === 'bad_request');
+    assert.equal((await h.outbox('payment.confirmed')).filter((e) => e.payload.payment_id === p.id).length, 0);
+  });
+
+  it('возврат бара — только с позициями чека; чек возврата ЮKassa позициями бара', async () => {
+    const deps = await inj();
+    const r = await asStaff(async (db) =>
+      createOnlinePayment(db, { clubId: CLUB_A, saleId: sale(), method: 'sbp', amountKopecks: 36000, items: items('120.00', 3), customer: { email: 'kassa@club.test' }, confirmation: 'qr', description: 'Бар' }, deps),
+    );
+    await emuSucceed(r.payment.id);
+    await assert.rejects(asStaff((db) => refund(db, { paymentId: r.payment.id, amountKopecks: 12000, reason: 'Гость вернул чай' }, deps)), (e) => e.code === 'bad_request');
+    await assert.rejects(
+      asStaff((db) => refund(db, { paymentId: r.payment.id, amountKopecks: 12000, reason: 'Гость вернул чай', items: items('120.00', 2), customer: { email: 'kassa@club.test' } }, deps)),
+      (e) => e.code === 'bad_request',
+    );
+    const f = await asStaff((db) =>
+      refund(db, { paymentId: r.payment.id, amountKopecks: 12000, reason: 'Гость вернул чай', items: items('120.00'), customer: { email: 'kassa@club.test' }, requestedBy: RECEPTION_A }, deps),
+    );
+    assert.equal(f.status, 'succeeded');
+    const p = await payment(r.payment.id);
+    const emuP = await (await fetch(`${h.emuBase}/__emu/payments/${p.provider_payment_id}`)).json();
+    const rec = emuP.receipts.find((x) => x.kind === 'refund');
+    assert.equal(rec.receipt.items[0].description, 'Чай чёрный');
+    assert.equal((await h.q('select requested_by from bl.refunds where id = $1', [f.refund_id]))[0].requested_by, RECEPTION_A);
+  });
+});
+
+describe('вебхук: наш платёж, запись которого ещё не дошла', () => {
+  it('платёж есть у магазина клуба с нашим metadata.payment_id — 503 (ЮKassa повторит); чужой — 200', async () => {
+    const { createYooKassaClient } = await import('../../server/payments/yookassa.mjs');
+    const { SHOP_A } = await import('./money_harness.mjs');
+    const client = createYooKassaClient({ apiUrl: `${h.emuBase}/v3`, shopId: SHOP_A.shopId, secretKey: SHOP_A.secret });
+    const body = (metadata) => ({
+      amount: { value: '120.00', currency: 'RUB' },
+      capture: true,
+      confirmation: { type: 'qr' },
+      payment_method_data: { type: 'sbp' },
+      metadata,
+      receipt: { customer: { email: 'a@b.c' }, items: [{ description: 'Чай', quantity: 1, amount: { value: '120.00', currency: 'RUB' }, vat_code: 1 }] },
+    });
+    const ours = await client.createPayment(body({ club_id: CLUB_A, kind: 'bar', payment_id: newKey(), sale_id: newKey() }), newKey());
+    const r = await h.call(WEBHOOK, { params: { club_id: CLUB_A }, body: { event: 'payment.succeeded', object: { id: ours.id } }, actor: 'system' });
+    assert.equal(r.status, 503);
+    const foreign = await client.createPayment(body({ club_id: CLUB_A, kind: 'bar' }), newKey());
+    assert.equal((await h.call(WEBHOOK, { params: { club_id: CLUB_A }, body: { event: 'payment.succeeded', object: { id: foreign.id } }, actor: 'system' })).status, 200);
+    const otherClub = await client.createPayment(body({ club_id: CLUB_B, payment_id: newKey() }), newKey());
+    assert.equal((await h.call(WEBHOOK, { params: { club_id: CLUB_A }, body: { event: 'payment.succeeded', object: { id: otherClub.id } }, actor: 'system' })).status, 200);
   });
 });
 

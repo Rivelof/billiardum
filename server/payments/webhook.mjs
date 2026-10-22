@@ -7,6 +7,8 @@
 //   один раз): повтор вебхука — 200 без действий.
 // * ЮKassa недоступна или ответила 5xx — 503: ЮKassa повторит вебхук позже.
 // * Ответ 200 — платёж обработан, уже был обработан или вебхук не наш (не повторять).
+// * Платёж есть у магазина клуба с нашим metadata.payment_id, но строки ещё нет
+//   (транзакция создания не закоммичена) — 503: ЮKassa повторит.
 
 import { enterClub, isUuid } from './context.mjs';
 import { MoneyError } from './errors.mjs';
@@ -53,9 +55,12 @@ async function paymentWebhook(db, deps, client, { clubId, objectId }) {
   const payment = rows[0];
   if (!payment) {
     // Не наш платёж или наша запись ещё не закоммичена: проверим, есть ли он у магазина клуба.
+    // Наш — metadata.club_id этого клуба и наш payment_id (стол и бар) или quote_id (M1):
+    // запись ещё не дошла — 503, ЮKassa повторит вебхук.
     const remote = await client.getPayment(objectId);
-    if (remote?.metadata?.club_id === clubId && isUuid(remote?.metadata?.quote_id)) {
-      deps.log?.warn?.('webhook_payment_not_recorded', { club_id: clubId });
+    const meta = remote?.metadata ?? {};
+    if (meta.club_id === clubId && (isUuid(meta.payment_id) || isUuid(meta.quote_id))) {
+      deps.log?.warn?.('webhook_payment_not_recorded', { club_id: clubId, payment_id: isUuid(meta.payment_id) ? meta.payment_id : null });
       return RETRY;
     }
     deps.log?.warn?.('webhook_unknown_payment', { club_id: clubId });

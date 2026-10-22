@@ -181,6 +181,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         // M0
         ['device_club', 'bl_definer'],
         ['device_total', 'bl_definer'],
+        // M2 kkt (0500): чеки ККТ, не пробитые дольше 10 минут
+        ['kkt_due', 'bl_definer'],
         // M1 light
         ['light_open_sessions', 'bl_definer'],
         // M1 money (0200)
@@ -188,6 +190,9 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['money_object_club', 'bl_definer'],
         // M1 core
         ['notify_route', 'bl_definer'],
+        // M2 pos (0420): продажи к завершению, клуб заказа и продажи
+        ['pos_due', 'bl_definer'],
+        ['pos_object_club', 'bl_definer'],
         // M1 light
         ['resource_by_code', 'bl_definer'],
         ['resource_club', 'bl_definer'],

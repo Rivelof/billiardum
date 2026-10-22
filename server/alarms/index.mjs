@@ -43,6 +43,18 @@ export const ALARM_TEXTS = {
   state_mismatch: 'Состояние стола не совпадает с сервером',
   light_without_session: 'Свет включён без оплаченной игры',
   payment_unapplied: 'Оплата получена, но игра не запущена: проверьте стол',
+  // M2: касса и бар (backend-pos).
+  discount_over_limit: 'Скидка выше лимита клуба',
+  order_canceled: 'Отменён заказ бара',
+  pos_refund: 'Возврат по продаже на кассе',
+  bar_double_payment: 'Заказ бара оплачен дважды: нужен возврат',
+  // M2: ККТ и смены (backend-kkt).
+  cash_discrepancy: 'Расхождение кассы при закрытии смены',
+  receipt_failed: 'Чек не пробит: ККТ вернула ошибку',
+  receipt_unknown: 'Неизвестно, пробит ли чек: проверьте ККТ',
+  receipt_double: 'Чек пробит дважды: проверьте ККТ',
+  service_light_threshold: 'Сервисный свет за смену дольше порога клуба',
+  kkt_shift_failed: 'ККТ не открыла или не закрыла смену',
 };
 
 /**
@@ -66,6 +78,16 @@ export const ALARM_LEVELS = {
   ota_failed: 'important',
   offline_resume_denied: 'important',
   receipt_pending: 'important',
+  discount_over_limit: 'important',
+  order_canceled: 'important',
+  pos_refund: 'critical',
+  bar_double_payment: 'important',
+  cash_discrepancy: 'critical',
+  receipt_failed: 'important',
+  receipt_unknown: 'critical',
+  receipt_double: 'critical',
+  service_light_threshold: 'important',
+  kkt_shift_failed: 'important',
 };
 
 /** Типы ручных действий персонала: уведомление владельцу при каждом подъёме. */

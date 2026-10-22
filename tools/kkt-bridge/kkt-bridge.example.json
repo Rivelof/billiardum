@@ -1,0 +1,14 @@
+{
+  "server_url": "wss://bl.example.ru/api/kkt/ws",
+  "token_file": "token.txt",
+  "atol_url": "http://127.0.0.1:16732",
+  "atol_api": "v2",
+  "atol_device_id": null,
+  "name": "Ресепшн",
+  "data_dir": "./kkt-bridge-data",
+  "job_timeout_ms": 60000,
+  "poll_ms": 500,
+  "status_poll_ms": 15000,
+  "reconnect_min_ms": 1000,
+  "reconnect_max_ms": 60000
+}

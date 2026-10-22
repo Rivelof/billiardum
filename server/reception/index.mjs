@@ -3,7 +3,7 @@
 // * Заявка живёт reception_request_minutes (15) минут, держит стол в pending за гостем,
 //   затем сгорает и снимает pending (планировщик server/payments/index.mjs).
 // * Принять: наличные (received_kopecks ≥ суммы, сдачу считает сервер) или карта через
-//   терминал. Принятие создаёт платёж, задание на чек ККТ (receipt_pending; мост ККТ — M2),
+//   терминал — только при открытой смене клуба (shift_closed, decisions №93). Принятие создаёт платёж, задание на чек ККТ (receipt_pending; мост ККТ — M2),
 //   событие outbox payment.confirmed и запись журнала reception.accept — в одной транзакции.
 // * Отклонить — с кодом причины, журнал reception.decline, pending снимается.
 // * Экран ресепшена узнаёт о заявках по SSE: событие reception_request в канале club:{id}.
@@ -145,6 +145,12 @@ export async function acceptRequest(db, deps, info) {
   } else if (received !== undefined && received !== null && received !== amount) {
     throw new MoneyError('bad_request', 'received_kopecks для терминала');
   }
+
+  // Деньги на ресепшене — только в открытую смену (decisions №83, №93): иначе наличные не
+  // попадут ни в одну смену и сверка разойдётся. Строка смены блокируется до коммита, чтобы
+  // смена не закрылась между проверкой и записью платежа.
+  const shift = await deps.shifts.currentShift(db, clubId, { forUpdate: true });
+  if (!shift) throw new MoneyError('shift_closed');
 
   const settings = await loadPaymentSettings(db, clubId);
   const { rows: res } = await db.query('select number from bl.resources where id = $1', [r.resource_id]);

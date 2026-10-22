@@ -1,0 +1,28 @@
+{
+  "name": "@billiardum/kkt-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Мост ККТ «Бильярдума»: ПК ресепшена ↔ сервер (WebSocket) ↔ веб-сервер драйвера АТОЛ; эмулятор веб-сервера АТОЛ",
+  "type": "module",
+  "main": "lib/bridge.mjs",
+  "exports": {
+    ".": "./lib/bridge.mjs",
+    "./emu": "./emu/emulator.mjs",
+    "./codes": "./lib/codes.mjs"
+  },
+  "bin": {
+    "bl-kkt-bridge": "index.mjs",
+    "bl-atol-emu": "emu/index.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.mjs",
+    "emu": "node emu/index.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "ws": "8.22.0"
+  }
+}

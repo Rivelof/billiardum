@@ -1,8 +1,14 @@
-// Денежный API для light (контракт M1 §13, §14): возврат за interrupted и аварийный, статус чеков.
+// Денежный API для light и кассы (контракт M1 §13, §14; M2 §5): возвраты, статус чеков,
+// платежи бара и кассы.
 //
-//   refund(db, { paymentId, amountKopecks, reason, key? }) → { refund_id, status, amount_kopecks }
+//   refund(db, { paymentId, amountKopecks, reason, key?, items?, customer?, requestedBy?, description? })
+//       → { refund_id, status, amount_kopecks }; у платежа бара items (позиции чека возврата) обязательны
 //   receiptStatus(db, { paymentIds }) → { [paymentId]: 'pending' | 'succeeded' | 'receipt_pending'
 //                                           | 'failed' | 'canceled' | 'none' }
+//   createOnlinePayment(db, { clubId, saleId, method, amountKopecks, items, customer, ... })
+//       → { payment, confirmation } — СБП или карта ЮKassa бара и кассы (kind bar)
+//   recordOfflinePayment(db, { clubId, saleId, method, amountKopecks, receivedKopecks?, staffId, ... })
+//       → payment — наличные или терминал на кассе (kind bar), сразу succeeded
 //
 // * db — транзакция вызывающего с контекстом клуба платежа.
 // * Идемпотентно: ключ (key или хеш платежа, суммы и причины) хранится в bl.refunds
@@ -18,10 +24,12 @@ import { createHash } from 'node:crypto';
 import { moneyConfig } from './config.mjs';
 import { resolveDeps } from './deps.mjs';
 import { MoneyError } from './errors.mjs';
-import { yookassaReceipt, receiptItems } from './receipt.mjs';
-import { insertReceipt, receiptPhoneOf, sessionIdOf } from './records.mjs';
+import { enterClub } from './context.mjs';
+import { createYooKassaPayment } from './pay.mjs';
+import { receiptPhone, yookassaReceipt, receiptItems } from './receipt.mjs';
+import { insertReceipt, receiptPhoneOf, sessionIdOf, stableUuid } from './records.mjs';
 import { clientFor, loadPaymentSettings } from './settings.mjs';
-import { YooKassaError, formatValue } from './yookassa.mjs';
+import { YooKassaError, formatValue, parseValue } from './yookassa.mjs';
 
 let runtime = null;
 
@@ -41,7 +49,8 @@ const MAX_RECEIPT_IDS = 200;
 
 /**
  * Статус чека продажи по каждому платежу (чек сессии, light). db — транзакция с контекстом
- * клуба: чужие платежи RLS не покажет (для них — 'none').
+ * клуба: чужие платежи RLS не покажет (для них — 'none'). Чек ККТ в статусе printed (пробит,
+ * M2) отдаётся как succeeded — набор статусов для light не меняется.
  * Действующий чек — последний чек продажи, кроме отменённых (у заморозки чек на сумму
  * заморозки отменяется и заменяется чеком на фактическую сумму); все отменены — 'canceled';
  * чека нет — 'none'. Чеки возвратов сюда не входят.
@@ -62,8 +71,128 @@ export async function receiptStatus(db, { paymentIds } = {}) {
       order by payment_id, (status = 'canceled'), created_at desc, id desc`,
     [ids],
   );
-  for (const r of rows) out[r.payment_id] = r.status;
+  // printed — чек пробит на ККТ клуба (M2, server/kkt): для чека сессии это успех, отдаём succeeded.
+  for (const r of rows) out[r.payment_id] = r.status === 'printed' ? 'succeeded' : r.status;
   return out;
+}
+
+/** Позиции чека 54-ФЗ от вызывающего: формат ЮKassa, сумма (цена × количество) = amount. */
+export function checkItems(items, amountKopecks) {
+  if (!Array.isArray(items) || items.length === 0 || items.length > 100) throw new MoneyError('bad_request', 'items');
+  let milli = 0;
+  for (const it of items) {
+    const price = parseValue(it?.amount?.value);
+    const qty = Number(it?.quantity);
+    if (
+      price === null || price <= 0 || it.amount.currency !== 'RUB' || !Number.isFinite(qty) || qty <= 0 ||
+      typeof it.description !== 'string' || it.description.length < 1 || it.description.length > 128 ||
+      !Number.isInteger(it.vat_code) || it.vat_code < 1 || it.vat_code > 12
+    ) {
+      throw new MoneyError('bad_request', 'позиция чека');
+    }
+    milli += Math.round(price * qty * 1000);
+  }
+  if (milli !== amountKopecks * 1000) throw new MoneyError('bad_request', 'сумма позиций чека не равна сумме');
+  return items;
+}
+
+const BAR_METHODS_ONLINE = ['sbp', 'card'];
+const BAR_METHODS_OFFLINE = ['cash', 'card_terminal'];
+
+/** id и ключ платежа продажи кассы (детерминированные: повтор продажи — тот же платёж). */
+export const barPaymentId = (saleId) => stableUuid(`bl.payment/bar/${saleId}`);
+export const barIdempotenceKey = (saleId) => `bar-${saleId}`;
+
+/**
+ * Платёж ЮKassa бара и кассы (контракт M2 §5): СБП (на экране кассы — confirmation qr) или карта
+ * (гостю — redirect). kind = 'bar'. Строки платежа и чека — в транзакции вызывающего (контекст клуба).
+ * Подтверждение — общий путь money: вебхук или сверка → outbox payment.confirmed (kind bar);
+ * отказ — outbox payment.canceled.
+ * @param {{ clubId: string, saleId: string, method: 'sbp'|'card', amountKopecks: number, items: object[],
+ *           customer: { phone: string } | { email: string }, phone?: string|null,
+ *           confirmation: 'qr'|'redirect', returnUrl?: string, description: string, metadata?: object,
+ *           requestKey?: string|null, userId?: string|null, resourceId?: string|null }} args
+ */
+export async function createOnlinePayment(db, args, injected) {
+  const { deps, config } = injected ?? (await rt());
+  const { clubId, saleId, method, amountKopecks } = args;
+  if (!UUID.test(saleId ?? '')) throw new MoneyError('bad_request', 'saleId');
+  if (!BAR_METHODS_ONLINE.includes(method)) throw new MoneyError('bad_request', 'method');
+  if (!Number.isSafeInteger(amountKopecks) || amountKopecks <= 0) throw new MoneyError('bad_request', 'amountKopecks');
+  if (args.confirmation !== 'qr' && args.confirmation !== 'redirect') throw new MoneyError('bad_request', 'confirmation');
+  if (args.confirmation === 'qr' && method !== 'sbp') throw new MoneyError('bad_request', 'QR — только СБП');
+  if (args.confirmation === 'redirect' && !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(args.returnUrl ?? '')) {
+    throw new MoneyError('bad_request', 'returnUrl');
+  }
+  const customer = args.customer;
+  if (!customer || (!customer.phone && !customer.email)) throw new MoneyError('bad_request', 'customer');
+  const items = checkItems(args.items, amountKopecks);
+  await enterClub(db, clubId);
+  const settings = await loadPaymentSettings(db, clubId);
+  if (method === 'sbp' && !settings.sbp) throw new MoneyError('bad_request', 'СБП недоступна');
+  if (method === 'card' && !settings.card) throw new MoneyError('bad_request', 'карта недоступна');
+  const receipt = { customer, items, ...(settings.tax_system_code != null ? { tax_system_code: settings.tax_system_code } : {}) };
+  return createYooKassaPayment(db, deps, config, {
+    settings,
+    clubId,
+    paymentId: barPaymentId(saleId),
+    idempotenceKey: barIdempotenceKey(saleId),
+    requestKey: args.requestKey ?? null,
+    kind: 'bar',
+    method,
+    amountKopecks,
+    capture: true,
+    receipt,
+    confirmation: args.confirmation === 'qr' ? { type: 'qr' } : { type: 'redirect', returnUrl: args.returnUrl },
+    description: args.description ?? 'Бар',
+    metadata: { ...(args.metadata ?? {}), sale_id: saleId },
+    userId: args.userId ?? null,
+    resourceId: args.resourceId ?? null,
+    phone: args.phone ?? null,
+    now: deps.clock.now(),
+  });
+}
+
+/**
+ * Наличные или терминал на кассе (kind bar): платёж сразу succeeded, confirmed_at ставится
+ * один раз; outbox payment.confirmed нет (это не игра — продажу завершает касса), чек ККТ
+ * ставит касса (server/kkt). Повтор с тем же saleId возвращает тот же платёж.
+ * @param {{ clubId: string, saleId: string, method: 'cash'|'card_terminal', amountKopecks: number,
+ *           receivedKopecks?: number|null, staffId: string, requestKey?: string|null, userId?: string|null }} args
+ */
+export async function recordOfflinePayment(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { clubId, saleId, method, amountKopecks } = args;
+  if (!UUID.test(saleId ?? '')) throw new MoneyError('bad_request', 'saleId');
+  if (!BAR_METHODS_OFFLINE.includes(method)) throw new MoneyError('bad_request', 'method');
+  if (!Number.isSafeInteger(amountKopecks) || amountKopecks <= 0) throw new MoneyError('bad_request', 'amountKopecks');
+  if (!UUID.test(args.staffId ?? '')) throw new MoneyError('bad_request', 'staffId');
+  let received = null;
+  let change = 0;
+  if (method === 'cash') {
+    received = args.receivedKopecks ?? amountKopecks;
+    if (!Number.isSafeInteger(received) || received < amountKopecks || received > amountKopecks + 10_000_000) {
+      throw new MoneyError('bad_request', 'receivedKopecks');
+    }
+    change = received - amountKopecks;
+  }
+  await enterClub(db, clubId);
+  const id = barPaymentId(saleId);
+  const prev = (await db.query('select * from bl.payments where id = $1', [id])).rows[0];
+  if (prev) {
+    if (prev.method !== method || Number(prev.amount_kopecks) !== amountKopecks) throw new MoneyError('idempotency_conflict');
+    return prev;
+  }
+  const now = deps.clock.now();
+  const { rows } = await db.query(
+    `insert into bl.payments (id, club_id, resource_id, user_id, kind, provider, method, idempotence_key, request_key, status,
+                              amount_kopecks, capture, received_kopecks, change_kopecks, accepted_by, confirmed_at, captured_at,
+                              created_at, updated_at)
+     values ($1, $2, null, $3, 'bar', 'reception', $4, $5, $6, 'succeeded', $7, true, $8, $9, $10, $11, $11, $11, $11)
+     returning *`,
+    [id, clubId, args.userId ?? null, method, barIdempotenceKey(saleId), args.requestKey ?? null, amountKopecks, received, change, args.staffId, now],
+  );
+  return rows[0];
 }
 
 function refundKey({ paymentId, amountKopecks, reason, key }) {
@@ -137,6 +266,10 @@ export async function refund(db, args, injected) {
   const settings = await loadPaymentSettings(db, p.club_id);
   const { rows: res } = await db.query('select number from bl.resources where id = $1', [p.resource_id]);
   const number = res[0]?.number;
+  // Позиции чека возврата: у бара — от кассы (что именно возвращается), у стола — «Игра, стол N».
+  const items = args.items === undefined ? null : checkItems(args.items, amountKopecks);
+  if (p.kind === 'bar' && !items) throw new MoneyError('bad_request', 'items: позиции чека возврата бара');
+  const requestedBy = UUID.test(args.requestedBy ?? '') ? args.requestedBy : null;
 
   // Заморозка ещё не списана: отменить целиком или списать за вычетом возврата.
   if (p.status === 'waiting_for_capture') {
@@ -162,9 +295,9 @@ export async function refund(db, args, injected) {
 
   if (p.provider === 'reception') {
     const { rows: f } = await db.query(
-      `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, created_at, updated_at)
-       values ($1, $2, $3, $4, 'manual', $5, $6, $6) returning *`,
-      [p.club_id, p.id, key, amountKopecks, reason, now],
+      `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, requested_by, created_at, updated_at)
+       values ($1, $2, $3, $4, 'manual', $5, $7, $6, $6) returning *`,
+      [p.club_id, p.id, key, amountKopecks, reason, now, requestedBy],
     );
     await insertReceipt(db, {
       clubId: p.club_id,
@@ -174,7 +307,7 @@ export async function refund(db, args, injected) {
       channel: 'kkt',
       status: 'receipt_pending',
       amountKopecks,
-      items: receiptItems({ resourceNumber: number, minutes: p.minutes, amountKopecks, vatCode: settings.vat_code }),
+      items: items ?? receiptItems({ resourceNumber: number, minutes: p.minutes, amountKopecks, vatCode: settings.vat_code }),
       taxSystemCode: settings.tax_system_code,
       userId: p.user_id,
       now,
@@ -184,18 +317,30 @@ export async function refund(db, args, injected) {
   }
 
   const phone = await receiptPhoneOf(db, p.id);
-  const receipt = yookassaReceipt({ phone, resourceNumber: number, minutes: p.minutes, amountKopecks, settings });
+  let receipt;
+  if (items) {
+    const customer = args.customer ?? (receiptPhone(phone) ? { phone: receiptPhone(phone) } : null);
+    if (!customer) throw new MoneyError('bad_request', 'нет контакта покупателя для чека возврата');
+    receipt = { customer, items, ...(settings.tax_system_code != null ? { tax_system_code: settings.tax_system_code } : {}) };
+  } else {
+    receipt = yookassaReceipt({ phone, resourceNumber: number, minutes: p.minutes, amountKopecks, settings });
+  }
   const { rows: ins } = await db.query(
-    `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, created_at, updated_at)
-     values ($1, $2, $3, $4, 'pending', $5, $6, $6) returning *`,
-    [p.club_id, p.id, key, amountKopecks, reason, now],
+    `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, requested_by, created_at, updated_at)
+     values ($1, $2, $3, $4, 'pending', $5, $7, $6, $6) returning *`,
+    [p.club_id, p.id, key, amountKopecks, reason, now, requestedBy],
   );
   let f = ins[0];
   let remote;
   try {
     const client = clientFor(settings, config);
     remote = await client.createRefund(
-      { payment_id: p.provider_payment_id, amount: { value: formatValue(amountKopecks), currency: 'RUB' }, description: `Возврат: стол ${number}`, receipt },
+      {
+        payment_id: p.provider_payment_id,
+        amount: { value: formatValue(amountKopecks), currency: 'RUB' },
+        description: String(args.description ?? (p.kind === 'bar' ? 'Возврат: бар' : `Возврат: стол ${number}`)).slice(0, 128),
+        receipt,
+      },
       key,
     );
   } catch (err) {

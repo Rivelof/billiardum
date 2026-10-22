@@ -1,0 +1,208 @@
+// Смены и отчёт смены на настоящем Postgres: открыть с разменом (одна открытая на клуб), закрыть
+// с фактом наличных, T16 (недостача 500 ₽ → расхождение, тревога владельцу), ожидаемые наличные
+// по всем наличным платежам клуба, смена ККТ через мост, отчёт владельцу при закрытии,
+// сервисный свет по сотрудникам и столам (№71), права.
+
+import assert from 'node:assert/strict';
+import { after, before, describe, it } from 'node:test';
+import { appendAudit } from '../../../lib/audit.mjs';
+import { currentShift } from '../../../shifts/api.mjs';
+import { CLUB_A, CLUB_B, GUEST, RECEPTION_A, setupKkt, TABLE_1, TABLE_2, waitFor } from './harness.mjs';
+
+let t;
+let reception;
+
+before(async () => {
+  t = await setupKkt();
+  reception = await t.login('reception');
+  const reg = await t.registerBridge();
+  t.startBridge(reg.token);
+});
+after(async () => {
+  await t?.stop();
+});
+
+/** Сдвинуть начало открытой смены назад (служебная правка в обход защиты — только тест). */
+async function backdateShift(id, ms) {
+  const c = await t.admin.connect();
+  try {
+    await c.query('begin');
+    await c.query('set local session_replication_role = replica');
+    await c.query('update bl.shifts set opened_at = opened_at - make_interval(secs => $2::float8 / 1000) where id = $1', [id, ms]);
+    await c.query('commit');
+  } finally {
+    c.release();
+  }
+}
+
+async function kktOps(kind) {
+  const { rows } = await t.admin.query('select * from bl.kkt_ops where club_id = $1 and kind = $2 order by created_at', [CLUB_A, kind]);
+  return rows;
+}
+
+describe('смена: открытие и закрытие, T16', () => {
+  let shift;
+  let cashTable;
+
+  it('ресепшн открывает смену с разменом; вторая открытая — 409 shift_open; currentShift видит смену', async () => {
+    const res = await t.request('POST', `/api/clubs/${CLUB_A}/shifts`, { token: reception, body: { float_kopecks: 500000 } });
+    assert.equal(res.status, 201);
+    shift = res.json;
+    assert.equal(shift.status, 'open');
+    assert.equal(shift.number, 1);
+    assert.equal(shift.float_kopecks, 500000);
+    assert.equal(shift.opened_by_name, 'Ресепшн (тест)');
+    const again = await t.request('POST', `/api/clubs/${CLUB_A}/shifts`, { token: await t.login('manager'), body: { float_kopecks: 0 } });
+    assert.equal(again.status, 409);
+    assert.equal(again.json.error, 'shift_open');
+    const cur = await t.request('GET', `/api/clubs/${CLUB_A}/shifts/current`, { token: reception });
+    assert.equal(cur.json.shift.id, shift.id);
+    const viaApi = await t.asClub(CLUB_A, (db) => currentShift(db, CLUB_A));
+    assert.equal(viaApi.id, shift.id);
+    assert.equal(await t.asClub(CLUB_B, (db) => currentShift(db, CLUB_B)), null);
+    // Неверный размен, чужой клуб.
+    assert.equal((await t.request('POST', `/api/clubs/${CLUB_B}/shifts`, { token: reception, body: { float_kopecks: 0 } })).status, 403);
+    assert.equal((await t.request('POST', `/api/clubs/${CLUB_A}/shifts`, { token: reception, body: { float_kopecks: -1 } })).status, 400);
+  });
+
+  it('смена ККТ открывается через мост (open_shift)', async () => {
+    await waitFor(async () => (await kktOps('open_shift'))[0]?.status === 'done', { timeoutMs: 10_000 });
+    assert.equal(t.emu.control.state().shift.state, 'opened');
+  });
+
+  it('T16: недостача 500 ₽ — расхождение −50 000 коп., тревога владельцу сразу, отчёт смены владельцу', async () => {
+    await backdateShift(shift.id, 3 * 3600_000);
+    const now = Date.now();
+    // Наличные клуба за смену: заявка стола M1, бар (касса M2); терминал и онлайн в кассу не входят.
+    cashTable = await t.receptionPayment({ method: 'cash', amount: 160000 });
+    await t.receptionPayment({ method: 'card_terminal', amount: 80000, resourceId: TABLE_2, number: 2 });
+    const bar = await t.barSale({ method: 'cash', lines: [{ name: 'Чай', price_kopecks: 15000, quantity: 2 }] });
+    await t.cashRefund({ paymentId: cashTable.paymentId, amount: 20000 });
+    // Наличные до смены не считаются.
+    await t.receptionPayment({ method: 'cash', amount: 99900, at: new Date(now - 5 * 3600_000) });
+    await t.waitPrinted([cashTable.receiptId, bar.receiptId]);
+    // Сервисный свет 70 минут (порог 60) и игра 60 минут — внутри смены.
+    await t.asClub(CLUB_A, async (db) => {
+      await db.query(
+        `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, reason_code, reason_text, created_at, released_at)
+         values ($1, $2, 'service', $3, $5, 'cleaning', 'Уборка', $4, $5)`,
+        [CLUB_A, TABLE_1, RECEPTION_A, new Date(now - 2 * 3600_000), new Date(now - 2 * 3600_000 + 70 * 60_000)],
+      );
+      await db.query(
+        `insert into bl.sessions (club_id, resource_id, status, payer_user_id, started_at, paid_until, ended_at, close_reason, created_at, updated_at)
+         values ($1, $2, 'closed', $3, $4, $5, $5, 'expired', $4, $5)`,
+        [CLUB_A, TABLE_2, GUEST, new Date(now - 90 * 60_000), new Date(now - 30 * 60_000)],
+      );
+      await appendAudit(db, { action: 'service.start', objectType: 'resource', objectId: TABLE_1, reason: 'Уборка', actorType: 'user', actorId: RECEPTION_A, data: { minutes: 70, reason_code: 'cleaning', resource_id: TABLE_1 } });
+    });
+    const expected = 500000 + 160000 + 30000 - 20000;
+    const res = await t.request('POST', `/api/shifts/${shift.id}/close`, { token: reception, body: { actual_cash_kopecks: expected - 50000, comment: 'Пересчитали дважды' } });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.status, 'closed');
+    assert.equal(res.json.expected_cash_kopecks, expected);
+    assert.equal(res.json.actual_cash_kopecks, expected - 50000);
+    assert.equal(res.json.discrepancy_kopecks, -50000);
+    assert.equal(res.json.cash_sales_kopecks, 190000);
+    assert.equal(res.json.cash_refunds_kopecks, 20000);
+
+    const alarm = await t.admin.query("select * from bl.alarms where club_id = $1 and type = 'cash_discrepancy'", [CLUB_A]);
+    assert.equal(alarm.rowCount, 1);
+    assert.equal(alarm.rows[0].level, 'critical');
+    assert.equal(alarm.rows[0].data.discrepancy_kopecks, -50000);
+    const owners = await t.admin.query(
+      `select n.text from bl.notifications n join bl.club_members m on m.user_id = n.user_id and m.club_id = n.club_id
+        where n.club_id = $1 and m.role = 'owner' and n.text like 'Смена №1: расхождение кассы%'`,
+      [CLUB_A],
+    );
+    assert.equal(owners.rowCount, 1);
+    assert.match(owners.rows[0].text, /500\s₽ \(недостача\)/);
+
+    const light = await t.admin.query("select * from bl.alarms where club_id = $1 and type = 'service_light_threshold'", [CLUB_A]);
+    assert.equal(light.rowCount, 1);
+    assert.equal(light.rows[0].data.minutes, 70);
+
+    const audit = await t.admin.query("select data, reason from bl.audit_log where club_id = $1 and action = 'shift.close'", [CLUB_A]);
+    assert.equal(audit.rows[0].data.discrepancy_kopecks, -50000);
+    assert.equal(audit.rows[0].reason, 'Пересчитали дважды');
+
+    // Отчёт уходит владельцу через outbox (notify core).
+    await waitFor(async () => (await t.admin.query('select report_sent_at from bl.shifts where id = $1', [shift.id])).rows[0].report_sent_at, { timeoutMs: 10_000 });
+    const rep = await t.admin.query("select text, level from bl.notifications where club_id = $1 and kind = 'shift.report'", [CLUB_A]);
+    assert.equal(rep.rowCount, 1, 'один владелец — одно уведомление');
+    assert.equal(rep.rows[0].level, 'info');
+    assert.match(rep.rows[0].text, /^Смена №1 закрыта/);
+    assert.match(rep.rows[0].text, /расхождение/);
+    assert.ok(!/\+7\d{10}|79990000099/.test(rep.rows[0].text), 'без телефонов');
+  });
+
+  it('смена ККТ закрывается через мост (close_shift)', async () => {
+    await waitFor(async () => (await kktOps('close_shift'))[0]?.status === 'done', { timeoutMs: 10_000 });
+    assert.equal(t.emu.control.state().shift.state, 'closed');
+  });
+
+  it('отчёт смены: выручка столов и бара по способам, игра, сервисный свет по сотрудникам и столам, ручные действия', async () => {
+    const res = await t.request('GET', `/api/shifts/${shift.id}/report?online=0`, { token: await t.login('manager') });
+    assert.equal(res.status, 200);
+    const r = res.json;
+    assert.equal(r.revenue.tables.by_method.cash, 160000);
+    assert.equal(r.revenue.tables.by_method.card_terminal, 80000);
+    assert.equal(r.revenue.bar.by_method.cash, 30000);
+    assert.equal(r.revenue.total_kopecks, 270000);
+    assert.equal(r.revenue.refunds.total_kopecks, 20000);
+    assert.equal(r.revenue.net_kopecks, 250000);
+    assert.equal(r.play.sessions, 1);
+    assert.equal(r.play.minutes, 60);
+    assert.ok(r.play.utilization_percent > 0);
+    assert.equal(r.service_light.total_minutes, 70);
+    assert.equal(r.service_light.exceeded, true);
+    assert.deepEqual(r.service_light.by_staff.map((s) => [s.user_id, s.name, s.minutes]), [[RECEPTION_A, 'Ресепшн (тест)', 70]]);
+    assert.deepEqual(r.service_light.by_resource.map((x) => [x.number, x.minutes]), [[1, 70]]);
+    assert.ok(r.manual_actions.by_action['service.start'] >= 1);
+    assert.equal(r.cash.discrepancy_kopecks, -50000);
+    assert.equal(r.reconciliation.kkt.ok, true, JSON.stringify(r.reconciliation.kkt));
+    assert.equal(r.reconciliation.kkt.diff_kopecks, 0);
+    assert.equal(r.reconciliation.online.status, 'skipped');
+  });
+
+  it('права: отчёт — владелец и управляющий; ресепшн — 403; чужой клуб — 404', async () => {
+    assert.equal((await t.request('GET', `/api/shifts/${shift.id}/report?online=0`, { token: await t.login('owner') })).status, 200);
+    assert.equal((await t.request('GET', `/api/shifts/${shift.id}/report?online=0`, { token: reception })).status, 403);
+    assert.equal((await t.request('GET', `/api/shifts/${shift.id}/report?online=0`, { token: await t.login('ownerB') })).status, 404);
+    assert.equal((await t.request('GET', `/api/shifts/${shift.id}`, { token: await t.login('ownerB') })).status, 404);
+    assert.equal((await t.request('GET', `/api/clubs/${CLUB_A}/shifts`, { token: reception })).status, 403);
+    const list = await t.request('GET', `/api/clubs/${CLUB_A}/shifts`, { token: await t.login('manager') });
+    assert.equal(list.json.items[0].id, shift.id);
+  });
+
+  it('закрыть ещё раз — 409 shift_closed; новую смену без факта наличных не закрыть (400)', async () => {
+    const again = await t.request('POST', `/api/shifts/${shift.id}/close`, { token: reception, body: { actual_cash_kopecks: 0 } });
+    assert.equal(again.status, 409);
+    assert.equal(again.json.error, 'shift_closed');
+    const open = await t.request('POST', `/api/clubs/${CLUB_A}/shifts`, { token: reception, body: { float_kopecks: 0 } });
+    assert.equal(open.status, 201);
+    assert.equal(open.json.number, 2);
+    assert.ok(new Date(open.json.opened_at) > new Date(shift.closed_at ?? 0));
+    for (const body of [{}, { actual_cash_kopecks: null }, { actual_cash_kopecks: '100' }, { actual_cash_kopecks: 1.5 }]) {
+      const res = await t.request('POST', `/api/shifts/${open.json.id}/close`, { token: reception, body });
+      assert.equal(res.status, 400, JSON.stringify(body));
+    }
+    // Без расхождения — тревоги нет.
+    const ok = await t.request('POST', `/api/shifts/${open.json.id}/close`, { token: reception, body: { actual_cash_kopecks: 0 } });
+    assert.equal(ok.json.discrepancy_kopecks, 0);
+    const alarm = await t.admin.query("select count(*)::int as n from bl.alarms where club_id = $1 and type = 'cash_discrepancy'", [CLUB_A]);
+    assert.equal(alarm.rows[0].n, 1);
+  });
+
+  it('закрытая смена неизменна для app_api (триггер), размен не меняется', async () => {
+    const c = await t.admin.connect();
+    try {
+      await c.query('begin');
+      await c.query('set local role app_api');
+      await c.query("select set_config('app.club_id', $1, true), set_config('app.actor_type', 'system', true)", [CLUB_A]);
+      await assert.rejects(c.query('update bl.shifts set actual_cash_kopecks = 0 where id = $1', [shift.id]), (e) => e.code === '23514' || e.code === '42501');
+    } finally {
+      await c.query('rollback').catch(() => {});
+      c.release();
+    }
+  });
+});

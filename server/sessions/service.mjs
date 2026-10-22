@@ -368,7 +368,7 @@ export function createLightService(opts) {
         `update bl.sessions set paid_until = $2, status = $3, notified = $4::jsonb, updated_at = $5 where id = $1`,
         [s.id, paidUntil, phaseOf(paidUntil, t, s.warn_ms), JSON.stringify(premarkNotified(s.notified, paidUntil, t)), t],
       );
-      await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
+      if (isUuid(p.user_id)) await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
       await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
       await audit(db, {
         action: 'session.extend',
@@ -418,7 +418,7 @@ export function createLightService(opts) {
                                 notified = $4::jsonb, updated_at = $5 where id = $1`,
         [s.id, phaseOf(paidUntil, t, s.warn_ms), paidUntil, JSON.stringify(premarkNotified({}, paidUntil, t)), t],
       );
-      await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
+      if (isUuid(p.user_id)) await addParticipant(db, { session: s, userId: p.user_id, role: 'player', now: t });
       await recordPayment(db, p, { sessionId: s.id, outcome: 'applied', minutes, confirmedAt });
       await audit(db, {
         action: 'session.extend',
@@ -439,6 +439,11 @@ export function createLightService(opts) {
    * db — транзакция outbox; контекст клуба ставится по payload.club_id.
    */
   async function onPaymentConfirmed(db, p) {
+    // Платежи не за стол (бар M2 и др.) — не дело light: без тревоги и без записи.
+    if (p && typeof p === 'object' && p.kind !== 'start' && p.kind !== 'extend' && typeof p.kind === 'string' && /^[a-z_]{1,32}$/.test(p.kind)) {
+      log.debug('payment_confirmed_ignored', { payment_id: isUuid(p.payment_id) ? p.payment_id : null, kind: p.kind });
+      return { result: 'ignored' };
+    }
     if (!validPayment(p)) {
       log.error('payment_confirmed_invalid', { payment_id: isUuid(p?.payment_id) ? p.payment_id : null });
       if (isUuid(p?.club_id)) {

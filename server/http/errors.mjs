@@ -24,6 +24,14 @@ export const ERROR_CODES = new Set([
   'idempotency_conflict',
   // Деньги (backend-money): для стола нет тарифа на это время — 409.
   'no_tariff',
+  // M2 (контракт m2.md): касса, бар, смены, ККТ.
+  'shift_closed',
+  'shift_open',
+  'stop_list',
+  'already_paid',
+  'duplicate',
+  'receipt_not_failed',
+  'receipt_not_unknown',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',

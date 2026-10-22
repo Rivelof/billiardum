@@ -1,0 +1,8 @@
+{
+  "server_url": "wss://localhost:8443/api/kkt/ws",
+  "token_file": "kkt-bridge.token",
+  "atol_url": "http://127.0.0.1:16732",
+  "atol_api": "v2",
+  "name": "Ресепшн (разработка, хост)",
+  "data_dir": "kkt-bridge-data"
+}

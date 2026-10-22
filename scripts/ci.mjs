@@ -1,15 +1,20 @@
-// `npm run ci`: то же, что .github/workflows/ci.yml, локально (контракты M0 §9 и M1 §11).
+// `npm run ci`: то же, что .github/workflows/ci.yml, локально (контракты M0 §9, M1 §11, M2 §2).
 // Только синтетические данные сида (decisions №21). .env не читается.
 //
 // Этапы:
-//   --base    lint → test → test:it симулятора (свой брокер в Docker)
-//   --config  docker compose config, caddy validate, mosquitto --test-config (в контейнерах)
+//   --base    все *.test.mjs кем-то запускаются (scripts/ci-test-files.mjs) → lint → test
+//             (в том числе @billiardum/kkt-bridge) → test:it пакетов, где он есть (симулятор —
+//             свой брокер в Docker)
+//   --config  docker compose config (все профили), caddy validate, WebSocket моста ККТ через
+//             Caddy (scripts/ci-caddy-ws.mjs), mosquitto --test-config — в контейнерах
 //   --web     сборка web/guest и web/admin, бюджет JS гостя (npm run size -w web/guest)
 //   --fw      нативные тесты прошивки: CMake + g++ (firmware/test/native), ctest
 //   --db      чистый Postgres (supabase/postgres) в отдельном контейнере на свободном порту →
 //             роли в supautils.reserved_roles → db:migrate → db:seed → тесты на базе
-//             (scripts/ci-test-db.mjs: @billiardum/db, @billiardum/server, server/test/light
-//             с LIGHT_IT=1 — интеграция light + свой брокер + симулятор; нужен openssl)
+//             (scripts/ci-test-db.mjs: @billiardum/db (все миграции, и 0400–0599 M2),
+//             @billiardum/server, test:db остальных пакетов, server/test/light с LIGHT_IT=1 —
+//             интеграция light + свой брокер + симулятор, нужен openssl; тесты модулей M2 на
+//             базе — server/test/<модуль>/ и server/<модуль>/test/db/)
 //   --pio     pio run -e esp32dev и pio test -e native (нужен PlatformIO, см. PIO_VERSION);
 //             в CI — отдельная задача, в «всё» не входит
 //
@@ -20,17 +25,19 @@
 // пометкой ::notice в сводке. Пакет есть, а нужного скрипта или инструмента нет — ошибка.
 
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { checkCaddyWebSocket, WS_PATH } from './ci-caddy-ws.mjs';
 import { dbTestEnv, lightItProblem, runDbTests } from './ci-test-db.mjs';
+import { uncoveredTests } from './ci-test-files.mjs';
 import {
+  ALL_PROFILE_ARGS,
   capture,
   checkDocker,
   composeArgs,
-  EMU_PROFILE,
   ENV_EXAMPLE,
   fail,
   isMain,
@@ -50,8 +57,10 @@ const READY_TIMEOUT_MS = 180_000;
 
 /** Версия PlatformIO для `--pio` и задачи CI firmware-pio (закреплена). */
 export const PIO_VERSION = '6.1.19';
-const CADDY_IMAGE = 'caddy:2.11.7-alpine';
-const MOSQUITTO_IMAGE = 'eclipse-mosquitto:2.1.2-alpine';
+export const CADDY_IMAGE = 'caddy:2.11.7-alpine';
+export const MOSQUITTO_IMAGE = 'eclipse-mosquitto:2.1.2-alpine';
+/** Образ сервисов Node в deploy/dev/compose.yml (x-node-service). */
+export const NODE_IMAGE = 'node:22.23.4-alpine';
 const FW_NATIVE_DIR = join('firmware', 'test', 'native');
 
 export const STAGES = ['base', 'config', 'web', 'fw', 'db', 'pio'];
@@ -135,19 +144,35 @@ async function startPostgres() {
   return { port, password };
 }
 
+/** Пакеты workspaces, у которых есть скрипт test:it (интеграция без базы, например симулятор). */
+export function itPackages(root = ROOT) {
+  const workspaces = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).workspaces ?? [];
+  return workspaces.filter((dir) => packageScript(dir, 'test:it').ok);
+}
+
 async function stageBase() {
+  log('все *.test.mjs запускает какой-то скрипт CI (scripts/ci-test-files.mjs)');
+  const orphans = uncoveredTests();
+  if (orphans.length > 0) {
+    fail(
+      `эти тесты не запускает ни один скрипт CI:\n  - ${orphans.join('\n  - ')}\n` +
+        'Добавьте их шаблон в скрипт test (или test:db) пакета — зона владельца пакета — или перенесите файлы.',
+    );
+  }
   log('lint');
   await runNpm(['run', 'lint']);
   log('test');
   await runNpm(['test']);
-  log('test:it симулятора');
-  await runNpm(['run', 'test:it', '-w', 'tools/device-sim']);
+  for (const dir of itPackages()) {
+    log(`test:it ${dir}`);
+    await runNpm(['run', 'test:it', '-w', dir]);
+  }
 }
 
 /** Конфиги окружения разработки: Compose, Caddy, Mosquitto — их же образами. */
 async function stageConfig() {
-  log('docker compose config (с профилем эмулятора, переменные из .env.example)');
-  await runChecked('docker', composeArgs(ENV_EXAMPLE, '--profile', EMU_PROFILE, 'config', '--quiet'), {}, 'docker compose config');
+  log('docker compose config (все профили: yookassa-emu, kkt-emu, kkt-bridge; переменные из .env.example)');
+  await runChecked('docker', composeArgs(ENV_EXAMPLE, ...ALL_PROFILE_ARGS, 'config', '--quiet'), {}, 'docker compose config');
 
   log(`caddy validate (${CADDY_IMAGE})`);
   const caddyfile = join(ROOT, 'deploy', 'dev', 'Caddyfile');
@@ -158,6 +183,9 @@ async function stageConfig() {
     {},
     'caddy validate',
   );
+
+  log(`WebSocket ${WS_PATH} через Caddy (мост ККТ): временная сеть, заглушка сервера, ${NODE_IMAGE}`);
+  await checkCaddyWebSocket({ caddyImage: CADDY_IMAGE, nodeImage: NODE_IMAGE });
 
   log(`mosquitto --test-config (${MOSQUITTO_IMAGE})`);
   const conf = join(ROOT, 'deploy', 'dev', 'mosquitto', 'mosquitto.conf');

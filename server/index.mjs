@@ -62,6 +62,8 @@ try {
 }
 
 const server = http.createServer(app.handler);
+// WebSocket моста ККТ (/api/kkt/ws, модуль kkt); остальные upgrade закрываются.
+server.on('upgrade', (req, socket, head) => app.upgrade(req, socket, head));
 server.headersTimeout = 20_000;
 server.requestTimeout = 30_000;
 server.listen(config.port, () => log.info('server_started', { port: config.port, env: config.nodeEnv, dev_login: config.allowDevLogin }));
@@ -76,12 +78,8 @@ async function shutdown(signal) {
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS);
   force.unref();
-  // Новые соединения не принимаются; потоки SSE закрываются, чтобы close() не ждал их.
-  const closed = new Promise((resolve) => server.close(resolve));
-  hub.closeAll();
-  server.closeIdleConnections?.();
-  await closed;
-  await app.stop();
+  // Новые соединения не принимаются; потоки SSE и мосты ККТ закрываются, чтобы close() не ждал их.
+  await app.shutdown(server, { timeoutMs: SHUTDOWN_TIMEOUT_MS - 2_000 });
   await pool.end();
   log.info('server_stopped', {});
   process.exit(0);

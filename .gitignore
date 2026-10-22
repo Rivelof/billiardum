@@ -12,6 +12,8 @@ node_modules/
 # Окружение разработки (deploy/dev): сертификаты, секреты устройств, данные
 deploy/dev/certs/
 deploy/dev/devices.json
+deploy/dev/kkt-bridge.token
+deploy/dev/kkt-bridge-data/
 deploy/dev/data/
 deploy/dev/**/*.log
 

@@ -16,9 +16,44 @@ export const DEVICES_FILE = join(ROOT, 'deploy', 'dev', 'devices.json');
 export const POSTGRES_IMAGE = 'supabase/postgres:15.8.1.085';
 /** Наши роли в supautils.reserved_roles; выполняется внутри контейнера базы. */
 export const RESERVED_ROLES_SCRIPT = join(ROOT, 'deploy', 'postgres', 'reserved-roles.sh');
-/** Эмулятор ЮKassa: сервис Compose в своём профиле, стартует, только когда есть пакет. */
-export const EMU_PROFILE = 'yookassa-emu';
-export const EMU_ENTRY = 'tools/yookassa-emu/index.mjs';
+/**
+ * Токен моста ККТ тестового клуба (пишет регистрация моста в npm run dev, права 0600, вне git).
+ * Настройки моста без секретов — deploy/dev/kkt-bridge.json (в контейнере) и
+ * kkt-bridge.host.json (мост с хоста через Caddy); оба ссылаются на этот файл (token_file).
+ */
+export const KKT_TOKEN_FILE = join(ROOT, 'deploy', 'dev', 'kkt-bridge.token');
+
+/**
+ * Необязательные сервисы Compose: каждый в своём профиле и стартует, только когда есть
+ * все его файлы (пакеты пишут соседи параллельно). `needs` — пути от корня репозитория.
+ */
+export const OPTIONAL_SERVICES = [
+  {
+    service: 'yookassa-emu',
+    needs: ['tools/yookassa-emu/index.mjs'],
+    owner: 'backend-money',
+    without: 'эмулятор ЮKassa не запускаю, /pay/ ответит 502',
+  },
+  {
+    service: 'kkt-emu',
+    needs: ['tools/kkt-bridge/emu/index.mjs'],
+    owner: 'backend-kkt',
+    without: 'эмулятор ККТ АТОЛ не запускаю',
+  },
+  {
+    service: 'kkt-bridge',
+    needs: ['tools/kkt-bridge/index.mjs', 'deploy/dev/kkt-bridge.token'],
+    owner: 'backend-kkt',
+    without: 'мост ККТ не запускаю, чеки ККТ останутся receipt_pending',
+  },
+];
+/** Профиль сервиса совпадает с его именем. */
+export const ALL_PROFILE_ARGS = OPTIONAL_SERVICES.flatMap((s) => ['--profile', s.service]);
+
+/** Чего не хватает необязательному сервису (пути от корня); пусто — можно запускать. */
+export function missingFiles(svc, root = ROOT) {
+  return svc.needs.filter((p) => !existsSync(join(root, p)));
+}
 
 /** Ошибка, понятная человеку: печатается без стека. */
 export class UserError extends Error {}
@@ -148,14 +183,20 @@ export function packageScript(pkgDir, script) {
 /**
  * Зависимости на хосте не совпадают с package-lock.json: не хватает пакета
  * или ссылки на workspace. Необязательные пакеты (под другую ОС) не учитываются.
+ * Ещё — workspace, чей package.json появился после package-lock.json (пакет пишет сосед):
+ * его нет в package-lock.json, и `npm ci` в CI отказался бы; `npm install` допишет.
  */
-export function missingDependencies() {
-  const lockFile = join(ROOT, 'package-lock.json');
-  if (!existsSync(join(ROOT, 'node_modules'))) return ['node_modules'];
+export function missingDependencies(root = ROOT) {
+  const lockFile = join(root, 'package-lock.json');
+  if (!existsSync(join(root, 'node_modules'))) return ['node_modules'];
   if (!existsSync(lockFile)) return [];
   const lock = JSON.parse(readFileSync(lockFile, 'utf8'));
-  return Object.entries(lock.packages ?? {})
+  const packages = lock.packages ?? {};
+  const workspaces = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).workspaces ?? [];
+  const newWorkspaces = workspaces.filter((dir) => existsSync(join(root, dir, 'package.json')) && !(dir in packages));
+  const missing = Object.entries(packages)
     .filter(([path, meta]) => path.startsWith('node_modules/') && !meta.optional)
     .map(([path]) => path)
-    .filter((path) => !existsSync(join(ROOT, path)));
+    .filter((path) => !existsSync(join(root, path)));
+  return [...missing, ...newWorkspaces];
 }

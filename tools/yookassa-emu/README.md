@@ -31,7 +31,7 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 
 | Метод | Что делает |
 |---|---|
-| `POST /v3/payments` | `amount {value: "1600.00", currency: "RUB"}`, `capture` (по умолчанию `false`, как у ЮKassa), `confirmation {type: "redirect", return_url}`, `payment_method_data.type` (`bank_card`, `sbp`), `description` ≤ 128, `metadata` (≤ 16 строк), **`receipt` обязателен**. Ответ — платёж `pending` с `confirmation.confirmation_url = {PUBLIC_URL}/pay/{id}` |
+| `POST /v3/payments` | `amount {value: "1600.00", currency: "RUB"}`, `capture` (по умолчанию `false`, как у ЮKassa), `confirmation {type: "redirect", return_url}` или `{type: "qr"}` (только СБП; в ответе `confirmation {type: "qr", confirmation_data}` — в эмуляторе это ссылка на `/pay/{id}`, её можно отсканировать телефоном), `payment_method_data.type` (`bank_card`, `sbp`), `description` ≤ 128, `metadata` (≤ 16 строк), **`receipt` обязателен**. Ответ — платёж `pending` с `confirmation.confirmation_url = {PUBLIC_URL}/pay/{id}` |
 | `GET /v3/payments/{id}` | платёж своего магазина (чужой — `404`) |
 | `POST /v3/payments/{id}/capture` | только `waiting_for_capture`; `amount` ≤ заморожённой; при другой сумме — чек на неё обязателен |
 | `POST /v3/payments/{id}/cancel` | только `waiting_for_capture` → `canceled` (`merchant`, `canceled_by_merchant`) |
@@ -46,7 +46,7 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 
 ## Страница подтверждения
 
-`GET /pay/{id}` — сумма, способ и кнопки «Оплатить» и «Отказ» (без внешних ресурсов, CSP `default-src 'none'`). «Оплатить»: `capture: true` → `succeeded`, иначе `waiting_for_capture`; «Отказ» → `canceled` (`payment_network`, `general_decline`). Затем `303` на `return_url` и вебхук `payment.succeeded`, `payment.waiting_for_capture` или `payment.canceled` (`refund.succeeded` — после возврата) на адрес клуба: `{type: "notification", event, object}`.
+`GET /pay/{id}` — сумма, способ и кнопки «Оплатить» и «Отказ» (без внешних ресурсов, CSP `default-src 'none'`). «Оплатить»: `capture: true` → `succeeded`, иначе `waiting_for_capture`; «Отказ» → `canceled` (`payment_network`, `general_decline`). Затем `303` на `return_url` (у QR без `return_url` — обратно на страницу со статусом) и вебхук `payment.succeeded`, `payment.waiting_for_capture` или `payment.canceled` (`refund.succeeded` — после возврата) на адрес клуба: `{type: "notification", event, object}`.
 
 ## Управление для тестов (`/__emu/...`)
 
@@ -64,6 +64,6 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 
 ## Тесты
 
-`npm test -w @billiardum/yookassa-emu` — 22 теста: авторизация, ключ идемпотентности, отказ без чека и при несовпадении суммы позиций, форма объекта, страница подтверждения, вебхуки с повтором до 200, двухстадийный платёж, возвраты, управление.
+`npm test -w @billiardum/yookassa-emu` — 24 теста: авторизация, ключ идемпотентности, отказ без чека и при несовпадении суммы позиций, форма объекта, QR для СБП, страница подтверждения, вебхуки с повтором до 200, двухстадийный платёж, возвраты, управление.
 
 Поля, в которых эмулятор опирается на память, а не на проверенную документацию (сверить с настоящим магазином, когда откроется `api.yookassa.ru`): ответ на повтор `Idempotence-Key` с другим телом; `capture` по умолчанию; требование чека при `capture` с меньшей суммой и при возврате; `quantity` числом или строкой; диапазон `vat_code` (1–12, включая ставки 5 %, 7 % и 22 % с 2026 года); поддержка СБП в двухстадийной оплате; `expires_at` заморозки.

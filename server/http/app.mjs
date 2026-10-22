@@ -14,11 +14,20 @@ import { streamTokens as defaultStreamTokens } from './stream-tokens.mjs';
 import { createHttpHandler } from './server.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 
-/** Модули по порядку подъёма (контракт §2.1): light, затем money. */
+/**
+ * Модули по порядку подъёма (контракт M1 §2.1, M2): light, money, затем каталог и склад бара,
+ * заказы и касса (pos), ККТ и смены (kkt). Останавливаются в обратном порядке.
+ * Каталог и склад таймеров не держат — init/stop только для порядка и лога.
+ */
 export const MODULES = [
   { name: 'light', spec: '../sessions/index.mjs' },
   { name: 'money', spec: '../payments/index.mjs' },
+  { name: 'catalog', spec: '../catalog/index.mjs' },
+  { name: 'stock', spec: '../stock/index.mjs' },
+  { name: 'pos', spec: '../orders/index.mjs' },
+  { name: 'kkt', spec: '../kkt/index.mjs' },
 ];
+export const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 /** Импорт модуля соседа; нет файла — null (сервер работает без него), ошибка внутри — бросается. */
 export async function importOptional(spec, base = import.meta.url) {
@@ -126,6 +135,50 @@ export async function createApp({
     router,
     handler,
     janitor,
+    /**
+     * Событие upgrade HTTP-сервера (WebSocket моста ККТ, /api/kkt/ws). Не взял ни один
+     * модуль — соединение закрывается.
+     */
+    upgrade(req, socket, head) {
+      let taken = false;
+      try {
+        taken = Boolean(ctx.modules.kkt?.handleUpgrade?.(req, socket, head));
+      } catch (err) {
+        log.error('upgrade_failed', { error: err.message });
+      }
+      if (!taken) socket.destroy();
+    },
+    /** Закрыть долгие соединения (потоки SSE, мосты ККТ), чтобы server.close() не ждал их. */
+    closeConnections() {
+      sse.closeAll();
+      try {
+        ctx.modules.kkt?.closeConnections?.();
+      } catch (err) {
+        log.error('close_connections_failed', { error: err.message });
+      }
+    },
+    /**
+     * Остановка по SIGTERM: не принимать новые соединения, закрыть долгие, дождаться
+     * HTTP-сервера, остановить модули и outbox. Пул базы закрывает вызывающий.
+     */
+    async shutdown(server, { timeoutMs = SHUTDOWN_TIMEOUT_MS } = {}) {
+      const closed = new Promise((resolve) => server.close(resolve));
+      this.closeConnections();
+      server.closeIdleConnections?.();
+      let timer;
+      const timedOut = await Promise.race([
+        closed.then(() => false),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(true), timeoutMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (timedOut) {
+        log.warn('http_close_timeout', {});
+        server.closeAllConnections?.();
+      }
+      await this.stop();
+    },
     async stop() {
       clearInterval(janitorTimer);
       sse.closeAll();

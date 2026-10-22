@@ -1,4 +1,4 @@
-# CI «Бильярдума» (контракты M0 §9 и M1 §11). Локально то же самое: `npm run ci`
+# CI «Бильярдума» (контракты M0 §9, M1 §11, M2 §2). Локально то же самое: `npm run ci`
 # (этапы по отдельности: `npm run ci -- --web`, `--fw`, `--config`, `--db`, `--pio`).
 # Только синтетические данные сида (decisions №21): раннеры GitHub вне РФ.
 #
@@ -22,8 +22,9 @@ jobs:
   ci:
     name: lint, test, конфиги, миграции, тесты на базе и брокере
     runs-on: ubuntu-24.04
-    # --base и --config — минуты; --db — до 20 мин у сторожа тестов light (scripts/ci-test-db.mjs).
-    timeout-minutes: 40
+    # --base и --config — минуты; --db — до 20 мин у сторожа на каждый каталог тестов на базе
+    # (light, затем модули M2: scripts/ci-test-db.mjs).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,25 +38,29 @@ jobs:
       - run: npm ci
 
       # Образы заранее: время скачивания не попадает в ожидание готовности контейнеров.
-      - name: Образы Postgres, брокера и Caddy
+      - name: Образы Postgres, брокера, Caddy и Node
         run: |
           docker pull supabase/postgres:15.8.1.085
           docker pull eclipse-mosquitto:2.1.2-alpine
           docker pull caddy:2.11.7-alpine
+          docker pull node:22.23.4-alpine
 
-      # lint, npm test, test:it симулятора (свой брокер в Docker).
-      - name: lint, test, test:it симулятора
+      # Все *.test.mjs кем-то запускаются, lint, npm test (и @billiardum/kkt-bridge),
+      # test:it пакетов, где он есть (симулятор — свой брокер в Docker).
+      - name: lint, test, test:it
         run: node scripts/ci.mjs --base
 
-      # docker compose config, caddy validate, mosquitto --test-config — образами из compose.yml.
+      # docker compose config (все профили), caddy validate, WebSocket моста ККТ
+      # /api/kkt/ws через Caddy (заглушка сервера), mosquitto --test-config — образами из compose.yml.
       - name: Конфиги окружения разработки
         run: node scripts/ci.mjs --config
 
-      # Одноразовый Postgres → роли в supautils.reserved_roles → db:migrate → db:seed →
-      # test:db @billiardum/db и @billiardum/server → server/test/light с LIGHT_IT=1:
-      # интеграция light + свой брокер (TLS, Dynamic Security) + симулятор, p95 до ack.
+      # Одноразовый Postgres → роли в supautils.reserved_roles → db:migrate (все миграции,
+      # и 0400–0599 M2) → db:seed → test:db @billiardum/db, @billiardum/server и остальных
+      # пакетов → server/test/light с LIGHT_IT=1: интеграция light + свой брокер (TLS,
+      # Dynamic Security) + симулятор, p95 до ack → тесты модулей M2 на базе (касса, ККТ, смены).
       - name: Миграции, сид, тесты на базе и брокере
-        timeout-minutes: 30
+        timeout-minutes: 50
         run: node scripts/ci.mjs --db
 
   web:

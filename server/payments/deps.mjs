@@ -12,6 +12,7 @@ const MODULES = {
   alarms: { spec: '../alarms/index.mjs', ctxKey: 'alarms', need: ['raise'] },
   notify: { spec: '../notify/index.mjs', ctxKey: 'notify', need: ['sendToClubStaff'] },
   sse: { spec: '../http/sse.mjs', ctxKey: 'sse', need: ['publish'] },
+  shifts: { spec: '../shifts/api.mjs', ctxKey: 'shiftsApi', need: ['currentShift'] },
 };
 
 const imported = new Map();
@@ -74,6 +75,8 @@ function stubs(log) {
       },
     },
     sse: { publish() {} },
+    // Без модуля смен (kkt) деньги на ресепшене не принимаются: ошибка, откат (decisions №93).
+    shifts: missing('shifts'),
   };
 }
 

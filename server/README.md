@@ -14,7 +14,7 @@
 
 ## Сборка (`index.mjs`, `http/app.mjs`)
 
-Общий контекст `ctx` (контракт §2.1): `{ config, log, pool, clock, outbox, alarms, notify, sse, audit, telegram, bridge, withContext, modules }`. `withContext` — функция M0 `withContext(pool, { clubId, userId, actorType }, fn)`. Модули `server/sessions/index.mjs` (light) и `server/payments/index.mjs` (money) поднимаются по порядку через `init(ctx)` и останавливаются `stop()` в обратном порядке. Нет файла модуля — лог `module_missing`, сервер работает без него; пока нет light, мост MQTT создаётся как в M0 (`bridge_fallback_m0`). Ошибка внутри модуля — сервер не стартует.
+Общий контекст `ctx` (контракт §2.1): `{ config, log, pool, clock, outbox, alarms, notify, sse, audit, telegram, bridge, withContext, modules }`. `withContext` — функция M0 `withContext(pool, { clubId, userId, actorType }, fn)`. Модули поднимаются по порядку через `init(ctx)` и останавливаются `stop()` в обратном порядке (`http/app.mjs`, `MODULES`): `sessions` (light) → `payments` (money) → `catalog` → `stock` → `orders` (pos) → `kkt`. WebSocket моста ККТ: событие `upgrade` HTTP-сервера отдаётся `kkt.handleUpgrade` (`/api/kkt/ws`), остальные upgrade закрываются. Остановка (`app.shutdown`): `server.close()`, затем сразу закрываются потоки SSE и мосты ККТ (`kkt.closeConnections`), иначе `close()` ждал бы их; затем модули и outbox. Нет файла модуля — лог `module_missing`, сервер работает без него; пока нет light, мост MQTT создаётся как в M0 (`bridge_fallback_m0`). Ошибка внутри модуля — сервер не стартует.
 
 ## HTTP API (`api/router.mjs`)
 

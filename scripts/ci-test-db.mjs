@@ -1,19 +1,24 @@
 // `npm run test:db`: все тесты на настоящем Postgres (контракт M1 §11).
 //
-//   1. npm run test:db -w @billiardum/db       — миграции, RLS, журнал (supabase/tests)
+//   1. npm run test:db -w @billiardum/db       — миграции (все, и 0400–0599 M2), RLS, журнал
+//                                               (supabase/tests)
 //   2. npm run test:db -w @billiardum/server   — вход, outbox, маршруты core (server/test/db)
-//   3. LIGHT_IT=1 node --test --test-concurrency=1 --test-timeout=600000 "server/test/light/*.test.mjs"
+//   3. npm run test:db остальных пакетов, где этот скрипт есть (например @billiardum/kkt-bridge)
+//   4. LIGHT_IT=1 node --test --test-concurrency=1 --test-timeout=600000 "server/test/light/*.test.mjs"
 //      — сессии и контроллер (backend-light) на том же DATABASE_ADMIN_URL, 10 минут на тест,
 //      сторож всего прогона — 20 минут (зависший it-sim не держит CI бесконечно); интеграция
 //      light + брокер + симулятор (it-sim) сама поднимает и удаляет свой брокер
 //      bl-light-it-* (TLS, Dynamic Security; нужны docker и openssl).
+//   5. Тесты модулей на базе (M2: касса backend-pos, ККТ и смены backend-kkt) — каждый каталог
+//      server/test/<модуль>/ (кроме db и light) и server/<модуль>/test/db/ с *.test.mjs,
+//      по одному файлу, тот же предел и сторож, что у light.
 //
 // Каждый тест создаёт свою временную базу и удаляет её; рабочую базу и брокер
 // `npm run dev` не трогает. DATABASE_ADMIN_URL — из окружения, иначе из .env
 // (как у supabase/lib/db.mjs).
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { capture, ENV_FILE, fail, isMain, makeLogger, readEnvFile, ROOT, runMain, runNpm, UserError } from './dev-lib.mjs';
@@ -25,9 +30,40 @@ export const LIGHT_TESTS = 'server/test/light/*.test.mjs';
 export const LIGHT_TEST_TIMEOUT_MS = 10 * 60_000;
 export const LIGHT_WATCHDOG_MS = 20 * 60_000;
 
-/** Аргументы node для тестов light. */
-export function lightTestArgs() {
-  return ['--test', '--test-concurrency=1', `--test-timeout=${LIGHT_TEST_TIMEOUT_MS}`, LIGHT_TESTS];
+/** Аргументы node для тестов light (или другого каталога тестов на базе). */
+export function lightTestArgs(pattern = LIGHT_TESTS) {
+  return ['--test', '--test-concurrency=1', `--test-timeout=${LIGHT_TEST_TIMEOUT_MS}`, pattern];
+}
+
+/** Тесты модулей M2 на базе, которых ждём (для подсказки в логе, пока каталога нет). */
+export const EXPECTED_MODULE_TESTS = [
+  { dir: 'server/test/pos', owner: 'backend-pos' },
+  { dir: 'server/test/kkt', owner: 'backend-kkt' },
+];
+
+const hasTests = (dir) => existsSync(dir) && readdirSync(dir).some((f) => f.endsWith('.test.mjs'));
+const subdirs = (dir) => (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : []);
+
+/**
+ * Каталоги тестов модулей на базе: server/test/<модуль>/ (кроме db — это test:db сервера —
+ * и light — свой запуск) и server/<модуль>/test/db/, где есть *.test.mjs. Пути от корня, по порядку.
+ */
+export function moduleDbTestDirs(root = ROOT) {
+  const dirs = [
+    ...subdirs(join(root, 'server', 'test')).filter((d) => !['db', 'light'].includes(d)).map((d) => `server/test/${d}`),
+    ...subdirs(join(root, 'server')).filter((d) => d !== 'test').map((d) => `server/${d}/test/db`),
+  ];
+  return dirs.filter((d) => hasTests(join(root, d))).sort();
+}
+
+/** Пакеты (кроме db и server), у которых есть скрипт test:db. */
+export function extraDbTestPackages(root = ROOT) {
+  const workspaces = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).workspaces ?? [];
+  return workspaces.filter((dir) => {
+    if (['supabase', 'server'].includes(dir)) return false;
+    const file = join(root, dir, 'package.json');
+    return existsSync(file) && Boolean(JSON.parse(readFileSync(file, 'utf8')).scripts?.['test:db']);
+  });
 }
 
 /**
@@ -91,20 +127,36 @@ export async function runDbTests(env, { strict = false } = {}) {
   await runNpm(['run', 'test:db', '-w', '@billiardum/db'], { env });
   log('npm run test:db -w @billiardum/server');
   await runNpm(['run', 'test:db', '-w', '@billiardum/server'], { env });
+  for (const dir of extraDbTestPackages()) {
+    log(`npm run test:db -w ${dir}`);
+    await runNpm(['run', 'test:db', '-w', dir], { env });
+  }
 
   if (!existsSync(join(ROOT, 'server', 'test', 'light'))) {
     log('пропуск: нет server/test/light (зона backend-light)');
-    return;
+  } else {
+    if (env.LIGHT_IT === '1') {
+      const problem = lightItProblem();
+      if (problem && strict) fail(`интеграция light (it-sim) не запустится: ${problem}`);
+      if (problem) log(`внимание: ${problem} — it-sim будет пропущен`);
+    }
+    log(`LIGHT_IT=${env.LIGHT_IT} node ${lightTestArgs().join(' ')} (сторож ${LIGHT_WATCHDOG_MS / 60_000} мин)`);
+    // По одному файлу: интеграция меряет p95 в реальном времени, соседи не должны её грузить.
+    const code = await runWithWatchdog(process.execPath, lightTestArgs(), { env, limitMs: LIGHT_WATCHDOG_MS, what: 'тесты light' });
+    if (code !== 0) fail(`тесты light: код выхода ${code}`);
   }
-  if (env.LIGHT_IT === '1') {
-    const problem = lightItProblem();
-    if (problem && strict) fail(`интеграция light (it-sim) не запустится: ${problem}`);
-    if (problem) log(`внимание: ${problem} — it-sim будет пропущен`);
+
+  const dirs = moduleDbTestDirs();
+  if (dirs.length === 0) {
+    const expected = EXPECTED_MODULE_TESTS.map((m) => `${m.dir} — ${m.owner}`).join(', ');
+    log(`пропуск: тестов модулей на базе ещё нет (${expected} или server/<модуль>/test/db)`);
   }
-  log(`LIGHT_IT=${env.LIGHT_IT} node ${lightTestArgs().join(' ')} (сторож ${LIGHT_WATCHDOG_MS / 60_000} мин)`);
-  // По одному файлу: интеграция меряет p95 в реальном времени, соседи не должны её грузить.
-  const code = await runWithWatchdog(process.execPath, lightTestArgs(), { env, limitMs: LIGHT_WATCHDOG_MS, what: 'тесты light' });
-  if (code !== 0) fail(`тесты light: код выхода ${code}`);
+  for (const dir of dirs) {
+    const args = lightTestArgs(`${dir}/*.test.mjs`);
+    log(`node ${args.join(' ')} (сторож ${LIGHT_WATCHDOG_MS / 60_000} мин)`);
+    const code = await runWithWatchdog(process.execPath, args, { env, limitMs: LIGHT_WATCHDOG_MS, what: `тесты ${dir}` });
+    if (code !== 0) fail(`тесты ${dir}: код выхода ${code}`);
+  }
 }
 
 async function main() {

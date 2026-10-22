@@ -1,4 +1,4 @@
-# Окружение разработки «Бильярдума» (контракты M0 §2 и M1 §11).
+# Окружение разработки «Бильярдума» (контракты M0 §2, M1 §11, M2 §2 и §6).
 # Запускать через `npm run dev` (scripts/dev.mjs): он создаёт .env и сертификаты,
 # применяет миграции, сид и провижининг до старта server и device-sim и собирает
 # фронтенд на хосте до старта caddy.
@@ -208,6 +208,61 @@ services:
       retries: 3
       start_period: 30s
       start_interval: 2s
+
+  # Эмулятор веб-сервера драйвера АТОЛ (контракт M2, пакет backend-kkt): задания на чек
+  # по HTTP JSON, порт 16732 как у настоящего веб-сервера, только внутри сети Compose.
+  # Профиль: стартует, только когда есть tools/kkt-bridge/emu/index.mjs (scripts/dev.mjs).
+  kkt-emu:
+    <<: *node-service
+    profiles: [kkt-emu]
+    command: ["node", "tools/kkt-bridge/emu/index.mjs"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ATOL_EMU_PORT: "16732"
+      # Все интерфейсы контейнера (по умолчанию эмулятор слушает 127.0.0.1): иначе мост
+      # из сети Compose не достучится.
+      ATOL_EMU_HOST: 0.0.0.0
+      # Управление для тестов /__emu/* (выключить ККТ, конец бумаги, список документов)
+      # наружу не опубликовано (ни порт, ни Caddy), поэтому без ATOL_EMU_CONTROL_TOKEN;
+      # только изнутри стека (README):
+      # docker compose -p billiardum exec kkt-emu wget -qO- http://127.0.0.1:16732/__emu/state
+    healthcheck:
+      # Порт принимает соединения (любой HTTP-сервер эмулятора).
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('node:net').connect(16732, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+  # Мост ККТ тестового клуба (tools/kkt-bridge, decisions №77, №85) — как служба на ПК
+  # ресепшена: исходящее WebSocket-соединение к серверу, задания на чек — в эмулятор АТОЛ.
+  # Настройки — deploy/dev/kkt-bridge.json (в git, без секретов): сервер ws://server:3000
+  # напрямую по сети Compose, а не через Caddy — у сертификата Caddy нет имени caddy, а
+  # корень его CA лежит в томе вместе с закрытым ключом; так мост не зависит от пересоздания
+  # caddy. Путь через Caddy (wss://…/api/kkt/ws, как на ПК ресепшена) проверяет
+  # npm run ci -- --config (scripts/ci-caddy-ws.mjs), вручную — kkt-bridge.host.json (README).
+  # Токен — deploy/dev/kkt-bridge.token (права 0600, вне git), его пишет регистрация моста
+  # в npm run dev. Журнал моста — /var/lib/kkt-bridge в контейнере: живёт, пока жив
+  # контейнер, как и память эмулятора (оба пересоздаёт npm run dev).
+  # Профиль: стартует, только когда есть tools/kkt-bridge/index.mjs и токен.
+  kkt-bridge:
+    <<: *node-service
+    profiles: [kkt-bridge]
+    command: ["node", "tools/kkt-bridge/index.mjs", "--config", "deploy/dev/kkt-bridge.json"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      server:
+        condition: service_healthy
+      kkt-emu:
+        condition: service_healthy
+        # Без эмулятора (профиль kkt-emu выключен) мост ждёт только сервер.
+        required: false
 
   caddy:
     image: caddy:2.11.7-alpine

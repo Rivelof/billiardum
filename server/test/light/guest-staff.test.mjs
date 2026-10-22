@@ -157,6 +157,30 @@ describe('гость и персонал', { skip: SKIP }, () => {
     assert.equal(st.status, 'offline');
   });
 
+  it('payment.confirmed бара (M2, kind bar, без стола и гостя) — игнорируется: ни сессии, ни тревоги', async () => {
+    const before = (await t.q('select count(*)::int as n from bl.session_payments')).rows[0].n;
+    const res = await h.outbox.deliver('payment.confirmed', {
+      payment_id: '0b000000-0000-4000-8000-000000000001',
+      club_id: CLUB,
+      quote_id: null,
+      kind: 'bar',
+      session_id: null,
+      resource_id: null,
+      user_id: null,
+      minutes: null,
+      unlimited: false,
+      amount_kopecks: 45_000,
+      method: 'sbp',
+    });
+    assert.deepEqual(res, { result: 'ignored' });
+    assert.equal((await t.q('select count(*)::int as n from bl.session_payments')).rows[0].n, before);
+    assert.equal((await t.q("select count(*)::int as n from bl.alarms where type = 'payment_unapplied'")).rows[0].n, 0);
+    // Испорченный платёж за стол по-прежнему поднимает тревогу.
+    const bad = await h.outbox.deliver('payment.confirmed', { payment_id: '0b000000-0000-4000-8000-000000000002', club_id: CLUB, kind: 'start', amount_kopecks: 1 });
+    assert.equal(bad.result, 'invalid');
+    assert.equal((await t.q("select level from bl.alarms where type = 'payment_unapplied'")).rows[0].level, 'critical');
+  });
+
   it('стол занят к моменту оплаты — автоматический возврат и тревога payment_conflict', async () => {
     const sid = await start(1, GUEST(1), 60);
     const pay = await makePayment(t, { resource: 1, user: GUEST(2), minutes: 60, at: h.time.now() });

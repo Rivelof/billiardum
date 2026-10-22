@@ -1,0 +1,9 @@
+{
+  "server_url": "ws://server:3000/api/kkt/ws",
+  "allow_insecure": true,
+  "token_file": "kkt-bridge.token",
+  "atol_url": "http://kkt-emu:16732",
+  "atol_api": "v2",
+  "name": "Ресепшн (разработка)",
+  "data_dir": "/var/lib/kkt-bridge"
+}

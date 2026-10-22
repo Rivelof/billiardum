@@ -10,6 +10,7 @@
     "supabase",
     "server",
     "tools/device-sim",
+    "tools/kkt-bridge",
     "tools/yookassa-emu",
     "web/guest",
     "web/admin"

@@ -14,7 +14,7 @@ import { MoneyError, fromNeighbor } from './errors.mjs';
 import { yookassaReceipt } from './receipt.mjs';
 import { confirmedPayload, insertReceipt, sessionIdOf, stableUuid } from './records.mjs';
 import { clientFor, loadPaymentSettings } from './settings.mjs';
-import { amountKopecks, YooKassaError } from './yookassa.mjs';
+import { amountKopecks, formatValue, YooKassaError } from './yookassa.mjs';
 import { createReceptionRequest, receptionResponse } from '../reception/index.mjs';
 
 export const METHODS = Object.freeze(['sbp', 'card', 'reception']);
@@ -111,40 +111,84 @@ export async function payQuote(db, deps, info, config) {
   if (method === 'card' && !settings.card) throw new MoneyError('bad_request', 'карта недоступна');
 
   const paymentId = stableUuid(`bl.payment/${quoteId}/${method}`);
-  const ykKey = `q-${quoteId}-${method}`;
   const receipt = yookassaReceipt({ phone, resourceNumber: number, minutes: plan.unlimited && plan.capture === false ? null : plan.minutes, amountKopecks: plan.amount, settings });
-  const body = {
-    amount: { value: (plan.amount / 100).toFixed(2), currency: 'RUB' },
+  const { payment } = await createYooKassaPayment(db, deps, config, {
+    settings,
+    clubId,
+    paymentId,
+    idempotenceKey: `q-${quoteId}-${method}`,
+    requestKey: key,
+    kind: quote.kind,
+    method,
+    amountKopecks: plan.amount,
     capture: plan.capture,
-    confirmation: { type: 'redirect', return_url: returnUrl(config, paymentId) },
-    payment_method_data: { type: method === 'sbp' ? 'sbp' : 'bank_card' },
+    receipt,
+    confirmation: { type: 'redirect', returnUrl: returnUrl(config, paymentId) },
     description: `Стол ${number}, ${plan.unlimited && !plan.capture ? 'без лимита' : formatDuration(plan.minutes)}`,
-    metadata: { club_id: clubId, quote_id: quoteId, kind: quote.kind, payment_id: paymentId },
+    metadata: { quote_id: quoteId },
+    quoteId,
+    sessionId: quote.session_id,
+    resourceId: quote.resource_id,
+    userId,
+    minutes: plan.minutes,
+    unlimited: plan.unlimited,
+    phone,
+    now,
+  });
+  await db.query('update bl.quotes set used_at = $2 where id = $1', [quoteId, now]);
+  return { status: 200, json: paymentResponse(payment) };
+}
+
+/**
+ * Платёж ЮKassa — общий путь стола (payQuote) и бара (api.mjs createOnlinePayment).
+ * Ключ ЮKassa и id платежа даёт вызывающий (детерминированные: повтор после сбоя связи
+ * получает тот же платёж ЮKassa). Строка платежа и чек продажи пишутся в транзакции
+ * вызывающего; уже записанный платёж с этим id возвращается как есть.
+ * metadata ЮKassa: club_id, kind, payment_id и поля вызывающего (quote_id, sale_id).
+ * confirmation: { type: 'redirect', returnUrl } или { type: 'qr' } (СБП на экране кассы);
+ * в confirmation_url хранится адрес страницы оплаты или данные QR.
+ * @returns {Promise<{ payment: object, confirmation: { type: 'redirect', url } | { type: 'qr', confirmation_data } | null }>}
+ */
+export async function createYooKassaPayment(db, deps, config, spec) {
+  const { settings, clubId, paymentId, idempotenceKey, kind, method, amountKopecks: amount, capture = true, receipt, confirmation, now } = spec;
+  const existing = (await db.query('select * from bl.payments where id = $1', [paymentId])).rows[0];
+  if (existing) return { payment: existing, confirmation: confirmationOf(existing, confirmation.type) };
+  const body = {
+    amount: { value: formatValue(amount), currency: 'RUB' },
+    capture,
+    confirmation: confirmation.type === 'qr' ? { type: 'qr' } : { type: 'redirect', return_url: confirmation.returnUrl },
+    payment_method_data: { type: method === 'sbp' ? 'sbp' : 'bank_card' },
+    description: String(spec.description).slice(0, 128),
+    metadata: { ...(spec.metadata ?? {}), club_id: clubId, kind, payment_id: paymentId },
     receipt,
   };
   let remote;
   try {
-    const client = clientFor(settings, config);
-    remote = await client.createPayment(body, ykKey);
+    remote = await clientFor(settings, config).createPayment(body, idempotenceKey);
   } catch (err) {
-    throw providerFail(err, deps.log, { quote_id: quoteId, method });
+    throw providerFail(err, deps.log, { payment_id: paymentId, method });
   }
   const remoteAmount = amountKopecks(remote?.amount);
-  if (typeof remote?.id !== 'string' || remoteAmount !== plan.amount || !['pending', 'waiting_for_capture', 'succeeded', 'canceled'].includes(remote.status)) {
-    deps.log?.error?.('yookassa_bad_create', { quote_id: quoteId, status: remote?.status });
+  if (typeof remote?.id !== 'string' || remoteAmount !== amount || !['pending', 'waiting_for_capture', 'succeeded', 'canceled'].includes(remote.status)) {
+    deps.log?.error?.('yookassa_bad_create', { payment_id: paymentId, status: remote?.status });
     throw new MoneyError('payment_failed', 'ответ ЮKassa не совпал с запросом', 503);
   }
-  const confirmationUrl = remote.confirmation?.confirmation_url ?? null;
+  const conf = remote.confirmation ?? null;
+  if (remote.status === 'pending' && confirmation.type === 'qr' && (conf?.type !== 'qr' || typeof conf.confirmation_data !== 'string')) {
+    deps.log?.error?.('yookassa_no_qr', { payment_id: paymentId });
+    throw new MoneyError('payment_failed', 'ЮKassa не вернула QR', 503);
+  }
+  const stored = conf?.type === 'qr' ? conf.confirmation_data : conf?.confirmation_url ?? null;
   const ins = await db.query(
     `insert into bl.payments (id, club_id, resource_id, user_id, quote_id, session_id, kind, provider, method,
                               provider_payment_id, idempotence_key, request_key, status, amount_kopecks, capture,
                               minutes, unlimited, confirmation_url, created_at, updated_at)
      values ($1, $2, $3, $4, $5, $6, $7, 'yookassa', $8, $9, $10, $11, 'pending', $12, $13, $14, $15, $16, $17, $17)
      returning *`,
-    [paymentId, clubId, quote.resource_id, userId, quoteId, quote.session_id, quote.kind, method, remote.id, ykKey, key,
-      plan.amount, plan.capture, plan.minutes, plan.unlimited, confirmationUrl, now],
+    [paymentId, clubId, spec.resourceId ?? null, spec.userId ?? null, spec.quoteId ?? null, spec.sessionId ?? null, kind, method,
+      remote.id, idempotenceKey, spec.requestKey ?? null, amount, capture, spec.minutes ?? null, Boolean(spec.unlimited),
+      typeof stored === 'string' && stored.length <= 2000 ? stored : null, now],
   );
-  await db.query('update bl.quotes set used_at = $2 where id = $1', [quoteId, now]);
   // Чек продажи (у заморозки — на сумму заморозки; при списании меньшей суммы capture.mjs
   // заменяет его чеком на фактическую сумму, телефон берёт из этой строки).
   await insertReceipt(db, {
@@ -152,18 +196,24 @@ export async function payQuote(db, deps, info, config) {
     paymentId,
     channel: 'yookassa',
     status: 'pending',
-    amountKopecks: plan.amount,
+    amountKopecks: amount,
     items: receipt.items,
     taxSystemCode: settings.tax_system_code,
-    userId,
-    phone,
+    userId: spec.userId ?? null,
+    phone: spec.phone ?? null,
     now,
   });
   let payment = ins.rows[0];
   // Платёж уже прошёл (ЮKassa вернула конечный статус сразу) — подтверждаем тем же путём.
   if (remote.status !== 'pending') payment = (await applyRemote(db, deps, payment, remote, { source: 'create' })).payment;
-  deps.log?.info?.('payment_created', { payment_id: paymentId, club_id: clubId, method, amount_kopecks: plan.amount, capture: plan.capture });
-  return { status: 200, json: paymentResponse(payment) };
+  deps.log?.info?.('payment_created', { payment_id: paymentId, club_id: clubId, kind, method, amount_kopecks: amount, capture });
+  return { payment, confirmation: confirmationOf(payment, confirmation.type) };
+}
+
+/** confirmation для ответа: только пока платёж ждёт гостя. */
+function confirmationOf(p, type) {
+  if (p.status !== 'pending' || !p.confirmation_url) return null;
+  return type === 'qr' ? { type: 'qr', confirmation_data: p.confirmation_url } : { type: 'redirect', url: p.confirmation_url };
 }
 
 // Подтверждение ---------------------------------------------------------------------------
@@ -268,7 +318,26 @@ async function updateReceiptStatus(db, paymentId, registration, now) {
   );
 }
 
-/** Платёж отменён в ЮKassa: статус, журнал payment.canceled, снять pending со стола (start). */
+/**
+ * Событие outbox payment.canceled (M2: касса узнаёт об отмене СБП по QR без своего опроса).
+ * previous_status: pending — гость не оплатил; waiting_for_capture — заморозка снята.
+ */
+export function canceledPayload(p, previousStatus) {
+  return {
+    payment_id: p.id,
+    club_id: p.club_id,
+    kind: p.kind,
+    method: p.method,
+    quote_id: p.quote_id ?? null,
+    resource_id: p.resource_id ?? null,
+    user_id: p.user_id ?? null,
+    amount_kopecks: Number(p.amount_kopecks),
+    reason: p.cancellation_reason ?? null,
+    previous_status: previousStatus,
+  };
+}
+
+/** Платёж отменён в ЮKassa: статус, журнал и outbox payment.canceled, снять pending со стола (start). */
 export async function cancelLocal(db, deps, payment, { reason, now }) {
   const { rows } = await db.query(
     `update bl.payments set status = 'canceled', canceled_at = $3, cancellation_reason = $2, updated_at = $3, checked_at = $3
@@ -284,6 +353,7 @@ export async function cancelLocal(db, deps, payment, { reason, now }) {
     data: { payment_id: p.id, method: p.method, amount_kopecks: Number(p.amount_kopecks), reason: p.cancellation_reason },
     actorType: 'system',
   });
+  await deps.outbox.enqueue(db, 'payment.canceled', canceledPayload(p, payment.status));
   if (payment.status === 'pending' && p.kind === 'start') {
     try {
       await deps.sessions.releasePending(db, { resourceId: p.resource_id, userId: p.user_id });

@@ -231,6 +231,39 @@ describe('страница подтверждения и вебхуки', () => 
   });
 });
 
+describe('QR на экране кассы (confirmation qr, контракт M2 §5)', () => {
+  it('СБП с confirmation qr: confirmation_data, без return_url; подтверждение — succeeded и вебхук', async () => {
+    const body = payment('350.00', { confirmation: { type: 'qr' } });
+    const r = await api('POST', '/v3/payments', { body, key: key() });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.confirmation, { type: 'qr', confirmation_data: `${base}/pay/${r.json.id}` });
+    assert.equal(r.json.payment_method.type, 'sbp');
+    const page = await fetch(`${base}/pay/${r.json.id}`);
+    assert.match(await page.text(), /Оплатить/);
+    const res = await fetch(`${base}/pay/${r.json.id}/confirm`, { method: 'POST', redirect: 'manual' });
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get('location'), `/pay/${r.json.id}`);
+    await emu.settle();
+    const g = (await api('GET', `/v3/payments/${r.json.id}`)).json;
+    assert.equal(g.status, 'succeeded');
+    assert.equal(g.confirmation, undefined);
+    assert.equal(JSON.parse(received.at(-1).body).event, 'payment.succeeded');
+    assert.match(await (await fetch(`${base}/pay/${r.json.id}`)).text(), /Оплачено/);
+  });
+
+  it('QR без способа оплаты — СБП; QR для карты — 400', async () => {
+    const noMethod = payment('350.00', { confirmation: { type: 'qr' } });
+    delete noMethod.payment_method_data;
+    assert.equal((await api('POST', '/v3/payments', { body: noMethod, key: key() })).json.payment_method.type, 'sbp');
+    const card = payment('350.00', { confirmation: { type: 'qr' }, payment_method_data: { type: 'bank_card' } });
+    const r = await api('POST', '/v3/payments', { body: card, key: key() });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.parameter, 'confirmation.type');
+    const other = payment('350.00', { confirmation: { type: 'embedded' } });
+    assert.equal((await api('POST', '/v3/payments', { body: other, key: key() })).json.parameter, 'confirmation');
+  });
+});
+
 describe('двухстадийный платёж (карта «Без лимита»)', () => {
   async function hold(value = '1600.00') {
     const body = payment(value, { capture: false, payment_method_data: { type: 'bank_card' } });

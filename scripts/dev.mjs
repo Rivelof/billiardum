@@ -1,4 +1,4 @@
-// `npm run dev`: поднимает окружение разработки с нуля (контракты M0 §2 и M1 §11).
+// `npm run dev`: поднимает окружение разработки с нуля (контракты M0 §2, M1 §11, M2 §6).
 // Требуется только Docker (Compose v2) и Node 22.
 //
 // 1. Проверяет Docker и Compose.
@@ -7,11 +7,12 @@
 // 3. Ставит зависимости на хосте, если их нет (в контейнерах npm не запускается).
 // 4. Создаёт dev-сертификаты брокера (scripts/dev-certs.mjs).
 // 5. Поднимает db и mosquitto и ждёт готовности; роли базы — в supautils.reserved_roles.
-// 6. Останавливает старые server и device-sim; db:migrate, db:seed, provision:dev — с хоста.
+// 6. Останавливает старые server, device-sim и kkt-bridge; db:migrate, db:seed,
+//    provision:dev и регистрация моста ККТ тестового клуба (если скрипт уже есть) — с хоста.
 // 7. Собирает web/guest и web/admin на хосте (vite build): у Vite нативный esbuild
 //    под платформу хоста, в Linux-контейнере на macOS и Windows он не запустится.
-// 8. Заново поднимает server, device-sim (после провижининга), yookassa-emu (если
-//    пакет уже есть), caddy и показывает логи.
+// 8. Заново поднимает server, device-sim (после провижининга), необязательные сервисы,
+//    чьи пакеты уже есть (yookassa-emu, kkt-emu, kkt-bridge), caddy и показывает логи.
 //
 //   npm run dev                  — всё по шагам выше
 //   npm run dev -- --watch-web   — ещё и `vite build --watch` обоих приложений на хосте
@@ -28,16 +29,18 @@ import {
   capture,
   checkDocker,
   composeArgs,
-  EMU_ENTRY,
-  EMU_PROFILE,
+  ALL_PROFILE_ARGS,
   ENV_EXAMPLE,
   ENV_FILE,
   envWithFile,
   fail,
   isMain,
+  KKT_TOKEN_FILE,
   makeLogger,
   missingDependencies,
+  missingFiles,
   npm,
+  OPTIONAL_SERVICES,
   packageScript,
   projectVolumes,
   readEnvFile,
@@ -197,6 +200,45 @@ const HOST_STEPS = [
   { script: 'provision:dev', pkg: 'server', pkgScript: 'provision:dev', owner: 'backend' },
 ];
 
+/**
+ * Регистрация моста ККТ тестового клуба (backend-kkt, контракт M2 §6) — после provision:dev.
+ * Первый найденный вариант: скрипт npm `provision:dev` пакета tools/kkt-bridge или файл
+ * из списка (запускается `node <файл>`, окружение — .env). Скрипт выдаёт мосту новый токен
+ * (в базе — хеш, прежний токен моста разработки отзывается) и пишет только токен в файл
+ * KKT_BRIDGE_TOKEN_FILE (deploy/dev/kkt-bridge.token, права 0600, вне git). Токен не печатается.
+ * Настройки моста (адреса, журнал) — deploy/dev/kkt-bridge.json, без секретов, в git.
+ */
+export const KKT_REGISTER_SCRIPTS = [
+  'server/kkt/bin/provision-dev.mjs',
+  'server/kkt/bin/register-dev.mjs',
+  'tools/kkt-bridge/bin/provision-dev.mjs',
+  'tools/kkt-bridge/bin/register-dev.mjs',
+];
+
+/** Чем зарегистрировать мост разработки: команда npm, файл или null (скрипта ещё нет). */
+export function kktRegisterCommand(root = ROOT) {
+  const file = join(root, 'tools', 'kkt-bridge', 'package.json');
+  if (existsSync(file) && JSON.parse(readFileSync(file, 'utf8')).scripts?.['provision:dev']) {
+    return { label: 'npm run provision:dev -w @billiardum/kkt-bridge', npmArgs: ['run', 'provision:dev', '-w', '@billiardum/kkt-bridge'] };
+  }
+  const script = KKT_REGISTER_SCRIPTS.find((p) => existsSync(join(root, p)));
+  return script ? { label: `node ${script}`, script } : null;
+}
+
+async function registerKktBridge(env) {
+  const cmd = kktRegisterCommand();
+  if (!cmd) {
+    const have = existsSync(KKT_TOKEN_FILE) ? ', мост запустится с прежним токеном deploy/dev/kkt-bridge.token' : '';
+    log(`нет скрипта регистрации моста ККТ (зона backend-kkt: ${KKT_REGISTER_SCRIPTS.join(', ')})${have}`);
+    return;
+  }
+  log(`регистрация моста ККТ тестового клуба: ${cmd.label}`);
+  const regEnv = { ...env, KKT_BRIDGE_TOKEN_FILE: KKT_TOKEN_FILE };
+  if (cmd.npmArgs) await runNpm(cmd.npmArgs, { env: regEnv });
+  else await runChecked(process.execPath, [cmd.script], { env: regEnv }, cmd.label);
+  if (!existsSync(KKT_TOKEN_FILE)) log(`${cmd.label} не создал deploy/dev/kkt-bridge.token — мост ККТ не запускаю`);
+}
+
 /** Приложения, которые собираются на хосте и раздаются Caddy (deploy/dev/Caddyfile). */
 export const WEB_APPS = [
   { dir: 'web/guest', url: '/app/' },
@@ -225,9 +267,20 @@ export function parseDevArgs(args) {
   return opts;
 }
 
-// Профиль Compose эмулятора ЮKassa включается, только когда пакет уже есть.
+// Профили необязательных сервисов (OPTIONAL_SERVICES) включаются, только когда их файлы уже есть.
 let profileArgs = [];
 const dc = (...args) => composeArgs(ENV_FILE, ...profileArgs, ...args);
+
+/** Необязательные сервисы, которые можно запускать; про остальные — строка в лог. */
+function pickOptionalServices() {
+  const on = [];
+  for (const svc of OPTIONAL_SERVICES) {
+    const missing = missingFiles(svc);
+    if (missing.length === 0) on.push(svc.service);
+    else log(`нет ${missing.join(', ')} (зона ${svc.owner}) — ${svc.without}`);
+  }
+  return on;
+}
 
 async function compose(args, what) {
   await runChecked('docker', dc(...args), {}, what);
@@ -333,10 +386,6 @@ async function main() {
   await ensureDependencies();
   checkPackages();
 
-  const emu = existsSync(join(ROOT, EMU_ENTRY));
-  if (emu) profileArgs = ['--profile', EMU_PROFILE];
-  else log(`нет ${EMU_ENTRY} (зона backend-money) — эмулятор ЮKassa не запускаю, /pay/ ответит 502`);
-
   // DEV_LAN_HOST — в SAN брокера (контроллер в локальной сети); нет имени — перевыпуск тем же CA.
   const { changed } = ensureDevCerts({ log: makeLogger('certs'), extraHosts: [readEnvFile(ENV_FILE).DEV_LAN_HOST] });
   const brokerWasRunning = capture('docker', dc('ps', '-q', '--status', 'running', 'mosquitto')).stdout.trim() !== '';
@@ -354,23 +403,37 @@ async function main() {
   log('закрываю роли базы от привилегированной роли Supabase (supautils.reserved_roles)');
   await runChecked('docker', dc('exec', '-T', '-u', 'postgres', 'db', 'sh', '-s'), { stdinFile: RESERVED_ROLES_SCRIPT }, 'reserved-roles.sh');
 
-  // provision:dev меняет пароли и ключи устройств, миграции — схему. Старые server
-  // и device-sim останавливаем до этих шагов и запускаем заново только после них,
-  // чтобы оба прочитали актуальные ключи (из базы и deploy/dev/devices.json).
-  await compose(['stop', 'device-sim', 'server'], 'остановка server и device-sim');
+  // provision:dev меняет пароли и ключи устройств, регистрация моста — токен моста ККТ,
+  // миграции — схему. Старые server, device-sim и kkt-bridge останавливаем до этих шагов
+  // и запускаем заново только после них, чтобы все прочитали актуальные ключи (из базы,
+  // deploy/dev/devices.json и deploy/dev/kkt-bridge.token). Все профили: иначе Compose
+  // не остановил бы мост, если его пакет пропал.
+  await runChecked(
+    'docker',
+    composeArgs(ENV_FILE, ...ALL_PROFILE_ARGS, 'stop', 'kkt-bridge', 'device-sim', 'server'),
+    {},
+    'остановка server, device-sim и kkt-bridge',
+  );
 
   const env = envWithFile(ENV_FILE);
   for (const step of HOST_STEPS) {
     log(`npm run ${step.script}`);
     await runNpm(['run', step.script], { env });
   }
+  await registerKktBridge(env);
+
+  // Необязательные сервисы — после регистрации моста: ему нужен её токен.
+  const optional = pickOptionalServices();
+  profileArgs = optional.flatMap((s) => ['--profile', s]);
+  const emu = optional.includes('yookassa-emu');
 
   // Фронтенд — до caddy: он раздаёт готовые web/*/dist.
   const webWarnings = await buildWeb();
 
   // Пересоздаём контейнеры, даже если их конфигурация не менялась: новый процесс
-  // читает свежие ключи. device-sim стартует после healthy server (depends_on).
-  const services = ['server', 'device-sim', ...(emu ? ['yookassa-emu'] : []), 'caddy'];
+  // читает свежие ключи. device-sim и kkt-bridge стартуют после healthy server, мост —
+  // ещё и после healthy kkt-emu (depends_on).
+  const services = ['server', 'device-sim', ...optional, 'caddy'];
   log(`поднимаю ${services.join(', ')}`);
   await compose(
     ['up', '-d', '--wait', '--wait-timeout', WAIT_TIMEOUT_S, '--force-recreate', '--no-deps', ...services],
@@ -383,18 +446,21 @@ async function main() {
   const devLogin = files.ALLOW_DEV_LOGIN === '1' ? 'вход для разработки по телефону включён (ALLOW_DEV_LOGIN=1)' : 'вход для разработки выключен';
   const anyMinutes = files.DEV_ALLOW_ANY_MINUTES === '1' ? ', ускоренное время включено (DEV_ALLOW_ANY_MINUTES=1)' : '';
   const warn = webWarnings.length > 0 ? `\n  Внимание:\n${webWarnings.map((w) => `    - ${w}`).join('\n')}\n` : '';
-  const logServices = ['server', 'device-sim', ...(emu ? ['yookassa-emu'] : [])];
+  const logServices = ['server', 'device-sim', ...optional];
+  const kkt = optional.includes('kkt-emu')
+    ? `\n    kkt-emu:16732                  эмулятор ККТ АТОЛ, только внутри Compose; мост ККТ ${optional.includes('kkt-bridge') ? 'запущен' : 'не запущен'} (README)`
+    : '';
 
   console.log(`
   Окружение запущено (проект Compose: billiardum)
     ${pub}/app/     приложение гостя (Caddy, tls internal)
     ${pub}/club/    программа клуба
     ${pub}/pay/     страница оплаты эмулятора ЮKassa${emu ? '' : ' (эмулятора ещё нет)'}
-    ${pub}/api/     API сервера${lan}
+    ${pub}/api/     API сервера; мост ККТ — wss://${files.PUBLIC_HOST || 'localhost:8443'}/api/kkt/ws${lan}
     http://localhost:3000/health   сервер напрямую
     http://127.0.0.1:18080         управление симулятором (README)
     mqtts://localhost:8883         брокер, CA: deploy/dev/certs/ca.crt
-    localhost:54322                Postgres (пароли в .env)
+    localhost:54322                Postgres (пароли в .env)${kkt}
   ${devLogin}${anyMinutes}
 ${warn}
   Ниже логи ${logServices.join(', ')}${opts.watchWeb ? ' и пересборки фронтенда' : ''}.

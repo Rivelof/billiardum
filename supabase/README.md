@@ -106,7 +106,11 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl.light_open_sessions()` (0310, 0330, light) | `bl_definer` | `(session_id, club_id)` идущих и прерванных (`interrupted`) сессий всех клубов | планировщик восстанавливает таймеры после перезапуска |
 | `bl.device_bind_window(device_id uuid, now timestamptz)` (0320, light) | `bl_definer` | `(window_id, club_id)` открытого окна привязки | `POST /api/devices/claim` от контроллера без входа |
 
-`bl_definer` видит только столбцы, нужные этим функциям: у `users`, `auth_tokens`, `staff_terminals`, `consents` (core); `resources(id, club_id, code, active)`, `sessions(id, club_id, status)`, `device_bind_windows(id, club_id, device_id, until, claimed_at, closed_at, created_at)` (light); у денег — свои (`money_object_club`, `money_due`, `server/payments/README.md`). Других функций `SECURITY DEFINER` в `bl` нет: список закреплён тестом `isolation` — новая функция добавляется в него вместе с миграцией.
+| `bl.pos_object_club(kind text, id uuid) → uuid` (0420, pos) | `bl_definer` | клуб заказа бара (`order`) или продажи кассы (`sale`) | маршруты заказов и продаж по id до проверки ролей |
+| `bl.pos_due(limit integer)` (0420, pos) | `bl_definer` | `(club_id, sale_id)` продаж в `pending`, у которых платёж уже `succeeded` или `canceled` | планировщик кассы завершает или отменяет продажу |
+| `bl.kkt_due(cutoff timestamptz, limit integer)` (0500, kkt) | `bl_definer` | `(club_id, receipt_id)` чеков ККТ в `receipt_pending` дольше порога без тревоги | тревога «чек не пробит больше 10 минут» |
+
+`bl_definer` видит только столбцы, нужные этим функциям: у `users`, `auth_tokens`, `staff_terminals`, `consents` (core); `resources(id, club_id, code, active)`, `sessions(id, club_id, status)`, `device_bind_windows(id, club_id, device_id, until, claimed_at, closed_at, created_at)` (light); `payments(id, club_id, status, provider, created_at, checked_at)` (money: `money_object_club`, `money_due`, `server/payments/README.md`); `orders(id, club_id)`, `pos_sales(id, club_id, status, payment_id, created_at)` (pos, `server/orders/README.md`); `receipts(id, club_id, channel, status, created_at, alarmed_at)` (kkt, `server/kkt/README.md`). Других функций `SECURITY DEFINER` в `bl` нет: список закреплён тестом `isolation` — новая функция добавляется в него вместе с миграцией.
 
 ## Журнал `audit_log`
 
@@ -180,6 +184,14 @@ alter event trigger bl_audit_guard_drop enable always;
 | `device_bind_windows` (0320) | окно привязки контроллера к столу на 30 минут: хеш кода с наклейки (decisions №67), 5 неверных попыток закрывают окно |
 
 Гость дополнительно видит свои сессии и своё участие в любом клубе (`session_participants.user_id = app.user_id`) — для `GET /api/sessions/current`. Срок выбора после `interrupted` — 24 часа (0330, decisions №65). Внешние ключи на платежи — `0390_money_fks.sql`.
+
+## Настройки платформы (`bl.platform_settings`)
+
+Таблица `0400_pos_catalog.sql` (создал backend-pos, владелец настроек платформы — backend-core): `key` → `value jsonb`, без клуба. RLS включена и принудительна; у `app_api` только `SELECT` (политика `using (true)`: настройки одинаковы для всех клубов, данных клубов и гостей в них нет). Меняет только суперпользователь, например `update bl.platform_settings set value = 'true', updated_at = now() where key = 'qr_alcohol_allowed';` — алкоголь в QR-меню включает Андрей после заключения юриста (decisions №76). Сейчас ключ один: `qr_alcohol_allowed` (по умолчанию `false`).
+
+## Касса, бар, смены, ККТ (M2)
+
+Миграции `0400`–`0430` (backend-pos: каталог, платежи бара, заказы, продажи кассы, склад) — `server/orders/README.md`; `0500`–`0510` (backend-kkt: очередь чеков ККТ, мосты, смены) — `server/kkt/README.md`. Узкие функции — в таблице выше.
 
 ## Деньги
 

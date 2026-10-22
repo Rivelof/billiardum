@@ -121,7 +121,7 @@ export function createEmulator(opts = {}) {
       ...(p.capturedAt ? { captured_at: p.capturedAt } : {}),
       created_at: p.createdAt,
       ...(p.status === 'waiting_for_capture' ? { expires_at: p.expiresAt } : {}),
-      ...(p.status === 'pending' ? { confirmation: { type: 'redirect', confirmation_url: `${config.publicUrl}/pay/${p.id}`, return_url: p.returnUrl } } : {}),
+      ...(p.status === 'pending' ? { confirmation: confirmationView(p) } : {}),
       test: true,
       ...(p.refundedKopecks > 0 ? { refunded_amount: { value: formatValue(p.refundedKopecks), currency: 'RUB' } } : {}),
       refundable: p.status === 'succeeded' && p.refundedKopecks < p.amountKopecks,
@@ -130,6 +130,16 @@ export function createEmulator(opts = {}) {
       ...(p.cancellation ? { cancellation_details: { ...p.cancellation } } : {}),
     };
     return o;
+  }
+
+  /**
+   * confirmation платежа в pending: redirect — страница подтверждения; qr — данные QR-кода
+   * (у ЮKassa для СБП — ссылка НСПК; эмулятор кладёт в QR ссылку на свою страницу
+   * подтверждения, чтобы в разработке его можно было отсканировать телефоном).
+   */
+  function confirmationView(p) {
+    if (p.confirmationType === 'qr') return { type: 'qr', confirmation_data: `${config.publicUrl}/pay/${p.id}` };
+    return { type: 'redirect', confirmation_url: `${config.publicUrl}/pay/${p.id}`, return_url: p.returnUrl };
   }
 
   function refundView(r) {
@@ -268,11 +278,17 @@ export function createEmulator(opts = {}) {
     const capture = body.capture === undefined ? false : body.capture;
     if (typeof capture !== 'boolean') throw new EmuError(400, 'invalid_request', 'capture — true или false', 'capture');
     const conf = body.confirmation;
-    if (!conf || conf.type !== 'redirect' || typeof conf.return_url !== 'string' || !/^https?:\/\//.test(conf.return_url) || conf.return_url.length > 2048) {
-      throw new EmuError(400, 'invalid_request', 'confirmation: type redirect и return_url', 'confirmation');
-    }
-    const methodType = body.payment_method_data?.type ?? 'bank_card';
+    const methodType = body.payment_method_data?.type ?? (conf?.type === 'qr' ? 'sbp' : 'bank_card');
     if (!['bank_card', 'sbp'].includes(methodType)) throw new EmuError(400, 'invalid_request', 'Эмулятор знает bank_card и sbp', 'payment_method_data.type');
+    if (conf?.type === 'qr') {
+      // QR на экране кассы (контракт M2 §5): эмулятор принимает его только для СБП.
+      if (methodType !== 'sbp') throw new EmuError(400, 'invalid_request', 'confirmation qr — только для СБП', 'confirmation.type');
+      if (conf.return_url !== undefined && (typeof conf.return_url !== 'string' || !/^https?:\/\//.test(conf.return_url) || conf.return_url.length > 2048)) {
+        throw new EmuError(400, 'invalid_request', 'Неверный return_url', 'confirmation.return_url');
+      }
+    } else if (!conf || conf.type !== 'redirect' || typeof conf.return_url !== 'string' || !/^https?:\/\//.test(conf.return_url) || conf.return_url.length > 2048) {
+      throw new EmuError(400, 'invalid_request', 'confirmation: type redirect и return_url или type qr', 'confirmation');
+    }
     // Допущение decisions №26: СБП — только одностадийная оплата.
     if (methodType === 'sbp' && !capture) throw new EmuError(400, 'invalid_request', 'СБП не поддерживает capture=false', 'capture');
     const description = checkDescription(body.description);
@@ -289,7 +305,8 @@ export function createEmulator(opts = {}) {
       capture,
       description,
       metadata,
-      returnUrl: conf.return_url,
+      confirmationType: conf.type,
+      returnUrl: conf.return_url ?? null,
       paymentMethod: methodType === 'sbp'
         ? { type: 'sbp', id: randomUUID(), saved: false }
         : { type: 'bank_card', id: randomUUID(), saved: false, title: 'Bank card *4477', card: { first6: '555555', last4: '4477', expiry_year: '2030', expiry_month: '12', card_type: 'MasterCard' } },
@@ -453,7 +470,7 @@ export function createEmulator(opts = {}) {
     const buttons = p.status === 'pending'
       ? `<form method="post" action="/pay/${p.id}/confirm"><button class="ok" type="submit">Оплатить</button></form>
          <form method="post" action="/pay/${p.id}/decline"><button class="no" type="submit">Отказ</button></form>`
-      : `<p class="st">${escapeHtml(statusText)}</p><p><a href="${escapeHtml(p.returnUrl)}">Вернуться</a></p>`;
+      : `<p class="st">${escapeHtml(statusText)}</p>${p.returnUrl ? `<p><a href="${escapeHtml(p.returnUrl)}">Вернуться</a></p>` : ''}`;
     return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} — эмулятор ЮKassa</title>
 <style>body{font:16px/1.4 system-ui,sans-serif;margin:0;padding:24px;background:#f4f5f7;color:#1b1f27}
@@ -470,9 +487,9 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
     let m;
     if (req.method === 'GET' && (m = /^\/pay\/([\w-]{1,64})$/.exec(path))) {
       const p = getPayment(null, m[1]);
-      const ret = new URL(p.returnUrl).origin;
+      const ret = p.returnUrl ? ` ${new URL(p.returnUrl).origin}` : '';
       return send(res, 200, payPage(p), {
-        'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${ret}; frame-ancestors 'none'; base-uri 'none'`,
+        'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${ret}; frame-ancestors 'none'; base-uri 'none'`,
         'x-content-type-options': 'nosniff',
         'referrer-policy': 'no-referrer',
       });
@@ -484,7 +501,8 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
         if (m[2] === 'confirm') confirm(p);
         else decline(p);
       }
-      res.writeHead(303, { location: p.returnUrl, 'cache-control': 'no-store' });
+      // QR без return_url: гость платил с телефона, возвращаться некуда — страница со статусом.
+      res.writeHead(303, { location: p.returnUrl ?? `/pay/${p.id}`, 'cache-control': 'no-store' });
       return res.end();
     }
     throw new EmuError(404, 'not_found', 'Страница не найдена');

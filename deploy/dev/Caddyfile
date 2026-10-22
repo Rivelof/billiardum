@@ -117,6 +117,24 @@ https://localhost, https://{$DEV_LAN_HOST:127.0.0.1} {
 		}
 	}
 
+	# Мост ККТ (tools/kkt-bridge, decisions №77): WebSocket с ПК ресепшена, одно соединение
+	# на часы и дни. Upgrade и Connection Caddy передаёт серверу сам, после 101 кадры идут
+	# в обе стороны сразу, без буфера. Простой соединения Caddy не обрывает: idle_timeout
+	# сервера действует только между HTTP-запросами, а read/write_timeout и stream_timeout
+	# не заданы; живость проверяют ping моста и сервера. Без request_body: открытое
+	# соединение — не тело запроса, лимит 1 МБ к нему не относится.
+	# stream_close_delay: перезагрузка конфига Caddy не рвёт мосты сразу, а даёт им 5 минут.
+	handle /api/kkt/ws {
+		header {
+			?Cache-Control "no-store"
+			?Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		}
+		reverse_proxy server:3000 {
+			flush_interval -1
+			stream_close_delay 5m
+		}
+	}
+
 	# API, короткие ссылки со стикеров (/t/{code} → сервер перенаправит на /app/t/{code})
 	# и проверка живости.
 	@server path /api/* /t/* /health
