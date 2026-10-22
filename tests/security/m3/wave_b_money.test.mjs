@@ -77,7 +77,7 @@ describe('волна B: деньги', { skip }, () => {
 
   it('ownReturnUrl: любой обход даёт bad_request, а принятый адрес всегда на нашем хосте', () => {
     for (const v of EVIL) {
-      let out = null;
+      let out;
       try {
         out = ownReturnUrl(h.config, v);
       } catch (e) {
@@ -148,48 +148,126 @@ describe('волна B: деньги', { skip }, () => {
     assert.equal((await payment(p0.id)).status, 'succeeded', 'оплаченный платёж не отменён');
   });
 
-  it('НАХОДКА (низкая): pending отменён по 404 (not_found_at_provider), затем гость всё-таки оплатил — деньги списаны, игры нет, ни возврата, ни тревоги', async () => {
-    const t = T(7);
+  /** Платёж старта, отменённый у нас по 404 (not_found_at_provider); возвращает { id, providerId }. */
+  async function canceledBy404(t, user = GUEST_2) {
     h.sessions.holds.delete(t);
-    const q = await h.call(QUOTE, { user: GUEST_2, body: { resource_id: t, kind: 'start', minutes: 60 } });
+    const q = await h.call(QUOTE, { user, body: { resource_id: t, kind: 'start', minutes: 60 } });
     assert.equal(q.status, 200, JSON.stringify(q.json));
-    const r = await h.call(PAY, { user: GUEST_2, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: randomUUID() });
+    const r = await h.call(PAY, { user, params: { id: q.json.quote_id }, body: { method: 'sbp' }, idempotencyKey: randomUUID() });
     const id = r.json.payment_id;
-    const realProviderId = (await payment(id)).provider_payment_id;
-    // ЮKassa временно не знает платёж (смена ключей магазина, сбой) — больше часа.
+    const providerId = (await payment(id)).provider_payment_id;
     await h.pool.query('update bl.payments set provider_payment_id = $2 where id = $1', [id, `lost-${randomUUID().slice(0, 20)}`]);
-    let shift = 0;
+    const runTick = () => tick({ pool: h.pool, withContext: asAppApi, deps, config: h.config });
+    h.clock.advance(5 * 60_000);
+    await runTick();
+    h.clock.advance(61 * 60_000);
+    await runTick();
+    await runTick();
+    h.clock.advance(-66 * 60_000);
+    const p = await payment(id);
+    assert.deepEqual([p.status, p.cancellation_reason], ['canceled', NOT_FOUND_REASON]);
+    await h.pool.query('update bl.payments set provider_payment_id = $2 where id = $1', [id, providerId]);
+    return { id, providerId };
+  }
+  const lateAlarms = (id) => h.alarms.items.filter((x) => x.type === 'payment_paid_after_cancel' && x.data.payment_id === id);
+  const refundsOf = (id) => h.q("select * from bl.refunds where payment_id = $1 and status <> 'canceled'", [id]);
+  const webhook = (providerId) =>
+    h.call(WEBHOOK, { params: { club_id: CLUB_A }, body: { event: 'payment.succeeded', object: { id: providerId } }, actor: 'system' });
+
+  it('B-L1 исправлено: отменён по 404, затем оплачен — один полный возврат с чеком, одна тревога, статус canceled, игры нет, payment.confirmed не шлётся', async () => {
+    const { id, providerId } = await canceledBy404(T(7));
+    const confirmedBefore = (await h.outbox('payment.confirmed')).filter((e) => e.payload.payment_id === id).length;
+    const res = await fetch(`${h.emuBase}/__emu/payments/${providerId}/succeed?wait=1`, { method: 'POST' });
+    assert.equal(res.status, 200);
+    await h.emu.settle();
+    const p = await payment(id);
+    assert.equal(p.status, 'canceled');
+    assert.equal(p.session_id, null, 'игра не началась');
+    assert.ok(p.late_paid_at, 'отмечено late_paid_at');
+    const refunds = await refundsOf(id);
+    assert.equal(refunds.length, 1, 'один возврат');
+    assert.equal(Number(refunds[0].amount_kopecks), Number(p.amount_kopecks), 'возврат на всю сумму');
+    const receipts = await h.q("select * from bl.receipts where refund_id = $1 and kind = 'refund'", [refunds[0].id]);
+    assert.equal(receipts.length, 1, 'чек возврата (54-ФЗ)');
+    assert.equal(lateAlarms(id).length, 1, 'одна критичная тревога');
+    assert.equal(lateAlarms(id)[0].level, 'critical');
+    assert.equal((await h.outbox('payment.confirmed')).filter((e) => e.payload.payment_id === id).length, confirmedBefore, 'payment.confirmed не отправлен');
+  });
+
+  it('обход 1: повтор вебхука (5 раз) и сверка — по-прежнему один возврат и одна тревога', async () => {
+    const { id, providerId } = await canceledBy404(T(8));
+    await fetch(`${h.emuBase}/__emu/payments/${providerId}/succeed?wait=1`, { method: 'POST' });
+    await h.emu.settle();
+    for (let i = 0; i < 5; i += 1) assert.equal((await webhook(providerId)).status, 200);
+    await tick({ pool: h.pool, withContext: asAppApi, deps, config: h.config });
+    assert.equal((await refundsOf(id)).length, 1);
+    assert.equal(lateAlarms(id).length, 1);
+    // ЮKassa (эмулятор) тоже видит ровно один возврат: ключ идемпотентности late-<id>.
+    const remote = await (await fetch(`${h.emuBase}/__emu/payments/${providerId}`)).json();
+    assert.ok(!remote.refunded_amount || Number(remote.refunded_amount.value) * 100 === Number((await payment(id)).amount_kopecks), JSON.stringify(remote.refunded_amount));
+  });
+
+  it('обход 2: параллельные вебхуки — один возврат', async () => {
+    const { id, providerId } = await canceledBy404(T(5));
+    await fetch(`${h.emuBase}/__emu/payments/${providerId}/succeed?wait=1`, { method: 'POST' });
+    await h.emu.settle();
+    await Promise.all(Array.from({ length: 6 }, () => webhook(providerId).catch((e) => e)));
+    assert.equal((await refundsOf(id)).length, 1);
+    assert.equal(lateAlarms(id).length, 1);
+  });
+
+  it('обход 3: другая сумма у ЮKassa — не возврат «по телу», а payment_mismatch (критичная тревога), деньги не уходят', async () => {
+    const { id, providerId } = await canceledBy404(T(6));
+    const p = await payment(id);
+    const remote = { id: providerId, status: 'succeeded', amount: { value: '1.00', currency: 'RUB' }, metadata: { club_id: CLUB_A, quote_id: p.quote_id } };
+    const { applyRemote } = await import('../../../server/payments/pay.mjs');
+    const out = await h.tx({ clubId: CLUB_A, actorType: 'system' }, (db) => applyRemote(db, deps, p, remote, { source: 'pentest', client: {} }));
+    assert.equal(out.result, 'mismatch');
+    assert.equal((await refundsOf(id)).length, 0);
+    assert.ok(h.alarms.items.some((x) => x.type === 'payment_mismatch' && x.data.payment_id === id));
+  });
+
+  it('B-R1 исправлено: гонка вебхука со сверкой — устаревшая строка pending всё равно уходит в автовозврат и тревогу', async () => {
+    // Вебхук теперь берёт строку FOR UPDATE, а applyRemote после неудачного confirmPayment перечитывает
+    // строку: устаревший payment.status 'pending' при canceled в базе ведёт в тот же автовозврат.
+    const { id, providerId } = await canceledBy404(T(3));
+    const fresh = await payment(id);
+    const stale = { ...fresh, status: 'pending', canceled_at: null, cancellation_reason: null, checked_at: null };
+    const remote = {
+      id: providerId, status: 'succeeded', amount: { value: (Number(fresh.amount_kopecks) / 100).toFixed(2), currency: 'RUB' },
+      metadata: { club_id: CLUB_A, quote_id: fresh.quote_id }, receipt_registration: 'succeeded',
+    };
+    const calls = [];
+    const client = { createRefund: async (body, key) => (calls.push({ key, value: body.amount.value }), { id: `rf-${randomUUID().slice(0, 8)}`, status: 'succeeded', receipt_registration: 'succeeded' }) };
+    const { applyRemote } = await import('../../../server/payments/pay.mjs');
+    const raced = await h.tx({ clubId: CLUB_A, actorType: 'system' }, (db) => applyRemote(db, deps, stale, remote, { source: 'race', client }));
+    assert.equal(raced.result, 'late_refund', 'устаревшая строка — автовозврат');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].key, `late-${id}`);
+    assert.equal(lateAlarms(id).length, 1, 'одна тревога');
+    // Повтор той же гонки (вторая устаревшая копия) — без второго возврата и тревоги.
+    const again = await h.tx({ clubId: CLUB_A, actorType: 'system' }, (db) => applyRemote(db, deps, stale, remote, { source: 'race2', client }));
+    assert.ok(['late_refund', 'already'].includes(again.result));
+    assert.equal(calls.length, 1, 'возврат в ЮKassa не повторён');
+    assert.equal((await refundsOf(id)).length, 1);
+    assert.equal(lateAlarms(id).length, 1);
+    assert.equal((await payment(id)).status, 'canceled');
+  });
+
+  it('B-R1: вебхук блокирует строку платежа (FOR UPDATE) — параллельная транзакция ждёт', async () => {
+    const { id, providerId } = await canceledBy404(T(2));
+    const locker = await h.pool.connect();
     try {
-      const runTick = () => tick({ pool: h.pool, withContext: asAppApi, deps, config: h.config });
-      h.clock.advance(5 * 60_000);
-      shift += 5 * 60_000;
-      await runTick();
-      h.clock.advance(61 * 60_000);
-      shift += 61 * 60_000;
-      await runTick();
-      await runTick();
-      const canceled = await payment(id);
-      assert.deepEqual([canceled.status, canceled.cancellation_reason], ['canceled', NOT_FOUND_REASON]);
-      const alarmsBefore = h.alarms.items.length;
-
-      // Платёж снова виден в ЮKassa, и гость его оплачивает (СБП в своём банке).
-      await h.pool.query('update bl.payments set provider_payment_id = $2 where id = $1', [id, realProviderId]);
-      const res = await fetch(`${h.emuBase}/__emu/payments/${realProviderId}/succeed?wait=1`, { method: 'POST' });
-      assert.equal(res.status, 200);
-      await h.emu.settle();
-      const remote = await (await fetch(`${h.emuBase}/__emu/payments/${realProviderId}`)).json();
-      assert.equal(remote.status, 'succeeded', 'в ЮKassa деньги списаны');
-
-      const p = await payment(id);
-      const refunds = await h.q("select * from bl.refunds where payment_id = $1 and status <> 'canceled'", [id]);
-      const newAlarms = h.alarms.items.slice(alarmsBefore);
-      // Фиксируем текущее поведение: локально canceled, без возврата и без тревоги.
-      assert.equal(p.status, 'canceled', 'у нас платёж остался отменённым');
-      assert.equal(p.session_id, null, 'игра не началась');
-      assert.equal(refunds.length, 0, 'возврата нет');
-      assert.equal(newAlarms.length, 0, 'тревоги нет — деньги гостя «зависли» молча');
+      await locker.query('begin');
+      await locker.query('select 1 from bl.payments where id = $1 for update', [id]);
+      let done = false;
+      const wh = webhook(providerId).then((r) => ((done = true), r));
+      await new Promise((r) => setTimeout(r, 400));
+      assert.equal(done, false, 'вебхук ждёт блокировку строки платежа');
+      await locker.query('rollback');
+      assert.equal((await wh).status, 200);
     } finally {
-      h.clock.advance(-shift);
+      locker.release();
     }
   });
 

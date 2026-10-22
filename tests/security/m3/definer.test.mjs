@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
-import { asRole, createTestDatabase, seedClubB, CLUB_A, CLUB_B, OWNER_A, OWNER_B } from '../../../supabase/tests/helpers.mjs';
+import { asRole, createTestDatabase, seedClubB, CLUB_A, OWNER_A, OWNER_B } from '../../../supabase/tests/helpers.mjs';
 
 const RECEPTION_A = 'a1000000-0000-4000-8000-000000000004';
 const token64 = () => Array.from({ length: 64 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
