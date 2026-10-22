@@ -23,6 +23,7 @@ import { CLUB_A, CLUB_B, GUEST_1, GUEST_2, newKey, OWNER_A, OWNER_B, RECEPTION_A
 
 const route = (list, method, path) => list.find((r) => r.method === method && r.path === path);
 const QUOTE = route(quoteRoutes, 'POST', '/api/quotes');
+const TABLE_ROUTE = route(quoteRoutes, 'GET', '/api/t/{code}');
 const PAY = route(quoteRoutes, 'POST', '/api/quotes/{id}/pay');
 const LIST_PKG = route(packageRoutes, 'GET', '/api/clubs/{club}/packages');
 const CREATE_PKG = route(packageRoutes, 'POST', '/api/clubs/{club}/packages');
@@ -1206,6 +1207,43 @@ describe('pendingPlayUntil для брони', () => {
       assert.equal(await until(), null, 'подтверждено — время уже у сессии');
     } finally {
       h.clock.advance(-2 * 3600_000);
+    }
+  });
+});
+
+describe('замечания light: id чужой игры и booking_start_required', () => {
+  it('GET /api/t/{code}: аноним не видит session_id; вошедший — видит (присоединиться с кодом), my_session_id — только участник', async () => {
+    const t = T(2);
+    h.sessions.holds.delete(t);
+    for (const [sid, x] of h.sessions.sessions) if (x.resource_id === t) h.sessions.sessions.delete(sid);
+    const sid = await session(t, { paidUntil: '2026-10-20T09:00:00Z', participants: [GUEST_1] });
+    try {
+      const anon = await h.call(TABLE_ROUTE, { params: { code: 'TEST000002' } });
+      assert.equal(anon.json.status, 'busy');
+      assert.deepEqual({ s: anon.json.session_id, m: anon.json.my_session_id }, { s: null, m: null });
+      const other = await h.call(TABLE_ROUTE, { user: GUEST_2, params: { code: 'TEST000002' } });
+      assert.deepEqual({ s: other.json.session_id, m: other.json.my_session_id }, { s: sid, m: null });
+      const mine = await h.call(TABLE_ROUTE, { user: GUEST_1, params: { code: 'TEST000002' } });
+      assert.deepEqual({ s: mine.json.session_id, m: mine.json.my_session_id }, { s: sid, m: sid });
+    } finally {
+      h.sessions.sessions.delete(sid);
+      await h.pool.query("update bl.sessions set status = 'closed', ended_at = now(), close_reason = 'stopped' where id = $1", [sid]);
+    }
+  });
+
+  it('стол ждёт брони гостя: 409 {error: booking_start_required, booking_id}; лишние поля не уходят', async () => {
+    const t = T(2);
+    h.sessions.holds.delete(t);
+    const bookingId = newKey();
+    const orig = h.sessions.holdPending;
+    h.sessions.holdPending = async () => {
+      throw Object.assign(new Error('booking'), { code: 'booking_start_required', data: { booking_id: bookingId, phone: '+79990000001' } });
+    };
+    try {
+      const r = await h.call(QUOTE, { user: GUEST_1, body: { resource_id: t, kind: 'start', minutes: 60 } });
+      assert.deepEqual([r.status, r.json], [409, { error: 'booking_start_required', booking_id: bookingId }]);
+    } finally {
+      h.sessions.holdPending = orig;
     }
   });
 });

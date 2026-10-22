@@ -77,7 +77,9 @@ export async function tableByCode(db, deps, { code, userId = null }) {
     resource: { id: t.id, number: t.number, type: t.type, title: t.title },
     status: status?.status ?? 'offline',
     busy_until: status?.busy_until ?? null,
-    session_id: status?.session_id ?? null,
+    // Аноним id игры не получает (ревью light: присоединение к чужой игре); вошедшему гостю, который
+    // стоит у стола (знает код), id нужен для «Присоединиться» (join с кодом стола).
+    session_id: userId ? (status?.session_id ?? null) : null,
     price_now: prices.price_now,
     price_next: prices.price_next,
     options,

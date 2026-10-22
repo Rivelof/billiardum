@@ -31,18 +31,41 @@ export const STATUS_BY_CODE = Object.freeze({
   already_paid: 409,
   package_used: 409,
   already_refunded: 409,
+  // Стол ждёт брони этого же гостя (light, M3): ответ 409 {error, booking_id}.
+  booking_start_required: 409,
 });
+
+/**
+ * Поля err.data, которые можно отдать клиенту рядом с кодом (без персональных данных).
+ * Форма для роутера (core): ошибка с полем data — объект только из этих полей;
+ * ответ { error: code, ...data }.
+ */
+export const PUBLIC_DATA_FIELDS = Object.freeze(['booking_id']);
+
+/** Только разрешённые поля: UUID или короткие коды/числа. */
+export function publicData(data) {
+  if (!data || typeof data !== 'object') return undefined;
+  const out = {};
+  for (const k of PUBLIC_DATA_FIELDS) {
+    const v = data[k];
+    if (v === null || (typeof v === 'string' && /^[0-9a-z_-]{1,64}$/i.test(v)) || Number.isSafeInteger(v)) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 export class MoneyError extends Error {
   /**
    * @param {string} code код словаря §3
    * @param {string} [detail] только для лога
    * @param {number} [status] HTTP-статус, если не по словарю (ЮKassa недоступна — 503)
+   * @param {object} [data] безопасные поля для клиента (PUBLIC_DATA_FIELDS), например booking_id
    */
-  constructor(code, detail, status) {
+  constructor(code, detail, status, data) {
     super(detail ? `${code}: ${detail}` : code);
     this.name = 'MoneyError';
     this.code = code;
+    const pub = publicData(data);
+    if (pub) this.data = pub;
     this.status = status ?? STATUS_BY_CODE[code] ?? 400;
   }
 }
@@ -51,7 +74,7 @@ export const fail = (code, detail, status) => {
   throw new MoneyError(code, detail, status);
 };
 
-const LIGHT_CODES = new Set(['bad_request', 'shift_closed', 'table_busy', 'table_pending', 'table_offline', 'table_service', 'session_not_active', 'not_found', 'forbidden', 'not_payer', 'limit_exceeded']);
+const LIGHT_CODES = new Set(['booking_start_required', 'bad_request', 'shift_closed', 'table_busy', 'table_pending', 'table_offline', 'table_service', 'session_not_active', 'not_found', 'forbidden', 'not_payer', 'limit_exceeded']);
 
 /**
  * Ошибка соседнего модуля (light: LightError с кодом словаря) → MoneyError того же кода.
@@ -59,7 +82,7 @@ const LIGHT_CODES = new Set(['bad_request', 'shift_closed', 'table_busy', 'table
  */
 export function fromNeighbor(err) {
   const code = err?.code ?? err?.error;
-  if (typeof code === 'string' && LIGHT_CODES.has(code)) return new MoneyError(code, err.message);
+  if (typeof code === 'string' && LIGHT_CODES.has(code)) return new MoneyError(code, err.message, undefined, err.data);
   return err;
 }
 

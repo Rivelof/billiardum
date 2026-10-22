@@ -5,7 +5,9 @@
 // Ошибка модуля (MoneyError: status и code): под роутером api/router.mjs (есть ctx.useClub)
 // бросается дальше — роутер откатывает транзакцию целиком (вместе с ключом идемпотентности,
 // поэтому повтор после сбоя ЮKassa выполняется заново) и отвечает {"error": code}; без
-// роутера — откат до точки сохранения и ответ {"error": code}. Прочие ошибки — роутеру (500).
+// роутера — откат до точки сохранения и ответ {"error": code, ...data}. Прочие ошибки — роутеру (500).
+// err.data — только безопасные поля (errors.mjs PUBLIC_DATA_FIELDS: booking_id); роутер core отдаёт
+// их рядом с кодом по своему белому списку.
 // Без ctx.db (вызов вне роутера) — своя транзакция withContext.
 
 import { withContext as storeWithContext } from '../lib/store.mjs';
@@ -30,7 +32,7 @@ export function moneyRoute(fn) {
         if (err instanceof MoneyError) {
           (ctx.log ?? deps.log)?.info?.('money_route_error', { code: err.code, status: err.status, detail: err.message });
           if (typeof ctx.useClub === 'function') throw err;
-          return { status: err.status, json: { error: err.code } };
+          return { status: err.status, json: { error: err.code, ...(err.data ?? {}) } };
         }
         throw err;
       }
