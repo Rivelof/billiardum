@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { formatMoney, formatTime, plural } from '@billiardum/shared/format';
-import { addFixed, addProduct, available, defaultModifiers, emptyCart, lineTotal, modifiersText, normalizeMenu, refreshCart, removeLine, setQty, unavailableWord } from '@billiardum/shared/bar';
+import { addFixed, addProduct, available, cartNeedsBar, defaultModifiers, emptyCart, lineTotal, modifiersText, normalizeMenu, refreshCart, removeLine, setQty, unavailableWord } from '@billiardum/shared/bar';
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
@@ -36,7 +36,8 @@ export function Pos({ ctx }) {
   const [error, setError] = useState(null);
   const [cart, setCart] = useState(() => session.get(CART_KEY)?.cart ?? emptyCart());
   const [discount, setDiscount] = useState(() => session.get(CART_KEY)?.discount ?? null);
-  const [toBar, setToBar] = useState(true);
+  // «Готовить в баре»: по умолчанию — есть ли в чеке то, что готовит бар (needsBar); кассир может переключить сам
+  const [toBarManual, setToBar] = useState(null);
   const [category, setCategory] = useState(null);
   const [query, setQuery] = useState('');
   const [modProduct, setModProduct] = useState(null);
@@ -156,6 +157,7 @@ export function Pos({ ctx }) {
 
   const kkt = kktState(kktRaw);
   const totals = saleTotals(cart, discount);
+  const toBar = toBarManual ?? cartNeedsBar(cart, menu);
   // Подтверждение управляющего привязано к сумме: состав чека изменился — скидку подтверждают заново
   useEffect(() => {
     if (!discount) return;
@@ -193,7 +195,7 @@ export function Pos({ ctx }) {
   const newCheck = () => {
     setCart(emptyCart());
     setDiscount(null);
-    setToBar(true);
+    setToBar(null);
     loadTables();
     loadMenu();
   };

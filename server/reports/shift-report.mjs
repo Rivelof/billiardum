@@ -6,7 +6,7 @@
 
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { sendToClubStaff } from '../notify/index.mjs';
-import { shiftView } from '../shifts/service.mjs';
+import { shiftView, signedMoney } from '../shifts/service.mjs';
 import { manualActions, playStats, revenueOf, serviceLight, shiftLinks, shiftPayments, shiftRefunds } from './queries.mjs';
 import { reconcileKkt, reconcileOnline } from './reconcile.mjs';
 
@@ -105,12 +105,12 @@ export function reportText(r) {
   const c = r.cash;
   if (c.discrepancy_kopecks === 0) lines.push(`Касса сошлась: ${formatMoney(c.actual_cash_kopecks)}.`);
   else if (c.discrepancy_kopecks !== null) {
-    lines.push(`Касса: ожидалось ${formatMoney(c.expected_cash_kopecks)}, в кассе ${formatMoney(c.actual_cash_kopecks)}, расхождение ${formatMoney(c.discrepancy_kopecks)}.`);
+    lines.push(`Касса: ожидалось ${formatMoney(c.expected_cash_kopecks)}, в кассе ${formatMoney(c.actual_cash_kopecks)}, расхождение ${signedMoney(c.discrepancy_kopecks)}.`);
   }
   const k = r.reconciliation.kkt;
-  lines.push(k.ok ? 'Чеки ККТ сходятся с продажами.' : `Чеки ККТ: расхождение ${formatMoney(k.diff_kopecks)}, без чека — ${k.missing_count}.`);
+  lines.push(k.ok ? 'Чеки ККТ сходятся с продажами.' : `Чеки ККТ: расхождение ${signedMoney(-k.diff_kopecks)}, без чека — ${k.missing_count}.`);
   const o = r.reconciliation.online;
-  if (o.status === 'checked') lines.push(o.ok ? 'Онлайн-оплаты сходятся с ЮKassa.' : `Онлайн-оплаты: расхождение с ЮKassa ${formatMoney(o.diff_kopecks ?? 0)}.`);
+  if (o.status === 'checked') lines.push(o.ok ? 'Онлайн-оплаты сходятся с ЮKassa.' : `Онлайн-оплаты: расхождение с ЮKassa ${signedMoney(o.diff_kopecks ?? 0)}.`);
   else if (o.status === 'unavailable') lines.push('ЮKassa не ответила — сверка онлайн-оплат позже в программе клуба.');
   return lines.join('\n');
 }

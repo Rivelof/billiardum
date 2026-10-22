@@ -125,7 +125,7 @@ describe('смена: открытие и закрытие, T16', () => {
       [CLUB_A],
     );
     assert.equal(owners.rowCount, 1);
-    assert.match(owners.rows[0].text, /500\s₽ \(недостача\)/);
+    assert.match(owners.rows[0].text, /расхождение кассы \u2212500\s₽ \(недостача\)/, 'минус U+2212, не дефис');
 
     const light = await t.admin.query("select * from bl.alarms where club_id = $1 and type = 'service_light_threshold'", [CLUB_A]);
     assert.equal(light.rowCount, 1);

@@ -53,7 +53,7 @@ ATOL_EMU_PORT=16732 ATOL_EMU_HOST=127.0.0.1 node tools/kkt-bridge/emu/index.mjs
 
 API: `POST /api/v2/requests` (201, повтор UUID — 409, ККТ выключена в режиме `reject` — 409), `GET|DELETE /api/v2/requests/{uuid}` (404 — нет), `GET /api/v2/getRequestsQueueStatus`, `GET /api/v2/serverInfo`, `POST /api/v2/operations/queryDeviceStatus|queryShiftStatus|queryFnStatus`; то же по `/requests` в старом формате (`errorCode`, `errorDescription`). Задачи: `sell`, `sellReturn`, `openShift`, `closeShift`, `getShiftStatus`, `getDeviceStatus`, `getFnStatus`, `continuePrint`, `reportX`. Проверяет задание чека (сумма позиций = `total`, оплаты, типы НДС, признаки, кассир). ФД сквозной, ФП — 10 цифр, номер чека в смене, номер смены; первый чек в закрытой смене открывает её.
 
-Управление: `GET /__emu/state`, `GET /__emu/documents`, `POST /__emu/reset`, `POST /__emu/power {on, mode: reject|error|wait}`, `POST /__emu/paper {present, mode: error|block}`, `POST /__emu/fn {error: код|null}`, `POST /__emu/delay {ms}`, `POST /__emu/fault {kind: "lose_after_fiscal", times}`, `POST /__emu/shift {expired: true}`.
+Управление: `GET /__emu/state`, `GET /__emu/documents`, `POST /__emu/reset`, `POST /__emu/power {on, mode: reject|error|wait}`, `POST /__emu/paper {present, mode: error|block}`, `POST /__emu/fn {error: код|null}`, `POST /__emu/delay {ms}`, `POST /__emu/fault {kind: "lose_after_fiscal" | "forget_request", times}` (`forget_request` — задание выполнено, документ в ФН, но веб-сервер его «забыл»: GET — 404; мост сообщает «исход неизвестен», сервер поднимает тревогу `receipt_unknown`, управляющий отмечает чек `mark-printed`), `POST /__emu/shift {expired: true}`.
 
 ## Тесты
 

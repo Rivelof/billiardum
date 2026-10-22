@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ORDER_NEXT, addFixed, addProduct, available, cartTotals, defaultModifiers, emptyCart, itemView, itemsLine, lineKey, mergeOrder, modifiersText, normalizeMenu, orderItems, orderPayWord, orderTable, orderTotal, orderWord, refreshCart, removeLine, setQty, sortQueue, toggleModifier, unavailableWord, unitPrice, validateModifiers, waitMinutes, waitTone } from '../bar.mjs';
+import { ORDER_NEXT, addFixed, addProduct, available, cartNeedsBar, cartTotals, defaultModifiers, emptyCart, itemView, itemsLine, lineKey, mergeOrder, modifiersText, needsBar, normalizeMenu, orderItems, orderPayWord, orderTable, orderTotal, orderWord, refreshCart, removeLine, setQty, sortQueue, toggleModifier, unavailableWord, unitPrice, validateModifiers, waitMinutes, waitTone } from '../bar.mjs';
 
 const VOLUME = { id: 'g-vol', name: 'Объём', required: true, modifiers: [{ id: 'm-03', name: '0,3 л', price_delta_kopecks: 0 }, { id: 'm-04', name: '0,4 л', price_delta_kopecks: 4000 }] };
 const SUGAR = { id: 'g-sug', name: 'Сахар', required: false, max: 1, modifiers: [{ id: 'm-s1', name: '1 ложка', price_delta_kopecks: 0 }, { id: 'm-s2', name: '2 ложки', price_delta_kopecks: 0 }] };
@@ -148,7 +148,9 @@ test('очередь бара: порядок, ожидание, статусы 
     { id: 'd', status: 'served', created_at: ago(40) },
     { id: 'e', status: 'preparing', created_at: ago(12) },
   ]);
-  assert.deepEqual(q.map((o) => o.id), ['c', 'b', 'e', 'a'], 'выданные ушли, внутри статуса — кто ждёт дольше');
+  assert.deepEqual(q.map((o) => o.id), ['b', 'c', 'e', 'a'], 'выданные ушли; новые — свежий сверху, дальше — кто ждёт дольше');
+  const q2 = sortQueue([{ id: 'p1', status: 'preparing', created_at: ago(3) }, { id: 'p2', status: 'preparing', created_at: ago(20) }]);
+  assert.deepEqual(q2.map((o) => o.id), ['p2', 'p1']);
   assert.equal(waitMinutes({ created_at: ago(9.5) }, now), 9);
   assert.equal(waitMinutes({ created_at: 'x' }, now), 0);
   assert.equal(waitTone(9), 'ok');
@@ -183,4 +185,15 @@ test('позиция заказа: product_name сервера, без него 
   assert.deepEqual(itemView({ product_name: 'Чай, чёрный', name: 'Чай, чёрный, С сахаром', modifiers: [{ name: 'С сахаром' }] }), { name: 'Чай, чёрный', mods: 'С сахаром' });
   assert.deepEqual(itemView({ product_name: 'Очень длинное название', name: long, modifiers: [{ name: 'Кетчуп' }] }), { name: 'Очень длинное название', mods: 'Кетчуп' });
   assert.deepEqual(itemView({ product_name: null, name: 'Американо, 0,3 л', modifiers: [{ name: '0,3 л' }] }), { name: 'Американо', mods: '0,3 л' }, 'запасной путь');
+});
+
+test('«Готовить в баре»: порция или модификаторы — готовит бар, штучное — нет, явный признак важнее', () => {
+  assert.equal(needsBar({ unit: 'порц', modifier_groups: [] }), true);
+  assert.equal(needsBar({ unit: 'шт', modifier_groups: [{ id: 'g' }] }), true);
+  assert.equal(needsBar({ unit: 'шт', modifier_groups: [] }), false);
+  assert.equal(needsBar({ unit: 'порц', modifier_groups: [], prepared: false }), false);
+  assert.equal(needsBar(undefined), false);
+  const menu = { byId: new Map([['w', { unit: 'шт', modifier_groups: [] }], ['t', { unit: 'порц', modifier_groups: [] }]]) };
+  assert.equal(cartNeedsBar({ lines: [{ kind: 'product', product_id: 'w' }, { kind: 'tab' }] }, menu), false);
+  assert.equal(cartNeedsBar({ lines: [{ kind: 'product', product_id: 'w' }, { kind: 'product', product_id: 't' }] }, menu), true);
 });

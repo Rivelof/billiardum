@@ -233,6 +233,21 @@ export function itemsLine(items) {
     .join(', ');
 }
 
+/**
+ * Готовит ли товар бар (галочка «Готовить в баре» на кассе). Явный признак товара — prepared | to_bar, если сервер
+ * его отдаст; иначе по виду товара: порция («порц») или выбор модификаторов — готовят, штучное (вода, чипсы) — отдают сразу.
+ */
+export function needsBar(product) {
+  if (!product) return false;
+  for (const k of ['prepared', 'to_bar', 'needs_bar']) if (typeof product[k] === 'boolean') return product[k];
+  return product.unit === 'порц' || (Array.isArray(product.modifier_groups) && product.modifier_groups.length > 0);
+}
+
+/** В чеке есть то, что готовит бар: товары кассы по меню. */
+export function cartNeedsBar(cart, menu) {
+  return (cart?.lines ?? []).some((l) => l.kind === 'product' && needsBar(menu?.byId?.get(l.product_id)));
+}
+
 /** @returns {{ lines: object[] }} */
 export function emptyCart() {
   return { lines: [] };
@@ -372,9 +387,11 @@ export function waitTone(minutes) {
 /** Сортировка очереди бара: по статусу (новые, готовятся, готовы), внутри — кто ждёт дольше, тот выше. */
 export function sortQueue(orders) {
   const rank = { new: 0, preparing: 1, ready: 2 };
+  const at = (o) => String(o.created_at);
+  // «Новые» — свежий заказ сверху, его не пропустить; «Готовятся» и «Готовы» — кто ждёт дольше, тот выше
   return [...orders]
     .filter(orderActive)
-    .sort((a, b) => rank[a.status] - rank[b.status] || String(a.created_at).localeCompare(String(b.created_at)));
+    .sort((a, b) => rank[a.status] - rank[b.status] || (a.status === 'new' ? at(b).localeCompare(at(a)) : at(a).localeCompare(at(b))));
 }
 
 /**

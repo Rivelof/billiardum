@@ -314,10 +314,16 @@ export function createKktService({ pool, withContext, clock, log, outbox, alarms
     if (out.ack) send(conn, { type: 'ack', uuid: msg.uuid });
     const c = club(conn.clubId);
     if (out.done && c.inflight?.uuid === msg.uuid) c.inflight = null;
-    if (out.retry && (out.category === 'connection' || out.category === 'paper') && conn.kkt.online !== false) {
-      conn.kkt = { ...conn.kkt, online: out.category === 'connection' ? false : conn.kkt.online, reason: out.category === 'paper' ? 'paper' : 'kkt_offline' };
-    }
-    schedulePublish(conn.clubId);
+    // Ответ задания — свежее состояние ККТ: ошибка связи — offline; документ, «уже в нужном
+    // состоянии» или ошибка не связи — ККТ отвечает (online), бумага — предупреждение.
+    const category = msg.outcome === 'error' ? (msg.error?.category ?? 'unknown') : null;
+    let next = null;
+    if (msg.outcome === 'done' || msg.outcome === 'skipped') next = { online: true, reason: null, paper: true, blocked: false };
+    else if (category === 'connection') next = { online: false, reason: 'kkt_offline', paper: conn.kkt.paper ?? null, blocked: false };
+    else if (category === 'paper') next = { online: true, reason: 'paper', paper: false, blocked: false };
+    else if (category) next = { online: true, reason: null, paper: conn.kkt.paper ?? null, blocked: false };
+    if (next && (next.online !== conn.kkt.online || next.reason !== conn.kkt.reason || next.blocked !== Boolean(conn.kkt.blocked))) onStatus(conn, next);
+    else schedulePublish(conn.clubId);
     kick(conn.clubId);
   }
 

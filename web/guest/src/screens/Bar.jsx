@@ -96,6 +96,7 @@ export function BarScreen({ sessionId }) {
         if (name === 'order' && data?.id) {
           setOrders((list) => mergeOrder(list ?? [], data));
           if (data.status === 'ready') setAnnounce(`Заказ № ${data.number} готов, несём к столу.`);
+          else if (data.status === 'served') setAnnounce(`Заказ № ${data.number} выдан. Приятного отдыха!`);
           loadTab();
         } else if (name === 'session' && data?.id === sessionId) setSession((s) => ({ ...s, ...data }));
       },
@@ -336,6 +337,8 @@ function OrderCard({ order }) {
 }
 
 /** Счёт стола: заказы «в счёт стола», оплата онлайн — сейчас или после игры (№79). */
+const tabPayKey = (sessionId) => `bl-tab-pay:${sessionId}`;
+
 function TabBlock({ sessionId, tab, summary, onPaid }) {
   const [method, setMethod] = useState('sbp');
   const [busy, setBusy] = useState(false);
@@ -347,6 +350,7 @@ function TabBlock({ sessionId, tab, summary, onPaid }) {
     try {
       const res = await api.payTab(sessionId, method, summary.total);
       const url = safeRedirectUrl(res?.confirmation?.url);
+      if (url) sessionStore.set(tabPayKey(sessionId), Date.now()); // вернёмся на /sessions/{id}/tab — знать, что платили
       if (url) window.location.assign(url);
       else onPaid?.();
     } catch (err) {
@@ -618,7 +622,8 @@ export function OrderPaid({ orderId }) {
         const o = await api.order(orderId);
         setOrder(o);
         setError(null);
-        if (!o.awaiting_payment || o.status === 'canceled') done.current = true;
+        // Оплату ждём, а после неё следим за статусом, пока заказ не выдан: «готов» не должен застывать на экране
+        if (o.status === 'served' || o.status === 'canceled') done.current = true;
       } catch (err) {
         setError(err);
       }
@@ -655,34 +660,47 @@ export function OrderPaid({ orderId }) {
   );
 }
 
-/** Возврат после оплаты счёта стола (return_url backend-pos `/app/sessions/{id}/tab`). */
+/**
+ * Счёт стола по адресу `/app/sessions/{id}/tab` — return_url оплаты счёта (backend-pos). Ждём подтверждения;
+ * счёт не оплачен — показываем его и оплату. «Оплата не прошла» — только если гость с этой вкладки уходил платить.
+ */
 export function TabPaid({ sessionId }) {
   const [tab, setTab] = useState(null);
   const [error, setError] = useState(null);
+  const [tried] = useState(() => {
+    const at = sessionStore.get(tabPayKey(sessionId));
+    return Number.isFinite(at) && Date.now() - at < 30 * 60_000;
+  });
   const done = useRef(false);
+  const load = useCallback(async () => {
+    try {
+      const t = await api.tab(sessionId);
+      setTab(t);
+      setError(null);
+      if (!t?.pending_payment) done.current = true;
+    } catch (err) {
+      setError(err);
+    }
+  }, [sessionId]);
   usePoll(
     async () => {
-      if (done.current) return;
-      try {
-        const t = await api.tab(sessionId);
-        setTab(t);
-        setError(null);
-        if (!t?.pending_payment) done.current = true;
-      } catch (err) {
-        setError(err);
-      }
+      if (!done.current) await load();
     },
     1500,
     [sessionId],
   );
   const s = tabSummary(tab);
   const settled = tab && !s.pending;
+  useEffect(() => {
+    if (settled) sessionStore.set(tabPayKey(sessionId), null);
+  }, [settled, sessionId]);
+  const failed = settled && s.open && tried;
   return (
     <div class="screen screen--paper">
       <Header back={{ href: `${BASE}s/${encodeURIComponent(sessionId)}`, label: 'К игре' }} />
-      <main class="wrap content">
+      <main class="wrap content bar">
         <h1 class="page-title display" aria-live="polite">
-          {!tab ? 'Счёт стола' : s.pending ? 'Ждём подтверждения оплаты' : s.open ? 'Счёт ещё не оплачен' : 'Счёт стола оплачен'}
+          {!tab ? 'Счёт стола' : s.pending ? 'Ждём подтверждения оплаты' : s.open ? 'Оплата счёта' : tried ? 'Счёт стола оплачен' : 'Счёт стола пуст'}
         </h1>
         <ErrorNote error={error} />
         {tab && s.pending ? (
@@ -691,11 +709,30 @@ export function TabPaid({ sessionId }) {
             Проверяем оплату. Обычно это несколько секунд.
           </p>
         ) : null}
-        {settled && !s.open ? <p class="lead">Спасибо! Чек по 54‑ФЗ придёт на ваш номер.</p> : null}
-        {settled && s.open ? <p class="lead">Оплата не прошла или вы её отменили. Деньги не списаны — попробуйте ещё раз.</p> : null}
-        <a class="btn btn--primary btn--block btn--lg" href={`${BASE}s/${encodeURIComponent(sessionId)}/bar${s.open ? '#tab' : ''}`} onClick={linkHandler}>
-          {s.open ? 'Вернуться к счёту' : 'Открыть бар'}
-        </a>
+        {failed ? (
+          <div class="note note--error" role="alert">
+            <Icon name="alert" />
+            <p class="note__title">Оплата не прошла</p>
+            <p class="note__body">Деньги не списаны. Попробуйте ещё раз или выберите другой способ.</p>
+          </div>
+        ) : null}
+        {settled && !s.open ? <p class="lead">{tried ? 'Спасибо! Чек по 54‑ФЗ придёт на ваш номер.' : 'Неоплаченных заказов бара нет.'}</p> : null}
+        {settled && s.open ? (
+          <TabBlock
+            sessionId={sessionId}
+            tab={tab}
+            summary={s}
+            onPaid={() => {
+              done.current = false;
+              load();
+            }}
+          />
+        ) : null}
+        {settled && !s.open ? (
+          <a class="btn btn--primary btn--block btn--lg" href={`${BASE}s/${encodeURIComponent(sessionId)}/bar`} onClick={linkHandler}>
+            Открыть бар
+          </a>
+        ) : null}
         <a class="btn btn--quiet btn--block" href={`${BASE}s/${encodeURIComponent(sessionId)}`} onClick={linkHandler}>
           К игре
         </a>

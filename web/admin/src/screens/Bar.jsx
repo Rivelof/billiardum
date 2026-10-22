@@ -66,6 +66,11 @@ export function BarScreen({ ctx }) {
     const o = added[added.length - 1];
     setAnnounce(`Новый заказ: ${orderTable(o) ? `стол ${orderTable(o)}` : 'касса'}, ${o.items.map((i) => `${itemView(i).name} ${i.qty}`).join(', ')}`);
     setTimeout(() => setFresh((prev) => new Set([...prev].filter((id) => !added.some((a) => a.id === id)))), HIGHLIGHT_MS);
+    // Новый заказ — вверху колонки «Новые»; если экран прокручен, показываем его
+    setTimeout(() => {
+      const reduce = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      document.getElementById(`t-${o.id}`)?.closest('.ticket')?.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
+    }, 50);
   }, []);
 
   const load = useCallback(async () => {

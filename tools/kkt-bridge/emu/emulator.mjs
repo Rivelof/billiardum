@@ -21,6 +21,8 @@
 //   POST /__emu/delay { ms }                              задержка каждой фискальной задачи
 //   POST /__emu/fault { kind: 'lose_after_fiscal', times } документ закрылся в ФН, связь оборвалась:
 //                                                         задача blocked, затем ready только с номером ФД
+//   POST /__emu/fault { kind: 'forget_request', times }    задание выполнено (документ в ФН), но веб-сервер
+//                                                         его «забыл»: GET по UUID — 404 (исход неизвестен у моста)
 //   POST /__emu/shift { expired: true }                   смена ККТ старше 24 часов
 // Выдаёт номер ФД (сквозной), ФП (10 цифр, HMAC от ФН и ФД), номер чека в смене и номер смены.
 
@@ -342,6 +344,16 @@ export function createAtolEmulator({
     const req = st.requests.get(uuid);
     run(req)
       .catch((err) => log?.warn?.('atol_emu_run_failed', { error: err.message }))
+      .then(() => {
+        // Сбой «забыть задание»: задание выполнено (документ в ФН), но веб-сервер его больше не знает
+        // (переустановка драйвера, очистка заданий) — GET по UUID отвечает 404.
+        const forget = st.faults.find((f) => f.kind === 'forget_request' && f.remaining > 0);
+        if (forget && req.state === 'done') {
+          forget.remaining -= 1;
+          st.requests.delete(req.uuid);
+          log?.info?.('atol_emu_forgot', { uuid: req.uuid });
+        }
+      })
       .finally(() => {
         st.busy = false;
         setImmediate(pump);
@@ -450,7 +462,7 @@ export function createAtolEmulator({
       st.delayMs = ms;
     },
     fault(kind, times = 1) {
-      if (kind !== 'lose_after_fiscal') throw new HttpFail(400, 'kind: lose_after_fiscal');
+      if (kind !== 'lose_after_fiscal' && kind !== 'forget_request') throw new HttpFail(400, 'kind: lose_after_fiscal | forget_request');
       st.faults.push({ kind, remaining: Number.isInteger(times) && times > 0 ? times : 1 });
     },
     expireShift() {

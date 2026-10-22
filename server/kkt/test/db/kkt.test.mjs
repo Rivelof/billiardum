@@ -294,6 +294,51 @@ describe('очередь чеков ККТ', () => {
   });
 });
 
+describe('состояние ККТ и сбои стенда', () => {
+  const status = async () => (await t.request('GET', `/api/clubs/${CLUB_A}/kkt/status`, { token: await t.login('reception') })).json;
+
+  it('короткое отключение ККТ (опрос состояния его не заметил): offline по ошибке задания, online после пробития', async () => {
+    // В очереди клуба могут остаться чеки с ошибкой из прошлых тестов (state warning) — смотрим ККТ моста.
+    const kktOnline = async () => (await status()).bridges.some((b) => b.kkt?.online === true);
+    await t.stopBridges();
+    const reg = await t.registerBridge('owner', CLUB_A, 'Без опроса');
+    t.startBridge(reg.token, { status_poll_ms: 600000 });
+    await waitFor(kktOnline);
+    t.emu.control.power(false, 'error');
+    const sale = await t.barSale({ lines: [{ name: 'Морс', price_kopecks: 11000 }] });
+    await waitFor(async () => (await status()).state === 'offline');
+    const before = t.log.lines.length;
+    t.emu.control.power(true);
+    await t.waitPrinted(sale.receiptId);
+    await waitFor(kktOnline);
+    assert.notEqual((await status()).state, 'offline');
+    await waitFor(() => t.log.lines.slice(before).some((l) => l.msg === 'kkt_state' && l.state !== 'offline'), { timeoutMs: 3000 });
+  });
+
+  it('эмулятор «забыл задание»: исход неизвестен → тревога receipt_unknown → управляющий отмечает чек пробитым', async () => {
+    t.emu.control.delay(200);
+    t.emu.control.fault('forget_request', 1);
+    const sale = await t.barSale({ lines: [{ name: 'Забытый', price_kopecks: 8800 }] });
+    await waitFor(async () => (await t.receipt(sale.receiptId)).kkt_job?.state === 'lost', { timeoutMs: 10_000 });
+    t.emu.control.delay(0);
+    const r = await t.receipt(sale.receiptId);
+    assert.equal(r.status, 'receipt_pending');
+    assert.equal(r.error, 'atol_task_lost');
+    const doc = t.emu.control.documents().find((d) => d.uuid === sale.receiptId);
+    assert.ok(doc, 'документ на ККТ есть');
+    assert.equal(t.emu.control.documents().filter((d) => d.uuid === sale.receiptId).length, 1, 'второй раз не пробит');
+    const alarm = await t.admin.query("select level from bl.alarms where club_id = $1 and type = 'receipt_unknown' and data ->> 'receipt_id' = $2", [CLUB_A, sale.receiptId]);
+    assert.equal(alarm.rows[0]?.level, 'critical');
+    const res = await t.request('POST', `/api/kkt/receipts/${sale.receiptId}/mark-printed`, {
+      token: await t.login('manager'),
+      body: { fd: doc.fd, fp: doc.fp, reason: 'Чек есть в ленте ККТ' },
+    });
+    assert.equal(res.status, 200);
+    const done = await t.receipt(sale.receiptId);
+    assert.deepEqual([done.status, Number(done.fd), done.fp], ['printed', doc.fd, doc.fp]);
+  });
+});
+
 describe('тревога «Чек не пробит больше 10 минут»', () => {
   it('чек старше 10 минут без моста — тревога владельцу один раз; повторный проход не дублирует', async () => {
     await t.stopBridges();

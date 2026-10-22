@@ -182,6 +182,17 @@ describe('эмулятор АТОЛ: сбои ККТ', () => {
     assert.equal(emu.control.state().receipts, 1);
   });
 
+  it('«забыть задание»: документ в ФН есть, а GET по UUID — 404', async () => {
+    emu.control.fault('forget_request', 1);
+    await call('POST', '/api/v2/requests', { uuid: 'fg-1', request: [sell()] });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal((await call('GET', '/api/v2/requests/fg-1')).status, 404);
+    assert.equal(emu.control.documents().filter((d) => d.uuid === 'fg-1').length, 1);
+    await call('POST', '/api/v2/requests', { uuid: 'fg-2', request: [sell()] });
+    assert.equal((await result('fg-2'))[0].status, 'ready', 'сбой — один раз');
+    assert.equal((await call('POST', '/__emu/fault', { kind: 'nope' })).status, 400);
+  });
+
   it('задержка печати: задача inProgress, затем ready', async () => {
     emu.control.delay(200);
     await call('POST', '/api/v2/requests', { uuid: 'd-1', request: [sell()] });

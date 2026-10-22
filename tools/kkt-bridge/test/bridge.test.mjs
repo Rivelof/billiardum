@@ -283,6 +283,20 @@ describe('мост ККТ: задания', () => {
     assert.equal(emu.control.state().stats.posts, 0);
   });
 
+  it('АТОЛ забыл задание сразу после постановки: unknown без ожидания таймаута, чек не повторяется', async () => {
+    emu.control.delay(200);
+    emu.control.fault('forget_request', 1);
+    startBridge({ job_timeout_ms: 30000 });
+    await server.wait((m) => m.type === 'hello');
+    const uuid = randomUUID();
+    server.job(uuid);
+    const r = await server.wait((m) => m.type === 'result' && m.uuid === uuid, 3000);
+    assert.equal(r.outcome, 'unknown');
+    assert.equal(r.error.code, 'atol_task_lost');
+    assert.equal(emu.control.state().stats.posts, 1);
+    assert.equal(emu.control.state().receipts, 1);
+  });
+
   it('перезапуск моста: журнал на диске помнит UUID, новое задание не ставится второй раз', async () => {
     emu.control.delay(500);
     const b1 = startBridge();

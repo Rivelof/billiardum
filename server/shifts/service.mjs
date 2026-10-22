@@ -23,6 +23,13 @@ export const DEFAULT_SERVICE_LIGHT_ALARM_MINUTES = 60;
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
+/** Сумма со знаком для текстов: «−500 ₽» (минус U+2212, не дефис), «+500 ₽», «0 ₽». */
+export function signedMoney(kopecks) {
+  const n = Number(kopecks);
+  if (n === 0) return formatMoney(0);
+  return `${n < 0 ? '\u2212' : '+'}${formatMoney(Math.abs(n))}`;
+}
+
 export function shiftView(s) {
   const closed = Boolean(s.closed_at);
   return {
@@ -249,7 +256,7 @@ export async function closeShift(db, deps, { shiftId, userId, actualCashKopecks,
       level: 'critical',
       manual: true,
       data: { shift_id: s.id, number: s.number, discrepancy_kopecks: discrepancy, expected_cash_kopecks: expected, actual_cash_kopecks: actualCashKopecks },
-      text: `Смена №${s.number}: расхождение кассы ${formatMoney(discrepancy)} (${sign}). Ожидалось ${formatMoney(expected)}, в кассе ${formatMoney(actualCashKopecks)}`,
+      text: `Смена №${s.number}: расхождение кассы ${signedMoney(discrepancy)} (${sign}). Ожидалось ${formatMoney(expected)}, в кассе ${formatMoney(actualCashKopecks)}`,
     });
   }
 

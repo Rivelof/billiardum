@@ -212,6 +212,9 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
           L.error('bridge_job_crashed', { uuid: current.uuid, error: err.message });
           result = { outcome: 'in_progress', task_created: book.wasPosted(current.uuid), error: { code: 'bridge_error', category: 'unknown' } };
         }
+        // Ответ задания — свежее состояние ККТ: опрос состояния сообщит, когда связь вернётся.
+        if (result.outcome === 'error' && result.error?.category === 'connection') kkt = { ...kkt, online: false, reason: result.error.code === 'atol_unreachable' ? 'atol_unreachable' : 'kkt_offline' };
+        else if (result.outcome === 'done' || result.outcome === 'skipped') kkt = { ...kkt, online: true, reason: kkt.reason === 'paper' ? 'paper' : null };
         const message = { type: 'result', job_id: current.job_id, uuid: current.uuid, kind: current.kind, ...result };
         counters.results += 1;
         if (result.outcome !== 'in_progress') book.keepResult(current.uuid, message);
@@ -290,6 +293,10 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
     let blocked = null;
     for (;;) {
       got = await safeGet(uuid);
+      if (!got.found && !got.unreachable && !got.error) {
+        // Задание только что было в АТОЛ, а теперь его нет: второй раз не ставить.
+        return { outcome: 'unknown', task_created: true, error: { code: 'atol_task_lost', category: 'unknown', description: 'АТОЛ не знает отправленное задание' } };
+      }
       if (got.found) {
         if (isFinal(got.results)) return interpret(job, got.results);
         const b = got.results.find((r) => r.status === 'blocked');
