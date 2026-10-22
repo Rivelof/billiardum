@@ -44,3 +44,19 @@ test('«Стол занят до 21:40» — время подставляетс
   assert.equal(errorMessage('table_busy', { busyUntil: '21:40' }).title, 'Стол занят до 21:40.');
   assert.equal(errorMessage('table_busy').title, 'Стол уже занят.');
 });
+
+test('коды M2 (касса, бар, смены, ККТ): у каждого текст гостю и персоналу', () => {
+  const M2 = ['shift_closed', 'shift_open', 'stop_list', 'out_of_stock', 'alcohol_not_allowed', 'approval_required', 'approval_invalid', 'approval_unavailable', 'pin_invalid', 'tab_empty', 'order_closed', 'csv_invalid', 'already_paid', 'duplicate', 'receipt_not_failed', 'receipt_not_unknown'];
+  for (const code of M2) {
+    assert.ok(KNOWN_CODES.includes(code), code);
+    for (const audience of ['guest', 'staff']) {
+      const m = errorMessage(code, { audience });
+      assert.match(m.title, /[А-ЯЁ].*\.$/u, `${code}: заголовок — предложение`);
+      assert.match(m.action, /[А-ЯЁ].*[.!]$/u, `${code}: действие — предложение`);
+      assert.doesNotMatch(m.text, /\b[a-z_]{4,}\b/, `${code}: без кодов в тексте`);
+    }
+  }
+  assert.match(errorMessage('shift_closed', { audience: 'staff' }).action, /Откройте смену/);
+  assert.match(errorMessage('shift_closed', { audience: 'guest' }).action, /онлайн/);
+  assert.match(errorMessage('stop_list', { audience: 'guest' }).title, /сейчас нет/);
+});

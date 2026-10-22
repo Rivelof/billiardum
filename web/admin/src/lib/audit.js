@@ -27,16 +27,43 @@ export const ACTION_LABEL = {
   'device.claim': 'Контроллер подключился',
   'auth.staff_login': 'Вход сотрудника',
   'auth.pin_switch': 'Смена сотрудника по PIN',
+  // M2: касса, бар, смены, склад, ККТ (имена действий сверяются с backend-pos и backend-kkt)
+  'pos.sale': 'Продажа на кассе',
+  'pos.refund': 'Возврат продажи',
+  'pos.discount': 'Скидка на кассе',
+  'manual.discount': 'Скидка выше лимита',
+  'pos.sale_canceled': 'Продажа отменена',
+  'pos.settings': 'Настройки кассы изменены',
+  'order.create': 'Заказ со стола',
+  'order.cancel': 'Заказ бара отменён',
+  'tab.pay': 'Оплата счёта стола',
+  'kkt.receipt_retry': 'Чек ККТ повторён',
+  'kkt.receipt_mark_printed': 'Чек ККТ отмечен пробитым',
+  'catalog.import': 'Меню загружено из CSV',
+  'order.status': 'Статус заказа бара',
+  'shift.open': 'Смена открыта',
+  'shift.close': 'Смена закрыта',
+  'stock.arrival': 'Приход на склад',
+  'stock.writeoff': 'Списание со склада',
+  'stock.audit': 'Ревизия склада',
+  'menu.product': 'Товар меню изменён',
+  'menu.stop_list': 'Стоп-лист изменён',
+  'receipt.printed': 'Чек пробит на кассе',
+  'receipt.failed': 'Чек не пробился',
+  'kkt.bridge_register': 'Мост ККТ подключён',
+  'kkt.bridge_revoke': 'Мост ККТ отключён',
 };
 
 /** Ручные действия (инвариант 8) — подсвечиваются в журнале. */
-export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'payment.refunded']);
+export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'manual.discount', 'payment.refunded', 'pos.refund', 'order.cancel', 'stock.writeoff', 'kkt.receipt_retry']);
 
 /** Группы фильтра «Действие». В API уходит список через запятую, `*` — любое продолжение (запрошено у backend-core). */
 export const ACTION_GROUPS = [
   { value: '', label: 'Все действия' },
-  { value: 'service.*,manual.*,payment.refunded', label: 'Ручные действия' },
+  { value: 'service.*,manual.*,payment.refunded,pos.refund,order.cancel,stock.writeoff,kkt.receipt_retry', label: 'Ручные действия' },
   { value: 'payment.*,reception.*', label: 'Деньги' },
+  { value: 'pos.*,shift.*,kkt.*,tab.*', label: 'Касса и смены' },
+  { value: 'order.*,stock.*,catalog.*', label: 'Бар и склад' },
   { value: 'session.*', label: 'Игры' },
   { value: 'alarm.*', label: 'Тревоги' },
   { value: 'device.*', label: 'Контроллеры' },

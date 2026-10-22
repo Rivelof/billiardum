@@ -90,5 +90,18 @@ export const can = {
   bind: (role) => ['owner', 'installer'].includes(role),
   identify: (role) => ['owner', 'manager', 'installer'].includes(role),
   terminal: (role) => ['owner', 'manager'].includes(role),
-  setPin: (role) => ['owner', 'manager', 'reception'].includes(role),
+  setPin: (role) => ['owner', 'manager', 'reception', 'bar'].includes(role),
+  // M2 (контракт m2.md §4): касса и смена — ресепшн и выше; экран бара — ещё и бармен;
+  // отчёты смен, склад и меню — управляющий и владелец; мост ККТ — только владелец
+  pos: (role) => ['reception', 'manager', 'owner'].includes(role),
+  bar: (role) => ['bar', 'reception', 'manager', 'owner'].includes(role),
+  shift: (role) => ['reception', 'manager', 'owner'].includes(role),
+  reports: (role) => ['manager', 'owner'].includes(role),
+  stock: (role) => ['manager', 'owner'].includes(role),
+  menu: (role) => ['manager', 'owner'].includes(role),
+  // Касса ККТ: очередь чеков — управляющий и владелец (повтор и «пробит» — ручные действия); мосты — только владелец
+  kkt: (role) => ['manager', 'owner'].includes(role),
+  kktBridges: (role) => role === 'owner',
+  /** Скидку выше лимита даёт сам: управляющий и владелец (с причиной). */
+  bigDiscount: (role) => ['manager', 'owner'].includes(role),
 };

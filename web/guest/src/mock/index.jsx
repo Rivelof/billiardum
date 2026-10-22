@@ -51,7 +51,9 @@ export function install(configureApi) {
       this.readyState = 0;
       this.handlers = new Map();
       const id = new URL(url, location.origin).searchParams.get('session');
-      this.unsubscribe = backend.subscribe(id, (data) => this.dispatch('session', data));
+      this.unsubscribe = backend.subscribe(id, (data, name = 'session') => this.dispatch(name, data));
+      // Бар готовит заказы сам — статусы двигаются раз в 3 секунды
+      this.timer = setInterval(() => backend.handle('GET', '/api/__tick'), 3000);
       setTimeout(() => {
         if (this.readyState === 2) return;
         this.readyState = 1;
@@ -67,6 +69,7 @@ export function install(configureApi) {
     }
     close() {
       this.readyState = 2;
+      clearInterval(this.timer);
       this.unsubscribe();
     }
   }
@@ -85,7 +88,8 @@ function MockPay({ id, backend }) {
   const p = backend.payment(id);
   const go = (success) => {
     backend.confirm(id, success);
-    location.assign(`/app/wait/${id}`);
+    // return_url платежа: стол — /app/wait/{id}, бар — /app/orders/{id} и /app/sessions/{id}/tab (backend-pos)
+    location.assign(p?.return_url ?? `/app/wait/${id}`);
   };
   return (
     <div class="screen screen--paper">

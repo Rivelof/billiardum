@@ -49,5 +49,30 @@ export const ROLE_LABEL = {
   owner: 'Владелец',
   manager: 'Управляющий',
   reception: 'Ресепшн',
+  bar: 'Бар',
   installer: 'Монтажник',
 };
+
+/**
+ * Ставка НДС товара для чека (vat_code — код ЮKassa 1–12, как у backend-pos). Пусто — ставка из настроек клуба (№52).
+ * Ставки 2026 года: основная 22 %, для УСН — 5 % и 7 %. Проверить с бухгалтером пилотного клуба.
+ */
+export const VAT_OPTIONS = [
+  { value: '', label: 'Как в настройках клуба' },
+  { value: '1', label: 'Без НДС' },
+  { value: '2', label: 'НДС 0 %' },
+  { value: '7', label: 'НДС 5 %' },
+  { value: '8', label: 'НДС 7 %' },
+  { value: '3', label: 'НДС 10 %' },
+  { value: '11', label: 'НДС 22 %' },
+];
+
+/** Предмет расчёта в чеке (payment_subject → paymentObject АТОЛ). */
+export const SUBJECT_OPTIONS = [
+  { value: 'commodity', label: 'Товар' },
+  { value: 'excise', label: 'Подакцизный товар (алкоголь)' },
+  { value: 'service', label: 'Услуга' },
+];
+
+/** Единицы — коды сервера (server/catalog/service.mjs). */
+export const UNIT_OPTIONS = ['шт', 'порц', 'л', 'мл', 'кг', 'г'].map((u) => ({ value: u, label: u }));

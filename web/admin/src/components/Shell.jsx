@@ -11,16 +11,25 @@ const THEME_ICON = { auto: 'auto', light: 'sun', dark: 'moon' };
 
 export function navItems(role, club) {
   const c = `${BASE}c/${encodeURIComponent(club)}/`;
+  const manage = can.manage(role);
   const items = [];
-  if (can.manage(role)) items.push({ key: 'now', href: `${c}now`, icon: 'hall', label: 'Сейчас' });
-  if (can.reception(role)) items.push({ key: 'reception', href: `${c}reception`, icon: 'reception', label: 'Ресепшн' });
-  if (can.manage(role)) {
-    items.push({ key: 'journal', href: `${c}journal`, icon: 'journal', label: 'Журнал' });
-    items.push({ key: 'alarms', href: `${c}alarms`, icon: 'bell', label: 'Тревоги' });
+  const add = (key, icon, label, wideOnly = false) => items.push({ key, href: `${c}${key}`, icon, label, wideOnly });
+  // На телефоне у владельца и управляющего снизу пять пунктов: Сейчас, Смены, Журнал, Тревоги, Ещё.
+  // Касса, ресепшн, бар, склад, меню, ККТ и контроллеры — в «Ещё» и в боковой панели планшета
+  if (manage) add('now', 'hall', 'Сейчас');
+  if (can.pos(role)) add('pos', 'cart', 'Касса', manage);
+  if (can.reception(role)) add('reception', 'reception', 'Ресепшн', manage);
+  if (can.bar(role)) add('bar', 'cup', 'Бар', manage);
+  if (can.shift(role)) add('shift', 'register', manage ? 'Смены' : 'Смена');
+  if (manage) {
+    add('journal', 'journal', 'Журнал');
+    add('alarms', 'bell', 'Тревоги');
   }
-  // На телефоне у владельца и управляющего шестой пункт не помещается — «Контроллеры» там в «Ещё»
-  if (can.devices(role)) items.push({ key: 'devices', href: `${c}devices`, icon: 'chip', label: 'Контроллеры', wideOnly: can.manage(role) });
-  items.push({ key: 'more', href: `${c}more`, icon: 'more', label: 'Ещё' });
+  if (can.stock(role)) add('stock', 'box', 'Склад', true);
+  if (can.menu(role)) add('menu', 'list', 'Меню', true);
+  if (can.kkt(role)) add('kkt', 'printer', 'ККТ', true);
+  if (can.devices(role)) add('devices', 'chip', 'Контроллеры', manage);
+  add('more', 'more', 'Ещё');
   return items;
 }
 

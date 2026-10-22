@@ -26,7 +26,8 @@ export function configureApi({ fetch, EventSource, onUnauthorized } = {}) {
  * @param {{ onEvent: (name: string, data: unknown) => void, onOpen?: () => void, onState?: (s: string) => void }} handlers
  */
 export function streamSession(id, handlers) {
-  const opts = { ...handlers, events: ['session'], EventSource: EventSourceImpl };
+  // M2: в канале сессии ещё `order` — статус заказа бара (контракт m2 §5)
+  const opts = { ...handlers, events: handlers.events ?? ['session'], EventSource: EventSourceImpl };
   if (!hasBearer()) return openStream(api.streamUrl(id), opts);
   // Мини-приложение: EventSource не передаёт Bearer — одноразовый токен потока на 60 с
   let inner = null;
@@ -59,6 +60,19 @@ export function hasBearer() {
 
 // Ключ идемпотентности живёт, пока не пришёл ответ: повтор после обрыва связи не создаёт второй платёж
 const payKeys = new Map();
+
+/**
+ * Ключ на одну попытку: тот же состав запроса до успешного ответа — тот же ключ (повтор после обрыва
+ * не создаст второй заказ); после успеха ключ забывается — такой же заказ позже будет новым.
+ */
+async function once(map, fingerprint, run) {
+  if (!map.has(fingerprint)) map.set(fingerprint, newIdempotencyKey());
+  const res = await run(map.get(fingerprint));
+  map.delete(fingerprint);
+  return res;
+}
+const orderKeys = new Map();
+const tabKeys = new Map();
 
 export const api = {
   table: (code) => client.get(`/t/${encodeURIComponent(code)}`),
@@ -103,4 +117,20 @@ export const api = {
   streamToken: (query) => client.post('/stream/token', query),
 
   streamUrl: (sessionId) => client.url('/stream', { session: sessionId }),
+
+  // ---------- M2: бар со стола (backend-pos, server/orders/README.md) ----------
+  /** Меню гостя: алкоголь сервер не отдаёт (№76). */
+  menu: (clubId) => client.get(`/clubs/${encodeURIComponent(clubId)}/menu`),
+  /**
+   * Заказ со стола: { session_id, items, pay: 'tab' | 'online', method?: 'sbp' | 'card', comment? } → { order, payment? }.
+   * online — payment.confirmation.url (ЮKassa), return_url сервера — /app/orders/{id}.
+   */
+  createOrder: (body) => once(orderKeys, JSON.stringify(body), (key) => client.post('/orders', body, { idempotencyKey: key })),
+  order: (id) => client.get(`/orders/${encodeURIComponent(id)}`),
+  /** Счёт стола: { session_id, orders, total_kopecks, pending_payment } — живёт дольше сессии (№79). */
+  tab: (sessionId) => client.get(`/sessions/${encodeURIComponent(sessionId)}/tab`),
+  sessionOrders: (sessionId) => client.get(`/sessions/${encodeURIComponent(sessionId)}/orders`),
+  /** Оплата счёта стола онлайн: { method } → { sale_id, payment_id, status, confirmation }; return_url — /app/sessions/{id}/tab. */
+  payTab: (sessionId, method, total) =>
+    once(tabKeys, `${sessionId}:${method}:${total}`, (key) => client.post(`/sessions/${encodeURIComponent(sessionId)}/tab/pay`, { method }, { idempotencyKey: key })),
 };

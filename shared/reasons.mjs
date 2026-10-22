@@ -29,3 +29,24 @@ export const SERVICE_REASONS = Object.freeze([
 export function reasonLabel(list, code) {
   return (list.find((r) => r.code === code) ?? list.find((r) => r.code === 'other'))?.label ?? 'Другое';
 }
+
+/**
+ * M2. Скидка выше лимита клуба (№82): управляющий подтверждает с причиной, владельцу — тревога.
+ * Код уходит в `discount.reason_code`, текст — в `discount.reason_text`. Список сверяется с backend-pos.
+ */
+export const DISCOUNT_REASONS = Object.freeze([
+  { code: 'regular_guest', label: 'Постоянный гость' },
+  { code: 'compensation', label: 'Компенсация за неудобство' },
+  { code: 'promo', label: 'Акция клуба' },
+  { code: 'staff', label: 'Сотрудник клуба' },
+  { code: 'other', label: 'Другое' },
+]);
+
+/** M2. Списание со склада (POST /api/stock/writeoffs): причина обязательна. */
+export const WRITEOFF_REASONS = Object.freeze([
+  { code: 'broken', label: 'Бой или порча' },
+  { code: 'expired', label: 'Истёк срок годности' },
+  { code: 'treat', label: 'Угощение от клуба' },
+  { code: 'staff_meal', label: 'Питание персонала' },
+  { code: 'other', label: 'Другое' },
+]);

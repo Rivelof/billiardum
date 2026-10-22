@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { Shell } from '../components/Shell.jsx';
+import { Shell, navItems } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api, getTerminal, setTerminal } from '../lib/api.js';
@@ -34,21 +34,49 @@ export function More({ ctx }) {
             Выйти
           </button>
         </section>
-        {can.devices(role) ? (
-          <section class="panel">
-            <h2 class="section-title">Контроллеры</h2>
-            <p class="hint">На связи ли столы, сигнал, прошивка, «Подсветить стол», привязка нового контроллера.</p>
-            <a class="btn btn--secondary" href={`${BASE}c/${encodeURIComponent(club.club_id)}/devices`} onClick={linkHandler}>
-              <Icon name="chip" />
-              Открыть контроллеры
-            </a>
-          </section>
-        ) : null}
+        <Sections role={role} clubId={club.club_id} />
         {can.manage(role) ? <Stickers clubId={club.club_id} /> : null}
         {can.setPin(role) && principal === 'session' ? <SetPin clubId={club.club_id} /> : null}
         {can.terminal(role) ? <Terminal clubId={club.club_id} /> : null}
       </div>
     </Shell>
+  );
+}
+
+const SECTION_HINT = {
+  pos: 'Продажа бара, заявки и счета столов: наличные, карта, СБП.',
+  reception: 'Очередь заявок «Оплачу на ресепшене» и зал.',
+  bar: 'Очередь заказов бара крупно, для ТВ или планшета.',
+  stock: 'Остатки, приход, списание, ревизия.',
+  menu: 'Товары, модификаторы, стоп-лист, импорт CSV.',
+  kkt: 'Мост к кассе клуба: подключение и состояние.',
+  devices: 'Контроллеры столов: связь, прошивка, привязка.',
+};
+
+/** Разделы, которых нет в нижней панели телефона (у владельца и управляющего). */
+function Sections({ role, clubId }) {
+  const items = navItems(role, clubId).filter((it) => it.wideOnly);
+  if (!items.length) return null;
+  return (
+    <section class="panel panel--sections" aria-labelledby="sections-title">
+      <h2 class="section-title" id="sections-title">
+        Разделы
+      </h2>
+      <ul class="sections">
+        {items.map((it) => (
+          <li key={it.key}>
+            <a class="sections__link" href={it.href} onClick={linkHandler}>
+              <Icon name={it.icon} />
+              <span>
+                <span class="sections__name">{it.key === 'kkt' ? 'Касса ККТ' : it.label}</span>
+                <span class="sections__hint">{SECTION_HINT[it.key]}</span>
+              </span>
+              <Icon name="forward" class="sections__go" />
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

@@ -12,6 +12,13 @@ import { Journal } from './screens/Journal.jsx';
 import { Alarms } from './screens/Alarms.jsx';
 import { More } from './screens/More.jsx';
 import { Devices } from './screens/Devices.jsx';
+import { Pos } from './screens/Pos.jsx';
+import { BarScreen } from './screens/Bar.jsx';
+import { Shift } from './screens/Shift.jsx';
+import { ShiftReport } from './screens/ShiftReport.jsx';
+import { Stock } from './screens/Stock.jsx';
+import { MenuAdmin } from './screens/Menu.jsx';
+import { Kkt } from './screens/Kkt.jsx';
 import { setClub } from './lib/api.js';
 import { Icon } from './components/Icon.jsx';
 
@@ -20,6 +27,7 @@ const ROUTES = [
   ['signin', 'signin'],
   ['pin', 'pin'],
   ['c/:club/:screen', 'club'],
+  ['c/:club/:screen/:id', 'club'],
 ];
 
 const SCREENS = {
@@ -29,11 +37,19 @@ const SCREENS = {
   alarms: { allow: can.manage, render: (ctx) => <Alarms ctx={ctx} />, title: 'Тревоги' },
   devices: { allow: can.devices, render: (ctx) => <Devices ctx={ctx} />, title: 'Контроллеры' },
   more: { allow: () => true, render: (ctx) => <More ctx={ctx} />, title: 'Ещё' },
+  // M2
+  pos: { allow: can.pos, render: (ctx) => <Pos ctx={ctx} />, title: 'Касса' },
+  bar: { allow: can.bar, render: (ctx) => <BarScreen ctx={ctx} />, title: 'Заказы бара' },
+  shift: { allow: can.shift, render: (ctx) => (ctx.id ? <ShiftReport ctx={ctx} /> : <Shift ctx={ctx} />), title: 'Смена' },
+  stock: { allow: can.stock, render: (ctx) => <Stock ctx={ctx} />, title: 'Склад' },
+  menu: { allow: can.menu, render: (ctx) => <MenuAdmin ctx={ctx} />, title: 'Меню' },
+  kkt: { allow: can.kkt, render: (ctx) => <Kkt ctx={ctx} />, title: 'Касса ККТ' },
 };
 
-/** Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — очередь заявок. */
+/** Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — касса, бармен — экран бара. */
 export function homeFor(membership) {
-  const screen = can.manage(membership.role) ? 'now' : can.reception(membership.role) ? 'reception' : can.devices(membership.role) ? 'devices' : 'more';
+  const r = membership.role;
+  const screen = can.manage(r) ? 'now' : can.pos(r) ? 'pos' : can.bar(r) ? 'bar' : can.devices(r) ? 'devices' : 'more';
   return `${BASE}c/${encodeURIComponent(membership.club_id)}/${screen}`;
 }
 
@@ -81,10 +97,13 @@ export function App() {
     if (!membership || !screen) return <Redirect to={BASE} />;
     if (!screen.allow(membership.role)) return <Redirect to={homeFor(membership)} />;
     setClub(membership.club_id); // X-Club-Id для маршрутов без {club} (§14)
+    // Отчёт смены (/shift/{id}) — только управляющему и владельцу; у других экранов вложенных путей нет
+    if (params.id && !(params.screen === 'shift' && can.reports(membership.role))) return <Redirect to={homeFor(membership)} />;
     const ctx = {
       club: membership,
       role: membership.role,
       user,
+      id: params.id ?? null,
       timeZone: membership.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
     return screen.render(ctx);

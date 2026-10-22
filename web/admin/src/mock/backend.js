@@ -1,7 +1,10 @@
 /*
  * BL_MOCK_MARKER — заглушка API программы клуба по контракту M1 (§4–§7), только для разработки (VITE_MOCK=1).
- * Сценарии: ?mock=reception (по умолчанию) | owner | manager | anon | empty | broken | terminal
+ * Сценарии: ?mock=reception (по умолчанию) | owner | manager | anon | empty | broken | terminal;
+ * M2 (mock/m2.js): pos | noshift (смены нет) | kktoff (касса ККТ не на связи) | bar (бармен)
  */
+
+import { m2Routes, m2State, m2Tick } from './m2.js';
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -14,6 +17,7 @@ const STAFF = {
   manager: { id: 'u-manager-0002', name: 'Ольга Р.', phone_masked: '+7 *** ***-00-02', role: 'manager' },
   reception: { id: 'u-recept-0003', name: 'Анна К.', phone_masked: '+7 *** ***-00-03', role: 'reception' },
   reception2: { id: 'u-recept-0004', name: 'Игорь П.', phone_masked: '+7 *** ***-00-04', role: 'reception' },
+  bar: { id: 'u-bar-0005', name: 'Дима С.', phone_masked: '+7 *** ***-00-05', role: 'bar' },
 };
 
 const TYPES = { pyramid: ['billiard_pyramid', 'Пирамида 12 футов'], pool: ['billiard_pool', 'Пул 9 футов'] };
@@ -57,7 +61,9 @@ function freshState(scenario, t) {
     { id: uuid(), type: 'device_offline', level: 'critical', resource_number: 8, created_at: new Date(t - 14 * MIN).toISOString() },
     { id: uuid(), type: 'manual_action', level: 'important', resource_number: 5, created_at: new Date(t - 3 * MIN).toISOString() },
   ];
-  const role = ['owner', 'manager'].includes(scenario) ? scenario : 'reception';
+  // Роль — по сценарию; «kktoff-owner» — касса не на связи, вошёл владелец
+  const asRole = scenario?.split('-')[1];
+  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : 'reception';
   return {
     scenario,
     user: scenario === 'anon' ? null : { ...STAFF[role] },
@@ -67,6 +73,7 @@ function freshState(scenario, t) {
     audit: makeAudit(t),
     revenue: { sbp: 1248000, card: 486000, cash: 320000, card_terminal: 160000 },
     nextRequestAt: t + 45_000,
+    m2: m2State(scenario, t, hall),
   };
 }
 
@@ -113,6 +120,8 @@ const PDF = '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type
 
 export function createBackend(storage, now = () => Date.now()) {
   let state = storage.load() ?? freshState('reception', now());
+  // Состояние из sessionStorage до M2 — дополняем данными кассы, бара и смен
+  if (!state.m2?.catalog) state.m2 = m2State(state.scenario, now(), state.hall);
   const listeners = new Set();
   const save = () => storage.save(state);
   const emit = (name, data) => {
@@ -130,6 +139,7 @@ export function createBackend(storage, now = () => Date.now()) {
 
   // Новые заявки приходят сами, чтобы слышать звук очереди
   function tick() {
+    m2Tick(m2ctx);
     if (state.scenario === 'empty' || !state.user) return;
     if (now() < state.nextRequestAt) return;
     const free = state.hall.find((x) => x.status === 'free' && !x.session);
@@ -146,7 +156,7 @@ export function createBackend(storage, now = () => Date.now()) {
     ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ }] }) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/auth\/dev$/, (_m, b) => {
       if (!/^\+7\d{10}$/.test(b?.phone ?? '')) return err(400, 'bad_request');
-      const role = b.phone.endsWith('01') ? 'owner' : b.phone.endsWith('02') ? 'manager' : 'reception';
+      const role = b.phone.endsWith('01') ? 'owner' : b.phone.endsWith('02') ? 'manager' : b.phone.endsWith('05') ? 'bar' : 'reception';
       state.user = { ...STAFF[role] };
       return ok({ token: 'mock-staff', user: state.user });
     }],
@@ -161,7 +171,7 @@ export function createBackend(storage, now = () => Date.now()) {
     }],
     ['POST', /^\/api\/staff\/terminal$/, (_m, b) => (me() && ['owner', 'manager'].includes(me().role) && b.club_id === CLUB_ID ? ok({ terminal_token: `term-${uuid()}` }) : err(403, 'forbidden'))],
     // Как у core (§14): GET /api/staff/terminal → [{ user_id, name, role, phone_masked, pin_set }]
-    ['GET', /^\/api\/staff\/terminal$/, () => ok([STAFF.reception, STAFF.reception2, STAFF.manager].map((u) => ({ user_id: u.id, name: u.name, role: u.role, phone_masked: u.phone_masked, pin_set: true })))],
+    ['GET', /^\/api\/staff\/terminal$/, () => ok([STAFF.reception, STAFF.reception2, STAFF.bar, STAFF.manager, STAFF.owner].map((u) => ({ user_id: u.id, name: u.name, role: u.role, phone_masked: u.phone_masked, pin_set: true })))],
     ['PUT', /^\/api\/staff\/pin$/, (_m, b) => (/^\d{4,6}$/.test(b.pin ?? '') ? ok({ ok: true }) : err(400, 'bad_request'))],
     ['PATCH', /^\/api\/me$/, (_m, b) => {
       if (!me()) return err(401, 'unauthorized');
@@ -188,6 +198,9 @@ export function createBackend(storage, now = () => Date.now()) {
       const r = state.requests.find((x) => x.id === m[1]);
       if (!r) return err(404, 'not_found');
       if (b.method === 'cash' && !(b.received_kopecks >= r.amount_kopecks)) return err(400, 'bad_request');
+      // M2 (№83): без открытой смены наличные не принимаются; наличные заявки — в ожидаемую сумму смены
+      if (b.method === 'cash' && !state.m2.shift) return err(409, 'shift_closed');
+      if (b.method === 'cash') state.m2.shift.cash_sales_kopecks += r.amount_kopecks;
       state.requests = state.requests.filter((x) => x !== r);
       const t = byNumber(r.resource_number);
       const s = { id: uuid(), status: 'active', started_at: new Date(now()).toISOString(), paid_until: new Date(now() + (r.minutes ?? 120) * MIN).toISOString(), unlimited: r.minutes === null };
@@ -273,6 +286,21 @@ export function createBackend(storage, now = () => Date.now()) {
       return ok({ items: page, next_cursor: start + 12 < list.length ? String(start + 12) : null });
     }],
   ];
+
+  const m2ctx = {
+    state: () => state,
+    now,
+    emit,
+    save,
+    me,
+    err,
+    ok,
+    byNumber,
+    audit,
+    staffById: (id) => Object.values(STAFF).find((u) => u.id === id),
+    approvers: () => [STAFF.manager, STAFF.owner].map((u) => ({ user_id: u.id, name: u.name, role: u.role })),
+  };
+  routes.push(...m2Routes(m2ctx));
 
   async function handle(method, url) {
     tick();

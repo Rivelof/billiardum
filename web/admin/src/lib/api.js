@@ -91,15 +91,81 @@ export const api = {
   ack: (id) => client.post(`/alarms/${e(id)}/ack`),
   /** PDF наклеек: Response, чтобы забрать Blob. */
   qrStickers: (club) => client.request('GET', `/clubs/${e(club)}/qr-stickers.pdf`, { raw: true }),
+
+  // ---------- M2: касса POS (docs/contracts/m2.md §4) ----------
+  /** Меню персонала: с алкоголем, стоп-листом, остатками; settings.discount_limit_percent — лимит скидки (№82). */
+  menu: (club) => client.get(`/clubs/${e(club)}/menu`),
+  /** Открытые счета столов (№79): [{ session_id, resource_number, orders_count, total_kopecks, session_status }]. */
+  tabs: (club) => client.get(`/clubs/${e(club)}/tabs`),
+  /** Продажа: ключ идемпотентности живёт одну попытку оплаты чека — повтор после обрыва не пробьёт второй чек. */
+  sale: (body, idempotencyKey) => client.post('/pos/sales', body, { idempotencyKey }),
+  saleStatus: (id) => client.get(`/pos/sales/${e(id)}`),
+  /** Отменить ожидание СБП: QR больше не действует. */
+  cancelSale: (id) => client.post(`/pos/sales/${e(id)}/cancel`),
+  /** Кто может подтвердить скидку выше лимита: [{ user_id, name, role }] — управляющие и владелец клуба. */
+  approvers: (club) => client.get(`/clubs/${e(club)}/staff/approvers`),
+  /** Подтверждение скидки выше лимита управляющим по PIN на этом терминале. */
+  approveDiscount: (body) => client.post('/pos/discount-approvals', body),
+  /** Касса ККТ: { state: online | warning | offline, reason, bridges, queue: { pending, failed } } (backend-kkt). */
+  kktStatus: (club) => client.get(`/clubs/${e(club)}/kkt/status`),
+  /** Настройки кассы клуба: { discount_limit_percent, stop_at_zero, tab_limit_kopecks } (backend-pos). */
+  posSettings: (club) => client.get(`/clubs/${e(club)}/pos/settings`),
+  /** Каталог управляющего целиком: категории, товары с modifier_group_ids, группы модификаторов. */
+  catalog: (club) => client.get(`/clubs/${e(club)}/catalog`),
+
+  // ---------- M2: бар ----------
+  barQueue: (club) => client.get(`/clubs/${e(club)}/bar/queue`),
+  setOrderStatus: (id, status) => client.post(`/orders/${e(id)}/status`, { status }),
+
+  // ---------- M2: смены ----------
+  currentShift: (club) => client.get(`/clubs/${e(club)}/shifts/current`),
+  shifts: (club, query) => client.get(`/clubs/${e(club)}/shifts`, { query }),
+  openShift: (club, floatKopecks, idempotencyKey) => client.post(`/clubs/${e(club)}/shifts`, { float_kopecks: floatKopecks }, { idempotencyKey }),
+  closeShift: (id, body, idempotencyKey) => client.post(`/shifts/${e(id)}/close`, body, { idempotencyKey }),
+  shiftReport: (id) => client.get(`/shifts/${e(id)}/report`),
+
+  // ---------- M2: склад и меню (управляющий) ----------
+  stock: (club) => client.get(`/clubs/${e(club)}/stock`),
+  arrival: (body, idempotencyKey) => client.post('/stock/arrivals', body, { idempotencyKey }),
+  writeoff: (body, idempotencyKey) => client.post('/stock/writeoffs', body, { idempotencyKey }),
+  stockAudit: (body, idempotencyKey) => client.post('/stock/audits', body, { idempotencyKey }),
+  // Каталог управляющего (api/routes/catalog.mjs backend-pos)
+  createProduct: (club, body) => client.post(`/clubs/${e(club)}/catalog/products`, body),
+  updateProduct: (id, body) => client.request('PATCH', `/catalog/products/${e(id)}`, { body }),
+  /** Группа с вариантами сразу: { name, min_select, max_select, modifiers: [{ name, price_delta_kopecks }] }. */
+  createGroup: (club, body) => client.post(`/clubs/${e(club)}/catalog/modifier-groups`, body),
+  /** Группа без вариантов: { name, min_select, max_select, active }; варианты — addModifier и updateModifier. */
+  updateGroup: (id, body) => client.request('PATCH', `/catalog/modifier-groups/${e(id)}`, { body }),
+  /** Стоп-лист — ресепшн и выше (№88): только флаг, без цен и состава. */
+  setStopList: (id, stopList) => client.post(`/catalog/products/${e(id)}/stop-list`, { stop_list: stopList }),
+  addModifier: (groupId, body) => client.post(`/catalog/modifier-groups/${e(groupId)}/modifiers`, body),
+  updateModifier: (id, body) => client.request('PATCH', `/catalog/modifiers/${e(id)}`, { body }),
+  /** Импорт CSV как есть: { csv, dry_run } → { applied, created, updated, unchanged, categories_created, errors: [{ line, field, code }] }. */
+  importMenu: (club, csv, dryRun = false) => client.post(`/clubs/${e(club)}/catalog/import`, { csv, dry_run: dryRun }),
+
+  // ---------- M2: ККТ клуба (владелец) ----------
+  kktBridges: (club) => client.get(`/clubs/${e(club)}/kkt/bridges`),
+  /** Регистрация моста: { bridge, token } — токен виден только в этом ответе (в базе — хеш, №77). */
+  registerBridge: (club, name) => client.post(`/clubs/${e(club)}/kkt/bridges`, { name }),
+  revokeBridge: (id) => client.post(`/kkt/bridges/${e(id)}/revoke`),
+  /** Чеки ККТ: status open (в очереди, исход неизвестен, не пробились) | pending | unknown | failed | printed. */
+  kktReceipts: (club, status = 'open') => client.get(`/clubs/${e(club)}/kkt/receipts`, { query: { status } }),
+  /** Управляющий: повторить чек (failed или исход неизвестен — проверили, на ККТ его нет), причина обязательна. */
+  retryReceipt: (id, reason) => client.post(`/kkt/receipts/${e(id)}/retry`, { reason }),
+  /** Управляющий: исход неизвестен, а чек на ленте есть — ФД и ФП с ленты, причина; ручное действие. */
+  markPrinted: (id, body) => client.post(`/kkt/receipts/${e(id)}/mark-printed`, body),
 };
 
+export { newIdempotencyKey };
+
 /**
- * Живые обновления клуба: SSE /api/stream?club={id}, события hall, reception_request, alarm (контракт §7).
+ * Живые обновления клуба: SSE /api/stream?club={id}. M1: hall, reception_request, alarm, session (контракт §7);
+ * M2: bar (заказ бара целиком, m2 §5), pos_sale (продажа кассы: оплата СБП прошла или отменена), shift, kkt (состояние кассы ККТ и очередь чеков).
  */
 export function streamClub(club, handlers) {
   return openStream(client.url('/stream', { club }), {
     ...handlers,
-    events: ['hall', 'reception_request', 'alarm', 'session'],
+    events: handlers.events ?? ['hall', 'reception_request', 'alarm', 'session', 'bar', 'pos_sale', 'shift', 'kkt'],
     EventSource: EventSourceImpl,
   });
 }

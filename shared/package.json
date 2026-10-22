@@ -2,7 +2,7 @@
   "name": "@billiardum/shared",
   "version": "0.1.0",
   "private": true,
-  "description": "Бильярдум: токены дизайна, шрифты, базовые стили, склонения и форматы ru-RU, клиент API, тексты ошибок, зал",
+  "description": "Бильярдум: токены дизайна, шрифты, базовые стили, склонения и форматы ru-RU, клиент API, тексты ошибок, зал, бар и корзина",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -14,6 +14,7 @@
     "./hall": "./hall.mjs",
     "./icons": "./icons.mjs",
     "./reasons": "./reasons.mjs",
+    "./bar": "./bar.mjs",
     "./tokens.css": "./tokens.css",
     "./fonts.css": "./fonts.css",
     "./hall.css": "./hall.css",

@@ -14,6 +14,8 @@ import { durationWords, minutesWords, optionLabel, tableName } from '../lib/word
 import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { clubTimeZone, getFlow, setFlow } from '../lib/flow.js';
+import { currentOrder, ordersWord, tabSummary } from '../lib/bar.js';
+import { orderWord } from '@billiardum/shared/bar';
 
 const EXTEND_OPTIONS = [30, 60, 120, 180];
 const TONE = { play: 'play', warn: 'warn', grace: 'grace', unlimited: 'play' };
@@ -28,6 +30,13 @@ export function GameScreen({ id }) {
   const [skew, setSkew] = useState(0);
   const [loadError, setLoadError] = useState(null);
   const [live, setLive] = useState('open');
+  const [bar, setBar] = useState({ tab: null, orders: [] });
+
+  // Счёт стола и заказы бара (M2): полоса над кнопками и напоминание после игры
+  const loadBar = useCallback(async () => {
+    const [t, o] = await Promise.allSettled([api.tab(id), api.sessionOrders(id)]);
+    setBar((b) => ({ tab: t.status === 'fulfilled' ? t.value : b.tab, orders: o.status === 'fulfilled' && Array.isArray(o.value) ? o.value : b.orders }));
+  }, [id]);
 
   const apply = useCallback((s) => {
     if (!s || typeof s !== 'object') return;
@@ -47,13 +56,22 @@ export function GameScreen({ id }) {
 
   useEffect(() => {
     load();
+    loadBar();
     const stream = streamSession(id, {
+      events: ['session', 'order'],
       // В событии SSE сервер не знает, кто смотрит (is_payer: false) — берём своё из GET и перечитываем
-      onEvent: (_name, data) => {
+      onEvent: (name, data) => {
+        if (name === 'order') {
+          loadBar();
+          return;
+        }
         if (data && data.id === id) setSession((prev) => ({ ...prev, ...data, is_payer: prev?.is_payer ?? data.is_payer }));
         load();
       },
-      onOpen: load,
+      onOpen: () => {
+        load();
+        loadBar();
+      },
       onState: setLive,
     });
     // Запасной опрос: SSE может не пройти через прокси мобильного оператора
@@ -99,7 +117,7 @@ export function GameScreen({ id }) {
   const phase = view.phase;
 
   if (phase === 'interrupted') return <Interrupted session={session} view={view} kind={kind} onUpdate={apply} />;
-  if (phase === 'closed' || phase === 'cancelled') return <Closed session={session} kind={kind} />;
+  if (phase === 'closed' || phase === 'cancelled') return <Closed session={session} kind={kind} tab={bar.tab} />;
 
   const texts = timerTexts(view, { timeZone: tz, startedAt: session.started_at, unlimited: session.unlimited });
   const tone = TONE[phase] ?? 'idle';
@@ -127,6 +145,7 @@ export function GameScreen({ id }) {
 
       <main class="wrap content content--game">
         <ExtendPending session={session} tz={tz} />
+        <BarStrip sessionId={session.id} bar={bar} />
         <Participants session={session} />
         <PushOffer />
       </main>
@@ -228,12 +247,18 @@ function GameActions({ session, view, tz, onUpdate, reload }) {
           {session.unlimited ? 'Продлить без лимита' : 'Продлить игру'}
         </button>
       ) : null}
-      {canStop ? (
-        <button type="button" class={`btn btn--block ${session.unlimited && phase === 'unlimited' ? 'btn--primary btn--lg' : 'btn--quiet'}`} onClick={() => setStopOpen(true)}>
-          <Icon name="stop" />
-          Закончить игру
-        </button>
-      ) : null}
+      <div class={`actionbar__row${canStop ? '' : ' actionbar__row--one'}`}>
+        <a class="btn btn--secondary btn--block" href={`${BASE}s/${encodeURIComponent(session.id)}/bar`} onClick={linkHandler}>
+          <Icon name="cup" />
+          Бар
+        </a>
+        {canStop ? (
+          <button type="button" class={`btn btn--block ${session.unlimited && phase === 'unlimited' ? 'btn--primary' : 'btn--quiet'}`} onClick={() => setStopOpen(true)}>
+            <Icon name="stop" />
+            Закончить игру
+          </button>
+        ) : null}
+      </div>
       {!session.is_payer && phase !== 'over' ? <p class="small actionbar__note">Закончить игру может тот, кто её оплатил.</p> : null}
 
       <ExtendDialog open={extendOpen} onClose={() => setExtendOpen(false)} session={session} tz={tz} reload={reload} />
@@ -468,7 +493,8 @@ function Interrupted({ session, view, kind, onUpdate }) {
   );
 }
 
-function Closed({ session, kind }) {
+function Closed({ session, kind, tab }) {
+  const t = tabSummary(tab);
   return (
     <div class="screen">
       <Stage kind={kind} lit="false" label={`${tableName(session.resource?.number)}, игра завершена`}>
@@ -478,6 +504,18 @@ function Closed({ session, kind }) {
       <main class="wrap content">
         <div class="step">
           <p class="lead">Свет над столом выключен. Спасибо за игру!</p>
+          {t.open ? (
+            <div class="note note--lamp" role="status">
+              <Icon name="cup" />
+              <p class="note__title">Счёт бара не оплачен: {formatMoney(t.total)}</p>
+              <p class="note__body">{t.count ? `${ordersWord(t.count)} в счёте стола. ` : ''}Оплатите онлайн или на ресепшене перед уходом.</p>
+              <div class="note__actions">
+                <a class="btn btn--primary btn--sm" href={`${BASE}s/${encodeURIComponent(session.id)}/bar#tab`} onClick={linkHandler}>
+                  Оплатить счёт бара
+                </a>
+              </div>
+            </div>
+          ) : null}
           <a class="btn btn--primary btn--block btn--lg" href={`${BASE}s/${encodeURIComponent(session.id)}/receipt`} onClick={linkHandler}>
             <Icon name="receipt" />
             Открыть чек
@@ -485,5 +523,31 @@ function Closed({ session, kind }) {
         </div>
       </main>
     </div>
+  );
+}
+
+/** Полоса бара на экране «Игра»: текущий заказ и счёт стола (M2). Ничего не заказано — ничего не показываем. */
+function BarStrip({ sessionId, bar }) {
+  const order = currentOrder(bar.orders);
+  const t = tabSummary(bar.tab);
+  if (!order && !t.open) return null;
+  return (
+    <a class="barstrip" href={`${BASE}s/${encodeURIComponent(sessionId)}/bar`} onClick={linkHandler}>
+      <Icon name="cup" />
+      <span class="barstrip__text">
+        {order ? (
+          <span class="barstrip__main">
+            Заказ № {order.number}: {order.awaiting_payment ? 'ждёт оплаты' : orderWord(order.status).toLowerCase()}
+          </span>
+        ) : null}
+        {t.open ? (
+          <span class="barstrip__sub">
+            Счёт стола <b class="mono">{formatMoney(t.total)}</b>
+            {t.count ? `, ${ordersWord(t.count)}` : ''}
+          </span>
+        ) : null}
+      </span>
+      <Icon name="forward" />
+    </a>
   );
 }

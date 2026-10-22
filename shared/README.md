@@ -11,7 +11,8 @@
 | `hall.mjs`, `hall.css` | зал: `tableSvg` (стол сверху, пирамида и пул в настоящих пропорциях, лампа через `--lit`), `planLayout` (расстановка на плане), `tableState` (статус словом), `tableKind`, `typeLabel` |
 | `api.mjs` | клиент API по контракту: `createClient` (JSON, cookie, `Bearer`, `Idempotency-Key`), `ApiError` с кодом, `openStream` (SSE с переподключением), `newIdempotencyKey` |
 | `errors.mjs` | тексты ошибок API для людей: `errorMessage(err, { audience: 'guest' \| 'staff', busyUntil })` → что случилось и что делать |
-| `reasons.mjs` | коды причин ручных действий: отклонение заявки, сервисный свет |
+| `reasons.mjs` | коды причин ручных действий: отклонение заявки, сервисный свет, скидка выше лимита, списание со склада |
+| `bar.mjs` | бар (M2): меню в один вид (оба ответа backend-pos), модификаторы (по умолчанию, выбор, проверка), корзина в копейках, статусы заказа словами, очередь бара, ожидание |
 | `icons.mjs` | значки: линейные пути 24×24, толщина 1,75 |
 | `styleguide.html` | образец: палитра обеих тем с живым контрастом, шрифты, кнопки, статусы, таймер, план зала из 8 столов |
 | `test/` | `node --test`: форматы, токены против DESIGN.md, контраст WCAG, шрифты и отсутствие внешних ресурсов |
@@ -36,6 +37,7 @@ import '@billiardum/shared/hall.css';   // рисунок стола
 import { plural, formatMoney } from '@billiardum/shared/format';
 import { createClient } from '@billiardum/shared/api';
 import { errorMessage } from '@billiardum/shared/errors';
+import { normalizeMenu, addProduct, cartTotals } from '@billiardum/shared/bar';
 ```
 
 `api.mjs`, `errors.mjs`, `hall.mjs` без зависимостей и без фреймворка: рисунок стола — строка SVG на классах `hall.css` (без атрибутов `style`, поэтому работает при CSP `style-src 'self'`).

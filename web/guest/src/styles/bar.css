@@ -1,0 +1,206 @@
+/*
+ * Бар со стола (M2) — отдельный чанк вместе с экраном. Одной рукой: крупные кнопки «+» справа под большой палец,
+ * корзина внизу. Выбранное — янтарь лампы, основное действие — сукно. Только токены shared/tokens.css.
+ */
+
+.bar { gap: 18px; }
+.bar--cart { padding-bottom: calc(110px + env(safe-area-inset-bottom)); }
+.bar__head { display: grid; gap: 4px; }
+
+/* Разделы меню — капсулы, прилипают сверху при прокрутке */
+.cats {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin-inline: calc(-1 * var(--gutter));
+  padding: 10px var(--gutter);
+  background: var(--paper);
+  scrollbar-width: none;
+}
+.cats::-webkit-scrollbar { display: none; }
+.cat { position: relative; flex: none; }
+.cat input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.cat span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 16px;
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  font-size: var(--fs-15);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.cat input:checked + span { background: var(--cloth-tint); box-shadow: inset 0 0 0 2px var(--cloth); font-weight: 600; }
+.cat input:focus-visible + span { outline: 2px solid var(--cloth); outline-offset: 2px; }
+
+.menu { display: grid; gap: 4px; }
+.mlist { display: grid; }
+.mrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 48px;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.mrow__text { display: grid; gap: 2px; min-width: 0; }
+.mrow__name { font-weight: 600; line-height: 1.3; }
+.mrow__sub { font-size: var(--fs-13); color: var(--ink-2); line-height: 1.35; }
+.mrow__sub--off { color: var(--ball-red); font-weight: 600; }
+.mrow__price { font-weight: 700; white-space: nowrap; }
+.mrow--off .mrow__name, .mrow--off .mrow__price { color: var(--ink-2); }
+.mrow__add {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--cloth);
+  color: var(--on-cloth);
+  font-size: var(--fs-17);
+  font-weight: 700;
+  touch-action: manipulation;
+}
+.mrow__add:not([disabled]):hover { background: var(--cloth-deep); }
+.mrow__add:focus-visible { outline: 2px solid var(--cloth); outline-offset: 3px; }
+.mrow__add[disabled] { background: var(--card-2); color: var(--ink-3); cursor: not-allowed; }
+.mrow__add--in { background: var(--lamp); color: var(--on-lamp); }
+.mrow__add--in:not([disabled]):hover { background: var(--lamp); box-shadow: inset 0 0 0 2px var(--on-lamp); }
+
+.cartbtn { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; text-align: left; }
+.cartbtn__sum { font-weight: 700; }
+
+/* Заказы: шкала статуса — настоящая последовательность, поэтому шаги */
+.orders { display: grid; gap: 4px; }
+.orders__list { display: grid; gap: 10px; }
+.ocard {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.ocard--ready { background: var(--lamp-tint); box-shadow: inset 0 0 0 2px var(--lamp); }
+.ocard__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.ocard__title { font-size: var(--fs-20); font-weight: 600; }
+.ocard__items { font-size: var(--fs-15); line-height: 1.45; }
+.ocard__meta { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-13); color: var(--ink-2); font-weight: 600; }
+
+.steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.steps__item { position: relative; display: grid; justify-items: center; gap: 6px; text-align: center; }
+.steps__item::before {
+  content: '';
+  position: absolute;
+  top: 7px;
+  right: 50%;
+  width: 100%;
+  height: 2px;
+  background: var(--line-strong);
+}
+.steps__item:first-child::before { display: none; }
+.steps__item--done::before, .steps__item--now::before { background: var(--cloth); }
+.steps__dot { position: relative; z-index: 1; width: 16px; height: 16px; border-radius: 50%; background: var(--card); box-shadow: inset 0 0 0 2px var(--line-strong); }
+.steps__item--done .steps__dot { background: var(--cloth); box-shadow: none; }
+.steps__item--now .steps__dot { background: var(--lamp); box-shadow: 0 0 0 4px color-mix(in oklab, var(--lamp) 30%, transparent); }
+.steps__word { font-size: var(--fs-13); color: var(--ink-2); line-height: 1.25; }
+.steps__item--now .steps__word { color: var(--ink); font-weight: 700; }
+
+/* Счёт стола */
+.tabblock {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  scroll-margin-top: 16px;
+}
+.tabblock__top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.tabblock__title { font-size: var(--fs-20); font-weight: 600; }
+.tabblock__sum { font-size: var(--fs-32); line-height: 1.05; }
+.tabblock .receipt__row:first-child { border-top: 0; }
+
+.paychoice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.paychoice__item { position: relative; }
+.paychoice__item input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.paychoice__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  background: var(--card);
+  font-weight: 600;
+}
+.paychoice__item input:checked + .paychoice__box { background: var(--lamp-tint); box-shadow: inset 0 0 0 2.5px var(--lamp); }
+.paychoice__item input:focus-visible + .paychoice__box { outline: 2px solid var(--cloth); outline-offset: 2px; }
+
+/* Корзина и модификаторы в нижнем листе */
+.clines { display: grid; }
+.cline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px dashed var(--line);
+}
+.cline:first-child { border-top: 0; }
+.cline__what { display: grid; gap: 2px; min-width: 0; }
+.cline__name { font-weight: 600; line-height: 1.3; }
+.cline__sub { font-size: var(--fs-13); color: var(--ink-2); }
+.cline__sum { font-weight: 700; text-align: right; }
+.cline > .stepper { grid-column: 1 / -1; justify-self: start; }
+
+.stepper { display: inline-flex; align-items: center; border-radius: var(--radius-pill); box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+.stepper__btn {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink);
+  touch-action: manipulation;
+}
+.stepper__btn:not([disabled]):hover { background: var(--card-2); }
+.stepper__btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+.stepper__value { min-width: 36px; text-align: center; font-weight: 700; font-size: var(--fs-17); }
+
+.mods { gap: 20px; }
+.mods__group { display: grid; gap: 10px; }
+.mods__rule { margin-left: 10px; font-size: var(--fs-13); font-weight: 500; color: var(--ink-2); }
+.opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.opt { position: relative; }
+.opt input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.opt__box {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 48px;
+  padding: 12px 16px;
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  background: var(--card);
+  font-weight: 600;
+  line-height: 1.2;
+}
+.opt__delta { font-size: var(--fs-13); color: var(--ink-2); font-weight: 500; }
+.opt input:checked + .opt__box { background: var(--lamp-tint); box-shadow: inset 0 0 0 2.5px var(--lamp); }
+.opt input:focus-visible + .opt__box { outline: 2px solid var(--cloth); outline-offset: 2px; }
+.mods__qty { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mods__qty .step__label { margin: 0; }
+
+@media (min-width: 900px) {
+  .bar-screen .actionbar--fixed { left: 0; width: auto; }
+}

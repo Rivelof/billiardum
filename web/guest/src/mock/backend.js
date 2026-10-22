@@ -3,8 +3,11 @@
  * В обычную сборку не попадает: scripts/size.mjs проверяет, что этой метки нет в dist.
  *
  * Состояние живёт в sessionStorage вкладки, поэтому переход на «страницу ЮKassa» и обратно его не теряет.
- * Сценарии для проверки глазами: ?mock=user | fresh | anon | game | warn | grace | unlimited | interrupted | closed | notpayer | decline
+ * Сценарии для проверки глазами: ?mock=user | fresh | anon | game | warn | grace | unlimited | interrupted | closed | notpayer | decline;
+ * M2 (mock/bar.js): barorders (игра, заказы бара и счёт стола) | closedtab (игра закончилась, счёт не оплачен)
  */
+
+import { barRoutes, barSeed } from './bar.js';
 
 const CLUB = { id: '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c', name: 'Клуб для разработки', timezone: 'Asia/Yekaterinburg' };
 const SESSION_ID = '6f1c2a9e-0d4b-4c7e-9a51-3b2f8e7d4c10';
@@ -93,6 +96,7 @@ function freshState() {
     sessions: {},
     links: {},
     scenario: null,
+    bar: { orders: {}, next: 42 },
   };
 }
 
@@ -140,11 +144,13 @@ export function createBackend(storage) {
     };
   }
 
-  function emit(id) {
-    const s = state.sessions[id];
-    if (!s) return;
-    const view = sessionView(s);
-    for (const fn of listeners.get(id) ?? []) fn(view);
+  function emit(id, data, name = 'session') {
+    if (name === 'session') {
+      const s = state.sessions[id];
+      if (!s) return;
+      data = sessionView(s);
+    }
+    for (const fn of listeners.get(id) ?? []) fn(data, name);
   }
 
   function createSession({ code, minutes, unlimited, paymentId, amount, method }) {
@@ -225,6 +231,13 @@ export function createBackend(storage) {
       Object.assign(state.tables['4K7P9QW2XM'], { status: 'free', session_id: null, busy_until: null });
     }
     if (name === 'limit') mk({ extend_limit_until: t + 65 * MIN + 75 * MIN });
+    // M2: бар — заказы и счёт стола
+    if (name === 'barorders') mk({});
+    if (name === 'closedtab') {
+      mk({ status: 'closed', started_at: t - 125 * MIN, paid_until: t - 5 * MIN, ended_at: t - 3 * MIN });
+      Object.assign(state.tables['4K7P9QW2XM'], { status: 'free', session_id: null, busy_until: null });
+    }
+    barSeed(state, name, t, SESSION_ID);
     save();
   }
 
@@ -423,7 +436,11 @@ export function createBackend(storage) {
     ['POST', /^\/api\/push\/subscribe$/, () => ok({ ok: true })],
   ];
 
+  const bar = barRoutes({ state: () => state, now, emit, needUser, sessionView, err, ok });
+  routes.unshift(...bar.routes);
+
   async function handle(method, path, body) {
+    bar.tick();
     for (const [m, re, fn] of routes) {
       if (m !== method) continue;
       const match = re.exec(path);
@@ -447,6 +464,11 @@ export function createBackend(storage) {
     confirm(paymentId, success) {
       const p = state.payments[paymentId];
       if (!p) return false;
+      if (p.kind === 'order' || p.kind === 'tab') {
+        bar.confirm(p, success);
+        save();
+        return true;
+      }
       if (success) Object.assign(p, { status: 'succeeded', paid_at: now() });
       else {
         p.status = 'canceled';

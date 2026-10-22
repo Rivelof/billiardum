@@ -1,4 +1,4 @@
-import { useEffect } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { useLocation, matchRoute } from './lib/router.js';
 import { BASE, MOCK } from './lib/env.js';
 import { ROUTES } from './lib/routes.js';
@@ -19,7 +19,53 @@ const TITLES = {
   game: 'Игра — Бильярдум',
   receipt: 'Чек — Бильярдум',
   privacy: 'Политика обработки данных — Бильярдум',
+  bar: 'Бар — Бильярдум',
+  order: 'Заказ бара — Бильярдум',
+  tabpaid: 'Счёт стола — Бильярдум',
 };
+
+// Бар — отдельный чанк: на первую загрузку (QR → стол → оплата) он не нужен, бюджет < 200 КБ JS
+let barChunk = null;
+function LazyBar({ name, params }) {
+  const [mod, setMod] = useState(barChunk);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (mod) return;
+    import('./screens/Bar.jsx')
+      .then((m) => {
+        barChunk = m;
+        setMod(m);
+      })
+      .catch(() => setFailed(true));
+  }, []);
+  if (failed) {
+    return (
+      <div class="screen screen--paper">
+        <main class="wrap content">
+          <p class="lead">Не получилось загрузить меню бара. Проверьте интернет и обновите страницу.</p>
+          <button type="button" class="btn btn--primary btn--block" onClick={() => location.reload()}>
+            Обновить страницу
+          </button>
+        </main>
+      </div>
+    );
+  }
+  if (!mod) {
+    return (
+      <div class="screen screen--paper" aria-busy="true">
+        <main class="wrap content">
+          <p class="waiting" role="status">
+            <span class="waiting__dot" aria-hidden="true" />
+            Открываем бар…
+          </p>
+        </main>
+      </div>
+    );
+  }
+  if (name === 'order') return <mod.OrderPaid key={params.id} orderId={params.id} />;
+  if (name === 'tabpaid') return <mod.TabPaid key={params.id} sessionId={params.id} />;
+  return <mod.BarScreen key={params.id} sessionId={params.id} />;
+}
 
 /** Приложение гостя: маршруты под /app/. extraRoutes — только в режиме заглушки (страница «ЮKassa»). */
 export function App({ extra }) {
@@ -46,6 +92,10 @@ export function App({ extra }) {
       return <ReceiptScreen key={params.id} id={params.id} />;
     case 'privacy':
       return <Privacy />;
+    case 'bar':
+    case 'order':
+    case 'tabpaid':
+      return <LazyBar name={name} params={params} />;
     default:
       if (MOCK && extra?.render(name, params)) return extra.render(name, params);
       return <NotFound />;
