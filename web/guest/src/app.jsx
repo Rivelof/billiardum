@@ -149,19 +149,19 @@ export function App({ extra }) {
     case 'tabpaid':
       return <LazyBar name={name} params={params} />;
     case 'book':
-      return <Lazy chunk="book" label="Открываем бронь…" render={(m) => <m.BookClubs />} />;
+      return <Lazy key="book" chunk="book" label="Открываем бронь…" render={(m) => <m.BookClubs />} />;
     case 'bookclub':
-      return <Lazy chunk="book" label="Открываем бронь…" render={(m) => <m.BookScreen key={params.club} clubId={params.club} search={search} />} />;
+      return <Lazy key="book" chunk="book" label="Открываем бронь…" render={(m) => <m.BookScreen key={params.club} clubId={params.club} search={search} />} />;
     case 'bookings':
-      return <Lazy chunk="book" label="Загружаем брони…" render={(m) => <m.MyBookings />} />;
+      return <Lazy key="book" chunk="book" label="Загружаем брони…" render={(m) => <m.MyBookings />} />;
     case 'booking':
-      return <Lazy chunk="book" label="Загружаем бронь…" render={(m) => <m.BookingScreen key={params.id} id={params.id} />} />;
+      return <Lazy key="book" chunk="book" label="Загружаем бронь…" render={(m) => <m.BookingScreen key={params.id} id={params.id} />} />;
     case 'waitlist':
-      return <Lazy chunk="book" label="Проверяем стол…" render={(m) => <m.WaitlistOffer key={params.id} id={params.id} />} />;
+      return <Lazy key="book" chunk="book" label="Проверяем стол…" render={(m) => <m.WaitlistOffer key={params.id} id={params.id} />} />;
     case 'me':
-      return <Lazy chunk="profile" label="Открываем профиль…" render={(m) => <m.ProfileScreen search={search} />} />;
+      return <Lazy key="profile" chunk="profile" label="Открываем профиль…" render={(m) => <m.ProfileScreen search={search} />} />;
     case 'notify':
-      return <Lazy chunk="profile" label="Открываем уведомления…" render={(m) => <m.NotifyScreen />} />;
+      return <Lazy key="profile" chunk="profile" label="Открываем уведомления…" render={(m) => <m.NotifyScreen />} />;
     default:
       if (MOCK && extra?.render(name, params)) return extra.render(name, params);
       return <NotFound />;
