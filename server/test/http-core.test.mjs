@@ -9,7 +9,8 @@ import { after, before, describe, it } from 'node:test';
 import { compilePath, createRouter, loadRoutes, SECURITY_HEADERS } from '../../api/router.mjs';
 import { clientIp, ipInCidrs, parseCidrs, parseCookies, serializeCookie } from '../http/request.mjs';
 import { createRateLimiter } from '../http/rate-limit.mjs';
-import { createSseHub, formatEvent, MAX_ANON_CLIENTS, MAX_CLIENTS, MAX_CLIENTS_PER_USER, sourceOf } from '../http/sse.mjs';
+import { createSseHub, formatEvent, MAX_ANON_CLIENTS, MAX_ANON_PER_NET, MAX_CLIENTS, MAX_CLIENTS_PER_USER, netOf, sourceOf } from '../http/sse.mjs';
+import { createTvHub } from '../tournaments/tv.mjs';
 import { httpRequest } from '../lib/http-client.mjs';
 import { createTelegramBot } from '../lib/telegram-bot.mjs';
 import { createHttpHandler } from '../http/server.mjs';
@@ -385,7 +386,8 @@ describe('хаб SSE', () => {
     assert.equal(MAX_ANON_CLIENTS, MAX_CLIENTS / 4);
     let anon = 0;
     for (let i = 0; i < MAX_CLIENTS; i += 1) {
-      const ip = `2001:db8:${(i >> 16).toString(16)}:${(i & 0xffff).toString(16)}::1`;
+      // Каждый адрес — своя сеть /56 (предел на /56 — отдельный тест M4-I6).
+      const ip = `2001:db8:${i.toString(16)}::1`;
       if (hub.attach(fakeRes(), { channels: [T(i)], key: `ip:${ip}` }).ok) anon += 1;
     }
     assert.equal(anon, MAX_ANON_CLIENTS, 'анонимы упираются в свою долю');
@@ -395,6 +397,61 @@ describe('хаб SSE', () => {
     const guest = hub.attach(fakeRes(), { channels: ['user:a1000000-0000-4000-8000-0000000000ff'], userId: 'a1000000-0000-4000-8000-0000000000ff' });
     assert.equal(guest.ok, true, 'гость подключается');
     hub.closeAll();
+  });
+});
+
+describe('M4-I6: анонимные потоки — предел на сеть IPv6 /56', () => {
+  const timers = { setInterval: () => ({ unref() {} }), clearInterval() {} };
+  const T = (i) => `tournament:11111111-1111-4111-8111-${String(i).padStart(12, '0')}`;
+  function fakeRes() {
+    const res = { chunks: [], writableEnded: false, writableLength: 0, headers: null, handlers: {} };
+    res.writeHead = (st, hd) => (res.headers = { status: st, ...hd });
+    res.write = (c) => res.chunks.push(c);
+    res.end = () => {
+      res.writableEnded = true;
+      res.handlers.close?.();
+    };
+    res.on = (e, f) => (res.handlers[e] = f);
+    return res;
+  }
+
+  it('сеть /56: IPv6 — первые 56 бит; IPv4 и IPv4 в IPv6 — без сети', () => {
+    assert.equal(netOf('2001:db8:1:2ff::1'), '2001:db8:1:200::/56');
+    assert.equal(netOf('2001:db8:1:200::1'), '2001:db8:1:200::/56');
+    assert.equal(netOf('2001:db8:1:300::1'), '2001:db8:1:300::/56', 'соседняя /56');
+    assert.equal(netOf('203.0.113.5'), null);
+    assert.equal(netOf('::ffff:203.0.113.5'), null);
+    assert.equal(netOf('не адрес'), null);
+  });
+
+  it('одна /56 (много /64) — не больше 50 анонимных потоков; доля остаётся другим сетям и вошедшим', () => {
+    assert.equal(MAX_ANON_PER_NET, 50);
+    const hub = createSseHub({ timers });
+    let fromNet = 0;
+    // 256 сетей /64 одной /56 по 10 потоков — без предела заняли бы всю анонимную долю (500).
+    for (let n = 0; n < 256; n += 1) {
+      for (let k = 0; k < 10; k += 1) {
+        if (hub.attach(fakeRes(), { channels: [T(n)], key: `ip:2001:db8:1:2${n.toString(16).padStart(2, '0')}::${k + 1}` }).ok) fromNet += 1;
+      }
+    }
+    assert.equal(fromNet, MAX_ANON_PER_NET);
+    // ТВ-экран другого клуба (другая сеть, IPv4) — подключается.
+    assert.ok(hub.attach(fakeRes(), { channels: [T(900)], key: 'ip:2001:db8:2::1' }).ok, 'другая /56');
+    assert.ok(hub.attach(fakeRes(), { channels: [T(901)], key: 'ip:198.51.100.7' }).ok, 'IPv4');
+    assert.ok(hub.attach(fakeRes(), { channels: [`club:${CLUB}`], userId: USER, key: 'ip:2001:db8:1:200::99' }).ok, 'вошедший из той же /56 — вне анонимной доли');
+    hub.closeAll();
+  });
+
+  it('запасной ТВ-хаб турниров — тот же предел на /56', () => {
+    const tv = createTvHub({ timers, maxPerNet: 50 });
+    assert.equal(tv.usesCore, false);
+    let ok = 0;
+    for (let n = 0; n < 20; n += 1) {
+      for (let k = 0; k < 8; k += 1) if (tv.attach(fakeRes(), { tournamentId: '11111111-1111-4111-8111-000000000001', ip: `2001:db8:1:2${n.toString(16).padStart(2, '0')}::${k + 1}` }).ok) ok += 1;
+    }
+    assert.equal(ok, 50);
+    assert.ok(tv.attach(fakeRes(), { tournamentId: '11111111-1111-4111-8111-000000000001', ip: '2001:db8:9::1' }).ok);
+    tv.closeAll();
   });
 });
 

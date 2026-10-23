@@ -267,6 +267,39 @@ function mergeDerived(list) {
   return kept;
 }
 
+const score = (x) => (x && Number.isInteger(x.score_a) && Number.isInteger(x.score_b) ? `${x.score_a}:${x.score_b}` : null);
+const uuidOr = (v) => (typeof v === 'string' && /^[0-9a-f-]{36}$/.test(v) ? v : null);
+/** Окно турнира в журнале extend: { ends_at, match_minutes, light_until } без лишнего. */
+const windowOf = (w) => (w && typeof w === 'object' ? { ends_at: w.ends_at ?? null, match_minutes: Number.isInteger(w.match_minutes) ? w.match_minutes : null, light_until: w.light_until ?? null } : null);
+
+/**
+ * Суть ручных действий турниров и споров для строки отчёта (frontend): что было → что стало.
+ * Только идентификаторы, счёт, время и коды — без персональных данных.
+ */
+const DETAIL_ACTIONS = {
+  'manual.tournament_score': (d) => ({
+    tournament_id: uuidOr(d.tournament_id),
+    match_id: uuidOr(d.match_id),
+    before: d.before?.status === 'done' ? score(d.before) : d.before?.status === 'disputed' ? 'спор' : 'без счёта',
+    after: score(d.after),
+  }),
+  'plus.match_resolve': (d) => ({
+    match_id: uuidOr(d.match_id),
+    result: ['a', 'b', 'annul'].includes(d.result) ? d.result : null,
+    before: score(d.before),
+    after: d.result === 'annul' ? 'отменён' : score(d),
+  }),
+  'manual.tournament_extend': (d) => ({ tournament_id: uuidOr(d.tournament_id), before: windowOf(d.before), after: windowOf(d.after) }),
+  'manual.tournament_refund': (d) => ({
+    tournament_id: uuidOr(d.tournament_id),
+    entry_id: uuidOr(d.entry_id),
+    scope: d.scope === 'all' ? 'all' : 'entry',
+    reason_code: ['health', 'equipment', 'venue'].includes(d.reason_code) ? d.reason_code : null,
+    refunds: Number.isInteger(d.refunds) ? d.refunds : null,
+  }),
+};
+const detailOf = (r) => DETAIL_ACTIONS[r.action](r.data ?? {});
+
 /**
  * Действия смены или суток из журнала (инвариант 8; decisions №125 с уточнением, дефекты tester Д4 и frontend).
  * * «ручные» (count, by_action, items) — записи журнала manual.* и действия персонала (staff: актор —
@@ -324,6 +357,7 @@ export async function manualActions(db, { clubId, from, to, limit = 100 }) {
         resource_number: r.resource_number ?? null,
         amount_kopecks: Number.isSafeInteger(r.data?.amount_kopecks) ? r.data.amount_kopecks : null,
         linked,
+        ...(DETAIL_ACTIONS[r.action] ? { data: detailOf(r) } : {}),
       })),
     };
   };

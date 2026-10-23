@@ -56,6 +56,12 @@ function checkReason(reason, max = 500) {
 /**
  * @param {{ deps: object, log: object, clock: { now(): Date }, config?: object }} options
  */
+/** Партия сверх суточного лимита (T23, №148): причина → текст уведомления игрокам. */
+const LIMIT_TEXTS = {
+  pair_daily_limit: 'это 4-я партия пары за сутки',
+  player_daily_limit: 'лимит партий за сутки — не больше 6 засчитанных у игрока',
+};
+
 export function createPlusService({ deps, log, clock }) {
   const now = () => clock.now();
 
@@ -436,13 +442,13 @@ export function createPlusService({ deps, log, clock }) {
     const r = rows[0] ?? null;
     const m = await loadMatch(db, matchId);
     if (r?.applied) await afterCounted(db, m);
-    else if (r?.status === 'rejected' && r.reject_reason === 'pair_daily_limit') {
-      log.info('plus_match_rejected', { match_id: m.id, reason: 'pair_daily_limit' });
+    else if (r?.status === 'rejected' && LIMIT_TEXTS[r.reject_reason]) {
+      log.info('plus_match_rejected', { match_id: m.id, reason: r.reject_reason });
       for (const uid of [m.player_a, m.player_b]) {
         await notify(db, uid, {
           kind: 'plus.match_not_counted',
-          text: 'Партия записана, но в рейтинг не засчитана: это 4-я партия пары за сутки.',
-          data: { match_id: m.id },
+          text: `Партия записана, но в рейтинг не засчитана: ${LIMIT_TEXTS[r.reject_reason]}.`,
+          data: { match_id: m.id, reason: r.reject_reason },
         });
       }
     }
@@ -616,7 +622,7 @@ export function createPlusService({ deps, log, clock }) {
       reason: why,
       actorType: 'user',
       actorId: userId,
-      data: { match_id: m.id, result, score_a: next.score_a, score_b: next.score_b, resource_id: m.resource_id },
+      data: { match_id: m.id, result, score_a: next.score_a, score_b: next.score_b, before: { score_a: m.score_a, score_b: m.score_b }, resource_id: m.resource_id },
     });
     // Решение спора — ручное действие (инвариант 8, M4-I5): тревога manual_action владельцу сразу —
     // кто, что решил и почему (как отмена турнира и исправление счёта).
@@ -632,7 +638,7 @@ export function createPlusService({ deps, log, clock }) {
           level: 'important',
           manual: true,
           resourceId: m.resource_id ?? null,
-          data: { action: 'plus.match_resolve', match_id: m.id, result, staff_id: userId, reason: why },
+          data: { action: 'plus.match_resolve', match_id: m.id, result, staff_id: userId, staff_name: who, reason: why, before: `${m.score_a}:${m.score_b}`, after: result === 'annul' ? 'отменён' : `${next.score_a}:${next.score_b}` },
           dedupeKey: `plus_resolve:${m.id}`,
           text: `Спор по партии${where} решён: ${what} — ${who}: ${why}`,
         });

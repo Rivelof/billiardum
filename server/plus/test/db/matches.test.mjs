@@ -8,7 +8,7 @@ import { after, before, describe, it } from 'node:test';
 import pg from 'pg';
 import { applyElo } from '../../elo.mjs';
 import { applyMatch } from '../../api.mjs';
-import { CLUB_A, CLUB_B, MIN, PHONES, setup, table, T0 } from './harness.mjs';
+import { CLUB_A, CLUB_B, MIN, PHONES, setup, table, TABLE_B, T0 } from './harness.mjs';
 
 const skip = !process.env.DATABASE_ADMIN_URL;
 
@@ -239,6 +239,9 @@ describe('Бильярдум+: партии', { skip, concurrency: false }, () =
     const [al] = await h.q("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'match_id' = $2", [CLUB_A, m.id]);
     assert.ok(al, 'тревога manual_action');
     assert.deepEqual([al.data.action, al.data.result, al.data.reason, al.data.staff_id], ['plus.match_resolve', 'b', 'Видео зала: победил Disp_B', manager.id]);
+    assert.ok(typeof al.data.staff_name === 'string' && al.data.staff_name.length > 0 && !/\+7/.test(al.data.staff_name), 'имя или роль, без телефона');
+    assert.deepEqual([al.data.before, al.data.after], ['8:6', '6:8']);
+    assert.deepEqual(res.at(-1).data.before, { score_a: 8, score_b: 6 });
     const owner = await h.login(PHONES.owner);
     const toOwner = (await h.notifications(owner.id, 'alarm')).filter((n) => n.data.alarm_id === al.id);
     assert.equal(toOwner.length, 1, 'владелец узнал сразу');
@@ -307,6 +310,76 @@ describe('Бильярдум+: партии', { skip, concurrency: false }, () =
     const both = await Promise.all([p2, p3].map((x) => h.request('POST', `/api/plus/matches/${x.id}/confirm`, { token: b.token })));
     assert.deepEqual(both.map((x) => x.json.counted).sort(), [false, true]);
     assert.equal((await h.rating(a.id)).games, 3);
+  });
+
+  const P = { discipline: 'pool' };
+
+  it('№148: у игрока не больше 6 засчитанных партий за сутки — по всем соперникам и клубам; гонка; турнир не в счёт', async () => {
+    h.clock.set(T0 + 7 * 24 * 60 * MIN);
+    const a = await h.player('Day_A');
+    const opps = [];
+    for (let i = 1; i <= 9; i += 1) opps.push(await h.player(`Day_B${i}`));
+    const s = await h.session({ players: [a.id, ...opps.map((o) => o.id)], resourceId: table(6) });
+    // Шесть партий с шестью разными соперниками (лимит пары не мешает) — засчитаны.
+    for (let i = 0; i < 6; i += 1) {
+      const m = await h.play(a, opps[i], s, P);
+      assert.equal(m.counted, true, `партия ${i + 1}`);
+      h.clock.add(5 * MIN);
+    }
+    const before7 = await h.rating(a.id, 'pool');
+    const b7 = opps[6];
+    const seventh = await h.play(a, b7, s, P);
+    assert.equal(seventh.counted, false);
+    assert.equal(seventh.not_counted_reason, 'player_daily_limit');
+    assert.deepEqual(await h.rating(a.id, 'pool'), before7, 'рейтинг не тронут');
+    assert.equal(await h.rating(b7.id, 'pool'), null, 'у соперника тоже');
+    const [row] = await h.q('select status, reject_reason from bl.matches where id = $1', [seventh.id]);
+    assert.deepEqual(row, { status: 'rejected', reject_reason: 'player_daily_limit' });
+    const note = (await h.notifications(b7.id, 'plus.match_not_counted')).at(-1);
+    assert.match(note.text, /лимит партий за сутки/);
+    const me = await h.request('GET', '/api/plus/me', { token: a.token });
+    assert.equal(me.json.history[0].not_counted_reason, 'player_daily_limit');
+    // Соперник (у него 1 партия) играет с другим — у него свой счёт.
+    const sB = await h.session({ players: [b7.id, opps[7].id], resourceId: table(7) });
+    assert.equal((await h.play(b7, opps[7], sB, P)).counted, true);
+    // Другой клуб — тот же лимит (сутки по клубу партии).
+    const sOther = await h.session({ players: [a.id, opps[8].id], clubId: CLUB_B, resourceId: TABLE_B });
+    assert.equal((await h.play(a, opps[8], sOther, P)).not_counted_reason, 'player_daily_limit');
+    // Турнирная партия лимитом не ограничивается (как лимит пары T23).
+    const ev = { match_id: randomUUID(), tournament_id: randomUUID(), winner_id: a.id, loser_id: opps[0].id, player_ids: [a.id, opps[0].id], discipline: 'pool', score: { a: 3, b: 1 } };
+    await h.emit('tournament.match_finished', ev);
+    await h.drain();
+    const [tm] = await h.q('select status from bl.matches where tournament_match_id = $1', [ev.match_id]);
+    assert.equal(tm.status, 'counted');
+    // Записать вручную засчитанную по лимиту игрока партию нельзя (только bl.plus_settle_match).
+    await assert.rejects(
+      h.pool.connect().then(async (c) => {
+        try {
+          await c.query('begin');
+          await c.query("select set_config('app.club_id', $1, true)", [CLUB_A]);
+          await c.query("update bl.matches set status = 'rejected', reject_reason = 'player_daily_limit' where id = $1", [seventh.id]);
+        } finally {
+          await c.query('rollback');
+          c.release();
+        }
+      }),
+    );
+  });
+
+  it('№148 под гонкой: у игрока 5 засчитанных, две партии с разными соперниками подтверждаются одновременно — засчитана одна', async () => {
+    h.clock.set(T0 + 8 * 24 * 60 * MIN);
+    const a = await h.player('DayRace_A');
+    const opps = [];
+    for (let i = 1; i <= 7; i += 1) opps.push(await h.player(`DayRace_B${i}`));
+    const s = await h.session({ players: [a.id, ...opps.map((o) => o.id)], resourceId: table(8) });
+    for (let i = 0; i < 5; i += 1) assert.equal((await h.play(a, opps[i], s, P)).counted, true);
+    const p6 = await h.play(a, opps[5], s, { ...P, confirm: false });
+    const p7 = await h.play(a, opps[6], s, { ...P, confirm: false });
+    const both = await Promise.all([[p6, opps[5]], [p7, opps[6]]].map(([x, o]) => h.request('POST', `/api/plus/matches/${x.id}/confirm`, { token: o.token })));
+    assert.ok(both.every((x) => x.status === 200), both.map((x) => x.text).join(' | '));
+    assert.deepEqual(both.map((x) => x.json.counted).sort(), [false, true]);
+    assert.deepEqual(both.map((x) => x.json.not_counted_reason).filter(Boolean), ['player_daily_limit']);
+    assert.equal((await h.rating(a.id, 'pool')).games, 6);
   });
 
   it('турнирная партия по outbox tournament.match_finished — ×1,5, один раз, достижение «Турнирный»', async () => {

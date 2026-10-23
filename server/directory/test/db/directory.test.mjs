@@ -343,10 +343,22 @@ describe('каталог клубов', { skip }, () => {
     assert.equal(r1.json.text, 'Хорошо, звоните ***');
     const r2 = await h.request('POST', '/api/reviews', {
       token: author.token,
-      body: { club_id: CLUB_A, rating: 5, text: 'Ещё лучше: +7.912.345.67.81, 8/912/345/67/82, 8 (912) 345.67.83; были 21.10.2026 12:30, час 1 490 ₽' },
+      body: { club_id: CLUB_A, rating: 5, text: 'Ещё лучше: +7.912.345.67.81 или 8/912/345/67/82 или 8 (912) 345.67.83; были 21.10.2026 12:30, час 1 490 ₽' },
     });
     assert.equal(r2.json.id, r1.json.id, 'один отзыв на гостя и клуб');
-    assert.equal(r2.json.text, 'Ещё лучше: ***, ***, ***; были 21.10.2026 12:30, час 1 490 ₽', 'M4-5: точки и косые черты — тоже телефон; дата, время и цена остаются');
+    assert.equal(r2.json.text, 'Ещё лучше: *** или *** или ***; были 21.10.2026 12:30, час 1 490 ₽', 'M4-5: точки и косые черты — тоже телефон; дата, время и цена остаются');
+    // M4-8: невидимые знаки убираются при сохранении, номер с ними и с «·» — тоже ***.
+    const r3 = await h.request('POST', '/api/reviews', {
+      token: author.token,
+      body: { club_id: CLUB_A, rating: 5, text: 'Стол\u200b №3\u00ad, звоните +7\u200b912\u200b345\u200b67\u200b89 или +7·912·345·67·96' },
+    });
+    assert.equal(r3.status, 200, r3.text);
+    assert.equal(r3.json.text, 'Стол №3, звоните *** или ***');
+    const [stored] = (await h.admin.query('select text from bl.reviews where id = $1', [r1.json.id])).rows;
+    assert.equal(stored.text, 'Стол №3, звоните *** или ***', 'в базе — нормализованный текст');
+    // Только невидимые знаки — пустой текст, 400.
+    const r4 = await h.request('POST', '/api/reviews', { token: author.token, body: { club_id: CLUB_A, rating: 5, text: '\u200b\u2060' } });
+    assert.equal(r4.status, 400);
     assert.equal((await h.request('GET', `/api/reviews/mine?club_id=${CLUB_A}`, { token: author.token })).json.rating, 5);
     // Ответ клуба — управляющий; автор отвечать не может (база).
     const rep = await h.request('POST', `/api/reviews/${r1.json.id}/reply`, { token: manager.token, club: CLUB_A, body: { text: 'Спасибо!' } });

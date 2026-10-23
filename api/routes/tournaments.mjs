@@ -173,10 +173,40 @@ export const routes = [
     auth: 'staff',
     roles: ORGANIZER,
     async handler(ctx, req) {
+      // Тело { reason, refund?: 'all'|'none', reason_code? }: после старта взносы не возвращаются,
+      // кроме refund: 'all' с reason_code health|equipment|venue (№149).
       return {
         status: 200,
-        json: await svc().cancel(ctx.db, { clubId: ctx.club, staffId: userId(req), tournamentId: req.params.id, reason: req.body?.reason }),
+        json: await svc().cancel(ctx.db, {
+          clubId: ctx.club,
+          staffId: userId(req),
+          tournamentId: req.params.id,
+          reason: req.body?.reason,
+          refund: req.body?.refund ?? null,
+          reasonCode: req.body?.reason_code ?? null,
+        }),
       };
+    },
+  },
+  // Продление идущего турнира без оплаты (№147): ручное действие с причиной, тревога владельцу.
+  {
+    method: 'POST',
+    path: '/api/clubs/{club}/tournaments/{id}/extend',
+    auth: 'staff',
+    roles: ORGANIZER,
+    async handler(ctx, req) {
+      return { status: 200, json: await svc().extend(ctx.db, { clubId: ctx.club, staffId: userId(req), tournamentId: req.params.id, body: req.body }) };
+    },
+  },
+  // Возврат взноса одному игроку после старта (№149): { reason_code, comment }.
+  {
+    method: 'POST',
+    path: '/api/clubs/{club}/tournaments/{id}/entries/{entry_id}/refund',
+    auth: 'staff',
+    roles: ORGANIZER,
+    async handler(ctx, req) {
+      const out = await svc().refundEntry(ctx.db, { clubId: ctx.club, staffId: userId(req), tournamentId: req.params.id, entryId: req.params.entry_id, body: req.body });
+      return { status: 200, json: out };
     },
   },
 ];

@@ -34,6 +34,27 @@ export const EXTEND_BEFORE_MS = 10 * MINUTE;
 export const REPORTED_TAIL_MS = 5 * MINUTE;
 /** Тревога «матч затянулся» (№147): матч упёрся в предел света ends_at + match_minutes. */
 export const OVERDUE_ALARM = 'tournament_match_overdue';
+/**
+ * Продление идущего турнира (POST …/extend, ручное действие, №147): ends_at не дальше этого от
+ * текущего момента и не дальше EXTEND_SPAN_MS от начала турнира (позднее из starts_at и started_at).
+ */
+export const EXTEND_AHEAD_MS = 12 * 60 * MINUTE;
+export const EXTEND_SPAN_MS = 24 * 60 * MINUTE;
+/** Время матча при продлении: не больше (или не больше прежнего, если оно было больше). */
+export const EXTEND_MATCH_MAX = 240;
+/** Поля, от которых зависят окно турнира и предел света (№147): после старта — только через extend. */
+export const WINDOW_FIELDS = ['starts_at', 'ends_at', 'match_minutes', 'registration_closes_at'];
+/** Напоминание организатору: соперник не подтвердил счёт за это время от первого внесённого счёта (№149). */
+export const CONFIRM_REMIND_MS = 15 * MINUTE;
+/**
+ * Возврат взноса после старта (№149) — только по объективной причине из закрытого списка;
+ * код → текст для журнала, чека возврата и тревоги.
+ */
+export const LATE_REFUND_CODES = {
+  health: 'здоровье игрока',
+  equipment: 'поломка оборудования',
+  venue: 'авария в клубе (свет, помещение)',
+};
 /** Кэш публичных ответов (контракт §4: кэш 60 с). */
 export const PUBLIC_CACHE_MS = 60_000;
 
@@ -55,6 +76,9 @@ export const REFUND_REASONS = {
   not_confirmed: 'Запись не подтверждена к началу турнира',
   payment_timeout: 'Оплата после истечения срока записи',
   canceled: 'Запись отменена',
+  health: 'Возврат после старта турнира: здоровье игрока',
+  equipment: 'Возврат после старта турнира: поломка оборудования',
+  venue: 'Возврат после старта турнира: авария в клубе',
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -82,6 +106,27 @@ function cleanText(v, field, max, { required = false } = {}) {
   }
   if (s.length > max) fail('bad_request', field);
   return s;
+}
+
+/** Код причины возврата после старта (№149): только из LATE_REFUND_CODES, иначе 400. */
+function cleanRefundCode(v) {
+  if (typeof v !== 'string' || !Object.prototype.hasOwnProperty.call(LATE_REFUND_CODES, v)) fail('bad_request', 'reason_code');
+  return v;
+}
+
+/** 100000 → «1 000 ₽», 149050 → «1 490,50 ₽». */
+function rub(kopecks) {
+  const n = Number(kopecks);
+  const r = String(Math.floor(n / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const k = n % 100;
+  return k ? `${r},${String(k).padStart(2, '0')} ₽` : `${r} ₽`;
+}
+
+/** Время по поясу клуба: «21:30», другой день — «24 октября, 01:30». */
+function clubTime(d, tz, ref) {
+  const time = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: tz }).format(d);
+  const day = (x) => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: tz }).format(x);
+  return ref && day(d) === day(ref) ? time : `${day(d)}, ${time}`;
 }
 
 function cleanReason(v) {
@@ -407,7 +452,8 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       if (!entriesExist) for (const c of ['discipline', 'format', 'race_to', 'rating_min', 'rating_max', 'fee_kopecks', 'group_count', 'advance_per_group']) s.add(c);
       return s;
     }
-    if (t.status === 'running') return new Set(['title', 'description', 'prize_text', 'prize_kopecks', 'match_minutes', 'ends_at', 'resource_ids']);
+    // После старта окно и время матча (предел света, №147) — только через extend с причиной.
+    if (t.status === 'running') return new Set(['title', 'description', 'prize_text', 'prize_kopecks', 'resource_ids']);
     return new Set(['description', 'prize_text', 'prize_kopecks']);
   }
 
@@ -417,6 +463,16 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     const t0 = now();
     const b = body ?? {};
     const fields = readFields(b, t);
+    if (t.started_at || ['running', 'finished'].includes(t.status)) {
+      // Турнир начался: окно и время матча обычной правкой не меняются (409 tournament_started);
+      // то же значение (форма прислала поле целиком) — не правка.
+      for (const k of WINDOW_FIELDS) {
+        if (!(k in fields)) continue;
+        const same = fields[k] instanceof Date ? t[k] && fields[k].getTime() === new Date(t[k]).getTime() : fields[k] === t[k];
+        if (!same) fail('tournament_started', k);
+        delete fields[k];
+      }
+    }
     const live = (await db.query("select count(*)::int as n from bl.tournament_entries where tournament_id = $1 and status <> 'canceled'", [t.id])).rows[0].n;
     const allowed = allowedFields(t, live > 0);
     for (const k of Object.keys(fields)) if (!allowed.has(k)) fail('bad_status', `поле ${k} в статусе ${t.status}`);
@@ -450,6 +506,78 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       actorType: 'user',
       actorId: staffId,
       data: { tournament_id: t.id, fields: changedFields, from: t.status, to: status },
+    });
+    await changed(db, t);
+    return clubDetail(db, { clubId, tournamentId: t.id });
+  }
+
+  async function clubTz(db, clubId) {
+    return (await db.query('select timezone from bl.clubs where id = $1', [clubId])).rows[0]?.timezone ?? 'Europe/Moscow';
+  }
+
+  /**
+   * POST …/extend { ends_at?, match_minutes?, reason } — продление идущего турнира без оплаты (№147):
+   * ручное действие (инвариант 8) — причина, журнал manual.tournament_extend, тревога manual_action
+   * владельцу (было → стало). Пределы: ends_at — позже текущего момента, не дальше EXTEND_AHEAD_MS от
+   * него и EXTEND_SPAN_MS от начала турнира; match_minutes — 10…EXTEND_MATCH_MAX (или до прежнего).
+   * Сверх предела — 409 limit_exceeded { extend_limit_until }.
+   */
+  async function extend(db, { clubId, staffId, tournamentId, body }) {
+    const b = body ?? {};
+    const reason = cleanReason(b.reason);
+    const given = (k) => b[k] !== undefined && b[k] !== null;
+    if (!given('ends_at') && !given('match_minutes')) fail('bad_request', 'ends_at или match_minutes');
+    const endsAt = given('ends_at') ? parseTime(b.ends_at, 'ends_at') : null;
+    if (given('match_minutes') && !intIn(b.match_minutes, 10, 600)) fail('bad_request', 'match_minutes');
+    const t = await loadT(db, tournamentId, { lock: true });
+    if (t.club_id !== clubId) fail('not_found');
+    if (t.status !== 'running') fail('bad_status', t.status);
+    const t0 = now();
+    const before = { ends_at: new Date(t.ends_at), match_minutes: t.match_minutes };
+    const after = { ...before };
+    if (endsAt) {
+      if (endsAt <= t0) fail('bad_request', 'ends_at: в прошлом');
+      const startRef = Math.max(new Date(t.starts_at).getTime(), new Date(t.started_at ?? t.starts_at).getTime());
+      const cap = new Date(Math.min(t0.getTime() + EXTEND_AHEAD_MS, startRef + EXTEND_SPAN_MS, new Date(t.starts_at).getTime() + 14 * 24 * 60 * MINUTE));
+      if (endsAt > cap) fail('limit_exceeded', 'ends_at', 409, { extend_limit_until: cap.toISOString() });
+      after.ends_at = endsAt;
+    }
+    if (given('match_minutes')) {
+      if (b.match_minutes > Math.max(EXTEND_MATCH_MAX, t.match_minutes)) fail('limit_exceeded', 'match_minutes', 409);
+      after.match_minutes = b.match_minutes;
+    }
+    if (after.ends_at.getTime() === before.ends_at.getTime() && after.match_minutes === before.match_minutes) fail('bad_request', 'ничего не меняется');
+    await db.query('update bl.tournaments set ends_at = $2, match_minutes = $3, updated_at = $4 where id = $1', [t.id, after.ends_at, after.match_minutes, t0]);
+    const window = (x) => ({ ends_at: x.ends_at.toISOString(), match_minutes: x.match_minutes, light_until: lightLimit(x).toISOString() });
+    await audit(db, {
+      action: 'manual.tournament_extend',
+      objectType: 'tournament',
+      objectId: t.id,
+      actorType: 'user',
+      actorId: staffId,
+      reason,
+      data: { tournament_id: t.id, before: window(before), after: window(after) },
+    });
+    const who = await staffLabel(db, t.club_id, staffId);
+    const tz = await clubTz(db, t.club_id);
+    const words = (x) => `до ${clubTime(x.ends_at, tz, t0)}, матч ${x.match_minutes} мин`;
+    await raiseAlarm(db, t.club_id, {
+      type: 'manual_action',
+      level: 'important',
+      manual: true,
+      data: {
+        action: 'manual.tournament_extend',
+        tournament_id: t.id,
+        staff_id: staffId,
+        staff_name: who,
+        reason,
+        before: words(before),
+        after: words(after),
+        window_before: window(before),
+        window_after: window(after),
+      },
+      dedupeKey: `tournament_extend:${t.id}`,
+      text: `Турнир «${t.title}»: время продлено без оплаты (${words(before)} → ${words(after)}) — ${who}: ${reason}`,
     });
     await changed(db, t);
     return clubDetail(db, { clubId, tournamentId: t.id });
@@ -684,19 +812,31 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     return { entry_id: entry.id, status: entry.status, confirmation };
   }
 
-  async function cancelEntryRow(db, entry, reason, t0) {
+  /**
+   * Снять запись. refund: false — взнос не возвращается (отмена турнира после старта, №149);
+   * refundCode — код причины возврата для money (по умолчанию reason); requestedBy — сотрудник.
+   */
+  async function cancelEntryRow(db, entry, reason, t0, { refund = true, refundCode = null, requestedBy = null } = {}) {
+    const pay = refund && Number(entry.paid_kopecks) > 0 && entry.refund_status === 'none';
     await db.query(
       `update bl.tournament_entries set status = 'canceled', cancel_reason = $2, canceled_at = $3, updated_at = $3,
-              refund_status = case when paid_kopecks > 0 then 'pending' else refund_status end
+              refund_status = case when $4 then 'pending' else refund_status end
         where id = $1`,
-      [entry.id, reason, t0],
+      [entry.id, reason, t0, pay],
     );
     if (entry.status === 'confirmed') await bumpCount(db, entry.tournament_id, -1, t0);
-    if (Number(entry.paid_kopecks) > 0) {
-      await deps.outbox.enqueue(db, 'tournament.refund', { entry_id: entry.id, payment_id: entry.payment_id, club_id: entry.club_id, reason });
-      return true;
-    }
-    return false;
+    if (pay) await enqueueRefund(db, entry, refundCode ?? reason, requestedBy);
+    return pay;
+  }
+
+  async function enqueueRefund(db, entry, code, requestedBy = null) {
+    await deps.outbox.enqueue(db, 'tournament.refund', {
+      entry_id: entry.id,
+      payment_id: entry.payment_id,
+      club_id: entry.club_id,
+      reason: code,
+      ...(isUuid(requestedBy) ? { requested_by: requestedBy } : {}),
+    });
   }
 
   /** Отмена записи игроком: до закрытия записи — взнос целиком назад; после — 409 registration_closed. */
@@ -873,7 +1013,13 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
         res = await deps.payments.refund(db, { paymentId, amountKopecks: amount, reason: REFUND_REASONS[code], key: `trn-${paymentId}`, description: 'Возврат взноса за турнир' });
       }
     } else {
-      res = await deps.payments.refundTournamentFee(db, { entryId: payload.entry_id, paymentId, reason: REFUND_REASONS[code], reasonCode: code });
+      res = await deps.payments.refundTournamentFee(db, {
+        entryId: payload.entry_id,
+        paymentId,
+        reason: REFUND_REASONS[code],
+        reasonCode: code,
+        ...(isUuid(payload.requested_by) ? { requestedBy: payload.requested_by } : {}),
+      });
     }
     await db.query(
       "update bl.tournament_entries set refund_status = 'done', updated_at = $2 where id = $1 and refund_status = 'pending'",
@@ -1346,7 +1492,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       level: 'important',
       manual: true,
       resourceId: m.resource_id ?? null,
-      data: { action: 'manual.tournament_score', tournament_id: t.id, match_id: m.id, staff_id: staffId, reason, before: was, after: `${a}:${b}` },
+      data: { action: 'manual.tournament_score', tournament_id: t.id, match_id: m.id, staff_id: staffId, staff_name: who, reason, before: was, after: `${a}:${b}` },
       dedupeKey: `tournament_score:${m.id}`,
       text: `Турнир «${t.title}»: счёт матча исправлен (${was} → ${a}:${b}) — ${who}: ${reason}`,
     });
@@ -1473,15 +1619,32 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
 
   // --- Отмена турнира клубом -------------------------------------------------------------------------
 
-  async function cancel(db, { clubId, staffId, tournamentId, reason: rawReason }) {
+  /**
+   * Отмена турнира клубом. До старта — взносы назад всем (№138). После старта (№149) — по умолчанию
+   * без возврата; refund: 'all' с reason_code из LATE_REFUND_CODES — возврат всем (авария), это
+   * ручное действие manual.tournament_refund с тревогой владельцу.
+   */
+  async function cancel(db, { clubId, staffId, tournamentId, reason: rawReason, refund = null, reasonCode = null }) {
     const reason = cleanReason(rawReason);
+    if (refund !== null && refund !== undefined && refund !== 'all' && refund !== 'none') fail('bad_request', 'refund');
     const t = await loadT(db, tournamentId, { lock: true });
     if (t.club_id !== clubId) fail('not_found');
     if (['finished', 'canceled'].includes(t.status)) fail('bad_status', t.status);
+    const started = Boolean(t.started_at) || t.status === 'running';
+    const code = started && refund === 'all' ? cleanRefundCode(reasonCode) : null;
+    const refundAll = !started || code !== null;
     const t0 = now();
     const live = (await db.query("select * from bl.tournament_entries where tournament_id = $1 and status <> 'canceled' for update", [t.id])).rows;
     let refunded = 0;
-    for (const e of live) if (await cancelEntryRow(db, e, 'tournament_canceled', t0)) refunded += 1;
+    let refundedKopecks = 0;
+    const refundedIds = [];
+    for (const e of live) {
+      if (await cancelEntryRow(db, e, 'tournament_canceled', t0, { refund: refundAll, refundCode: code, requestedBy: staffId })) {
+        refunded += 1;
+        refundedKopecks += Number(e.paid_kopecks);
+        refundedIds.push(e.id);
+      }
+    }
     for (const m of (await matchesOf(db, t.id)).filter((x) => LIVE.includes(x.status))) await stopLight(db, m);
     await db.query("update bl.tournaments set status = 'canceled', canceled_at = $2, entries_count = 0, updated_at = $2 where id = $1", [t.id, t0]);
     // Отмена — ручное действие (инвариант 8): причина в журнал, владельцу — сразу.
@@ -1492,16 +1655,49 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       actorType: 'user',
       actorId: staffId,
       reason,
-      data: { tournament_id: t.id, from: t.status, entries: live.length, refunds: refunded },
+      data: { tournament_id: t.id, from: t.status, entries: live.length, refunds: refunded, refund: refundAll ? 'all' : 'none', ...(code ? { reason_code: code } : {}) },
     });
+    const who = started ? await staffLabel(db, t.club_id, staffId) : null;
+    if (code) {
+      // Возврат всем после старта (авария) — отдельное ручное действие (№149).
+      await audit(db, {
+        action: 'manual.tournament_refund',
+        objectType: 'tournament',
+        objectId: t.id,
+        actorType: 'user',
+        actorId: staffId,
+        reason,
+        data: { tournament_id: t.id, scope: 'all', reason_code: code, entries: refundedIds, refunds: refunded, amount_kopecks: refundedKopecks },
+      });
+      await raiseAlarm(db, t.club_id, {
+        type: 'manual_action',
+        level: 'important',
+        manual: true,
+        data: {
+          action: 'manual.tournament_refund',
+          tournament_id: t.id,
+          scope: 'all',
+          reason_code: code,
+          staff_id: staffId,
+          staff_name: who,
+          reason,
+          refunds: refunded,
+          amount_kopecks: refundedKopecks,
+        },
+        dedupeKey: `tournament_refund:${t.id}`,
+        text: `Турнир «${t.title}» отменён после старта, взносы возвращаются всем (${refunded}, ${rub(refundedKopecks)}): ${LATE_REFUND_CODES[code]} — ${who}: ${reason}`,
+      });
+    }
     const al = await savepoint(db, () =>
       deps.alarms.raise(db, t.club_id, {
         type: 'manual_action',
         level: 'important',
         manual: true,
-        data: { tournament_id: t.id, action: 'tournament_cancel' },
+        data: { tournament_id: t.id, action: 'tournament_cancel', refund: refundAll ? 'all' : 'none' },
         dedupeKey: `tournament_cancel:${t.id}`,
-        text: `Турнир «${t.title}» отменён. Взносы вернутся участникам: ${refunded}`,
+        text: refundAll
+          ? `Турнир «${t.title}» отменён. Взносы вернутся участникам: ${refunded}`
+          : `Турнир «${t.title}» отменён после старта — ${who}: ${reason}. Взносы не возвращаются`,
       }),
     );
     if (!al.ok) log.warn('tournament_alarm_failed', { error: al.error?.message });
@@ -1509,12 +1705,75 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       await notifyUser(db, e.user_id, {
         kind: 'tournament.canceled',
         level: 'important',
-        text: Number(e.paid_kopecks) > 0 ? `Турнир «${t.title}» отменён клубом. Взнос вернём целиком` : `Турнир «${t.title}» отменён клубом`,
+        text: refundAll && Number(e.paid_kopecks) > 0 ? `Турнир «${t.title}» отменён клубом. Взнос вернём целиком` : `Турнир «${t.title}» отменён клубом`,
         data: { tournament_id: t.id },
       });
     }
     await changed(db, t);
     return { refunded };
+  }
+
+  /**
+   * POST …/entries/{entry_id}/refund { reason_code, comment } — возврат взноса одному игроку после
+   * старта (№149): только объективная причина из LATE_REFUND_CODES, комментарий обязателен.
+   * Ручное действие: журнал manual.tournament_refund, тревога manual_action владельцу. Деньги —
+   * outbox tournament.refund → money.refundTournamentFee (ключ trn-<payment_id>, чек возврата).
+   * Запись в сетке остаётся (матчи решает организатор).
+   */
+  async function refundEntry(db, { clubId, staffId, tournamentId, entryId, body }) {
+    const b = body ?? {};
+    const comment = cleanReason(b.comment);
+    const code = cleanRefundCode(b.reason_code);
+    if (!isUuid(entryId)) fail('not_found');
+    const t = await loadT(db, tournamentId, { lock: true });
+    if (t.club_id !== clubId) fail('not_found');
+    // До старта — правила №138 (отмена записи игроком, отмена турнира клубом).
+    if (!t.started_at) fail('bad_status', `${t.status}: до старта`);
+    const { rows } = await db.query('select * from bl.tournament_entries where id = $1 and tournament_id = $2 for update', [entryId, t.id]);
+    const e = rows[0];
+    if (!e) fail('not_found', 'entry');
+    if (Number(e.paid_kopecks) <= 0) fail('not_paid');
+    if (e.refund_status !== 'none') fail('already_refunded', e.refund_status);
+    const t0 = now();
+    await db.query("update bl.tournament_entries set refund_status = 'pending', updated_at = $2 where id = $1", [e.id, t0]);
+    await enqueueRefund(db, e, code, staffId);
+    const amount = Number(e.paid_kopecks);
+    await audit(db, {
+      action: 'manual.tournament_refund',
+      objectType: 'tournament_entry',
+      objectId: e.id,
+      actorType: 'user',
+      actorId: staffId,
+      reason: comment,
+      data: { tournament_id: t.id, entry_id: e.id, scope: 'entry', reason_code: code, payment_id: e.payment_id, amount_kopecks: amount, entry_status: e.status },
+    });
+    const who = await staffLabel(db, t.club_id, staffId);
+    const nick = displayNick(e);
+    await raiseAlarm(db, t.club_id, {
+      type: 'manual_action',
+      level: 'important',
+      manual: true,
+      data: {
+        action: 'manual.tournament_refund',
+        tournament_id: t.id,
+        entry_id: e.id,
+        scope: 'entry',
+        reason_code: code,
+        staff_id: staffId,
+        staff_name: who,
+        reason: comment,
+        amount_kopecks: amount,
+      },
+      dedupeKey: `tournament_refund:${e.id}`,
+      text: `Турнир «${t.title}»: взнос ${rub(amount)} возвращается игроку ${nick} после старта: ${LATE_REFUND_CODES[code]} — ${who}: ${comment}`,
+    });
+    await notifyUser(db, e.user_id, {
+      kind: 'tournament.refund',
+      text: `Взнос за турнир «${t.title}» вернём`,
+      data: { tournament_id: t.id },
+    });
+    await changed(db, t);
+    return { entry_id: e.id, refund_status: 'pending', reason_code: code, amount_kopecks: amount };
   }
 
   // --- Планировщик -------------------------------------------------------------------------------------
@@ -1541,8 +1800,9 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
         if (m.status === 'playing') {
           if (!m.session_id && m.hold_until && m.hold_until > t0) await startLight(db, t, m);
           await extendPlaying(db, t, m, t0);
-        } else if (await wrapUpReported(db, m, t0)) {
-          touched = true;
+        } else {
+          if (await wrapUpReported(db, m, t0)) touched = true;
+          if (m.status === 'pending_confirm') await remindConfirm(db, t, m, t0);
         }
       }
       if ((await schedule(db, t)) > 0) touched = true;
@@ -1609,9 +1869,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
    */
   async function wrapUpReported(db, m, t0) {
     if (!m.hold_until || m.hold_until <= t0) return false;
-    const times = [m.report_a, m.report_b].filter(Boolean).map((r) => Date.parse(r.first_at ?? r.at)).filter(Number.isFinite);
-    const reportedAt = times.length ? Math.min(...times) : new Date(m.updated_at).getTime();
-    if (t0.getTime() < reportedAt + REPORTED_TAIL_MS) return false;
+    if (t0.getTime() < firstReportAt(m) + REPORTED_TAIL_MS) return false;
     await stopLight(db, m);
     await db.query('update bl.tournament_matches set hold_until = $2, updated_at = $2 where id = $1 and hold_until > $2', [m.id, t0]);
     await audit(db, {
@@ -1622,6 +1880,38 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       actorId: null,
       data: { tournament_id: m.tournament_id, match_id: m.id, status: m.status, resource_id: m.resource_id ?? null },
     });
+    return true;
+  }
+
+  /** Время первого внесённого счёта матча (мс): от него доведение света и напоминание. */
+  function firstReportAt(m) {
+    const times = [m.report_a, m.report_b].filter(Boolean).map((r) => Date.parse(r.first_at ?? r.at)).filter(Number.isFinite);
+    return times.length ? Math.min(...times) : new Date(m.updated_at).getTime();
+  }
+
+  /**
+   * Соперник не подтвердил счёт за CONFIRM_REMIND_MS от первого внесённого счёта — напоминание
+   * организаторам (управляющий, владелец) с переходом к турниру; одно на матч (confirm_reminded_at, №149).
+   */
+  async function remindConfirm(db, t, m, t0) {
+    if (m.confirm_reminded_at || t0.getTime() < firstReportAt(m) + CONFIRM_REMIND_MS) return false;
+    const { rowCount } = await db.query(
+      "update bl.tournament_matches set confirm_reminded_at = $2 where id = $1 and confirm_reminded_at is null and status = 'pending_confirm'",
+      [m.id, t0],
+    );
+    if (rowCount === 0) return false;
+    const nums = await tableNumbers(db, t.club_id);
+    const table = m.resource_id ? nums.get(m.resource_id) : null;
+    const rep = m.report_a ?? m.report_b;
+    const url = `/club/tournaments/${t.id}`;
+    await notifyOrganizers(db, t.club_id, {
+      kind: 'tournament.confirm_reminder',
+      level: 'important',
+      text: `Турнир «${t.title}»: счёт матча${table ? ` на столе ${table}` : ''}${rep ? ` (${rep.score_a}:${rep.score_b})` : ''} не подтверждён соперником 15 минут. Проверьте в программе клуба.`,
+      data: { tournament_id: t.id, match_id: m.id, url },
+      actions: [{ id: 'open', title: 'Турнир', url }],
+    });
+    log.info('tournament_confirm_reminder', { tournament_id: t.id, match_id: m.id });
     return true;
   }
 
@@ -1709,6 +1999,8 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     enterClub,
     create,
     update,
+    extend,
+    refundEntry,
     listClub,
     clubDetail,
     start,

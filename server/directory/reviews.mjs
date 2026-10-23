@@ -53,7 +53,9 @@ export function createReviewsService({ deps, log, clock }) {
     if (body.text !== undefined && body.text !== null && body.text !== '') {
       txt = text(body.text, 1000);
       if (!txt) fail('bad_request', 'text');
-      txt = maskPhones(txt).slice(0, 1000);
+      // M4-8: хранится уже нормализованный текст (без невидимых знаков) с маской телефонов.
+      txt = maskPhones(txt).trim().slice(0, 1000);
+      if (!txt) fail('bad_request', 'text');
     }
     const { rows: c } = await db.query('select id, club_id from bl.club_public where club_id = $1', [clubId]);
     if (!c[0]) fail('not_found', 'club');
@@ -112,7 +114,9 @@ export function createReviewsService({ deps, log, clock }) {
     if (body?.text !== null && body?.text !== '') {
       txt = text(body?.text, 1000);
       if (!txt) fail('bad_request', 'text');
-      txt = maskPhones(txt).slice(0, 1000);
+      // M4-8: хранится уже нормализованный текст (без невидимых знаков) с маской телефонов.
+      txt = maskPhones(txt).trim().slice(0, 1000);
+      if (!txt) fail('bad_request', 'text');
     }
     const t = now();
     const { rows: up } = await db.query(

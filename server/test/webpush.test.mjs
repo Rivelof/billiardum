@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { createECDH, createPublicKey, verify } from 'node:crypto';
 import { describe, it } from 'node:test';
 import { decryptPayload, encryptPayload, endpointAllowed, loadVapid, p256Scalar, sendPush, vapidJwt } from '../notify/webpush.mjs';
-import { channelChain, cleanData, maskPhones, pushTitle } from '../notify/index.mjs';
+import { channelChain, cleanData, maskPhones, normalizeText, pushTitle } from '../notify/index.mjs';
 import { createStreamTokens, streamTarget } from '../http/stream-tokens.mjs';
 
 // RFC 8291, приложение A.
@@ -164,7 +164,37 @@ describe('адреса подписок и цепочка каналов', () =>
     ]) {
       assert.equal(maskPhones(`звоните ${phone} вечером`), 'звоните *** вечером', phone);
     }
-    assert.equal(maskPhones('+7.912.345.67.81, 8/912/345/67/82'), '***, ***');
+    // M4-8: запятая — тоже разделитель, два номера через запятую склеиваются в одну маску.
+    assert.equal(maskPhones('+7.912.345.67.81, 8/912/345/67/82'), '***');
+    assert.equal(maskPhones('+7.912.345.67.81 и 8/912/345/67/82'), '*** и ***');
+  });
+
+  it('M4-8: невидимые знаки, полноширинные цифры и разделители не из перечня — ***', () => {
+    for (const phone of [
+      '+7\u200b912\u200b345\u200b67\u200b89',
+      '+7\u00ad912\u00ad345\u00ad67\u00ad00',
+      '+7\u2060912\u20603456701',
+      '\ufeff+79123456702',
+      '+7\u200d912\u200d345\u200d67\u200d03',
+      '+7·912·345·67·96',
+      '+7,912,345,67,97',
+      '+7:912:345:67:98',
+      '+7~912~345~67~99',
+      '+7 ... 912 ... 345 ... 67 ... 95',
+      '+7 912 345 67 9４',
+      '＋７９１２３４５６７９３',
+      '8 ⑨①② 345 67 92',
+      '+7❤912❤345❤67❤91',
+    ]) {
+      assert.equal(maskPhones(`звоните ${phone} вечером`), 'звоните *** вечером', JSON.stringify(phone));
+    }
+  });
+
+  it('M4-8: текст нормализуется — без невидимых знаков, «№», «…» и эмодзи с ZWJ остаются', () => {
+    assert.equal(normalizeText('Стол\u200b №3\u00ad — отлично…'), 'Стол №3 — отлично…');
+    assert.equal(normalizeText('Семья 👨\u200d👩\u200d👧'), 'Семья 👨\u200d👩\u200d👧');
+    assert.equal(normalizeText('счёт １２:３'), 'счёт 12:3');
+    assert.equal(maskPhones('Отзыв: №5 из 10, цена 1 490 ₽'), 'Отзыв: №5 из 10, цена 1 490 ₽');
   });
 
   it('M4-5: цены, даты и время не маскируются', () => {
@@ -181,6 +211,11 @@ describe('адреса подписок и цепочка каналов', () =>
       'с 21.10 по 25.10, 10.00-22.00',
       'Стол 12, счёт 8:5, 7:8, 8:6',
       'турнир 26.10.2026 в 12:00, взнос 500 ₽',
+      // M4-8: списки времени и дат без года через запятую — не номер.
+      '22:00, 21:30, 22:00, 23:30',
+      'брони: 10:00–12:00, 14:30–16:00',
+      'Стол 3 · 21:30',
+      'Матч 8:5, стол 12, 2 игрока',
     ]) {
       assert.equal(maskPhones(text), text, text);
     }

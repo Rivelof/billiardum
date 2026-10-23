@@ -16,6 +16,12 @@ export const MAX_CLIENTS_PER_USER = 10;
  */
 export const ANON_SHARE = 0.25;
 export const MAX_ANON_CLIENTS = Math.floor(MAX_CLIENTS * ANON_SHARE);
+/**
+ * Анонимных потоков с одной сети IPv6 /56 — не больше (M4-I6): у одного абонента или хостинга
+ * бывает /56 и шире, 50 сетей /64 по 10 потоков иначе заняли бы всю анонимную долю, и ТВ-экраны
+ * других клубов остались бы без обновлений.
+ */
+export const MAX_ANON_PER_NET = 50;
 /** Медленный клиент с таким хвостом неотправленного отключается. */
 export const MAX_BUFFERED_BYTES = 1024 * 1024;
 
@@ -61,6 +67,16 @@ export function sourceOf(ip) {
   return `${g.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`;
 }
 
+/** Сеть /56 анонимного IPv6-адреса (M4-I6) или null: IPv4 (и IPv4 в IPv6) и не адрес — без сети. */
+export function netOf(ip) {
+  if (typeof ip !== 'string' || ip === '') return null;
+  const bare = ip.replace(/%.*$/, '');
+  if (isIP(bare) !== 6) return null;
+  const g = ipv6Groups(bare);
+  if (!g || (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff)) return null;
+  return `${g.slice(0, 3).map((x) => x.toString(16)).join(':')}:${(g[3] & 0xff00).toString(16)}::/56`;
+}
+
 /** Ключ лимита: ip:… — по источнику (IPv6 — по /64); прочие ключи — как есть. */
 export function limitKeyOf(key) {
   if (typeof key !== 'string' || !key.startsWith('ip:')) return key ?? null;
@@ -78,6 +94,7 @@ export function createSseHub({
   maxClients = MAX_CLIENTS,
   maxPerUser = MAX_CLIENTS_PER_USER,
   maxAnon = Math.floor(maxClients * ANON_SHARE),
+  maxAnonPerNet = MAX_ANON_PER_NET,
   timers = globalThis,
 } = {}) {
   /** @type {Set<{ res: any, channels: Set<string>, userId: string|null, close: () => void }>} */
@@ -104,7 +121,7 @@ export function createSseHub({
      * false — поток закрывается. only — канал → разрешённые события (бармену из club:{id}
      * только события бара, decisions №97); каналы без записи — все события.
      * Без userId поток анонимный: общий предел анонимных (maxAnon, четверть хаба) и предел на
-     * источник key (ip:… — IPv4 адрес или IPv6 сеть /64).
+     * источник key (ip:… — IPv4 адрес или IPv6 сеть /64) и на сеть IPv6 /56 (maxAnonPerNet, M4-I6).
      * @returns {{ ok: true, client: object } | { ok: false, reason: string }}
      */
     attach(res, { channels, userId = null, key = null, revalidate = null, revalidateMs = 60_000, only = null }) {
@@ -112,10 +129,18 @@ export function createSseHub({
       if (clients.size >= maxClients) return { ok: false, reason: 'too_many_clients' };
       // Анонимные потоки — не больше своей доли хаба (M4-7): вошедшим всегда остаётся место.
       const anon = !userId;
+      // Сеть IPv6 /56 анонимного источника: своя доля (M4-I6).
+      const net = anon && typeof key === 'string' && key.startsWith('ip:') ? netOf(key.slice(3)) : null;
       if (anon) {
         let n = 0;
-        for (const c of clients) if (c.anon) n += 1;
+        let inNet = 0;
+        for (const c of clients) {
+          if (!c.anon) continue;
+          n += 1;
+          if (net && c.net === net) inNet += 1;
+        }
         if (n >= maxAnon) return { ok: false, reason: 'too_many_clients' };
+        if (net && inNet >= maxAnonPerNet) return { ok: false, reason: 'too_many_clients' };
       }
       // Лимит потоков на пользователя, у анонимного — на источник (ip:…, IPv6 — сеть /64).
       const limitKey = userId ?? limitKeyOf(key);
@@ -140,6 +165,7 @@ export function createSseHub({
         userId,
         key,
         anon,
+        net,
         limitKey,
         channels: new Set(channels),
         only: only ? new Map(Object.entries(only).map(([ch, evs]) => [ch, new Set(evs)])) : null,

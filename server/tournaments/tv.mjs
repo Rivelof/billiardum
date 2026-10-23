@@ -3,7 +3,7 @@
 // поток идёт через него; иначе — через этот небольшой хаб с теми же правилами (keep-alive, предел
 // подключений всего и с одного адреса, медленный клиент отключается).
 
-import { formatEvent, KEEP_ALIVE_MS, MAX_BUFFERED_BYTES, sourceOf } from '../http/sse.mjs';
+import { formatEvent, KEEP_ALIVE_MS, MAX_ANON_PER_NET, MAX_BUFFERED_BYTES, netOf, sourceOf } from '../http/sse.mjs';
 
 export const TV_MAX_CLIENTS = 1_000;
 export const TV_MAX_PER_IP = 8;
@@ -14,7 +14,15 @@ export const tvChannel = (tournamentId) => `tournament:${tournamentId}`;
  * @param {{ core?: { isChannel?: Function, attach?: Function, publish?: Function }, log?: any, timers?: any,
  *           keepAliveMs?: number, maxClients?: number, maxPerIp?: number }} options
  */
-export function createTvHub({ core = null, log = null, timers = globalThis, keepAliveMs = KEEP_ALIVE_MS, maxClients = TV_MAX_CLIENTS, maxPerIp = TV_MAX_PER_IP } = {}) {
+export function createTvHub({
+  core = null,
+  log = null,
+  timers = globalThis,
+  keepAliveMs = KEEP_ALIVE_MS,
+  maxClients = TV_MAX_CLIENTS,
+  maxPerIp = TV_MAX_PER_IP,
+  maxPerNet = MAX_ANON_PER_NET,
+} = {}) {
   const probe = tvChannel('00000000-0000-4000-8000-000000000000');
   const useCore = Boolean(core?.attach && core?.publish && typeof core.isChannel === 'function' && core.isChannel(probe));
   const clients = new Set();
@@ -43,10 +51,17 @@ export function createTvHub({ core = null, log = null, timers = globalThis, keep
       if (clients.size >= maxClients) return { ok: false, reason: 'too_many_clients' };
       // Предел на источник: IPv4 — адрес, IPv6 — сеть /64 (M4-7).
       const src = sourceOf(ip);
+      const net = netOf(ip);
       if (src) {
         let mine = 0;
-        for (const c of clients) if (c.src === src) mine += 1;
+        let inNet = 0;
+        for (const c of clients) {
+          if (c.src === src) mine += 1;
+          if (net && c.net === net) inNet += 1;
+        }
         if (mine >= maxPerIp) return { ok: false, reason: 'too_many_clients' };
+        // И на сеть IPv6 /56 (M4-I6), как в хабе core.
+        if (net && inNet >= maxPerNet) return { ok: false, reason: 'too_many_clients' };
       }
       res.writeHead(200, {
         'content-type': 'text/event-stream; charset=utf-8',
@@ -62,6 +77,7 @@ export function createTvHub({ core = null, log = null, timers = globalThis, keep
         res,
         ip,
         src,
+        net,
         channel,
         close() {
           if (!clients.delete(c)) return;
