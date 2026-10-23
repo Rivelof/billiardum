@@ -2,9 +2,11 @@
 // Ошибки не содержат значений секретов — только имена полей и номера записей.
 
 import { existsSync, readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeBase64Strict, isUuid } from './command.mjs';
+import { parseClaimSpec } from './claim.mjs';
 import { FAULTS, parseFaults } from './faults.mjs';
 import { DEFAULT_CAPS } from './machine.mjs';
 import { LEVELS } from './log.mjs';
@@ -12,6 +14,9 @@ import { LEVELS } from './log.mjs';
 export const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const REPO_ROOT = path.resolve(PACKAGE_DIR, '..', '..');
 export const DEFAULT_DEVICES_FILE = 'deploy/dev/devices.json';
+export const DEFAULT_MQTT_CA_FILE = 'deploy/dev/certs/ca.crt'; // CA брокера стенда (режим --claim)
+export const DEFAULT_CLAIM_DIR = path.join(os.tmpdir(), 'billiardum-device-sim-claim');
+export const FIRST_CLAIM_TABLE = 101; // номера новых контроллеров в симуляторе, если не заданы @номер
 const KNOWN_CAPS = new Set(['relay', 'led', 'buzzer', 'current', 'dimmer']);
 
 export class ConfigError extends Error {
@@ -24,11 +29,19 @@ export class ConfigError extends Error {
 export const USAGE = `Симулятор контроллера стола (tools/device-sim)
 
   node index.mjs [--fault <режим>[@<стол>][:<мс>]]... [--tables 1,2,...] [--caps relay,led,...] [--help]
+  node index.mjs --claim BLD1:<device_id>:<claim_code>[@<номер>] [--claim ...]... [--fault ...] [--caps ...]
 
 Переменные: SIM_DEVICES_FILE (по умолчанию ${DEFAULT_DEVICES_FILE}), MQTT_URL, MQTT_CA_FILE,
 LOG_LEVEL (debug|info|warn|error), SIM_FAULTS, SIM_TABLES, SIM_CAPS — то же, что флаги;
 SIM_NVS_DIR — NVS в файлах (перезапуск процесса = перезагрузка контроллера);
 SIM_CONTROL_PORT — HTTP-управление для тестов (только разработка), SIM_CONTROL_HOST (по умолчанию 127.0.0.1).
+
+Режим «новый контроллер» (--claim или SIM_CLAIM через запятую): только эти контроллеры, файл устройств
+не читается. Контроллер повторяет POST {SIM_API_URL}/api/devices/claim, пока владелец не привяжет его
+по QR, сохраняет ключи в SIM_CLAIM_DIR (по умолчанию SIM_NVS_DIR, иначе ${DEFAULT_CLAIM_DIR})
+и работает как обычный стол. SIM_API_URL — адрес API (обязателен), SIM_API_CA_FILE — CA сервера API;
+MQTT_URL — вместо mqtt_url из ответа claim; MQTT_CA_FILE — по умолчанию ${DEFAULT_MQTT_CA_FILE}.
+Номер после @ — только для HTTP-управления и лога, по умолчанию ${FIRST_CLAIM_TABLE}, ${FIRST_CLAIM_TABLE + 1}, …
 
 Режимы сбоя (--fault; на ходу — POST /sim/tables/{стол}/fault):
 ${Object.entries(FAULTS).map(([name, text]) => `  ${name.padEnd(11)} ${text}`).join('\n')}`;
@@ -38,7 +51,7 @@ ${Object.entries(FAULTS).map(([name, text]) => `  ${name.padEnd(11)} ${text}`).j
  * @param {string[]} argv
  */
 export function parseArgs(argv) {
-  const out = { help: false, faults: [], tables: null, caps: null };
+  const out = { help: false, faults: [], tables: null, caps: null, claims: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const [flag, inline] = arg.startsWith('--') && arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, undefined];
@@ -61,6 +74,9 @@ export function parseArgs(argv) {
         break;
       case '--caps':
         out.caps = value();
+        break;
+      case '--claim':
+        out.claims.push(value());
         break;
       default:
         throw new ConfigError(`неизвестный аргумент ${flag}`);
@@ -126,6 +142,8 @@ export function loadConfig(options = {}) {
 
   // npm запускает скрипты пакета из его папки; INIT_CWD — откуда npm вызвали.
   const base = env.INIT_CWD || cwd;
+  const claimSpecs = [...(env.SIM_CLAIM ? env.SIM_CLAIM.split(',').map((s) => s.trim()).filter(Boolean) : []), ...args.claims];
+  if (claimSpecs.length > 0) return loadClaimConfig({ env, args, base, claimSpecs });
   const devicesFile = resolveExisting(env.SIM_DEVICES_FILE || DEFAULT_DEVICES_FILE, [base, REPO_ROOT]);
   if (!existsSync(devicesFile)) {
     throw new ConfigError(`нет файла устройств ${devicesFile}: его создаёт npm run provision:dev, путь — SIM_DEVICES_FILE`);
@@ -168,9 +186,27 @@ export function loadConfig(options = {}) {
     ca = readFileSync(caFile);
   }
 
+  const only = parseTables(args.tables ?? env.SIM_TABLES);
+  const selected = only ? devices.filter((d) => only.has(d.table)) : devices;
+  if (selected.length === 0) throw new ConfigError('после фильтра --tables/SIM_TABLES не осталось столов');
+
+  return {
+    help: false,
+    mode: 'devices',
+    ...commonOptions(env, args, base),
+    claims: [],
+    devicesFile,
+    mqttUrl,
+    tls,
+    caFile,
+    ca,
+    devices: selected,
+  };
+}
+
+function commonOptions(env, args, base) {
   const logLevel = env.LOG_LEVEL && Object.hasOwn(LEVELS, env.LOG_LEVEL) ? env.LOG_LEVEL : 'info';
   const logLevelInvalid = Boolean(env.LOG_LEVEL) && logLevel !== env.LOG_LEVEL;
-
   const faultSpecs = [...(env.SIM_FAULTS ? [env.SIM_FAULTS] : []), ...args.faults];
   let faults;
   try {
@@ -178,11 +214,6 @@ export function loadConfig(options = {}) {
   } catch (err) {
     throw new ConfigError(err.message);
   }
-
-  const only = parseTables(args.tables ?? env.SIM_TABLES);
-  const selected = only ? devices.filter((d) => only.has(d.table)) : devices;
-  if (selected.length === 0) throw new ConfigError('после фильтра --tables/SIM_TABLES не осталось столов');
-
   let controlPort = null;
   if (env.SIM_CONTROL_PORT) {
     if (!/^[1-9][0-9]{0,4}$/.test(env.SIM_CONTROL_PORT) || Number(env.SIM_CONTROL_PORT) > 65535) {
@@ -191,23 +222,99 @@ export function loadConfig(options = {}) {
     if (env.NODE_ENV === 'production') throw new ConfigError('SIM_CONTROL_PORT недоступен при NODE_ENV=production');
     controlPort = Number(env.SIM_CONTROL_PORT);
   }
-  const controlHost = env.SIM_CONTROL_HOST || '127.0.0.1';
-  const nvsDir = env.SIM_NVS_DIR ? resolveExisting(env.SIM_NVS_DIR, [base]) : null;
-
   return {
-    help: false,
-    controlPort,
-    controlHost,
-    nvsDir,
-    devicesFile,
-    mqttUrl,
-    tls,
-    caFile,
-    ca,
     logLevel,
     logLevelInvalid,
     faults,
     caps: parseCaps(args.caps ?? env.SIM_CAPS),
-    devices: selected,
+    controlPort,
+    controlHost: env.SIM_CONTROL_HOST || '127.0.0.1',
+    nvsDir: env.SIM_NVS_DIR ? resolveExisting(env.SIM_NVS_DIR, [base]) : null,
+  };
+}
+
+// Режим «новый контроллер» (lib/claim.mjs): заводские данные с наклейки вместо файла устройств.
+function loadClaimConfig({ env, args, base, claimSpecs }) {
+  const common = commonOptions(env, args, base);
+  const claims = [];
+  let next = FIRST_CLAIM_TABLE;
+  for (const [i, spec] of claimSpecs.entries()) {
+    let c;
+    try {
+      c = parseClaimSpec(spec);
+    } catch (err) {
+      throw new ConfigError(`claim[${i}]: ${err.message}`);
+    }
+    claims.push({ ...c, table: c.table ?? null });
+  }
+  const used = new Set(claims.filter((c) => c.table !== null).map((c) => c.table));
+  for (const c of claims) {
+    if (c.table !== null) continue;
+    while (used.has(next)) next += 1;
+    c.table = next;
+    used.add(next);
+  }
+  if (new Set(claims.map((c) => c.deviceId)).size !== claims.length) throw new ConfigError('--claim: device_id повторяется');
+  if (new Set(claims.map((c) => c.table)).size !== claims.length) throw new ConfigError('--claim: номер после @ повторяется');
+
+  const apiUrl = env.SIM_API_URL;
+  if (!apiUrl) throw new ConfigError('режиму --claim нужен SIM_API_URL — адрес API, например https://localhost:8443');
+  let apiProtocol;
+  try {
+    apiProtocol = new URL(apiUrl).protocol;
+  } catch {
+    throw new ConfigError('SIM_API_URL: неверный URL');
+  }
+  if (!['https:', 'http:'].includes(apiProtocol)) throw new ConfigError('SIM_API_URL: схема https:// (или http:// для тестов)');
+  let apiCa = null;
+  if (env.SIM_API_CA_FILE) {
+    const f = resolveExisting(env.SIM_API_CA_FILE, [base, REPO_ROOT]);
+    if (!existsSync(f)) throw new ConfigError(`нет файла CA API ${f}`);
+    apiCa = readFileSync(f);
+  }
+
+  const mqttUrl = env.MQTT_URL || null;
+  let tls = true;
+  if (mqttUrl) {
+    let protocol;
+    try {
+      protocol = new URL(mqttUrl).protocol;
+    } catch {
+      throw new ConfigError('MQTT_URL: неверный URL');
+    }
+    if (!['mqtts:', 'mqtt:'].includes(protocol)) throw new ConfigError('MQTT_URL: схема mqtts:// (или mqtt:// для тестов)');
+    tls = protocol === 'mqtts:';
+  }
+  let caFile = null;
+  let ca = null;
+  if (tls) {
+    caFile = resolveExisting(env.MQTT_CA_FILE || DEFAULT_MQTT_CA_FILE, [base, REPO_ROOT]);
+    if (!existsSync(caFile)) throw new ConfigError(`нет файла CA брокера ${caFile}: MQTT_CA_FILE`);
+    ca = readFileSync(caFile);
+  }
+
+  const only = parseTables(args.tables ?? env.SIM_TABLES);
+  const selected = only ? claims.filter((c) => only.has(c.table)) : claims;
+  if (selected.length === 0) throw new ConfigError('после фильтра --tables/SIM_TABLES не осталось контроллеров');
+
+  const claimDir = env.SIM_CLAIM_DIR
+    ? resolveExisting(env.SIM_CLAIM_DIR, [base])
+    : (common.nvsDir ?? DEFAULT_CLAIM_DIR);
+
+  return {
+    help: false,
+    mode: 'claim',
+    ...common,
+    devicesFile: null,
+    devices: [],
+    claims: selected,
+    apiUrl,
+    apiCa,
+    apiTls: apiProtocol === 'https:',
+    claimDir,
+    mqttUrl,
+    tls,
+    caFile,
+    ca,
   };
 }

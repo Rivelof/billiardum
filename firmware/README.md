@@ -2,9 +2,10 @@
 
 ESP32, PlatformIO, Arduino-ESP32 2.0.17 (ESP-IDF 4.4). Говорит с сервером по `docs/protocol.md` v1: MQTT по TLS, подписанные команды, локальный таймер игры и сигналы конца игры.
 
-Проверка на 22.10.2026:
+Проверка на 23.10.2026 (M5.1):
 - логика (`lib/logic`) проверена нативно: CMake + g++ и clang, с AddressSanitizer и UBSan;
-- код для ESP32 (`src/`, `lib/drivers`, `lib/platform`) **не компилировался**: реестр PlatformIO в среде разработки закрыт. Синтаксис сверен с заглушками заголовков Arduino-ESP32 2.0.17. Первая сборка — `pio run -e esp32dev` у Андрея или в CI.
+- `pio test -e native` в среде агентов не запускается: PlatformIO ставится, но реестр платформ (`native`, `espressif32`) из среды закрыт (`HTTPClientError`). Тот же набор тестов собирается CMake;
+- код для ESP32 (`src/`, `lib/drivers`, `lib/platform`) **не компилировался** по той же причине. Синтаксис сверен с заглушками заголовков Arduino-ESP32 2.0.17. Первая сборка — `pio run -e esp32dev` у Андрея или в CI.
 
 ## Что умеет
 
@@ -87,6 +88,7 @@ ctest --test-dir build/fw-native --no-tests=error --output-on-failure
 - таблица §3.2 и порядок «исполнить → блок в NVS → `ack`»;
 - диапазоны §3.3, включая `reason_code` 1…32 символа `[a-z0-9_]`;
 - все общие сценарии `tools/device-sim/scenarios/*.json`;
+- привязка: векторы `tools/device-sim/test/claim-vectors.json` — разбор `factory` и `BLD1`, задержки повтора `claim`. Их же проходит симулятор;
 - правило 4: окно ожидания, `сохранённый − S`, вторая перезагрузка, цикл перезагрузок без сервера не даёт ни секунды сверх оплаченного;
 - буфер событий на 64, `events_dropped`, запись в NVS только без связи, ограничение частоты событий.
 
@@ -95,8 +97,11 @@ ctest --test-dir build/fw-native --no-tests=error --output-on-failure
 - На стенде: `pio run -e esp32dev -t upload`, лог — `pio device monitor` (строки JSON).
 - В клубе — только OTA, по явному «да» Андрея. Сначала один свободный стол, затем остальные по одному. Это делает devops.
 
-На производстве в контроллер записываются данные с наклейки. Служебная консоль USB, 115200, доступна только при физическом доступе к плате:
-- `factory <device_id> <claim_code>` — один раз, код привязки не короче 8 символов;
+На производстве в контроллер записываются данные с наклейки. Их выдаёт `scripts/provision-factory.mjs` (решение №159): наклейку с QR `BLD1:{device_id}:{claim_code}` и строку консоли `factory …`. Служебная консоль USB, 115200, доступна только при физическом доступе к плате:
+- `factory <device_id> <claim_code>` или `factory BLD1:<device_id>:<claim_code>` (строка QR, можно сканером USB) — один раз:
+  - `device_id` — UUID, хранится строчными;
+  - `claim_code` — 8…63 символа `[A-Za-z0-9-]`, регистр значим. Он же пароль точки доступа, а пароль WPA2 — не длиннее 63;
+  - ответ в лог: `factory_saved`, `factory_already_set`, `bad_factory_args`;
 - `wifi <ssid> <пароль>` — сменить Wi-Fi клуба без перепривязки;
 - `unclaim` — сбросить привязку;
 - `reboot`.
@@ -106,7 +111,11 @@ ctest --test-dir build/fw-native --no-tests=error --output-on-failure
 1. Непривязанный контроллер поднимает точку доступа `Billiardum-XXXX`. Пароль — код привязки с наклейки.
 2. Владелец в программе клуба нажимает «Добавить контроллер», сканирует QR и выбирает стол. Открывается окно привязки на 30 минут.
 3. Монтажник подключается к точке доступа. Портальная страница открывается сама; на ней — Wi-Fi клуба и пароль.
-4. Контроллер подключается к Wi-Fi и вызывает `POST {BL_API_URL}/api/devices/claim` с `{device_id, claim_code}`. Это HTTPS с закреплённым `kApiCaPem`.
+4. Контроллер подключается к Wi-Fi и вызывает `POST {BL_API_URL}/api/devices/claim` с `{device_id, claim_code}`. Это HTTPS с закреплённым `kApiCaPem`. На время запроса задача снимается со сторожа: запрос может идти дольше срока сторожа (5 с в Arduino-ESP32 2.x).
+   - Если сервер не принял код, контроллер повторяет запрос сам (`lib/logic/src/bl_claim.*`, как симулятор): через 5 с, 10 с, 20 с, затем раз в 30 с, плюс случайные до 20 %. Так монтажник может ввести Wi-Fi раньше, чем владелец начнёт привязку.
+   - `rate_limited` — пауза 60 с: за NAT клуба лимит по IP общий.
+   - `bad_request` — без повтора. На портале — «сообщите в поддержку», повтор — кнопкой «Подключить».
+   - Пока Wi-Fi нет, код не тратится.
 5. Ответ `{mqtt_username, mqtt_password, device_key, mqtt_url, club_id}` сохраняется в `bl_keys`. `seq`, `id`, `ack` и сессия в `bl_state` обнуляются. Контроллер перезагружается и подключается к брокеру.
 
 ## Безопасность
@@ -140,6 +149,7 @@ ctest --test-dir build/fw-native --no-tests=error --output-on-failure
 | `lib/logic/src/bl_body.*` | §3.3: типы, тело, диапазоны |
 | `lib/logic/src/bl_events.*` | кольцевой буфер событий |
 | `lib/logic/src/bl_nvs.h` | интерфейс NVS и `MemoryNvs` |
+| `lib/logic/src/bl_claim.*` | привязка: разбор `factory` и `BLD1`, задержки повтора `claim` (векторы `tools/device-sim/test/claim-vectors.json`) |
 | `lib/logic/src/bl_machine.*` | автомат §5, сигналы, правило 4, `state`, события, датчик тока; интерфейсы `Hal` и `Output` |
 | `lib/drivers/src/bl_drivers.*` | реле, WS2812, пищалка, датчик тока (RMS, окно 200 мс), диммер (LEDC), `BoardHal` |
 | `lib/drivers/src/bl_board.h` | пины и `caps` из `build_flags` |

@@ -24,6 +24,7 @@
 - NVS в памяти (по умолчанию) или в файлах (`SIM_NVS_DIR`): перезапуск процесса — как перезагрузка контроллера. Новый `device_key` в файле устройств — перепривязка (§7): `seq`, `id`, `ack` и сессия обнуляются, `boot` остаётся.
 - Режимы сбоя флагами CLI и на ходу по HTTP.
 - Метрика `sim_relay`: от получения команды до включения реле.
+- M5.1: режим «новый контроллер» (`--claim`): заводские `device_id` и `claim_code`, привязка по §7 с повтором `POST /api/devices/claim`, затем обычный стол. Подробнее — раздел «Новый контроллер».
 
 ## Запуск
 
@@ -45,6 +46,10 @@ node tools/device-sim/index.mjs --help
 | `SIM_NVS_DIR` | папка NVS: файл `<device_id>.json` на контроллер, права 0600, секретов нет |
 | `SIM_CONTROL_PORT` | включает HTTP-управление на этом порту; без переменной управления нет; при `NODE_ENV=production` — ошибка запуска |
 | `SIM_CONTROL_HOST` | адрес HTTP-управления; по умолчанию `127.0.0.1`, в контейнере `0.0.0.0` (наружу devops публикует только на `127.0.0.1:18080`) |
+| `SIM_CLAIM` | то же, что `--claim`, через запятую |
+| `SIM_API_URL` | режим `--claim`: адрес API, например `https://localhost:8443`; обязателен. `http://` — только для тестов |
+| `SIM_API_CA_FILE` | режим `--claim`: CA сервера API (на стенде — корень CA Caddy) |
+| `SIM_CLAIM_DIR` | режим `--claim`: папка ключей привязки `<device_id>.keys.json` (0600, в нём секреты); по умолчанию `SIM_NVS_DIR`, иначе `$TMPDIR/billiardum-device-sim-claim`. Не кладите её в репозиторий |
 
 Относительный путь ищется так: сначала от каталога, где вызвали `npm` (`INIT_CWD`), или от текущего каталога, затем от корня репозитория. Для `ca_file` между этими вариантами проверяется ещё папка файла устройств.
 
@@ -53,6 +58,7 @@ node tools/device-sim/index.mjs --help
 | `--tables 1,4` | поднять только эти столы (`table_number`) |
 | `--caps relay,led,buzzer,current,dimmer` | что «есть на плате»; по умолчанию `relay,led,buzzer,current` |
 | `--fault <режим>[@<стол>][:<мс>]` | режим сбоя с начала работы; можно повторять; без `@стол` — для всех столов |
+| `--claim BLD1:<device_id>:<claim_code>[@<номер>]` | новый контроллер по строке QR с наклейки; можно повторять. Файл устройств не читается |
 
 ## Режимы сбоя
 
@@ -77,6 +83,7 @@ node tools/device-sim/index.mjs --help
 | `POST /sim/tables/{number}/reboot` | `{"down_ms"?: 0, "reset_reason"?: "poweron"}` | `{"ok": true, "table": стол}` |
 | `POST /sim/tables/{number}/net` | `{"up": false}` | `{"ok": true, "table": стол}` |
 | `POST /sim/tables/{number}/inject` | `{"raw": "строка команды"}` | `{"ok": true, "result", "reason"?, "ack", "table": стол}`; больше 2048 байт — `413 too_large`, контроллер выключен — `409 powered_off` |
+| `POST /sim/tables/{number}/unclaim` | `{}` | только `--claim`: ключи стёрты, контроллер снова ждёт привязки (консоль прошивки `unclaim`); `{"ok": true, "table": стол}`, без `--claim` — `409 not_claim_mode` |
 
 `стол`:
 
@@ -118,7 +125,66 @@ curl -s -X POST -H 'content-type: application/json' -d '{"up":false}' 127.0.0.1:
 | `sim_fault`, `sim_net`, `sim_reboot`, `sim_slow_ack`, `sim_replay_old`, `sim_inject`, `sim_ota`, `sim_rebind` | режимы сбоя и служебные действия |
 | `sim_control` | HTTP-управление запущено: адрес и порт |
 | `mqtt_connected`, `mqtt_disconnected`, `mqtt_error` | связь с брокером; одинаковая ошибка подряд пишется один раз |
+| `sim_claim_wait` | `--claim`: контроллер без ключей ждёт привязки |
+| `sim_claim_failed` | `--claim`: `claim` не удался: `error` (`forbidden`, `rate_limited`, `bad_request`, `network`, `bad_response`, `http_<статус>`), `failures`, `retry_ms` (−1 — без повтора, уровень `error`) |
+| `sim_claimed` | `--claim`: ключи получены и сохранены: `club_id`, `attempts` |
+| `sim_claim_stored` | `--claim`: ключи взяты из файла, `claim` не нужен |
+| `sim_unclaim` | `--claim`: ключи стёрты по `unclaim` |
 | `sim_event` (`debug`) | событие положено в буфер |
+
+## Новый контроллер (`--claim`, M5.1)
+
+Повторяет прошивку (`firmware/lib/logic/src/bl_claim.*`, `bl_provisioning.cpp`):
+1. Старт только с заводскими `device_id` и `claim_code`: строка QR `BLD1:{device_id}:{claim_code}` с наклейки. Её печатает `scripts/provision-factory.mjs`, код вида `7K2M-Q9XD-4HTB-R1VS`. Симулятор и прошивка принимают код 8…63 символа `[A-Za-z0-9-]`, `device_id` — UUID в любом регистре.
+2. Пока ключей нет, контроллер шлёт `POST {SIM_API_URL}/api/devices/claim {device_id, claim_code}`:
+   - первая попытка сразу, дальше через 5 с, 10 с, 20 с, затем раз в 30 с, плюс случайные до 20 %;
+   - `rate_limited` — пауза 60 с;
+   - `bad_request` — без повтора, повтор — `POST /sim/tables/{номер}/reboot`;
+   - пока связь выключена (`/net {"up": false}`), код не тратится.
+3. Ответ проверяется как в прошивке: `mqtt_url` только `mqtts://`, `device_key` — 32 байта, `club_id` — UUID. Ключи ложатся в `SIM_CLAIM_DIR/<device_id>.keys.json` (0600).
+4. Дальше это обычный стол: MQTT по §2, логин — `device_id`, топики — с `club_id` из ответа, все режимы сбоя.
+5. При перезапуске ключи берутся из файла, `claim` не зовётся (`sim_claim_stored`). Сбросить привязку — `POST /sim/tables/{номер}/unclaim` или удалить файл ключей.
+
+Номер стола контроллер не знает: стол выбирает владелец при привязке. Номер `@N` (по умолчанию 101, 102, …) — только адрес в HTTP-управлении и поле `table` в логе. В `GET /sim/tables/{номер}` есть поле `claim`: `state` (`waiting`, `claimed`, `failed`), `attempts`, `failures`, `last_error`, `next_attempt_in_ms`, `source` (`claimed` или `stored`). До привязки `state` — `null`, сбои и `inject` — `409 not_claimed`; `net-drop` и `reboot` работают.
+
+### T26: два новых контроллера рядом с 8 столами стенда
+
+Контейнер `device-sim` со столами 1–8 не трогается. Новые контроллеры — отдельный процесс на хосте: свои `device_id`, порт управления и папка ключей.
+
+1. Заводские данные. backend-B: `scripts/provision-factory.mjs` создаёт `device_id` и `claim_code`, пишет в базу только хеш кода. Он печатает наклейки с QR `BLD1:{device_id}:{claim_code}` и строки `factory …`. Нужны 2 строки `BLD1:…` (флаги скрипта — в его README).
+2. Корень CA Caddy, как для моста ККТ:
+
+   ```sh
+   docker compose -p billiardum cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+   ```
+
+3. Запуск из корня репозитория. Строки QR — в кавычках:
+
+   ```sh
+   SIM_API_URL=https://localhost:8443 SIM_API_CA_FILE=./caddy-root.crt \
+   MQTT_URL=mqtts://localhost:8883 MQTT_CA_FILE=deploy/dev/certs/ca.crt \
+   SIM_CONTROL_PORT=18081 \
+   node tools/device-sim/index.mjs \
+     --claim 'BLD1:<device_id_1>:<claim_code_1>' \
+     --claim 'BLD1:<device_id_2>:<claim_code_2>'
+   ```
+
+   - `MQTT_URL` нужен, если `PUBLIC_HOST` в `.env` не `localhost`: в ответе `claim` брокер — `mqtts://{PUBLIC_HOST}:8883`, а сертификат брокера стенда выписан на `localhost`, `mosquitto` и `127.0.0.1`.
+   - Порт 18080 занят контейнером, поэтому здесь 18081.
+   - Ключи — в `$TMPDIR/billiardum-device-sim-claim` или в `SIM_CLAIM_DIR` вне репозитория.
+4. В логе — `sim_claim_wait`, затем `sim_claim_failed` с `error: forbidden`: окно привязки ещё не открыто. Это нормально.
+5. В мастере подключения: «Добавить контроллер» → QR (или ручной ввод строки `BLD1:…`) → стол. Через 30–36 с, не позже, в логе `sim_claimed`, затем `mqtt_connected`.
+
+   ```sh
+   curl -s 127.0.0.1:18081/sim/tables   # claim.state: claimed, online: true, state.mode: free
+   ```
+
+6. Дальше по T26: гость платит — `sim_relay` и `sim_state` с `relay: true` у этого номера (101 или 102), по окончании — `relay: false`. Сбои — те же запросы на порт 18081.
+7. Повторный запуск той же командой берёт ключи из файла. Чтобы привязать заново, нужны `POST /sim/tables/101/unclaim` и новая привязка в мастере: код уже сгорел.
+
+T28, «5 неверных кодов закрывают окно». Неверный код у владельца сервер ловит при `bind` по заводскому реестру, это зона backend-B. Сторона контроллера: запустить его с неверным кодом той же командой, например `--claim 'BLD1:<device_id_1>:WRONG-CODE-0000-0000'`, а владелец привязывает с верным. Попытки `claim` идут на 0, 5, 15, 35 и 65 с, плюс до 20 %. Через 1–1,5 мин окно закрыто, и верный код тоже получает `forbidden` до новой привязки.
+
+Лимит `POST /api/devices/claim` — 10 запросов в минуту с IP. Два контроллера в него укладываются. Третий и следующие могут получить `rate_limited`, тогда пауза 60 с.
 
 ## Сценарии (`scenarios/*.json`)
 
@@ -249,6 +315,7 @@ curl -s -X POST -H 'content-type: application/json' -d '{"up":false}' 127.0.0.1:
 | `lib/scenario.mjs` | исполнитель общих сценариев, датчик тока симулятора |
 | `lib/device.mjs` | MQTT, питание, обрыв связи, режимы сбоя, метрика |
 | `lib/control.mjs` | HTTP-управление |
+| `lib/claim.mjs` | режим `--claim`: разбор `BLD1` и `factory`, задержки повтора, `POST /api/devices/claim`, файл ключей, `ClaimingDevice` |
 | `lib/config.mjs`, `lib/log.mjs`, `lib/faults.mjs` | файл устройств и переменные, лог JSON, разбор режимов сбоя |
 
 ## Тесты
@@ -264,7 +331,15 @@ npm run test:it -w tools/device-sim  # с настоящим брокером, �
 - все сценарии `scenarios/*.json`;
 - автомат на ускоренном времени: публикацию `state`, порядок «исполнить → NVS → `ack`», износ NVS (одна запись остатка в минуту), события, буфер 64, ограничение частоты;
 - `SimDevice` с подменным клиентом MQTT: режимы сбоя, перезагрузку, `SIM_NVS_DIR`, перепривязку, метрику, HTTP-управление;
-- конфиг и лог.
+- конфиг и лог;
+- режим `--claim` (`test/claim.test.mjs`, поддельный сервер привязки `test/helpers/claim-api.mjs` по правилам решения №67):
+  - общие с прошивкой векторы `test/claim-vectors.json`;
+  - ожидание привязки и задержки 5/10/20/30 с;
+  - неверный код: 5 попыток закрывают окно;
+  - окно закрыто по времени;
+  - повтор после успеха: ключи из файла, код сгорел, потерянный ответ;
+  - `bad_request`, `rate_limited`, `bad_response`, `unclaim`, два контроллера рядом;
+  - `postClaim` по HTTP, HTTP-управление, конфиг.
 
 `npm run test:it` поднимает свой контейнер `bl-fw-mqtt` (`eclipse-mosquitto:2.1.2-alpine`, decisions №40; порт 18884 на 127.0.0.1). Конфиг временный: вход по паролю, ACL как у роли Dynamic Security, TLS с одноразовым CA, если на хосте есть `openssl`. В конце контейнер удаляется. Тест запускает `index.mjs` с HTTP-управлением и проверяет:
 - `online`, `state`, `boot`;

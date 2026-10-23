@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Симулятор контроллеров столов: по виртуальному столу на каждое устройство из SIM_DEVICES_FILE.
 // Протокол: docs/protocol.md. Контракты: docs/contracts/m0.md §7, docs/contracts/m1.md §9.
+// Режим --claim (контракт M5.1 §2): новые контроллеры по заводским данным, привязка по §7 (lib/claim.mjs).
 
 import { ConfigError, USAGE, loadConfig } from './lib/config.mjs';
 import { createLogger, redactUrl } from './lib/log.mjs';
 import { SimDevice } from './lib/device.mjs';
+import { ClaimingDevice, ClaimStore } from './lib/claim.mjs';
 import { startControl } from './lib/control.mjs';
 
 async function main() {
@@ -24,20 +26,30 @@ async function main() {
 
   const log = createLogger({ level: cfg.logLevel });
   if (cfg.logLevelInvalid) log.warn('sim_log_level_invalid', { using: cfg.logLevel });
+  const claimMode = cfg.mode === 'claim';
   log.info('sim_start', {
-    devices: cfg.devices.length,
-    tables: cfg.devices.map((d) => d.table),
-    mqtt_url: redactUrl(cfg.mqttUrl),
+    mode: cfg.mode,
+    devices: claimMode ? cfg.claims.length : cfg.devices.length,
+    tables: (claimMode ? cfg.claims : cfg.devices).map((d) => d.table),
+    mqtt_url: cfg.mqttUrl ? redactUrl(cfg.mqttUrl) : 'из ответа claim',
+    ...(claimMode ? { api_url: redactUrl(cfg.apiUrl), claim_dir: cfg.claimDir, device_ids: cfg.claims.map((c) => c.deviceId) } : {}),
     tls: cfg.tls,
     caps: cfg.caps,
     faults: cfg.faults.map((f) => `${f.name}${f.table ? `@${f.table}` : ''}${f.ms !== null ? `:${f.ms}` : ''}`),
     nvs: cfg.nvsDir ? 'file' : 'memory',
   });
   if (!cfg.tls) log.warn('sim_tls_disabled', { note: 'mqtt:// только для тестов; контроллер ходит по mqtts://' });
+  if (claimMode && !cfg.apiTls) log.warn('sim_api_tls_disabled', { note: 'http:// только для тестов; прошивка ходит в claim по https:// с закреплённым CA' });
 
-  const devices = cfg.devices.map((device) => new SimDevice({
-    device, mqttUrl: cfg.mqttUrl, ca: cfg.ca, caps: cfg.caps, faults: cfg.faults, nvsDir: cfg.nvsDir, log,
-  }));
+  const store = claimMode ? new ClaimStore(cfg.claimDir) : null;
+  const devices = claimMode
+    ? cfg.claims.map((factory) => new ClaimingDevice({
+      factory, apiUrl: cfg.apiUrl, apiCa: cfg.apiCa, store,
+      mqttUrl: cfg.mqttUrl, ca: cfg.ca, caps: cfg.caps, faults: cfg.faults, nvsDir: cfg.nvsDir, log,
+    }))
+    : cfg.devices.map((device) => new SimDevice({
+      device, mqttUrl: cfg.mqttUrl, ca: cfg.ca, caps: cfg.caps, faults: cfg.faults, nvsDir: cfg.nvsDir, log,
+    }));
   for (const d of devices) d.start();
 
   let control = null;

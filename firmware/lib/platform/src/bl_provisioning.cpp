@@ -2,13 +2,21 @@
 // 1) точка доступа Billiardum-XXXX (пароль — код привязки с наклейки, если в нём ≥ 8 символов);
 // 2) портальная страница: выбор Wi-Fi клуба и пароль;
 // 3) подключение к Wi-Fi и POST /api/devices/claim {device_id, claim_code} по HTTPS с закреплённым CA;
+//    пока сервер не принял код (окно привязки не открыто — монтажник успел раньше владельца),
+//    попытки повторяются: 5 с, 10 с, 20 с, далее раз в 30 с (bl_claim.h, как симулятор);
 // 4) ключи — в bl_keys, seq, id, ack и сессия в bl_state обнуляются, перезагрузка.
 // Код привязки принимается сервером только в окне 30 минут, которое открыл владелец в программе клуба.
 #include <DNSServer.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <esp_http_client.h>
+#if __has_include(<esp_random.h>)
+#include <esp_random.h>
+#endif
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 
+#include "bl_claim.h"
 #include "bl_command.h"
 #include "bl_platform.h"
 
@@ -40,6 +48,15 @@ const char kPageHead[] =
     "button{margin-top:16px;background:#1a7a4d;color:#fff;border:0;border-radius:8px}.s{margin-top:16px;padding:12px;background:#eef2f7;border-radius:8px}</style>"
     "</head><body><h1>Контроллер стола</h1>";
 
+// Код ошибки сервера ({"error": "forbidden"}) — в лог JSON и на страницу портала: только [a-z0-9_].
+bool isErrorCode(const std::string& s) {
+  if (s.empty() || s.size() > 32) return false;
+  for (char c : s) {
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+  }
+  return true;
+}
+
 struct Portal {
   std::string status = "Выберите Wi-Fi клуба и введите пароль.";
   bool connectRequested = false;
@@ -68,6 +85,9 @@ bool claimDevice(const char* apiUrl, const char* caPem, DeviceKeys& keys, std::s
     error = "http_init";
     return false;
   }
+  // Запрос блокирует задачу дольше срока сторожа (5 с в Arduino-ESP32 2.x): DNS, TLS и ответ.
+  // На время запроса задача снимается со сторожа; каждый шаг ограничен timeout_ms, реле выключено.
+  esp_task_wdt_delete(nullptr);
   Json req = Json::object();
   req.set("device_id", Json::string(keys.deviceId));
   req.set("claim_code", Json::string(keys.claimCode));
@@ -86,13 +106,15 @@ bool claimDevice(const char* apiUrl, const char* caPem, DeviceKeys& keys, std::s
   }
   esp_http_client_close(c);
   esp_http_client_cleanup(c);
+  esp_task_wdt_add(nullptr);
+  watchdogFeed();
   if (status == 0) return false;
 
   Json j;
   bool parsed = parseJson(resp, j, ParseMode::Relaxed).ok && j.isObject();
   if (status != 200) {
     const Json* e = parsed ? j.get("error") : nullptr;
-    error = (e && e->isString() && e->asString().size() <= 32) ? e->asString() : "http_" + intToString(status);
+    error = (e && e->isString() && isErrorCode(e->asString())) ? e->asString() : "http_" + intToString(status);
     return false;
   }
   const Json* user = parsed ? j.get("mqtt_username") : nullptr;
@@ -167,6 +189,8 @@ void runProvisioning(KeyStore& store, DeviceKeys& keys, Nvs& state, const char* 
   server.begin();
 
   int64_t connectStarted = -1;
+  int64_t nextClaimAt = -1;  // когда следующий POST /api/devices/claim; -1 — не нужен
+  uint32_t claimFailures = 0;
   for (;;) {
     watchdogFeed();
     dns.processNextRequest();
@@ -175,9 +199,17 @@ void runProvisioning(KeyStore& store, DeviceKeys& keys, Nvs& state, const char* 
       portal.connectRequested = false;
       WiFi.begin(keys.wifiSsid.c_str(), keys.wifiPass.c_str());
       connectStarted = nowMs();
+      nextClaimAt = -1;
     }
     if (connectStarted >= 0 && WiFi.status() == WL_CONNECTED) {
       connectStarted = -1;
+      nextClaimAt = nowMs();
+      claimFailures = 0;
+    }
+    if (nextClaimAt >= 0 && nowMs() >= nextClaimAt && WiFi.status() != WL_CONNECTED) {
+      nextClaimAt = nowMs() + 1000;  // Wi-Fi пропал: ждём переподключения, код не тратим
+    } else if (nextClaimAt >= 0 && nowMs() >= nextClaimAt) {
+      nextClaimAt = -1;
       std::string error;
       if (claimDevice(apiUrl, caPem, keys, error)) {
         store.saveWifi(keys.wifiSsid, keys.wifiPass);
@@ -189,8 +221,18 @@ void runProvisioning(KeyStore& store, DeviceKeys& keys, Nvs& state, const char* 
         logLine("claimed", "\"club_id\":\"" + keys.clubId + "\"");
         portal.done = true;
       } else {
-        portal.status = "Не удалось привязать (" + error + "). Проверьте, что привязка начата в программе клуба, и повторите.";
-        logLine("claim_failed", "\"error\":\"" + error + "\"");
+        ++claimFailures;
+        int64_t delayMs = claimRetryDelayMs(claimFailures, error);
+        if (delayMs < 0) {
+          portal.status = "Сервер не принял данные контроллера (" + error + "). Сообщите в поддержку номер контроллера.";
+        } else {
+          delayMs += (int64_t)(esp_random() % (uint32_t)(delayMs / 5 + 1));  // столы клуба не идут в ногу
+          nextClaimAt = nowMs() + delayMs;
+          portal.status = "Ждём привязку в программе клуба (" + error + "): «Добавить контроллер» → QR → стол. Повтор через " +
+                          intToString(delayMs / 1000) + " с.";
+        }
+        logLine("claim_failed", "\"error\":\"" + error + "\",\"failures\":" + intToString(claimFailures) +
+                                    ",\"retry_ms\":" + intToString(delayMs));
       }
     }
     if (connectStarted >= 0 && nowMs() - connectStarted > 20000) {

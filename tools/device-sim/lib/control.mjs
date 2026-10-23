@@ -9,6 +9,7 @@
 //   POST /sim/tables/{number}/reboot       {"down_ms"?: n, "reset_reason"?: "poweron"|"sw"|...}
 //   POST /sim/tables/{number}/net          {"up": true|false}
 //   POST /sim/tables/{number}/inject       {"raw": "строка команды"} — как пришедшая в cmd (T9)
+//   POST /sim/tables/{number}/unclaim      {} — режим --claim: стереть ключи привязки, снова ждать привязки
 //
 // POST принимает только Content-Type: application/json: браузер не может отправить такой запрос
 // на 127.0.0.1 с чужой страницы без CORS-preflight, а CORS здесь не разрешён.
@@ -76,7 +77,7 @@ function readJson(req) {
 }
 
 /**
- * @param {{ devices: import('./device.mjs').SimDevice[], port: number, host?: string, log: object }} options
+ * @param {{ devices: (import('./device.mjs').SimDevice | import('./claim.mjs').ClaimingDevice)[], port: number, host?: string, log: object }} options
  * @returns {Promise<{ server: http.Server, port: number, close(): Promise<void> }>}
  */
 export async function startControl({ devices, port, host = '127.0.0.1', log }) {
@@ -123,6 +124,10 @@ export async function startControl({ devices, port, host = '127.0.0.1', log }) {
         const result = device.inject(body.raw);
         return { status: 200, body: { ok: true, ...result, table: device.status() } };
       }
+      case 'unclaim':
+        if (typeof device.unclaim !== 'function') throw new HttpError(409, 'not_claim_mode');
+        await device.unclaim();
+        return { status: 200, body: { ok: true, table: device.status() } };
       default:
         throw new HttpError(404, 'not_found');
     }
@@ -135,7 +140,7 @@ export async function startControl({ devices, port, host = '127.0.0.1', log }) {
         if (err instanceof HttpError) {
           send(res, err.status, { error: err.code });
         } else if (err instanceof FaultError) {
-          const status = { too_large: 413, powered_off: 409 }[err.message] ?? 400;
+          const status = { too_large: 413, powered_off: 409, not_claimed: 409 }[err.message] ?? 400;
           send(res, status, { error: err.message });
         } else {
           log.error('sim_control_error', { error: err.message });

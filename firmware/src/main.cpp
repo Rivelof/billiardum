@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include "bl_board.h"
+#include "bl_claim.h"
 #include "bl_command.h"
 #include "bl_drivers.h"
 #include "bl_machine.h"
@@ -34,6 +35,7 @@ std::string consoleLine;
 
 // Служебная консоль по USB (только физический доступ к плате):
 //   factory <device_id> <claim_code> — запись с наклейки на производстве (один раз);
+//   factory BLD1:<device_id>:<claim_code> — то же строкой QR с наклейки (сканер USB, решение №159);
 //   wifi <ssid> <пароль>             — смена Wi-Fi клуба без перепривязки;
 //   unclaim                          — сброс привязки: при загрузке снова точка доступа;
 //   reboot
@@ -49,8 +51,8 @@ void handleConsoleLine(const std::string& line) {
   if (cmd == "factory") {
     if (!keys.deviceId.empty()) {
       logLine("console", "\"result\":\"factory_already_set\"");
-    } else if (isUuid(a) && b.size() >= 8 && b.size() <= 64 && isPrintableAscii(b)) {
-      keyStore.saveFactory(a, b);
+    } else if (std::string id, code; parseFactoryArgs(a, b, id, code)) {
+      keyStore.saveFactory(id, code);
       logLine("console", "\"result\":\"factory_saved\"");
       delay(100);
       ESP.restart();
