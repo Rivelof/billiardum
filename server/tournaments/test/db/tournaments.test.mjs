@@ -98,6 +98,20 @@ describe('запись (T24), взнос и возвраты', () => {
     assert.match(r2.json.confirmation.url, /^https:\/\/yookassa\.test\//);
   });
 
+  it('№150: без профиля Бильярдум+ (ника) — 409 no_profile, без записи и платежа; создал ник — запись проходит', async () => {
+    const t = await h.createTournament({ title: 'Только с ником' });
+    const u = await h.login(player(4), { rating: 1300, nick: null });
+    const before = h.calls.money.length;
+    const r = await h.request('POST', `/api/tournaments/${t.id}/entries`, { token: u.token, key: randomUUID(), body: { return_url: '/app/x' } });
+    assert.deepEqual([r.status, r.json], [409, { error: 'no_profile' }]);
+    assert.equal(h.calls.money.length, before, 'платежа нет');
+    assert.equal((await h.q('select count(*)::int as n from bl.tournament_entries where tournament_id = $1', [t.id]))[0].n, 0);
+    h.nicks.set(u.id, 'СНиком');
+    const ok = await h.request('POST', `/api/tournaments/${t.id}/entries`, { token: u.token, key: randomUUID(), body: { return_url: '/app/x' } });
+    assert.equal(ok.status, 201, ok.text);
+    assert.equal((await h.entry(ok.json.entry_id)).nick, 'СНиком');
+  });
+
   it('взнос: платёж money вида tournament → payment.confirmed → запись подтверждена один раз', async () => {
     const t = await h.createTournament({ title: 'Взнос' });
     const u = await h.login(player(3), { rating: 1300, nick: 'Платит' });
@@ -600,10 +614,13 @@ describe('счёт: спор и исправление организатора'
 describe('публичная афиша и ТВ', () => {
   it('GET /api/public/tournaments — без входа, только ники, без user_id и телефонов', async () => {
     const t = await h.createTournament({ title: 'Публичный', fee_kopecks: 0 });
-    await h.enroll(t.id, [
+    const [, second] = await h.enroll(t.id, [
       { phone: player(600), rating: 1500, nick: 'Шар' },
-      { phone: player(601), rating: 1400, nick: null },
+      { phone: player(601), rating: 1400, nick: 'Второй' },
     ]);
+    // Запись, сделанная до №150 без ника, показывается «Участник».
+    await h.admin.query('update bl.tournament_entries set nick = null where id = $1', [second.entry_id]);
+    await h.service().flush();
     const list = await h.request('GET', '/api/public/tournaments');
     assert.equal(list.status, 200);
     const item = list.json.items.find((x) => x.id === t.id);

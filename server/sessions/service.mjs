@@ -442,9 +442,53 @@ export function createLightService(opts) {
     );
   }
 
+  /**
+   * Оплата старта отклонена (Д11 приёмки M4): удержание pending гостя на этом столе снимается
+   * сразу, а не в конце котировки — иначе 3 минуты стол не получат матч турнира и бронь. Удержание,
+   * которое уже держит более новая котировка гостя (until позже срока этой), не трогаем. Стол
+   * свободен — state.free (или state.reserved, если его ждёт бронь или турнир).
+   */
+  async function releaseRejectedPending(db, p, resourceId) {
+    if (p.kind !== 'start' || !isUuid(resourceId) || !isUuid(p.user_id)) return false;
+    const t = now();
+    const { rows } = await db.query(
+      `select id, club_id, until from bl.resource_holds
+        where resource_id = $1 and kind = 'pending' and user_id = $2 and released_at is null and until > $3
+        order by created_at desc limit 1`,
+      [resourceId, p.user_id, t],
+    );
+    const h = rows[0];
+    if (!h) return false;
+    if (isUuid(p.quote_id)) {
+      await db.query('savepoint light_rejected_quote');
+      try {
+        const q = await db.query('select valid_until from bl.quotes where id = $1', [p.quote_id]);
+        await db.query('release savepoint light_rejected_quote');
+        const until = q.rows[0]?.valid_until;
+        if (until && h.until.getTime() > new Date(until).getTime()) return false;
+      } catch (err) {
+        await db.query('rollback to savepoint light_rejected_quote');
+        log.warn('rejected_quote_lookup_failed', { payment_id: p.payment_id, code: err?.code ?? null });
+      }
+    }
+    await releaseHold(db, h.id, t, 'payment_rejected');
+    if (!(await openSessionOn(db, resourceId))) {
+      const next = await activeHold(db, resourceId, t);
+      const device = await deviceOfResource(db, resourceId);
+      if (device && next?.kind !== 'service') {
+        const type = next?.kind === 'reserved' ? 'state.reserved' : next?.kind === 'pending' ? 'state.pending' : 'state.free';
+        await queueCommand(db, { clubId: h.club_id, deviceId: device.id, type, body: {}, cause: 'hold', now: t });
+      }
+    }
+    await notifyLight(db, { k: 'hall', c: h.club_id, r: resourceId });
+    log.info('pending_released_on_reject', { payment_id: p.payment_id, resource_id: resourceId });
+    return true;
+  }
+
   /** Стол занят к моменту оплаты (крайний случай): тревога и автоматический возврат. */
   async function rejectPayment(db, p, { reason, resourceId, minutes, confirmedAt, cap = null }) {
     await recordPayment(db, p, { sessionId: null, outcome: 'refunded', minutes, confirmedAt, refunded: p.amount_kopecks });
+    await releaseRejectedPending(db, p, resourceId);
     if (p.amount_kopecks > 0) {
       await deps.payments.refund(db, { paymentId: p.payment_id, amountKopecks: p.amount_kopecks, reason: `light_${reason}` });
     }

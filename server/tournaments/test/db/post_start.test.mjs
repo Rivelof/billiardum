@@ -355,6 +355,67 @@ describe('№149: взнос после старта', () => {
     assert.equal(n.length, 1);
     assert.match(n[0].text, /отменён после старта, взносы возвращаются всем \(2, 600 ₽\): авария в клубе/);
   });
+
+  it('Д2: отмена идущего турнира закрывает матчи (canceled), гасит свет, снимает удержания — стол свободен сразу', async () => {
+    const { tournamentHolds } = await import('../../api.mjs');
+    const manager = await h.login(STAFF.manager);
+    const t0 = h.clock.now().getTime();
+    const at = (min) => new Date(t0 + min * MIN).toISOString();
+    // Четверо на одном столе: полуфинал 1 идёт, полуфинал 2 ждёт стол (ready), финал — waiting.
+    const t = await h.createTournament({ title: 'Отмена идущего', discipline: 'pyramid', fee_kopecks: 0, places: 4, match_minutes: 60, resource_ids: [table(4)], starts_at: at(60), ends_at: at(300) });
+    await h.enroll(t.id, [0, 1, 2, 3].map((i) => ({ phone: player(1300 + i), rating: 1500 - i * 10, nick: `Отм${1300 + i}` })));
+    h.clock.set(t0 + 60 * MIN);
+    let r = await h.request('POST', path(t, '/start'), { token: manager.token });
+    assert.equal(r.status, 200, r.text);
+    let ms = await h.matches(t.id);
+    const live = ms.find((m) => m.status === 'playing');
+    assert.ok(live, 'один матч идёт');
+    assert.deepEqual(ms.map((m) => m.status).sort(), ['playing', 'ready', 'waiting']);
+    // Счёт внесён одним игроком — матч pending_confirm, удержание матча ещё держит стол.
+    const [ua] = await h.q('select phone from bl.users where id = $1', [live.user_a]);
+    const pa = await h.login(ua.phone);
+    h.clock.add(20 * MIN);
+    r = await h.request('POST', `/api/tournaments/matches/${live.id}/score`, { token: pa.token, body: { score_a: 2, score_b: 0 } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal((await h.matches(t.id)).find((m) => m.id === live.id).status, 'pending_confirm');
+    const holdsOf = async () => {
+      const c = await h.pool.connect();
+      try {
+        await c.query('begin');
+        await c.query("select set_config('app.club_id', $1, true), set_config('app.actor_type', 'system', true)", [CLUB_A]);
+        return (await tournamentHolds(c, { resourceId: table(4), from: h.clock.now(), to: new Date(h.clock.now().getTime() + 600 * MIN) })).filter((x) => x.tournament_id === t.id);
+      } finally {
+        await c.query('rollback');
+        c.release();
+      }
+    };
+    assert.ok((await holdsOf()).some((x) => x.match_id === live.id), 'до отмены — удержание матча');
+    const lightBefore = h.calls.light.length;
+    r = await h.request('POST', path(t, '/cancel'), { token: manager.token, body: { reason: 'Игроки разошлись' } });
+    assert.equal(r.status, 200, r.text);
+    ms = await h.matches(t.id);
+    assert.deepEqual(ms.map((m) => m.status), ['canceled', 'canceled', 'canceled']);
+    const stopped = ms.find((m) => m.id === live.id);
+    assert.ok(stopped.hold_until.getTime() <= h.clock.now().getTime(), 'удержание матча закончилось');
+    const calls = h.calls.light.slice(lightBefore);
+    assert.ok(calls.some((c) => c.fn === 'stopFromTournament' && c.args.matchId === live.id), 'свет матча погашен');
+    assert.ok(calls.some((c) => c.fn === 'clearReserved' && c.args.refId === live.id && c.args.source === 'tournament'), 'удержание light снято');
+    assert.deepEqual(await holdsOf(), [], 'стол не держит ни окно, ни матч');
+    const [a] = (await h.audit('manual.tournament_cancel')).filter((x) => x.data.tournament_id === t.id);
+    assert.equal(a.data.matches_canceled, 3);
+    // Публичная сетка — статус canceled, без падения.
+    const pub = await h.request('GET', `/api/public/tournaments/${t.id}`);
+    assert.equal(pub.status, 200);
+    assert.equal(pub.json.status, 'canceled');
+    assert.ok(pub.json.bracket.rounds.flatMap((x) => x.matches).every((m) => m.status === 'canceled'));
+    // Счёт отменённого матча не вносится.
+    r = await h.request('POST', `/api/tournaments/matches/${live.id}/score`, { token: pa.token, body: { score_a: 2, score_b: 0 } });
+    assert.equal(r.status, 409);
+    // Повторный шаг планировщика ничего не включает.
+    const n = h.calls.light.length;
+    await h.tick();
+    assert.equal(h.calls.light.filter((c, i) => i >= n && c.fn === 'startFromTournament').length, 0);
+  });
 });
 
 describe('№149: напоминание организатору о неподтверждённом счёте', () => {

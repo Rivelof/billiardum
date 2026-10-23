@@ -1,4 +1,4 @@
-// Зависимости денежного модуля от core и light (контракт M1 §2.1, §13).
+// Зависимости денежного модуля от core и light (контракт M1 §2.1, §13), броней (M3) и турниров (M4).
 //
 // Берутся из ctx (так их подменяют тесты), иначе — динамическим импортом модуля соседа.
 // Пока модуля соседа нет (параллельная разработка), подставляется заглушка: журнал пишется
@@ -15,6 +15,8 @@ const MODULES = {
   shifts: { spec: '../shifts/api.mjs', ctxKey: 'shiftsApi', need: ['currentShift'] },
   kkt: { spec: '../kkt/api.mjs', ctxKey: 'kktApi', need: ['enqueueReceipt'] },
   bookings: { spec: '../bookings/api.mjs', ctxKey: 'bookingsApi', need: ['nextBookingStart'] },
+  // Окна турниров (M4 №146): котировка игры не заходит в окно турнира (Д3 приёмки M4).
+  tournaments: { spec: '../tournaments/api.mjs', ctxKey: 'tournamentsApi', need: ['tournamentHolds'] },
 };
 
 const imported = new Map();
@@ -83,6 +85,8 @@ function stubs(log) {
     kkt: missing('kkt'),
     // Без модуля броней (M3) продление ничем не ограничено.
     bookings: { nextBookingStart: async () => null },
+    // Без модуля турниров окон турнира нет (light всё равно вернёт оплату на столе турнира).
+    tournaments: { tournamentHolds: async () => [] },
   };
 }
 

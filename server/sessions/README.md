@@ -22,7 +22,7 @@
 3. После коммита `LISTEN bl_light` будит мост. Мост в своей транзакции: блокировка устройства, проверка, что сессия ещё идёт, `remaining_ms` по `paid_until` на этот момент, `seq`, журнал `device.cmd` (`cmd_id`, `seq`, `type`, `session_id`), строка → `sent`; публикация после коммита.
 4. `ack` → строка `acked`, `sessions.device_paid_until = время ack + remaining_ms`; для `session.start` по оплате — лог `{"msg":"light_latency","session_id":…,"ms":…}` (от `payments.confirmed_at` до `ack`).
 
-Стол занят к моменту оплаты — `session.start_rejected` в журнал, тревога `payment_conflict`, `refund` через money.
+Стол занят к моменту оплаты — `session.start_rejected` в журнал, тревога `payment_conflict`, `refund` через money. Отклонённая оплата старта сразу снимает удержание `pending` этого гостя на столе (`release_reason = 'payment_rejected'`, Д11 приёмки M4) и шлёт `state.free` (или `state.reserved`, если стол ждёт бронь или турнир), а не держит стол до конца котировки; удержание, которое уже держит более новая котировка гостя (`until` позже `valid_until` этой), не трогается.
 
 ## Состояния и сигналы
 

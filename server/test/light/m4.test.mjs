@@ -149,6 +149,53 @@ describe('M4: турнир и участники', { skip: SKIP }, () => {
     tIntervals = [];
   });
 
+  it('Д11: оплата старта отклонена — удержание pending гостя снимается сразу (state.free), матч турнира получает стол', async () => {
+    const c = h.ctl.get(3);
+    tIntervals = [];
+    const p = await h.asUser(GUEST(2), (db) => api.holdPending(db, { resourceId: RES(3), userId: GUEST(2), until: at(3 * MIN) }));
+    assert.equal(p.ok, true);
+    await h.until(() => c.st.mode === 'pending', 'pending');
+    const freeCmds = async () =>
+      (await t.q("select count(*)::int as n from bl.audit_log where action = 'device.cmd' and object_id = $1 and data->>'type' = 'state.free'", ['d1000000-0000-4000-8000-000000000003'])).rows[0].n;
+    const free0 = await freeCmds();
+    // Турнир на столе начался между котировкой и оплатой: оплата — возврат.
+    tIntervals = [{ resource: RES(3), from: at(-MIN).toISOString(), to: at(120 * MIN).toISOString(), tournament_id: randomUUID() }];
+    const pay = await makePayment(t, { resource: 3, user: GUEST(2), minutes: 30, at: h.time.now() });
+    assert.deepEqual(await h.outbox.deliver('payment.confirmed', pay), { result: 'refunded', reason: 'tournament' });
+    const hold = (await t.q("select released_at, release_reason from bl.resource_holds where resource_id = $1 and kind = 'pending' order by created_at desc limit 1", [RES(3)])).rows[0];
+    assert.deepEqual([Boolean(hold.released_at), hold.release_reason], [true, 'payment_rejected']);
+    await h.until(() => c.st.mode === 'free', 'стол свободен сразу, а не в конце котировки');
+    assert.ok((await freeCmds()) > free0, 'команда state.free в журнале');
+    // Стол сразу отдаётся матчу турнира (раньше — applied: false, reason: 'pending' до конца котировки).
+    tIntervals = [];
+    const m = randomUUID();
+    const r = await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(3), until: at(60 * MIN), source: 'tournament', refId: m }));
+    assert.equal(r.applied, true);
+    await h.asSystem(CLUB, (db) => api.clearReserved(db, { resourceId: RES(3), source: 'tournament', refId: m }));
+  });
+
+  it('Д11: удержание более новой котировки того же гостя отклонённая оплата не снимает', async () => {
+    tIntervals = [];
+    const q1 = randomUUID();
+    const until1 = at(3 * MIN);
+    await h.asUser(GUEST(2), (db) => api.holdPending(db, { resourceId: RES(3), userId: GUEST(2), until: until1 }));
+    await t.q(
+      `insert into bl.quotes (id, club_id, resource_id, user_id, kind, unlimited, minutes, from_at, amount_kopecks, breakdown, created_at, valid_until)
+       values ($1, $2, $3, $4, 'start', false, 30, $5, 40000, '[]'::jsonb, $5, $6)`,
+      [q1, CLUB, RES(3), GUEST(2), h.time.now(), until1],
+    );
+    // Гость взял новую котировку — удержание продлено до её срока.
+    await h.advance(MIN);
+    await h.asUser(GUEST(2), (db) => api.holdPending(db, { resourceId: RES(3), userId: GUEST(2), until: at(3 * MIN) }));
+    tIntervals = [{ resource: RES(3), from: at(-MIN).toISOString(), to: at(30 * MIN).toISOString(), tournament_id: randomUUID() }];
+    const pay = { ...(await makePayment(t, { resource: 3, user: GUEST(2), minutes: 30, at: h.time.now() })), quote_id: q1 };
+    assert.deepEqual(await h.outbox.deliver('payment.confirmed', pay), { result: 'refunded', reason: 'tournament' });
+    const hold = (await t.q("select released_at from bl.resource_holds where resource_id = $1 and kind = 'pending' and user_id = $2 and until > $3", [RES(3), GUEST(2), until1])).rows;
+    assert.deepEqual(hold, [{ released_at: null }], 'удержание новой котировки цело');
+    tIntervals = [];
+    await h.asUser(GUEST(2), (db) => api.releasePending(db, { resourceId: RES(3), userId: GUEST(2) }));
+  });
+
   it('extendFromTournament: до старта — удержание, в игре — paid_until и session.extend с журналом; идемпотентно', async () => {
     const M3 = randomUUID();
     const c = h.ctl.get(2);

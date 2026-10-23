@@ -160,12 +160,22 @@ describe('каталог клубов', { skip }, () => {
     const v = await h.request('GET', `/api/clubs/requests/${r.json.id}/answer?t=${token}`);
     assert.equal(v.status, 200, v.text);
     assert.equal(v.json.guest_phone, other.phone);
+    // Пояс клуба — как в уведомлении (время заявки на экране ответа не по часам устройства).
+    const [{ timezone }] = await h.q('select c.timezone from bl.club_public p join bl.cities c on c.id = p.city_id where p.id = $1', [CARD_DEMO]);
+    assert.match(timezone, /^[A-Za-z_]+\/[A-Za-z_]+/);
+    assert.deepEqual([v.json.timezone, v.json.club.timezone], [timezone, timezone]);
     const a = await h.request('POST', `/api/clubs/requests/${r.json.id}/answer`, { body: { t: token, decision: 'accept', text: 'Ждём, стол 3' } });
     assert.equal(a.status, 200, a.text);
     assert.equal(a.json.status, 'accepted');
     assert.ok((await h.notifications(other.id, 'club.request_answer')).some((x) => /принял/.test(x.text)));
-    // Ссылка одноразовая.
-    assert.equal((await h.request('POST', `/api/clubs/requests/${r.json.id}/answer`, { body: { t: token, decision: 'decline' } })).status, 404);
+    // Ответ один: повторный POST не принимается; GET по той же ссылке (другое устройство клуба) —
+    // 409 request_closed {status}, без телефона гостя; неверный токен — по-прежнему 404.
+    const again = await h.request('POST', `/api/clubs/requests/${r.json.id}/answer`, { body: { t: token, decision: 'decline' } });
+    assert.deepEqual([again.status, again.json], [409, { error: 'request_closed', status: 'accepted' }]);
+    const seen = await h.request('GET', `/api/clubs/requests/${r.json.id}/answer?t=${token}`);
+    assert.deepEqual([seen.status, seen.json], [409, { error: 'request_closed', status: 'accepted' }]);
+    assert.equal((await h.request('GET', `/api/clubs/requests/${r.json.id}/answer?t=${'y'.repeat(43)}`)).status, 404);
+    assert.equal((await h.request('GET', `/api/clubs/requests/${r.json.id}`, { token: other.token })).json.status, 'accepted', 'статус не изменился');
 
     // Вторая заявка: клуб молчит 15 минут → оператору.
     const r2 = await h.request('POST', '/api/clubs/requests', { token: other.token, body: { listing_id: CARD_DEMO, starts_at: new Date(T0 + 300 * MIN).toISOString(), minutes: 60 } });
@@ -178,6 +188,18 @@ describe('каталог клубов', { skip }, () => {
     // Гость отменяет.
     const cancel = await h.request('POST', `/api/clubs/requests/${r2.json.id}/cancel`, { token: other.token, body: {} });
     assert.equal(cancel.json.status, 'closed');
+    // Ссылка второй заявки (ещё живая) после отмены гостем — 409 request_closed {status: 'closed'}.
+    const [n2] = (await h.notifications(owner.id, 'club.request')).filter((x) => x.actions[0].url.includes(r2.json.id));
+    const token2 = new URL(n2.actions[0].url, 'https://x').searchParams.get('t');
+    const closed = await h.request('GET', `/api/clubs/requests/${r2.json.id}/answer?t=${token2}`);
+    assert.deepEqual([closed.status, closed.json], [409, { error: 'request_closed', status: 'closed' }]);
+    // После token_until ссылка не работает (404), хеш стирает планировщик.
+    h.clock.set(T0 + 45 * MIN + 25 * 60 * MIN);
+    await h.tick();
+    assert.equal((await h.request('GET', `/api/clubs/requests/${r2.json.id}/answer?t=${token2}`)).status, 404);
+    const [row] = await h.q('select token_hash, token_until from bl.club_requests where id = $1', [r2.json.id]);
+    assert.deepEqual([row.token_hash, row.token_until], [null, null]);
+    h.clock.set(T0 + 46 * MIN);
     await h.admin.query('update bl.club_public set contact_user_id = null where id = $1', [CARD_DEMO]);
   });
 
@@ -315,6 +337,7 @@ describe('каталог клубов', { skip }, () => {
     const n = await h.notifications(admin.id, 'platform.lead');
     assert.equal(n.length, 1);
     assert.ok(!n[0].text.includes('5556677'));
+    assert.equal(n[0].text, 'Заявка на программу: «Клуб Лузa», Пермь, 8 столов. Контакт — Иван.');
     // Лимит по IP.
     let last;
     for (let i = 0; i < 6; i += 1) last = await h.request('POST', '/api/leads', { body: form, ip: '10.1.1.9' });

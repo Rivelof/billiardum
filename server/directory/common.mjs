@@ -5,8 +5,8 @@ import { safely } from '../bookings/queries.mjs';
 import { BookingError } from '../bookings/errors.mjs';
 
 export const DirectoryError = BookingError;
-export const fail = (code, detail, status) => {
-  throw new DirectoryError(code, detail, status);
+export const fail = (code, detail, status, data) => {
+  throw new DirectoryError(code, detail, status, data);
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

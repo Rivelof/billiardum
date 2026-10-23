@@ -99,9 +99,13 @@ export const SAFE_ERROR_FIELDS = new Set([
   'rating',
   // Причина занятости и т. п. — только код из SAFE_REASONS (409 table_busy {reason:'tournament', busy_until}).
   'reason',
+  // Статус заявки в клуб, на которую уже ответили — только из SAFE_STATUSES (409 request_closed {status}).
+  'status',
 ]);
 /** Допустимые значения reason в ошибке: закрытый список кодов, не свободный текст. */
 export const SAFE_REASONS = new Set(['tournament', 'booking', 'service', 'pending', 'offline', 'busy', 'reserved', 'waitlist', 'session', 'maintenance', 'closed']);
+/** Допустимые значения status в ошибке: статус закрытой заявки гостя в клуб (T25). */
+export const SAFE_STATUSES = new Set(['accepted', 'declined', 'operator', 'closed']);
 const REASON_CODE = /^[a-z_]{1,32}$/;
 const SAFE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SAFE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -114,6 +118,10 @@ export function safeErrorData(data) {
     if (!SAFE_ERROR_FIELDS.has(k) || k === 'error') continue;
     if (k === 'reason') {
       if (typeof v === 'string' && REASON_CODE.test(v) && SAFE_REASONS.has(v)) out[k] = v;
+      continue;
+    }
+    if (k === 'status') {
+      if (typeof v === 'string' && SAFE_STATUSES.has(v)) out[k] = v;
       continue;
     }
     if (v === null || typeof v === 'boolean' || Number.isSafeInteger(v)) out[k] = v;

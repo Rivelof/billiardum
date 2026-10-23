@@ -4,6 +4,7 @@
 // скрытое поле и время заполнения формы. IP не хранится — только sha256 с секретом сервера.
 
 import { createHash } from 'node:crypto';
+import { plural } from '@billiardum/shared/format';
 import { fail, iso, isUuid, notifyPlatform, phone, text } from './common.mjs';
 
 export const MIN_FILL_MS = 3_000;
@@ -60,7 +61,8 @@ export function createLeadsService({ deps, log, clock, config }) {
     await notifyPlatform(db, deps, log, 'platform_admin', {
       kind: 'platform.lead',
       level: 'important',
-      text: `Заявка на программу: «${clubName}», ${city}${tables ? `, ${tables} ст.` : ''}. Контакт — ${name}.`,
+      // Без сокращения «ст.» и точки после имени: иначе «8 ст..» и «Иван И..» (Д10 приёмки M4).
+      text: `Заявка на программу: «${clubName}», ${city}${tables ? `, ${tables} ${plural(tables, ['стол', 'стола', 'столов'])}` : ''}. Контакт — ${name.replace(/[.\s]+$/u, '')}.`,
       data: { lead_id: rows[0].id },
       actions: [{ id: 'open', title: 'Заявки клубов', url: '/club/platform/leads' }],
     });

@@ -139,8 +139,10 @@ export function createRequestsService({ deps, log, clock }) {
     const answerText = answer === undefined || answer === null || answer === '' ? null : text(answer, 500);
     if (answer && !answerText) fail('bad_request', 'text');
     await db.query(
+      // Хеш ссылки клуба живёт до token_until: после ответа GET по ссылке отвечает 409 request_closed
+      // {status} (клуб ответил с другого устройства), а не «ссылка не работает».
       `update bl.club_requests set status = $2, answer_text = $3, answered_via = $4, answered_at = $5, operator_id = coalesce($6, operator_id),
-              token_hash = null, token_until = null, updated_at = $5 where id = $1`,
+              updated_at = $5 where id = $1`,
       [r.id, status, answerText, via, t, operatorId],
     );
     const nr = await load(db, r.id);
@@ -167,17 +169,25 @@ export function createRequestsService({ deps, log, clock }) {
     return a.length === b.length && timingSafeEqual(a, b);
   }
 
+  /** Заявка уже решена (ответ клуба, оператора или отмена гостем) — 409 request_closed {status}. */
+  function closedFail(r) {
+    fail('request_closed', r.status, 409, { status: r.status });
+  }
+
   /**
    * GET /api/clubs/requests/{id}/answer?t= — клуб по ссылке из уведомления (без входа, контекст
-   * платформы): заявка с телефоном гостя — клубу нужно с ним связаться.
+   * платформы): заявка с телефоном гостя — клубу нужно с ним связаться. timezone — пояс клуба (как
+   * в уведомлении). Ссылка жива, а на заявку уже ответили — 409 request_closed {status}, без ПДн.
    */
   async function byToken(db, { id, token }) {
     const r = await load(db, id);
     if (!r || !tokenOk(r, token, now())) fail('not_found', 'request');
+    if (!OPEN.includes(r.status)) closedFail(r);
     return {
       id: r.id,
       status: r.status,
-      club: { name: r.club_name },
+      timezone: r.timezone,
+      club: { name: r.club_name, timezone: r.timezone },
       starts_at: iso(r.starts_at),
       minutes: r.minutes,
       people: r.people,
@@ -191,6 +201,8 @@ export function createRequestsService({ deps, log, clock }) {
   async function answerByToken(db, { id, body }) {
     const r = await load(db, id);
     if (!r || !tokenOk(r, body?.t, now())) fail('not_found', 'request');
+    // Повторный ответ не принимается: 409 request_closed {status} (как у GET).
+    if (!OPEN.includes(r.status)) closedFail(r);
     if (!['accept', 'decline'].includes(body.decision)) fail('bad_request', 'decision');
     const nr = await decide(db, r, { decision: body.decision, answer: body.text, via: 'link' });
     await deps.audit.appendAudit(db, {
@@ -273,6 +285,8 @@ export function createRequestsService({ deps, log, clock }) {
   /** Планировщик (контекст платформы): без ответа 15 минут — оператору, гостю — статус. */
   async function escalateDue(db) {
     const t = now();
+    // Ссылка клуба истекла — хеш токена больше не нужен.
+    await db.query('update bl.club_requests set token_hash = null, token_until = null where token_until <= $1', [t]);
     const { rows } = await db.query(
       `select id from bl.club_requests where status = 'sent' and escalate_at <= $1 order by escalate_at limit 100 for update skip locked`,
       [t],

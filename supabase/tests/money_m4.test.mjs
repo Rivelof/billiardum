@@ -206,3 +206,106 @@ describe('турнирный матч без плательщика (light sourc
     assert.ok([400, 403].includes(other.status));
   });
 });
+
+describe('Д3: котировка не заходит в окно турнира (№146) — как в бронь', () => {
+  const T7 = 'e1000000-0000-4000-8000-000000000007';
+  const T8 = 'e1000000-0000-4000-8000-000000000008';
+  const windows = []; // { resource, from, to, match_id? }
+  const MIN = 60_000;
+  const at = (min) => new Date(h.clock.now().getTime() + min * MIN);
+  const iso = (min) => at(min).toISOString();
+  let nextBooking = null;
+  before(() => {
+    h.ctx.tournamentsApi = {
+      async tournamentHolds(_db, { resourceId, from, to }) {
+        return windows
+          .filter((w) => w.resource === resourceId && new Date(w.from) < new Date(to) && new Date(w.to) > new Date(from))
+          .map((w) => ({ from: w.from, to: w.to, tournament_id: 'f0000000-0000-4000-8000-000000000001', ...(w.match_id ? { match_id: w.match_id } : {}) }));
+      },
+    };
+    h.ctx.bookingsApi = { async nextBookingStart(_db, { resourceId, after }) { return nextBooking && nextBooking.resource === resourceId && nextBooking.at >= new Date(after) ? nextBooking.at : null; } };
+  });
+  after(() => {
+    delete h.ctx.tournamentsApi;
+    delete h.ctx.bookingsApi;
+  });
+  const reset = (list) => {
+    windows.length = 0;
+    windows.push(...list);
+    h.sessions.holds.clear();
+  };
+  const quote = (body, user = GUEST_2) => h.call(QUOTE, { user, body });
+  async function playing(resourceId, paidUntil) {
+    const { rows } = await h.pool.query(
+      `insert into bl.sessions (club_id, resource_id, status, payer_user_id, unlimited, started_at, paid_until, created_at, updated_at)
+       values ($1, $2, 'active', $3, false, $4, $5, $4, $4) returning id`,
+      [CLUB_A, resourceId, GUEST_1, h.clock.now(), paidUntil],
+    );
+    const id = rows[0].id;
+    h.sessions.sessions.set(id, { id, resource_id: resourceId, paid_until: paidUntil, status: 'active', participants: new Set([GUEST_1]), payer: GUEST_1, unlimited: false });
+    return id;
+  }
+
+  it('старт: окно через час — 30 минут можно (extend_limit_until = начало − 5 мин), час — 409 table_busy {reason, busy_until}; «Без лимита» заморожено до окна', async () => {
+    reset([{ resource: T7, from: iso(60), to: iso(300) }]);
+    const bad = await quote({ resource_id: T7, kind: 'start', minutes: 60 });
+    assert.deepEqual([bad.status, bad.json], [409, { error: 'table_busy', reason: 'tournament', busy_until: iso(300) }]);
+    assert.equal(h.sessions.holds.has(T7), false, 'стол не удержан');
+    const ok = await quote({ resource_id: T7, kind: 'start', minutes: 30 });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    assert.equal(ok.json.extend_limit_until, iso(55));
+    h.sessions.holds.clear();
+    const unl = await quote({ resource_id: T7, kind: 'start', minutes: null });
+    assert.equal(unl.status, 200, JSON.stringify(unl.json));
+    assert.equal(unl.json.unlimited.hold_minutes, 55);
+    assert.equal(unl.json.extend_limit_until, iso(55));
+  });
+
+  it('котировка за 3 минуты до окна: старт и продление — 409 table_busy, busy_until — конец окна с матчем после него', async () => {
+    reset([
+      { resource: T7, from: iso(3), to: iso(120) },
+      { resource: T7, from: iso(100), to: iso(160), match_id: 'f0000000-0000-4000-8000-0000000000aa' },
+    ]);
+    const start = await quote({ resource_id: T7, kind: 'start', minutes: 30 });
+    assert.deepEqual([start.status, start.json], [409, { error: 'table_busy', reason: 'tournament', busy_until: iso(160) }]);
+    const unl = await quote({ resource_id: T7, kind: 'start', minutes: null });
+    assert.equal(unl.json.error, 'table_busy');
+    reset([{ resource: T8, from: iso(3), to: iso(120) }]);
+    const sid = await playing(T8, at(2));
+    const ext = await quote({ resource_id: T8, kind: 'extend', minutes: 30, session_id: sid }, GUEST_1);
+    assert.deepEqual([ext.status, ext.json], [409, { error: 'table_busy', reason: 'tournament', busy_until: iso(120) }]);
+    await h.pool.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'stopped' where id = $1", [sid, h.clock.now()]);
+    h.sessions.sessions.delete(sid);
+  });
+
+  it('продление: до окна минус 5 минут; больше — 409 table_busy; игра уже зашла в окно — продлить нельзя совсем', async () => {
+    reset([{ resource: T8, from: iso(120), to: iso(360) }]);
+    const sid = await playing(T8, at(30));
+    const ok = await quote({ resource_id: T8, kind: 'extend', minutes: 30, session_id: sid }, GUEST_1);
+    assert.equal(ok.status, 200, JSON.stringify(ok.json));
+    assert.equal(ok.json.extend_limit_until, iso(115));
+    const bad = await quote({ resource_id: T8, kind: 'extend', minutes: 120, session_id: sid }, GUEST_1);
+    assert.deepEqual([bad.status, bad.json], [409, { error: 'table_busy', reason: 'tournament', busy_until: iso(360) }]);
+    // Оплаченная игра заходит в окно, которое уже началось (доигрывается), — продление 409.
+    reset([{ resource: T8, from: iso(-10), to: iso(200) }]);
+    const inside = await quote({ resource_id: T8, kind: 'extend', minutes: 30, session_id: sid }, GUEST_1);
+    assert.deepEqual([inside.status, inside.json], [409, { error: 'table_busy', reason: 'tournament', busy_until: iso(200) }]);
+    await h.pool.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'stopped' where id = $1", [sid, h.clock.now()]);
+    h.sessions.sessions.delete(sid);
+  });
+
+  it('бронь раньше окна — booking_conflict как прежде; окно раньше брони — table_busy; без окна и брони — без предела', async () => {
+    reset([{ resource: T7, from: iso(180), to: iso(400) }]);
+    nextBooking = { resource: T7, at: at(60) };
+    const b = await quote({ resource_id: T7, kind: 'start', minutes: 120 });
+    assert.deepEqual([b.status, b.json], [409, { error: 'booking_conflict' }]);
+    nextBooking = { resource: T7, at: at(300) };
+    const tw = await quote({ resource_id: T7, kind: 'start', minutes: 180 });
+    assert.deepEqual([tw.status, tw.json], [409, { error: 'table_busy', reason: 'tournament', busy_until: iso(400) }]);
+    nextBooking = null;
+    reset([]);
+    const free = await quote({ resource_id: T7, kind: 'start', minutes: 180 });
+    assert.equal(free.status, 200, JSON.stringify(free.json));
+    assert.equal(free.json.extend_limit_until, null);
+  });
+});

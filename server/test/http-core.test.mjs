@@ -199,6 +199,9 @@ describe('роутер', () => {
     // reason — только код из закрытого списка.
     assert.deepEqual(safeErrorData({ reason: 'tournament', busy_until: '2026-10-23T18:00:00.000Z' }), { reason: 'tournament', busy_until: '2026-10-23T18:00:00.000Z' });
     for (const reason of ['Стол занят Иваном +79990000000', 'unknown_code', 'TOURNAMENT', 'a'.repeat(40), 5]) assert.equal(safeErrorData({ reason }), null, String(reason));
+    // 409 request_closed {status}: статус заявки только из закрытого списка.
+    assert.deepEqual(safeErrorData({ status: 'accepted' }), { status: 'accepted' });
+    for (const status of ['sent', 'Принята Иваном', 'ACCEPTED', 1]) assert.equal(safeErrorData({ status }), null, String(status));
   });
 
   it('маршрут объявлен дважды — ошибка при сборке', () => {
