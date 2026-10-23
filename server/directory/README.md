@@ -74,13 +74,14 @@
 
 `GET /api/platform/requests?status=` → `{items: [{id, status, listing: {id, name, city, status}, starts_at, minutes, people, comment, guest: {phone, phone_masked}, answer_text, answered_via, escalated_at, created_at, updated_at}]}`, `PATCH …/{id} {status: 'accepted'|'declined'|'closed', reason}`.
 `GET /api/platform/listings?status=new|approved|rejected` → `{items: [{id, kind: 'claim'|'add', status, listing, payload, user: {id, phone, phone_masked}, reason, created_at, updated_at}]}`, `PATCH …/{id} {action: 'approve'|'reject', reason?, city_slug?}`; `POST /api/platform/cards`, `PATCH /api/platform/cards/{id}` (поля, `visible`, `status`, `club_id`).
+`GET /api/platform/cities` → `{items: [{id, slug, name, name_in, region, timezone, active, clubs, created_at}]}` (и неактивные); `POST /api/platform/cities {name, name_in, timezone, region?, slug?, active?}` → `201` город (слаг — транслит названия, если не задан; `name_in` начинается с «в»/«во»/«на»; пояс — IANA из Intl, `server/lib/timezone.mjs`; занятый слаг — `409 duplicate`); `PATCH …/{id} {name?, name_in?, region?, timezone?, active?}` — слаг не меняется (адреса сайта). Одобрение «Добавить клуб» в городе вне справочника — `409 city_required`, либо в том же PATCH `new_city: {name, name_in, timezone, region?, slug?}`.
 `GET /api/platform/leads?status=` → `{items: [{id, name, club_name, city, phone, tables_count, comment, status, note, created_at, updated_at}]}`, `PATCH …/{id} {status, note|reason}`.
 `GET /api/platform/reports?status=new|hidden|kept` → `{items: [{id, status, reason, review: {id, rating, text, status, reply, club: {id, name}}, decision_reason, created_at}]}`, `PATCH …/{id} {action: 'hide'|'keep', reason}` (скрыть — причина обязательна).
 Действия — в журнал платформы (`platform.*`, `actor_type: support`, от имени сотрудника).
 
 ## Коды ошибок
 
-`bad_request` 400, `reason_required` 400, `unauthorized` 401, `forbidden` 403, `consent_required`/`phone_required` 403, `review_not_allowed` 403, `not_found` 404, `online_booking` 409, `already_claimed` 409, `already_decided` 409, `request_closed` 409, `duplicate` 409, `limit_exceeded` 409, `rate_limited` 429.
+`bad_request` 400, `reason_required` 400, `city_required` 409, `unauthorized` 401, `forbidden` 403, `consent_required`/`phone_required` 403, `review_not_allowed` 403, `not_found` 404, `online_booking` 409, `already_claimed` 409, `already_decided` 409, `request_closed` 409, `duplicate` 409, `limit_exceeded` 409, `rate_limited` 429.
 
 ## Тесты
 

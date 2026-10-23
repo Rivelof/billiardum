@@ -10,6 +10,7 @@
 // ctx.directoryDeps — подмена соседей в тестах ({ sessions, plus, tournaments }); ctx.directoryOptions — { tickMs }.
 
 import { withContext as withContextM0 } from '../lib/store.mjs';
+import { createCitiesService } from './cities.mjs';
 import { createLeadsService } from './leads.mjs';
 import { createListingsService } from './listings.mjs';
 import { createPublicService } from './public.mjs';
@@ -62,10 +63,12 @@ export async function init(ctx) {
   const withContext = ctx.withContext ?? withContextM0;
   const deps = await resolveDirectoryDeps(ctx);
   const opts = { deps, log, clock, config: ctx.config ?? {} };
+  const cities = createCitiesService(opts);
   const services = {
     public: createPublicService(opts),
     requests: createRequestsService(opts),
-    listings: createListingsService(opts),
+    cities,
+    listings: createListingsService({ ...opts, cities }),
     leads: createLeadsService(opts),
     reviews: createReviewsService(opts),
   };

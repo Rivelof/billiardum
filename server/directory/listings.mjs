@@ -71,7 +71,7 @@ export function cardFields(body = {}, { partial = true } = {}) {
 /**
  * @param {{ deps: object, log: object, clock: { now(): Date } }} opts
  */
-export function createListingsService({ deps, log, clock }) {
+export function createListingsService({ deps, log, clock, cities }) {
   const now = () => clock.now();
 
   function listingView(card) {
@@ -226,7 +226,8 @@ export function createListingsService({ deps, log, clock }) {
   }
 
   /**
-   * PATCH /api/platform/listings/{id} {action: 'approve'|'reject', reason, city_slug?} — оператор.
+   * PATCH /api/platform/listings/{id} {action: 'approve'|'reject', reason, city_slug?, new_city?} — оператор.
+   * Города нет в справочнике — 409 city_required (или new_city: {name, name_in, timezone, region?, slug?}).
    * claim → карточка claimed, контакт для заявок — заявитель; add → новая карточка listed.
    */
   async function patchPlatform(db, { id, body, operatorId }) {
@@ -247,8 +248,13 @@ export function createListingsService({ deps, log, clock }) {
     }
     if (approve && c.kind === 'add') {
       const p = c.payload ?? {};
-      const city = await cityBySlugOrName(db, body.city_slug ?? p.city);
-      if (!city) fail('bad_request', 'city_slug');
+      let city = await cityBySlugOrName(db, body.city_slug ?? p.city);
+      // Новый город: оператор создаёт его здесь же — {new_city: {name, name_in, timezone, region?, slug?}}.
+      if (!city && body.new_city && cities) {
+        const made = await cities.create(db, { body: body.new_city });
+        city = await cityBySlugOrName(db, made.slug);
+      }
+      if (!city) fail('city_required', 'город не в справочнике: city_slug или new_city');
       const fields = cardFields(p, { partial: false });
       const slug = await uniqueSlug(fields.name, async (s) => (await db.query('select 1 from bl.club_public where city_id = $1 and slug = $2', [city.id, s])).rowCount > 0);
       const keys = Object.keys(fields);

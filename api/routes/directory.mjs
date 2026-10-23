@@ -207,6 +207,27 @@ export const routes = [
   },
   {
     method: 'GET',
+    path: '/api/platform/cities',
+    auth: 'platform',
+    roles: OPERATOR,
+    handler: async (ctx) => ({ status: 200, json: await d().cities.list(ctx.db) }),
+  },
+  {
+    method: 'POST',
+    path: '/api/platform/cities',
+    auth: 'platform',
+    roles: OPERATOR,
+    handler: async (ctx, req) => ({ status: 201, json: await d().cities.create(ctx.db, { body: req.body }) }),
+  },
+  {
+    method: 'PATCH',
+    path: '/api/platform/cities/{id}',
+    auth: 'platform',
+    roles: OPERATOR,
+    handler: async (ctx, req) => ({ status: 200, json: await d().cities.patch(ctx.db, { id: req.params.id, body: req.body }) }),
+  },
+  {
+    method: 'GET',
     path: '/api/platform/reports',
     auth: 'platform',
     roles: OPERATOR,

@@ -213,6 +213,38 @@ describe('каталог клубов', { skip }, () => {
     assert.equal((await h.audit('platform.listing_approve')).filter((a) => a.actor_id === operator.id && a.club_id === null).length, 2);
   });
 
+  it('города у оператора: создать (name_in и пояс обязательны), изменить без смены слага, журнал платформы; «Добавить клуб» в новом городе', async () => {
+    assert.equal((await h.request('GET', '/api/platform/cities', { token: guest.token })).status, 403);
+    const bad = await h.request('POST', '/api/platform/cities', { token: operator.token, body: { name: 'Пермь', timezone: 'Asia/Yekaterinburg' } });
+    assert.equal(bad.status, 400);
+    assert.equal((await h.request('POST', '/api/platform/cities', { token: operator.token, body: { name: 'Пермь', name_in: 'в Перми', timezone: 'Mars/Olympus' } })).status, 400);
+    const c = await h.request('POST', '/api/platform/cities', { token: operator.token, body: { name: 'Пермь', name_in: 'в Перми', region: 'Пермский край', timezone: 'Asia/Yekaterinburg' } });
+    assert.equal(c.status, 201, c.text);
+    assert.deepEqual({ slug: c.json.slug, name_in: c.json.name_in, active: c.json.active, clubs: c.json.clubs }, { slug: 'perm', name_in: 'в Перми', active: true, clubs: 0 });
+    assert.equal((await h.request('POST', '/api/platform/cities', { token: operator.token, body: { name: 'Пермь', name_in: 'в Перми', timezone: 'Asia/Yekaterinburg' } })).json.error, 'duplicate');
+    const p = await h.request('PATCH', `/api/platform/cities/${c.json.id}`, { token: operator.token, body: { region: 'Прикамье', active: false } });
+    assert.equal(p.json.region, 'Прикамье');
+    assert.equal(p.json.active, false);
+    assert.equal((await h.request('PATCH', `/api/platform/cities/${c.json.id}`, { token: operator.token, body: { slug: 'perm-2' } })).status, 400);
+    assert.equal((await h.request('GET', '/api/public/cities')).json.items.some((x) => x.slug === 'perm'), false, 'неактивный город не публикуется');
+    assert.equal((await h.audit('platform.city_create')).filter((a) => a.object_id === c.json.id && a.club_id === null && a.actor_id === operator.id).length, 1);
+    // «Добавить клуб» в городе, которого нет: без города — city_required, с new_city — город и карточка.
+    const owner = await h.login('+79990001040');
+    const add = await h.request('POST', '/api/directory/add', { token: owner.token, body: { city: 'Тюмень', name: 'Клуб Тюмени', address: 'ул. Республики, 1' } });
+    assert.equal(add.status, 201, add.text);
+    const need = await h.request('PATCH', `/api/platform/listings/${add.json.id}`, { token: operator.token, body: { action: 'approve' } });
+    assert.equal(need.status, 409);
+    assert.equal(need.json.error, 'city_required');
+    const ok = await h.request('PATCH', `/api/platform/listings/${add.json.id}`, {
+      token: operator.token,
+      body: { action: 'approve', new_city: { name: 'Тюмень', name_in: 'в Тюмени', timezone: 'Asia/Yekaterinburg', region: 'Тюменская область' } },
+    });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.json.listing.path, '/tyumen/klub-tyumeni/');
+    h.clock.add(2 * MIN); // кэш публичных ответов — 60 с
+    assert.equal((await h.request('GET', '/api/public/cities')).json.items.find((x) => x.slug === 'tyumen').name_in, 'в Тюмени');
+  });
+
   it('leads: антиспам (скрытое поле, время заполнения, лимит IP), согласие, уведомление Андрею, воронка оператора', async () => {
     const form = { name: 'Иван', club_name: 'Клуб Лузa', city: 'Пермь', phone: '+7 912 555-66-77', tables_count: 8, consent: true, website: '', elapsed_ms: 15_000 };
     const before = (await h.q('select count(*)::int as n from bl.leads'))[0].n;
