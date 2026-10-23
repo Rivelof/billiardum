@@ -142,7 +142,9 @@ async function resolveGuest(db, deps, p, { clubId, staffId, at }) {
   guard.lookup(staffId, at);
   const { rows } = await db.query('select bl.pos_guest($1, $2) as id', [p.user_id ?? null, p.user_id ? null : p.phone]);
   if (rows[0]?.id) return rows[0].id;
-  if (guard.miss(staffId, at)) await raiseLookupAlarm(deps, { clubId, staffId, misses: guard.missesInHour(staffId, at) });
+  // Тревога — своей транзакцией и без ожидания (pentester R-1): обработчик не держит соединение запроса,
+  // пока ждёт второе из того же пула; запрос откатится и отдаст соединение, тревога запишется следом.
+  if (guard.miss(staffId, at)) void raiseLookupAlarm(deps, { clubId, staffId, misses: guard.missesInHour(staffId, at) });
   throw new PosError('guest_not_found', p.user_id ? `user ${p.user_id}` : `phone ${maskPhone(p.phone)}`);
 }
 

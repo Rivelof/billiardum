@@ -345,6 +345,9 @@ describe('касса: поиск гостя — лимит и тревога о 
     assert.equal((await h.alarms('guest_lookup_misses')).length, 0);
     await missSale(manager.token, '+79995552000');
     await missSale(manager.token, '+79995552001');
+    // Тревога пишется без ожидания запроса (R-1) — ждём её.
+    await waitFor(async () => (await h.alarms('guest_lookup_misses')).length > 0);
+    await new Promise((r) => setTimeout(r, 200));
     const alarms = await h.alarms('guest_lookup_misses');
     assert.equal(alarms.length, 1, 'одна тревога, хотя транзакции запросов откатились');
     assert.equal(alarms[0].data.staff_id, manager.id);

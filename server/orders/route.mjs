@@ -26,6 +26,8 @@ export function posRoute(fn, { status = 200 } = {}) {
     const info = requestInfo(ctx, req);
     const deps = await resolveDeps(ctx);
     const out = await fn({ db: ctx.db, deps, info, ctx, req });
+    // Готовый ответ с другим статусом, который коммитит транзакцию (отказ PIN со счётчиком ошибок).
+    if (out && typeof out === 'object' && out.__response) return out.__response;
     return { status, json: out };
   };
 }

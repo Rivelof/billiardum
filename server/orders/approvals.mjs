@@ -4,9 +4,11 @@
 //   с заданным PIN ([{user_id, name, role}]).
 // * POST /api/pos/discount-approvals {user_id, pin, reason_code, reason_text, percent | amount_kopecks, subtotal_kopecks}
 //   → {approval_id, expires_at, subtotal_kopecks, max_discount_kopecks}: одноразовое подтверждение на 5 минут. PIN проверяет core
-//   (checkStaffPin из server/auth, роли owner и manager): своя транзакция, общий счётчик ошибок
-//   с входом по PIN — 5 ошибок подряд блокируют PIN на 15 минут. Неверный PIN — 401, не
-//   управляющий — 403, блокировка — 429 с Retry-After.
+//   (checkStaffPin из server/auth, роли owner и manager), общий счётчик ошибок с входом по PIN —
+//   5 ошибок подряд блокируют PIN на 15 минут. Неверный PIN — 401, не управляющий — 403,
+//   блокировка — 429 с Retry-After. pentester R-1: проверка — в транзакции запроса (одно соединение
+//   пула на запрос, без второй транзакции); отказ возвращается ответом, а не исключением, — транзакция
+//   коммитится вместе со счётчиком ошибок PIN (иначе откат стёр бы счётчик).
 // * В продаже: discount.approval_id — подтверждение той же скидки (процент или сумма), не
 //   использованное и не истёкшее; журнал manual.discount — от имени управляющего с его причиной,
 //   тревога владельцу (useApproval вызывает касса, pos.mjs). Одобрение привязано к сумме корзины
@@ -45,11 +47,13 @@ function parseDiscount(b) {
 }
 
 /**
- * POST /api/pos/discount-approvals → { approval_id, expires_at }. PIN проверяет core
- * (checkStaffPin, своя транзакция: счётчик ошибок не откатывается вместе с запросом).
- * @param {{ pool, withContext?, pepper }} pin доступ к пулу и «перец» PIN (ctx.pool, ctx.withContext, ctx.config.pinPepper)
+ * POST /api/pos/discount-approvals → { approval_id, expires_at }. PIN проверяет core (checkStaffPin)
+ * в транзакции запроса db (R-1: без второго соединения пула). Отказ PIN — { __response: { status,
+ * json: { error }, headers? } }: обработчик отдаёт его как ответ, транзакция коммитится вместе со
+ * счётчиком ошибок PIN.
+ * @param {{ pepper }} pin «перец» PIN (ctx.config.pinPepper)
  */
-export async function createApproval(db, deps, info, { pool, withContext, pepper }) {
+export async function createApproval(db, deps, info, { pepper }) {
   const b = info.body ?? {};
   const { user_id: approverId, pin } = b;
   if (!isUuid(approverId) || typeof pin !== 'string' || !PIN.test(pin)) throw new PosError('bad_request', 'user_id, pin');
@@ -66,13 +70,15 @@ export async function createApproval(db, deps, info, { pool, withContext, pepper
   const maxDiscount = percent !== null ? discountKopecks({ percent }, subtotal) : amount;
   const clubId = info.clubId;
   const now = deps.clock.now();
-  const check = await checkStaffPin({ pool, withContext, clubId, userId: approverId, pin, roles: [...MANAGER_ROLES], pepper, now });
+  // Транзакция запроса вместо своей (R-1): checkStaffPin выполняется на db, контекст клуба тот же.
+  const inRequest = (_pool, _ctx, fn) => fn(db);
+  const check = await checkStaffPin({ pool: null, withContext: inRequest, clubId, userId: approverId, pin, roles: [...MANAGER_ROLES], pepper, now });
   if (!check.ok) {
     deps.log?.warn?.('discount_approval_rejected', { club_id: clubId, user_id: approverId, code: check.code, locked: Boolean(check.locked) });
-    const status = { bad_request: 400, unauthorized: 401, forbidden: 403, rate_limited: 429 }[check.code] ?? 401;
-    const err = new PosError(check.code ?? 'unauthorized', 'PIN управляющего', status);
-    if (check.code === 'rate_limited' && check.retryAfterSec) err.headers = { 'retry-after': String(check.retryAfterSec) };
-    throw err;
+    const code = check.code ?? 'unauthorized';
+    const status = { bad_request: 400, unauthorized: 401, forbidden: 403, rate_limited: 429 }[code] ?? 401;
+    const headers = code === 'rate_limited' && check.retryAfterSec ? { 'retry-after': String(check.retryAfterSec) } : undefined;
+    return { __response: { status, json: { error: code }, ...(headers ? { headers } : {}) } };
   }
   const expiresAt = new Date(now.getTime() + APPROVAL_TTL_MS);
   const { rows: ins } = await db.query(

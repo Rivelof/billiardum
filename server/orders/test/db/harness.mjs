@@ -100,7 +100,8 @@ async function startQrProxy(emuBase) {
   return { server, base: `http://127.0.0.1:${server.address().port}`, faults, created };
 }
 
-export async function setup() {
+/** @param {{ poolMax?: number }} [options] poolMax — размер пула app_api (тест R-1 — маленький пул) */
+export async function setup({ poolMax = 20 } = {}) {
   const db = await createTestDatabase();
   await seedClubB(db.pool);
   const config = testConfig();
@@ -118,7 +119,7 @@ export async function setup() {
   const proxy = await startQrProxy(emuBase);
   const moneyConfig = { ...loadMoneyConfig({ YOOKASSA_API_URL: `${proxy.base}/v3`, PUBLIC_HOST: 'bl.test', NODE_ENV: 'test' }, { encKey: config.encKey }) };
 
-  const pool = appPool(db.url, { max: 20 });
+  const pool = appPool(db.url, { max: poolMax });
   const log = memoryLog();
   const outbox = createOutbox({ pollMs: 100 });
   const sseEvents = [];
