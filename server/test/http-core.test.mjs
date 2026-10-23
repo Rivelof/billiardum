@@ -13,7 +13,7 @@ import { createSseHub, formatEvent } from '../http/sse.mjs';
 import { httpRequest } from '../lib/http-client.mjs';
 import { createTelegramBot } from '../lib/telegram-bot.mjs';
 import { createHttpHandler } from '../http/server.mjs';
-import { HttpError, safeErrorData } from '../http/errors.mjs';
+import { ERROR_CODES, HttpError, safeErrorData } from '../http/errors.mjs';
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const CLUB = 'c1000000-0000-4000-8000-000000000001';
@@ -193,6 +193,8 @@ describe('роутер', () => {
     assert.deepEqual([x.cache, x.rateLimit.max], [60, 120]);
     assert.equal(r.routes.find((c) => c.path === '/api/public/s').cache, undefined, 'поток без кэша');
     assert.deepEqual(safeErrorData({ limit: 1500, rating: 1620, nick: 'Иван' }), { limit: 1500, rating: 1620 });
+    // Коды M4 в словаре.
+    for (const code of ['rating_above_limit', 'online_booking', 'already_claimed', 'request_closed', 'city_required', 'no_profile', 'invite_not_pending']) assert.ok(ERROR_CODES.has(code), code);
     // reason — только код из закрытого списка.
     assert.deepEqual(safeErrorData({ reason: 'tournament', busy_until: '2026-10-23T18:00:00.000Z' }), { reason: 'tournament', busy_until: '2026-10-23T18:00:00.000Z' });
     for (const reason of ['Стол занят Иваном +79990000000', 'unknown_code', 'TOURNAMENT', 'a'.repeat(40), 5]) assert.equal(safeErrorData({ reason }), null, String(reason));

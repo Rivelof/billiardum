@@ -52,6 +52,8 @@ export const ERROR_CODES = new Set([
   'already_claimed',
   'already_decided',
   'request_closed',
+  // M4 directory: для действия нужен город (409).
+  'city_required',
   // M4 plus (409): нет профиля игрока, партия в турнирной сессии, партия не ждёт подтверждения
   // или не в споре, приглашение не ждёт ответа.
   'no_profile',
