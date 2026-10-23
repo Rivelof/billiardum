@@ -60,7 +60,8 @@ export const routes = [
     path: '/api/plus/matches/{id}/confirm',
     auth: 'guest',
     requires: ['consent'],
-    handler: async (ctx, req) => ({ status: 200, json: await svc().confirmMatch(ctx.db, { userId: userId(req), matchId: req.params.id }) }),
+    // Тело { score_a, score_b } (необязательно) — счёт, который игрок видел: изменился — 409 score_changed.
+    handler: async (ctx, req) => ({ status: 200, json: await svc().confirmMatch(ctx.db, { userId: userId(req), matchId: req.params.id, body: req.body }) }),
   },
   {
     method: 'POST',

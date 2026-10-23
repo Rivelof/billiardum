@@ -42,6 +42,8 @@
 //   extendFromTournament(db, { resourceId, matchId, until, staffId? }) → { ok, session_id|null, until, extended } (№146)
 //       матч идёт дольше отведённого: игра матча — paid_until = until и session.extend (журнал);
 //       матч не начат — продлевается удержание турнира. Идемпотентно; ничего по матчу — not_found.
+//       Окно (№147, tournaments.matchLightWindow): только матч playing идущего турнира на этом столе
+//       (иначе session_not_active), until не дальше ends_at + match_minutes (иначе limit_exceeded).
 //   Пока идёт турнир (tournamentHolds турниров, №146), его столы и между матчами не принимают QR,
 //   оплату, депозит, старт по брони, продление и «Продолжить»: table_busy { reason: 'tournament',
 //   busy_until } (оплата — возврат с причиной tournament); getResourceStatus — reserved, hold_source

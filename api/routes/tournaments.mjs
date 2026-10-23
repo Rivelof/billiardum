@@ -105,7 +105,8 @@ export const routes = [
     auth: 'guest',
     rateLimit: { max: 30, windowMs: 60_000 },
     async handler(ctx, req) {
-      return { status: 200, json: await svc().confirm(ctx.db, { matchId: req.params.id, userId: userId(req) }) };
+      // Тело { score_a, score_b } (необязательно) — счёт, который игрок видел: изменился — 409 score_changed.
+      return { status: 200, json: await svc().confirm(ctx.db, { matchId: req.params.id, userId: userId(req), body: req.body }) };
     },
   },
   // Исправление организатора с причиной (журнал manual.tournament_score).

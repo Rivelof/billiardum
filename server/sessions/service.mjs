@@ -1095,6 +1095,9 @@ export function createLightService(opts) {
    * Игра идёт — paid_until = until, команда session.extend (журнал device.cmd), запись
    * session.extend с match_id; матч ещё не начат — продлевается удержание. Идемпотентно:
    * until не позже текущего конца — без изменений. Ничего нет по матчу — not_found.
+   * Окно турнира (№147, инвариант 4): только матч playing идущего турнира на этом столе
+   * (иначе session_not_active) и не дальше конца турнира + время матча (иначе limit_exceeded);
+   * окна нет (модуль турниров недоступен) — not_found: свет без оплаты не продлевается вслепую.
    * @returns {Promise<{ ok: true, session_id: string|null, until: string, extended: boolean }>}
    */
   async function extendFromTournament(db, { resourceId, matchId, until, staffId = null, system = staffId === null }) {
@@ -1107,6 +1110,11 @@ export function createLightService(opts) {
     if (!system) await requireRole(db, clubId, staffId, ROLES.reception);
     const res = await lockResource(db, resourceId);
     if (!res) fail('not_found', 'resource');
+    const w = typeof deps.tournaments.matchLightWindow === 'function' ? await deps.tournaments.matchLightWindow(db, { matchId }) : null;
+    if (!w || w.resource_id !== resourceId) fail('not_found', 'tournament_match');
+    if (w.status !== 'playing' || w.tournament_status !== 'running') fail('session_not_active', `match ${w.status}, tournament ${w.tournament_status}`);
+    const limit = new Date(w.until_max);
+    if (Number.isNaN(limit.getTime()) || u > limit) fail('limit_exceeded', `tournament window until ${iso(limit)}`);
     const { rows } = await db.query('select id from bl.sessions where match_id = $1 and resource_id = $2', [matchId, resourceId]);
     const s = rows[0] ? await loadSession(db, rows[0].id, { lock: true }) : null;
     if (s && isOpen(s)) {

@@ -546,6 +546,13 @@ describe('счёт: спор и исправление организатора'
     assert.equal(a.reason, 'Смотрели видео: выиграл первый');
     assert.equal(a.actor_id, manager.id);
     assert.deepEqual(a.data.after, { score_a: 2, score_b: 1 });
+    // M4-I5: исправление счёта — ручное действие: тревога manual_action владельцу с причиной, сотрудником и сутью.
+    const [al] = await h.q("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'match_id' = $2", [CLUB_A, m.id]);
+    assert.ok(al, 'тревога manual_action');
+    assert.deepEqual([al.data.action, al.data.reason, al.data.staff_id, al.data.before, al.data.after], ['manual.tournament_score', 'Смотрели видео: выиграл первый', manager.id, 'спор', '2:1']);
+    const toOwner = (await h.notifications(owner.id, 'alarm')).filter((n) => n.data.alarm_id === al.id);
+    assert.equal(toOwner.length, 1, 'владелец узнал сразу');
+    assert.match(toOwner[0].text, /счёт матча исправлен \(спор → 2:1\) — .+: Смотрели видео: выиграл первый/);
     const ev = (await h.outboxEvents('tournament.match_finished')).filter((e) => e.payload.match_id === m.id);
     assert.equal(ev.length, 1);
     assert.equal(ev[0].payload.winner_id, m.user_a);
@@ -670,5 +677,132 @@ describe('публичная афиша и ТВ', () => {
     assert.ok(h.sseEvents.some((e) => e.channel === `club:${CLUB_A}` && e.event === 'tournament' && e.data.tournament_id === t.id));
     ac.abort();
     await pump;
+  });
+});
+
+describe('№147 (M4-2, M4-3): свет матча ограничен, «Подтвердить» сверяет счёт', () => {
+  /** Турнир на двоих, матч идёт; окно турнира: начало через 60 минут, длина lenMin. */
+  async function liveMatch(tableN, base, { lenMin = 120, matchMinutes = 60 } = {}) {
+    const manager = await h.login(STAFF.manager);
+    const t0 = h.clock.now().getTime();
+    const at = (min) => new Date(t0 + min * MIN).toISOString();
+    const t = await h.createTournament({ title: `Окно ${base}`, discipline: 'pool', fee_kopecks: 0, places: 2, match_minutes: matchMinutes, resource_ids: [table(tableN)], starts_at: at(60), ends_at: at(60 + lenMin) });
+    const ps = await h.enroll(t.id, eight(base).slice(0, 2));
+    h.clock.set(t0 + 60 * MIN);
+    const r = await h.request('POST', `/api/clubs/${CLUB_A}/tournaments/${t.id}/start`, { token: manager.token });
+    assert.equal(r.status, 200, r.text);
+    const [m] = await h.matches(t.id);
+    assert.equal(m.status, 'playing');
+    const users = ps.map((p) => p.user);
+    return { t, m, ua: users.find((u) => u.id === m.user_a), ub: users.find((u) => u.id === m.user_b), endsAt: t0 + (60 + lenMin) * MIN };
+  }
+  const calls = (fn, matchId) => h.calls.light.filter((c) => c.fn === fn && c.args.matchId === matchId);
+  async function ticksUntil(ms, stepMin = 5) {
+    while (h.clock.now().getTime() + stepMin * MIN <= ms) {
+      h.clock.add(stepMin * MIN);
+      await h.tick();
+    }
+  }
+
+  it('один внёс счёт — продлений нет, через 5 минут свет гаснет (tournament_end) и стол свободен', async () => {
+    const { t, m, ua, endsAt } = await liveMatch(6, 900);
+    const r = await h.request('POST', `/api/tournaments/matches/${m.id}/score`, { token: ua.token, body: { score_a: 2, score_b: 0 } });
+    assert.equal(r.json.status, 'pending_confirm');
+    const reportedAt = h.clock.now().getTime();
+    h.clock.add(4 * MIN);
+    await h.tick();
+    assert.equal(calls('stopFromTournament', m.id).length, 0, 'доведение 5 минут');
+    h.clock.set(reportedAt + 5 * MIN);
+    await h.tick();
+    const stop = calls('stopFromTournament', m.id);
+    assert.equal(stop.length, 1, 'свет погашен');
+    assert.deepEqual([stop[0].args.resourceId, stop[0].args.system], [table(6), true]);
+    assert.ok(h.calls.light.some((c) => c.fn === 'clearReserved' && c.args.refId === m.id), 'удержание стола снято');
+    let [mm] = await h.matches(t.id);
+    assert.equal(mm.status, 'pending_confirm');
+    assert.ok(mm.hold_until.getTime() <= h.clock.now().getTime(), 'стол больше не держится матчем');
+    assert.equal((await h.audit('tournament.match_light_off')).filter((a) => a.data.match_id === m.id).length, 1);
+    // Сутки после конца турнира: ни продлений, ни повторных команд.
+    await ticksUntil(endsAt + 24 * 60 * MIN, 60);
+    assert.equal(calls('extendFromTournament', m.id).length, 0, 'внесённый счёт не продлевается');
+    assert.equal(calls('stopFromTournament', m.id).length, 1);
+    [mm] = await h.matches(t.id);
+    assert.ok(mm.hold_until.getTime() < endsAt);
+  });
+
+  it('разный счёт (спор) — свет гаснет так же; стол не ждёт организатора', async () => {
+    const { t, m, ua, ub } = await liveMatch(6, 910);
+    await h.request('POST', `/api/tournaments/matches/${m.id}/score`, { token: ua.token, body: { score_a: 2, score_b: 1 } });
+    h.clock.add(2 * MIN);
+    const d = await h.request('POST', `/api/tournaments/matches/${m.id}/score`, { token: ub.token, body: { score_a: 1, score_b: 2 } });
+    assert.equal(d.json.status, 'disputed');
+    h.clock.add(3 * MIN);
+    await h.tick();
+    assert.equal(calls('stopFromTournament', m.id).length, 1, '5 минут от первого счёта, а не от спора');
+    const [mm] = await h.matches(t.id);
+    assert.equal(mm.status, 'disputed');
+    assert.ok(mm.hold_until.getTime() <= h.clock.now().getTime());
+  });
+
+  it('игра без счёта — продление не дальше конца турнира + время матча; тревога «матч затянулся» одна на матч', async () => {
+    const { t, m, endsAt } = await liveMatch(6, 920, { lenMin: 60, matchMinutes: 60 });
+    const limit = endsAt + 60 * MIN;
+    await ticksUntil(endsAt + 30 * 60 * MIN);
+    const ext = calls('extendFromTournament', m.id);
+    assert.ok(ext.length >= 1 && ext.length <= 4, `продлений: ${ext.length}`);
+    for (const e of ext) assert.ok(Date.parse(e.args.until) <= limit, 'не дальше предела');
+    assert.equal(Date.parse(ext.at(-1).args.until), limit);
+    const [mm] = await h.matches(t.id);
+    assert.equal(mm.hold_until.getTime(), limit, 'удержание кончилось на пределе');
+    const alarms = await h.q("select * from bl.alarms where club_id = $1 and type = 'tournament_match_overdue' and data->>'match_id' = $2", [CLUB_A, m.id]);
+    assert.equal(alarms.length, 1);
+    assert.equal(alarms[0].count, 1, 'склейка по матчу: одна тревога, без повторов на каждом тике');
+    const owner = await h.login(STAFF.owner);
+    const manager = await h.login(STAFF.manager);
+    for (const u of [owner, manager]) {
+      const n = (await h.notifications(u.id, 'alarm')).filter((x) => x.data.alarm_id === alarms[0].id);
+      assert.equal(n.length, 1, 'организатор и владелец знают');
+      assert.match(n[0].text, /затянулся — свет погаснет в \d{2}:\d{2}/);
+    }
+  });
+
+  it('M4-3: соперник переписал счёт — «Подтвердить» с увиденным счётом 409 score_changed; с новым — сыгран', async () => {
+    const { t, m, ua, ub } = await liveMatch(6, 930);
+    let r = await h.request('POST', `/api/tournaments/matches/${m.id}/score`, { token: ua.token, body: { score_a: 1, score_b: 2 } });
+    assert.equal(r.status, 200);
+    r = await h.request('POST', `/api/tournaments/matches/${m.id}/score`, { token: ua.token, body: { score_a: 2, score_b: 1 } });
+    assert.equal(r.status, 200, 'свой счёт до подтверждения переписать можно');
+    const notes = await h.notifications(ub.id, 'tournament.score');
+    assert.match(notes.at(-1).text, /соперник изменил счёт на 2:1/);
+    r = await h.request('POST', `/api/tournaments/matches/${m.id}/confirm`, { token: ub.token, body: { score_a: 1, score_b: 2 } });
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error, 'score_changed');
+    let [mm] = await h.matches(t.id);
+    assert.equal(mm.status, 'pending_confirm', 'ничего не подтверждено');
+    assert.equal(mm.report_b, null);
+    r = await h.request('POST', `/api/tournaments/matches/${m.id}/confirm`, { token: ub.token, body: { score_a: 2 } });
+    assert.equal(r.status, 400, 'счёт — оба числа');
+    r = await h.request('POST', `/api/tournaments/matches/${m.id}/confirm`, { token: ub.token, body: { score_a: 2, score_b: 1 } });
+    assert.equal(r.status, 200, r.text);
+    [mm] = await h.matches(t.id);
+    assert.deepEqual([mm.status, mm.score_a, mm.score_b, mm.result_source], ['done', 2, 1, 'players']);
+    // Повтор с тем же счётом — тот же ответ; с другим — score_changed.
+    assert.equal((await h.request('POST', `/api/tournaments/matches/${m.id}/confirm`, { token: ub.token, body: { score_a: 2, score_b: 1 } })).status, 200);
+    assert.equal((await h.request('POST', `/api/tournaments/matches/${m.id}/confirm`, { token: ub.token, body: { score_a: 1, score_b: 2 } })).json.error, 'score_changed');
+    // Без тела — как раньше (старый клиент).
+    const x = await liveMatch(6, 940);
+    await h.request('POST', `/api/tournaments/matches/${x.m.id}/score`, { token: x.ua.token, body: { score_a: 2, score_b: 0 } });
+    assert.equal((await h.request('POST', `/api/tournaments/matches/${x.m.id}/confirm`, { token: x.ub.token })).json.status, 'done');
+  });
+
+  it('M4-7: публичный поток и ТВ — только у опубликованного турнира, иначе 404', async () => {
+    const t0 = h.clock.now().getTime();
+    const draft = await h.createTournament(
+      { title: 'Черновик потока', starts_at: new Date(t0 + 600 * MIN).toISOString(), ends_at: new Date(t0 + 900 * MIN).toISOString() },
+      { publish: false },
+    );
+    for (const id of [draft.id, randomUUID()]) {
+      assert.equal((await h.request('GET', `/api/public/tournaments/${id}/stream`)).status, 404, `ТВ ${id}`);
+    }
   });
 });

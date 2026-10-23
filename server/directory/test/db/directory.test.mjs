@@ -213,6 +213,60 @@ describe('каталог клубов', { skip }, () => {
     assert.equal((await h.audit('platform.listing_approve')).filter((a) => a.actor_id === operator.id && a.club_id === null).length, 2);
   });
 
+  it('M4-4: одобрить «Подтвердить клуб» — только пока карточка listed; остальные открытые заявки отклоняются с уведомлением', async () => {
+    const mk = await h.request('POST', '/api/platform/cards', {
+      token: operator.token,
+      body: { city_slug: 'ekaterinburg', name: 'Клуб под заявки', address: 'ул. Малышева, 5', disciplines: ['pool'] },
+    });
+    assert.equal(mk.status, 201, mk.text);
+    const card = mk.json.id;
+    const owner = await h.login('+79990001050');
+    const rival = await h.login('+79990001051');
+    const third = await h.login('+79990001052');
+    const claims = [];
+    for (const u of [owner, rival, third]) {
+      const c = await h.request('POST', '/api/directory/claim', { token: u.token, body: { listing_id: card, comment: 'Мой клуб' } });
+      assert.equal(c.status, 201, c.text);
+      claims.push(c.json.id);
+    }
+    const ok = await h.request('PATCH', `/api/platform/listings/${claims[0]}`, { token: operator.token, body: { action: 'approve', reason: 'Документы' } });
+    assert.equal(ok.status, 200, ok.text);
+    const rows = await h.q('select id, status, reason from bl.directory_claims where id = any($1::uuid[])', [claims]);
+    const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+    assert.equal(by[claims[0]].status, 'approved');
+    for (const id of claims.slice(1)) {
+      assert.equal(by[id].status, 'rejected', 'остальные заявки на карточку закрыты');
+      assert.match(by[id].reason, /другому заявителю/);
+    }
+    for (const u of [rival, third]) {
+      const n = await h.notifications(u.id, 'directory.claim_decision');
+      assert.equal(n.length, 1, 'заявитель узнал об отказе');
+      assert.match(n[0].text, /отклонена/);
+    }
+    assert.equal((await h.audit('platform.listing_reject')).filter((a) => claims.includes(a.object_id) && a.data.auto === true).length, 2);
+    // Заявка, которая всё же осталась открытой (гонка, старые данные): одобрение — 409, контакт не меняется.
+    await h.admin.query("update bl.directory_claims set status = 'new', reason = null where id = $1", [claims[1]]);
+    const late = await h.request('PATCH', `/api/platform/listings/${claims[1]}`, { token: operator.token, body: { action: 'approve' } });
+    assert.equal(late.status, 409);
+    assert.equal(late.json.error, 'already_claimed');
+    const [c] = await h.q('select status, contact_user_id from bl.club_public where id = $1', [card]);
+    assert.deepEqual(c, { status: 'claimed', contact_user_id: owner.id });
+    assert.equal((await h.q('select status from bl.directory_claims where id = $1', [claims[1]]))[0].status, 'new', 'отказ одобрения ничего не меняет');
+    // Отклонить её можно.
+    const rej = await h.request('PATCH', `/api/platform/listings/${claims[1]}`, { token: operator.token, body: { action: 'reject', reason: 'Уже подтверждён' } });
+    assert.equal(rej.status, 200, rej.text);
+    // Карточка клуба программы (platform) тоже не «подтверждается» заявкой.
+    await h.admin.query(
+      "insert into bl.directory_claims (kind, card_id, user_id, user_phone, payload, status, created_at, updated_at) values ('claim', $1, $2, $3, '{}'::jsonb, 'new', now(), now())",
+      [CARD_A, rival.id, rival.phone],
+    );
+    const [pc] = await h.q("select id from bl.directory_claims where card_id = $1 and user_id = $2 and status = 'new'", [CARD_A, rival.id]);
+    const pr = await h.request('PATCH', `/api/platform/listings/${pc.id}`, { token: operator.token, body: { action: 'approve' } });
+    assert.equal(pr.json.error, 'already_claimed');
+    const [a] = await h.q('select status, contact_user_id from bl.club_public where id = $1', [CARD_A]);
+    assert.notEqual(a.contact_user_id, rival.id);
+  });
+
   it('города у оператора: создать (name_in и пояс обязательны), изменить без смены слага, журнал платформы; «Добавить клуб» в новом городе', async () => {
     assert.equal((await h.request('GET', '/api/platform/cities', { token: guest.token })).status, 403);
     const bad = await h.request('POST', '/api/platform/cities', { token: operator.token, body: { name: 'Пермь', timezone: 'Asia/Yekaterinburg' } });
@@ -287,8 +341,12 @@ describe('каталог клубов', { skip }, () => {
     const r1 = await h.request('POST', '/api/reviews', { token: author.token, body: { club_id: CLUB_A, rating: 4, text: 'Хорошо, звоните +7 912 345-67-89' } });
     assert.equal(r1.status, 200, r1.text);
     assert.equal(r1.json.text, 'Хорошо, звоните ***');
-    const r2 = await h.request('POST', '/api/reviews', { token: author.token, body: { club_id: CLUB_A, rating: 5, text: 'Ещё лучше' } });
+    const r2 = await h.request('POST', '/api/reviews', {
+      token: author.token,
+      body: { club_id: CLUB_A, rating: 5, text: 'Ещё лучше: +7.912.345.67.81, 8/912/345/67/82, 8 (912) 345.67.83; были 21.10.2026 12:30, час 1 490 ₽' },
+    });
     assert.equal(r2.json.id, r1.json.id, 'один отзыв на гостя и клуб');
+    assert.equal(r2.json.text, 'Ещё лучше: ***, ***, ***; были 21.10.2026 12:30, час 1 490 ₽', 'M4-5: точки и косые черты — тоже телефон; дата, время и цена остаются');
     assert.equal((await h.request('GET', `/api/reviews/mine?club_id=${CLUB_A}`, { token: author.token })).json.rating, 5);
     // Ответ клуба — управляющий; автор отвечать не может (база).
     const rep = await h.request('POST', `/api/reviews/${r1.json.id}/reply`, { token: manager.token, club: CLUB_A, body: { text: 'Спасибо!' } });

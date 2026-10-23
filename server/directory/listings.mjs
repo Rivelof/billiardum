@@ -225,10 +225,15 @@ export function createListingsService({ deps, log, clock, cities }) {
     return { items };
   }
 
+  /** Причина автоматического отказа остальным заявкам на карточку, которую подтвердили (M4-4). */
+  const CLAIMED_BY_OTHER = 'Права на этот клуб подтверждены другому заявителю.';
+
   /**
    * PATCH /api/platform/listings/{id} {action: 'approve'|'reject', reason, city_slug?, new_city?} — оператор.
    * Города нет в справочнике — 409 city_required (или new_city: {name, name_in, timezone, region?, slug?}).
    * claim → карточка claimed, контакт для заявок — заявитель; add → новая карточка listed.
+   * Одобрить claim можно только пока карточка listed, иначе 409 already_claimed (M4-4); при одобрении
+   * остальные открытые заявки claim на эту карточку отклоняются с причиной, заявителям — уведомление.
    */
   async function patchPlatform(db, { id, body, operatorId }) {
     if (!isUuid(id)) fail('not_found', 'claim');
@@ -242,9 +247,21 @@ export function createListingsService({ deps, log, clock, cities }) {
     const t = now();
     let cardId = c.card_id;
     const approve = action === 'approve' || action === 'approved';
+    let othersRejected = [];
     if (approve && c.kind === 'claim') {
-      const card = await loadCard(db, c.card_id);
-      await updateCard(db, card.id, { status: card.status === 'listed' ? 'claimed' : card.status, contact_user_id: c.user_id });
+      // Карточка — под блокировкой: два оператора не одобрят две заявки на одну карточку.
+      const { rows: locked } = await db.query('select id, status from bl.club_public where id = $1 for update', [c.card_id]);
+      const card = locked[0];
+      if (!card) fail('not_found', 'listing');
+      if (card.status !== 'listed') fail('already_claimed', card.status);
+      await updateCard(db, card.id, { status: 'claimed', contact_user_id: c.user_id });
+      const { rows: others } = await db.query(
+        `update bl.directory_claims set status = 'rejected', operator_id = $3, reason = $4, updated_at = $5
+          where kind = 'claim' and card_id = $1 and status = 'new' and id <> $2
+          returning id, user_id`,
+        [card.id, c.id, operatorId, CLAIMED_BY_OTHER, t],
+      );
+      othersRejected = others;
     }
     if (approve && c.kind === 'add') {
       const p = c.payload ?? {};
@@ -283,6 +300,20 @@ export function createListingsService({ deps, log, clock, cities }) {
           : `Заявка на карточку клуба отклонена.${reason ? ` ${reason}` : ''}`,
         data: { claim_id: c.id, listing_id: cardId },
     });
+    for (const o of othersRejected) {
+      await deps.audit.appendAudit(db, {
+        action: 'platform.listing_reject',
+        objectType: 'directory_claim',
+        objectId: o.id,
+        reason: CLAIMED_BY_OTHER,
+        data: { claim_id: o.id, kind: 'claim', listing_id: cardId, auto: true, approved_claim_id: c.id },
+      });
+      await notifyUser(db, deps, log, o.user_id, {
+        kind: 'directory.claim_decision',
+        text: `Заявка на карточку клуба отклонена. ${CLAIMED_BY_OTHER} Если это ваш клуб — напишите в поддержку Бильярдума.`,
+        data: { claim_id: o.id, listing_id: cardId },
+      });
+    }
     const { rows: after } = await db.query('select * from bl.directory_claims where id = $1', [c.id]);
     return claimView(db, after[0]);
   }

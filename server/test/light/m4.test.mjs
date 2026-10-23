@@ -21,10 +21,14 @@ describe('M4: турнир и участники', { skip: SKIP }, () => {
   let h;
   let svc;
   let tIntervals = []; // подделка tournamentHolds (модуль турниров)
+  const windows = new Map(); // подделка matchLightWindow: окно света матча (№147)
   before(async () => {
     t = await createTestDb();
     const plusApi = { async nicksOf(_db, { userIds }) { return Object.fromEntries(userIds.filter((u) => u === GUEST(1)).map((u) => [u, 'Шар'])); } };
-    const tournamentsApi = { async tournamentHolds(_db, { resourceId }) { return tIntervals.filter((x) => x.resource === resourceId); } };
+    const tournamentsApi = {
+      async tournamentHolds(_db, { resourceId }) { return tIntervals.filter((x) => x.resource === resourceId); },
+      async matchLightWindow(_db, { matchId }) { return windows.get(matchId) ?? null; },
+    };
     h = await startLight(t, { extra: { plusApi, tournamentsApi } });
     svc = h.st.service;
   });
@@ -148,6 +152,7 @@ describe('M4: турнир и участники', { skip: SKIP }, () => {
   it('extendFromTournament: до старта — удержание, в игре — paid_until и session.extend с журналом; идемпотентно', async () => {
     const M3 = randomUUID();
     const c = h.ctl.get(2);
+    windows.set(M3, { status: 'playing', tournament_status: 'running', resource_id: RES(2), until_max: at(90 * MIN).toISOString() });
     await h.asSystem(CLUB, (db) => api.setReserved(db, { resourceId: RES(2), until: at(30 * MIN), source: 'tournament', refId: M3 }));
     assert.equal((await caught(() => h.asSystem(CLUB, (db) => api.extendFromTournament(db, { resourceId: RES(2), matchId: randomUUID(), until: at(45 * MIN) })))).code, 'not_found');
     const e1 = await h.asSystem(CLUB, (db) => api.extendFromTournament(db, { resourceId: RES(2), matchId: M3, until: at(45 * MIN) }));
@@ -168,6 +173,17 @@ describe('M4: турнир и участники', { skip: SKIP }, () => {
     assert.equal(e3.extended, false, 'повтор — без изменений');
     await h.settle();
     assert.equal(c.received.length, cmdsBefore, 'и без новой команды');
+    // №147 (M4-2): за окном турнира (конец + время матча) — отказ; счёт внесён — не продлевается.
+    const past = await caught(() => h.asSystem(CLUB, (db) => api.extendFromTournament(db, { resourceId: RES(2), matchId: M3, until: at(60 * MIN) })));
+    assert.equal(past.code, 'limit_exceeded', 'за пределом окна турнира');
+    windows.set(M3, { ...windows.get(M3), status: 'pending_confirm' });
+    assert.equal((await caught(() => h.asSystem(CLUB, (db) => api.extendFromTournament(db, { resourceId: RES(2), matchId: M3, until: at(30 * MIN) })))).code, 'session_not_active');
+    windows.set(M3, { ...windows.get(M3), status: 'playing', resource_id: RES(1) });
+    assert.equal((await caught(() => h.asSystem(CLUB, (db) => api.extendFromTournament(db, { resourceId: RES(2), matchId: M3, until: at(30 * MIN) })))).code, 'not_found', 'окно другого стола');
+    windows.set(M3, { ...windows.get(M3), resource_id: RES(2) });
+    await h.settle();
+    assert.equal(c.received.length, cmdsBefore, 'отказы — без команд контроллеру');
+    assert.equal((await session(r.session_id)).paid_until.getTime(), at(20 * MIN).getTime(), 'paid_until не сдвинулся');
     await h.advance(10 * MIN);
     assert.equal((await session(r.session_id)).status, 'active', 'старый конец прошёл, матч идёт');
     await h.asSystem(CLUB, (db) => api.stopFromTournament(db, { resourceId: RES(2), matchId: M3, system: true }));

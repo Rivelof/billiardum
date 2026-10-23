@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac } from 'node:crypto';
-import { DEFAULT_TRUSTED_PROXY_CIDRS, parseCidrs } from '../http/request.mjs';
+import { DEFAULT_TRUSTED_PROXY_CIDRS, parseCidrs, tooWideCidrs } from '../http/request.mjs';
 import { SERVER_CLIENT_ID } from './dynsec.mjs';
 import { loadEncKey } from './secrets.mjs';
 
@@ -48,20 +48,34 @@ export function loadServerConfig(env = process.env) {
   }
   const consentVersion = env.CONSENT_VERSION || DEFAULT_CONSENT_VERSION;
   if (!/^[0-9A-Za-z._-]{1,32}$/.test(consentVersion)) throw new ConfigError('CONSENT_VERSION');
-  // Caddy: X-Forwarded-For принимается только с этих адресов (по умолчанию loopback и частные сети Docker).
+  // Caddy: X-Forwarded-For принимается только с этих адресов. В разработке по умолчанию — loopback и
+  // частные сети Docker; в production (M4-I4) список обязателен и только из узких сетей (≤ /24, ≤ /120).
+  const list = (v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : []);
+  const proxyList = list(env.TRUSTED_PROXY_CIDRS);
+  if (production && proxyList.length === 0) {
+    throw new ConfigError('TRUSTED_PROXY_CIDRS обязательна в production: адреса Caddy и сайта (например 10.231.47.22/32,10.231.47.6/32)');
+  }
+  const narrowOnly = (name, entries) => {
+    if (!production) return;
+    const wide = tooWideCidrs(entries);
+    if (wide.length > 0) throw new ConfigError(`${name}: в production сети не шире /24 (IPv4) и /120 (IPv6): ${wide.join(', ')}`);
+  };
   let trustedProxies;
   try {
-    trustedProxies = parseCidrs(
-      env.TRUSTED_PROXY_CIDRS ? env.TRUSTED_PROXY_CIDRS.split(',').map((x) => x.trim()).filter(Boolean) : DEFAULT_TRUSTED_PROXY_CIDRS,
-    );
+    trustedProxies = parseCidrs(proxyList.length > 0 ? proxyList : DEFAULT_TRUSTED_PROXY_CIDRS);
+    narrowOnly('TRUSTED_PROXY_CIDRS', proxyList);
   } catch (err) {
+    if (err instanceof ConfigError) throw err;
     throw new ConfigError(`TRUSTED_PROXY_CIDRS: ${err.message}`);
   }
   // Сервис сайта (M4): с этих адресов публичный API /api/public/* без лимита по IP.
   let publicTrustedCidrs;
   try {
-    publicTrustedCidrs = env.PUBLIC_API_TRUSTED_CIDRS ? parseCidrs(env.PUBLIC_API_TRUSTED_CIDRS.split(',').map((x) => x.trim()).filter(Boolean)) : [];
+    const publicList = list(env.PUBLIC_API_TRUSTED_CIDRS);
+    publicTrustedCidrs = parseCidrs(publicList);
+    narrowOnly('PUBLIC_API_TRUSTED_CIDRS', publicList);
   } catch (err) {
+    if (err instanceof ConfigError) throw err;
     throw new ConfigError(`PUBLIC_API_TRUSTED_CIDRS: ${err.message}`);
   }
   const telegramUsername = env.TELEGRAM_BOT_USERNAME || null;

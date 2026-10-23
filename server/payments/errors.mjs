@@ -40,15 +40,26 @@ export const STATUS_BY_CODE = Object.freeze({
  * Форма для роутера (core): ошибка с полем data — объект только из этих полей;
  * ответ { error: code, ...data }.
  */
-export const PUBLIC_DATA_FIELDS = Object.freeze(['booking_id']);
+export const PUBLIC_DATA_FIELDS = Object.freeze(['booking_id', 'reason', 'busy_until']);
 
-/** Только разрешённые поля: UUID или короткие коды/числа. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Только разрешённые поля: booking_id — UUID или короткий код; reason — код причины занятости
+ * стола (light: 'tournament' и т. п.); busy_until — время ISO (M4-I1: 409 table_busy
+ * {reason: 'tournament', busy_until} на столе турнира). Роутер core ещё раз фильтрует по своему списку.
+ */
 export function publicData(data) {
   if (!data || typeof data !== 'object') return undefined;
   const out = {};
   for (const k of PUBLIC_DATA_FIELDS) {
     const v = data[k];
-    if (v === null || (typeof v === 'string' && /^[0-9a-z_-]{1,64}$/i.test(v)) || Number.isSafeInteger(v)) out[k] = v;
+    if (v === undefined) continue;
+    if (k === 'reason') {
+      if (typeof v === 'string' && /^[a-z_]{1,32}$/.test(v)) out[k] = v;
+    } else if (k === 'busy_until') {
+      if (v === null || (typeof v === 'string' && ISO_TIME.test(v))) out[k] = v;
+    } else if (v === null || (typeof v === 'string' && /^[0-9a-z_-]{1,64}$/i.test(v)) || Number.isSafeInteger(v)) out[k] = v;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

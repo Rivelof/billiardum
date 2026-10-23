@@ -60,6 +60,8 @@ export const ALARM_TEXTS = {
   settlement_receipt_failed: 'Не пробит чек зачёта предоплаты',
   // Ревью входа п. 5: подбор PIN на терминале.
   terminal_locked: 'Терминал ресепшена заблокирован: 10 неверных PIN за час. Разблокируйте в настройках клуба',
+  // M4 (№147): матч турнира упёрся в предел света (конец турнира + время матча).
+  tournament_match_overdue: 'Матч турнира затянулся: свет погаснет в конце отведённого времени',
 };
 
 /**
@@ -96,6 +98,7 @@ export const ALARM_LEVELS = {
   receipt_fd_conflict: 'critical',
   settlement_receipt_failed: 'important',
   terminal_locked: 'critical',
+  tournament_match_overdue: 'important',
 };
 
 /**

@@ -7,7 +7,7 @@
 //   light       (server/sessions/api.mjs):    sessionOf, sessionParticipants
 //   bookings    (server/bookings/api.mjs):    createBooking
 //   tournaments (server/tournaments/api.mjs): matchForRating (необязательно)
-//   core: audit.appendAudit, outbox, notify.send / sendToClubStaff, sse.publish — из ctx
+//   core: audit.appendAudit, outbox, notify.send / sendToClubStaff, alarms.raise, sse.publish — из ctx
 
 import { PlusError } from './errors.mjs';
 
@@ -16,6 +16,7 @@ const MODULES = {
   bookings: '../bookings/api.mjs',
   tournaments: '../tournaments/api.mjs',
   audit: '../lib/audit.mjs',
+  alarms: '../alarms/index.mjs',
   notify: '../notify/index.mjs',
   outbox: '../outbox.mjs',
 };
@@ -46,7 +47,7 @@ function notConfigured(owner, name) {
 
 /**
  * @param {object} ctx общий контекст сервера (§2.1) и необязательный ctx.plusDeps
- * @returns {Promise<{ light, bookings, tournaments, audit, notify, outbox, sse, missing: string[] }>}
+ * @returns {Promise<{ light, bookings, tournaments, audit, alarms, notify, outbox, sse, missing: string[] }>}
  */
 export async function resolveDeps(ctx = {}, log = null) {
   const override = ctx.plusDeps ?? {};
@@ -78,6 +79,8 @@ export async function resolveDeps(ctx = {}, log = null) {
   out.notify = ctx.notify?.send ? ctx.notify : await tryImport(MODULES.notify);
   out.outbox = ctx.outbox?.enqueue ? ctx.outbox : await tryImport(MODULES.outbox);
   out.sse = ctx.sse?.publish ? ctx.sse : { publish() {} };
+  // Тревоги (ручное действие — решение спора, M4-I5): из ctx, иначе модуль core.
+  out.alarms = ctx.alarms?.raise ? ctx.alarms : await tryImport(MODULES.alarms);
   out.missing = missing;
   if (missing.length > 0) log?.warn?.('plus_deps_stubbed', { missing });
   return out;

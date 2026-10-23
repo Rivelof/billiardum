@@ -10,6 +10,7 @@ import { maskPhone, newToken, normalizePhone, tokenHash } from '../auth/index.mj
 import { hashPin, verifyPin } from '../auth/pin.mjs';
 import { dataCheckString, InitDataError, signInitData, verifyInitData, webAppSecret } from '../auth/telegram.mjs';
 import { loadServerConfig } from '../lib/config.mjs';
+import { DEFAULT_TRUSTED_PROXY_CIDRS } from '../http/request.mjs';
 
 // Вектор: openssl dgst -sha256 -mac HMAC -macopt key:WebAppData (токен) → секрет;
 // openssl dgst -sha256 -mac HMAC -macopt hexkey:<секрет> (data_check_string) → hash.
@@ -123,7 +124,7 @@ describe('вход для разработки в проде не существ
   };
 
   it('NODE_ENV=production и ALLOW_DEV_LOGIN=1 — флаг выключен, маршрут не регистрируется', async () => {
-    const prod = loadServerConfig({ ...base, NODE_ENV: 'production', ALLOW_DEV_LOGIN: '1' });
+    const prod = loadServerConfig({ ...base, NODE_ENV: 'production', ALLOW_DEV_LOGIN: '1', TRUSTED_PROXY_CIDRS: '10.231.47.22/32' });
     assert.equal(prod.allowDevLogin, false);
     assert.equal(devLoginEnabled(prod), false);
     assert.equal(devLoginEnabled({ nodeEnv: 'production', allowDevLogin: true }), false, 'даже при ошибочно включённом флаге');
@@ -151,6 +152,49 @@ describe('вход для разработки в проде не существ
         expected,
       );
     }
+  });
+});
+
+describe('доверенные прокси в production (M4-I4)', () => {
+  const base = {
+    DATABASE_URL: 'postgres://x',
+    MQTT_URL: 'mqtts://x',
+    MQTT_CA_FILE: 'x',
+    MQTT_SERVER_USER: 'x',
+    MQTT_SERVER_PASSWORD: 'x',
+    SECRETS_ENC_KEY: Buffer.alloc(32, 1).toString('base64'),
+  };
+  const prod = (env) => () => loadServerConfig({ ...base, NODE_ENV: 'production', ...env });
+  const configError = (re) => (err) => err.name === 'ConfigError' && re.test(err.message);
+
+  it('без явной TRUSTED_PROXY_CIDRS сервер в production не стартует', () => {
+    assert.throws(prod({}), configError(/TRUSTED_PROXY_CIDRS обязательна/));
+    assert.throws(prod({ TRUSTED_PROXY_CIDRS: ' , ' }), configError(/TRUSTED_PROXY_CIDRS обязательна/));
+  });
+
+  it('сети шире /24 (IPv4) и /120 (IPv6) — отказ; то же для PUBLIC_API_TRUSTED_CIDRS', () => {
+    for (const wide of ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '10.231.47.0/23', 'fc00::/7', '2001:db8::/64', '2001:db8::/119']) {
+      assert.throws(prod({ TRUSTED_PROXY_CIDRS: `10.231.47.22/32,${wide}` }), configError(new RegExp(`TRUSTED_PROXY_CIDRS: .*${wide.replace(/[./]/g, '\\$&')}`)), wide);
+      assert.throws(prod({ TRUSTED_PROXY_CIDRS: '10.231.47.22/32', PUBLIC_API_TRUSTED_CIDRS: wide }), configError(/^PUBLIC_API_TRUSTED_CIDRS: /), `site ${wide}`);
+    }
+    const ok = loadServerConfig({
+      ...base,
+      NODE_ENV: 'production',
+      TRUSTED_PROXY_CIDRS: '10.231.47.22/32, 10.231.47.6, 10.231.48.0/24, 2001:db8::1/128, 2001:db8::100/120',
+      PUBLIC_API_TRUSTED_CIDRS: '10.231.47.6/32',
+    });
+    assert.equal(ok.trustedProxies.length, 5);
+    assert.equal(ok.publicTrustedCidrs.length, 1);
+    assert.throws(prod({ TRUSTED_PROXY_CIDRS: '10.231.47.22/33' }), configError(/длина маски/));
+  });
+
+  it('в разработке как раньше: без переменной — loopback и частные сети, широкие сети допустимы', () => {
+    const dev = loadServerConfig({ ...base, NODE_ENV: 'development' });
+    assert.equal(dev.trustedProxies.length, DEFAULT_TRUSTED_PROXY_CIDRS.length);
+    assert.equal(dev.publicTrustedCidrs.length, 0);
+    const wide = loadServerConfig({ ...base, TRUSTED_PROXY_CIDRS: '10.0.0.0/8', PUBLIC_API_TRUSTED_CIDRS: '172.16.0.0/12' });
+    assert.equal(wide.trustedProxies.length, 1);
+    assert.equal(wide.publicTrustedCidrs.length, 1);
   });
 });
 

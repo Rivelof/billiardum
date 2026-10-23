@@ -234,6 +234,15 @@ describe('Бильярдум+: партии', { skip, concurrency: false }, () =
     const res = await h.audit('plus.match_resolve');
     assert.equal(res.at(-1).reason, 'Видео зала: победил Disp_B');
     assert.equal(res.at(-1).actor_id, manager.id);
+    assert.equal(res.at(-1).actor_type, 'user', 'ручная строка отчёта смены (№125)');
+    // M4-I5: решение спора — ручное действие: тревога manual_action владельцу с причиной, сотрудником и сутью.
+    const [al] = await h.q("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'match_id' = $2", [CLUB_A, m.id]);
+    assert.ok(al, 'тревога manual_action');
+    assert.deepEqual([al.data.action, al.data.result, al.data.reason, al.data.staff_id], ['plus.match_resolve', 'b', 'Видео зала: победил Disp_B', manager.id]);
+    const owner = await h.login(PHONES.owner);
+    const toOwner = (await h.notifications(owner.id, 'alarm')).filter((n) => n.data.alarm_id === al.id);
+    assert.equal(toOwner.length, 1, 'владелец узнал сразу');
+    assert.match(toOwner[0].text, /Спор по партии на столе 4 решён: счёт 6:8 \(было 8:6\) — .+: Видео зала: победил Disp_B/);
     assert.equal((await h.request('POST', `/api/plus/matches/${m.id}/resolve`, { token: manager.token, club: CLUB_A, body: { result: 'a', reason: 'передумал' } })).status, 409);
 
     // Отмена результата — не засчитана, рейтинг не трогается.
@@ -245,6 +254,25 @@ describe('Бильярдум+: партии', { skip, concurrency: false }, () =
     assert.equal(an.json.counted, false);
     assert.equal(an.json.not_counted_reason, 'annulled');
     assert.deepEqual(await h.rating(a.id), before);
+    const annulAlarm = await h.q("select data from bl.alarms where type = 'manual_action' and data->>'match_id' = $1", [m2.id]);
+    assert.equal(annulAlarm[0]?.data.result, 'annul', 'отмена результата — тоже тревога владельцу');
+  });
+
+  it('M4-3: «Подтвердить» с увиденным счётом — не тот счёт 409 score_changed, тот — засчитывается', async () => {
+    h.clock.set(T0 + 4 * 24 * 60 * MIN + 30 * MIN);
+    const a = await h.player('Seen_A');
+    const b = await h.player('Seen_B');
+    const s = await h.session({ players: [a.id, b.id], resourceId: table(3) });
+    const m = await h.play(a, b, s, { my: 8, opp: 6, confirm: false });
+    let r = await h.request('POST', `/api/plus/matches/${m.id}/confirm`, { token: b.token, body: { score_a: 6, score_b: 8 } });
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error, 'score_changed');
+    assert.equal((await h.q('select status from bl.matches where id = $1', [m.id]))[0].status, 'pending', 'ничего не подтверждено');
+    r = await h.request('POST', `/api/plus/matches/${m.id}/confirm`, { token: b.token, body: { score_a: 'восемь', score_b: 6 } });
+    assert.equal(r.status, 400);
+    r = await h.request('POST', `/api/plus/matches/${m.id}/confirm`, { token: b.token, body: { score_a: 8, score_b: 6 } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.counted, true);
   });
 
   it('гонка: параллельные подтверждения и applyMatch — рейтинг пересчитан один раз', async () => {

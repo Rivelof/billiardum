@@ -27,6 +27,13 @@ export const MINUTE = 60_000;
 export const PAY_MINUTES = 15;
 /** Продление удержания стола, если матч ещё идёт ближе этого к концу удержания. */
 export const EXTEND_BEFORE_MS = 10 * MINUTE;
+/**
+ * Счёт внесён (pending_confirm, disputed): игра кончилась, свет гаснет через это время после
+ * первого внесённого счёта — одно короткое фиксированное доведение, без продлений (№147, M4-2).
+ */
+export const REPORTED_TAIL_MS = 5 * MINUTE;
+/** Тревога «матч затянулся» (№147): матч упёрся в предел света ends_at + match_minutes. */
+export const OVERDUE_ALARM = 'tournament_match_overdue';
 /** Кэш публичных ответов (контракт §4: кэш 60 с). */
 export const PUBLIC_CACHE_MS = 60_000;
 
@@ -34,6 +41,7 @@ export const DISCIPLINES = ['pyramid', 'pool', 'snooker'];
 export const FORMATS = ['single_elim', 'groups_playoff'];
 const RESOURCE_TYPE = { pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker' };
 const LIVE = ['playing', 'pending_confirm', 'disputed'];
+const ROLE_TITLE = { owner: 'владелец', manager: 'управляющий', reception: 'администратор' };
 const OPEN = ['registration', 'closed', 'running'];
 export const ORGANIZER_ROLES = ['owner', 'manager'];
 /** Причины возврата взноса: код → текст для журнала и чека возврата money. */
@@ -173,6 +181,24 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     if (!deps.notify.sendToClubStaff) return;
     const r = await savepoint(db, () => deps.notify.sendToClubStaff(db, clubId, roles, msg));
     if (!r.ok) log.warn('tournament_notify_failed', { kind: msg.kind, error: r.error?.message });
+  }
+
+  /** Подпись сотрудника для владельца: имя или роль в клубе (без телефона). */
+  async function staffLabel(db, clubId, staffId) {
+    if (!isUuid(staffId)) return 'сотрудник';
+    const { rows } = await db.query(
+      `select u.name, m.role from bl.club_members m join bl.users u on u.id = m.user_id
+        where m.club_id = $1 and m.user_id = $2 order by m.active desc limit 1`,
+      [clubId, staffId],
+    );
+    return rows[0]?.name?.trim() || ROLE_TITLE[rows[0]?.role] || 'сотрудник';
+  }
+
+  /** Тревога в точке сохранения: сбой тревог не ломает действие (лог). */
+  async function raiseAlarm(db, clubId, alarm) {
+    const r = await savepoint(db, () => deps.alarms.raise(db, clubId, alarm));
+    if (!r.ok) log.warn('tournament_alarm_failed', { type: alarm.type, error: r.error?.message });
+    return r.ok;
   }
 
   function userEvent(db, userId, data) {
@@ -1123,7 +1149,9 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     const tables = await tablesOf(db, t.id);
     const matches = await matchesOf(db, t.id);
     const live = matches.filter((m) => LIVE.includes(m.status));
-    const busyTables = new Set(live.map((m) => m.resource_id));
+    // Стол матча со внесённым счётом, где свет уже погашен (№147), свободен для следующего матча;
+    // игроки такого матча заняты, пока счёт не согласован.
+    const busyTables = new Set(live.filter((m) => m.status === 'playing' || !m.hold_until || m.hold_until > t0).map((m) => m.resource_id));
     const busyEntries = new Set(live.flatMap((m) => [m.entry_a, m.entry_b]));
     const skipped = new Set();
     let started = 0;
@@ -1187,7 +1215,10 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     const { a, b } = readScore(body);
     if (!validScore(a, b, t.race_to)) fail('bad_score', `${a}:${b} до ${t.race_to}`);
     const t0 = now();
-    const mine = { score_a: a, score_b: b, at: t0.toISOString() };
+    const prev = m[`report_${sideMe}`] ?? null;
+    // Время первого внесённого счёта сохраняется при переписывании: доведение света (№147) от него.
+    const mine = { score_a: a, score_b: b, at: t0.toISOString(), ...(prev ? { first_at: prev.first_at ?? prev.at } : {}) };
+    const changedScore = Boolean(prev) && (prev.score_a !== a || prev.score_b !== b);
     const theirs = sideMe === 'a' ? m.report_b : m.report_a;
     await db.query(`update bl.tournament_matches set report_${sideMe} = $2::jsonb, updated_at = $3 where id = $1`, [m.id, JSON.stringify(mine), t0]);
     m[`report_${sideMe}`] = mine;
@@ -1197,7 +1228,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       objectId: m.id,
       actorType: 'user',
       actorId: userId,
-      data: { tournament_id: t.id, match_id: m.id, side: sideMe, score_a: a, score_b: b },
+      data: { tournament_id: t.id, match_id: m.id, side: sideMe, score_a: a, score_b: b, ...(changedScore ? { changed_from: { score_a: prev.score_a, score_b: prev.score_b } } : {}) },
     });
     if (theirs && theirs.score_a === a && theirs.score_b === b) {
       await finalize(db, t, m, { a, b, source: 'players', t0, actorId: userId });
@@ -1206,9 +1237,10 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     } else {
       await db.query("update bl.tournament_matches set status = 'pending_confirm', updated_at = $2 where id = $1", [m.id, t0]);
       const other = sideMe === 'a' ? m.user_b : m.user_a;
+      // Переписал свой счёт — соперник подтверждает заново: «Подтвердить» со старым счётом — 409 score_changed (M4-3).
       await notifyUser(db, other, {
         kind: 'tournament.score',
-        text: `Турнир «${t.title}»: соперник внёс счёт ${a}:${b} — подтвердите`,
+        text: changedScore ? `Турнир «${t.title}»: соперник изменил счёт на ${a}:${b} — проверьте и подтвердите` : `Турнир «${t.title}»: соперник внёс счёт ${a}:${b} — подтвердите`,
         data: { tournament_id: t.id, match_id: m.id },
         actions: [{ id: 'open', title: 'Подтвердить', url: `/app/tournaments/${t.id}` }],
       });
@@ -1218,17 +1250,34 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     return matchState(db, m.id, userId);
   }
 
-  /** Игрок подтверждает счёт соперника. */
-  async function confirm(db, { matchId, userId }) {
+  /** Счёт, который видел подтверждающий: { score_a, score_b } из тела или null (тело без счёта). */
+  function readSeenScore(body) {
+    if (body?.score_a === undefined && body?.score_b === undefined) return null;
+    return readScore(body);
+  }
+
+  /**
+   * Игрок подтверждает счёт соперника. Тело { score_a, score_b } (необязательно) — счёт, который
+   * игрок видел; соперник успел его переписать — 409 score_changed, ничего не меняется (M4-3).
+   */
+  async function confirm(db, { matchId, userId, body = null }) {
+    const seen = readSeenScore(body);
     const clubId = await matchClub(db, matchId);
     await enterClub(db, clubId);
     const { t, m } = await lockTM(db, matchId);
     const sideMe = m.user_a === userId ? 'a' : m.user_b === userId ? 'b' : null;
     if (!sideMe) fail('forbidden', 'not_your_match');
-    if (m.status === 'done') return matchState(db, m.id, userId);
+    if (m.status === 'done') {
+      // Повтор «Подтвердить» после того, как матч сыгран: тот же счёт — ответ как есть.
+      if (seen && (seen.a !== m.score_a || seen.b !== m.score_b)) fail('score_changed', `сыгран ${m.score_a}:${m.score_b}`);
+      return matchState(db, m.id, userId);
+    }
     if (t.status !== 'running' || !LIVE.includes(m.status)) fail('bad_status', m.status);
     const theirs = sideMe === 'a' ? m.report_b : m.report_a;
     if (!theirs) fail('nothing_to_confirm');
+    if (seen && (seen.a !== theirs.score_a || seen.b !== theirs.score_b)) {
+      fail('score_changed', `видел ${seen.a}:${seen.b}, у соперника ${theirs.score_a}:${theirs.score_b}`);
+    }
     return report(db, { matchId, userId, body: { score_a: theirs.score_a, score_b: theirs.score_b } });
   }
 
@@ -1288,6 +1337,19 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       },
     });
     await finalize(db, t, m, { a, b, source: 'organizer', t0, actorId: staffId });
+    // Исправление счёта — ручное действие (инвариант 8, M4-I5): тревога manual_action владельцу сразу —
+    // кто, что было, что стало и почему (как отмена турнира).
+    const who = await staffLabel(db, t.club_id, staffId);
+    const was = m.status === 'done' ? `${m.score_a}:${m.score_b}` : m.status === 'disputed' ? 'спор' : 'без счёта';
+    await raiseAlarm(db, t.club_id, {
+      type: 'manual_action',
+      level: 'important',
+      manual: true,
+      resourceId: m.resource_id ?? null,
+      data: { action: 'manual.tournament_score', tournament_id: t.id, match_id: m.id, staff_id: staffId, reason, before: was, after: `${a}:${b}` },
+      dedupeKey: `tournament_score:${m.id}`,
+      text: `Турнир «${t.title}»: счёт матча исправлен (${was} → ${a}:${b}) — ${who}: ${reason}`,
+    });
     await notifyOrganizers(
       db,
       t.club_id,
@@ -1476,22 +1538,91 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     if (expired.rowCount > 0) touched = true;
     if (t.status === 'running') {
       for (const m of (await matchesOf(db, t.id)).filter((x) => LIVE.includes(x.status))) {
-        if (!m.session_id && m.hold_until && m.hold_until > t0 && m.status === 'playing') await startLight(db, t, m);
-        // Матч ещё идёт у конца удержания — продлить (если light умеет).
-        if (m.hold_until && m.hold_until.getTime() - t0.getTime() < EXTEND_BEFORE_MS) {
-          const until = new Date(t0.getTime() + Math.max(15, Math.round(t.match_minutes / 2)) * MINUTE);
-          if (typeof deps.light.extendFromTournament === 'function') {
-            const r = await savepoint(db, () => deps.light.extendFromTournament(db, { resourceId: m.resource_id, matchId: m.id, until: until.toISOString() }));
-            if (r.ok) await db.query('update bl.tournament_matches set hold_until = $2 where id = $1', [m.id, until]);
-            else log.warn('tournament_extend_failed', { match_id: m.id, code: r.error?.code ?? null });
-          } else if (m.hold_until > t0) {
-            log.warn('tournament_extend_unavailable', { match_id: m.id });
-          }
+        if (m.status === 'playing') {
+          if (!m.session_id && m.hold_until && m.hold_until > t0) await startLight(db, t, m);
+          await extendPlaying(db, t, m, t0);
+        } else if (await wrapUpReported(db, m, t0)) {
+          touched = true;
         }
       }
       if ((await schedule(db, t)) > 0) touched = true;
     }
     if (touched) await changed(db, t);
+  }
+
+  /** Предел света матча (№147): конец турнира по расписанию + время одного матча. */
+  function lightLimit(t) {
+    return new Date(new Date(t.ends_at).getTime() + t.match_minutes * MINUTE);
+  }
+
+  /**
+   * Матч идёт у конца удержания — продлить (если light умеет), но не дальше lightLimit; упёрся
+   * в предел — тревога «матч затянулся» организатору и владельцу (одна на матч), свет гаснет сам
+   * в конце удержания (инвариант 4, №147).
+   */
+  async function extendPlaying(db, t, m, t0) {
+    if (!m.hold_until || m.hold_until.getTime() - t0.getTime() >= EXTEND_BEFORE_MS) return;
+    const limit = lightLimit(t);
+    const want = new Date(t0.getTime() + Math.max(15, Math.round(t.match_minutes / 2)) * MINUTE);
+    const until = want > limit ? limit : want;
+    if (until <= m.hold_until) {
+      if (m.hold_until > t0) await overdueAlarm(db, t, m, limit);
+      return;
+    }
+    if (typeof deps.light.extendFromTournament !== 'function') {
+      if (m.hold_until > t0) log.warn('tournament_extend_unavailable', { match_id: m.id });
+      return;
+    }
+    const r = await savepoint(db, () => deps.light.extendFromTournament(db, { resourceId: m.resource_id, matchId: m.id, until: until.toISOString() }));
+    if (!r.ok) {
+      log.warn('tournament_extend_failed', { match_id: m.id, code: r.error?.code ?? null });
+      return;
+    }
+    await db.query('update bl.tournament_matches set hold_until = $2 where id = $1', [m.id, until]);
+    if (until.getTime() === limit.getTime()) await overdueAlarm(db, t, m, limit);
+  }
+
+  /** Тревога «матч затянулся» (№147): одна на матч (склейка по матчу), владельцу и управляющему. */
+  async function overdueAlarm(db, t, m, limit) {
+    const key = `tournament_match:${m.id}`;
+    const seen = await db.query('select 1 from bl.alarms where club_id = $1 and type = $2 and dedupe_key = $3 limit 1', [t.club_id, OVERDUE_ALARM, key]);
+    if (seen.rowCount > 0) return;
+    const nums = await tableNumbers(db, t.club_id);
+    const table = m.resource_id ? nums.get(m.resource_id) : null;
+    const tz = (await db.query('select timezone from bl.clubs where id = $1', [t.club_id])).rows[0]?.timezone ?? 'Europe/Moscow';
+    const at = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: tz }).format(limit);
+    await raiseAlarm(db, t.club_id, {
+      type: OVERDUE_ALARM,
+      level: 'important',
+      resourceId: m.resource_id ?? null,
+      data: { tournament_id: t.id, match_id: m.id, light_until: limit.toISOString() },
+      dedupeKey: key,
+      text: `Турнир «${t.title}»: матч${table ? ` на столе ${table}` : ''} затянулся — свет погаснет в ${at}. Внесите счёт или решите в программе клуба.`,
+    });
+    log.info('tournament_match_overdue', { tournament_id: t.id, match_id: m.id });
+  }
+
+  /**
+   * Счёт внесён (pending_confirm, disputed): игра кончилась, свет не продлевается; через
+   * REPORTED_TAIL_MS после первого внесённого счёта — погасить (stopFromTournament, reason_code
+   * tournament_end) и снять удержание стола (№147, M4-2). true — что-то изменилось.
+   */
+  async function wrapUpReported(db, m, t0) {
+    if (!m.hold_until || m.hold_until <= t0) return false;
+    const times = [m.report_a, m.report_b].filter(Boolean).map((r) => Date.parse(r.first_at ?? r.at)).filter(Number.isFinite);
+    const reportedAt = times.length ? Math.min(...times) : new Date(m.updated_at).getTime();
+    if (t0.getTime() < reportedAt + REPORTED_TAIL_MS) return false;
+    await stopLight(db, m);
+    await db.query('update bl.tournament_matches set hold_until = $2, updated_at = $2 where id = $1 and hold_until > $2', [m.id, t0]);
+    await audit(db, {
+      action: 'tournament.match_light_off',
+      objectType: 'tournament_match',
+      objectId: m.id,
+      actorType: 'system',
+      actorId: null,
+      data: { tournament_id: m.tournament_id, match_id: m.id, status: m.status, resource_id: m.resource_id ?? null },
+    });
+    return true;
   }
 
   /**
@@ -1518,6 +1649,27 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       [resourceId, f, u],
     );
     return rows.map((r) => ({ from: iso(r.from), to: iso(r.to), tournament_id: r.tournament_id, ...(r.match_id ? { match_id: r.match_id } : {}) }));
+  }
+
+  /**
+   * Окно света матча для light (extendFromTournament, №147): статус матча и турнира, стол и предел
+   * until_max = ends_at + match_minutes. Матча нет (или чужой клуб — RLS) — null.
+   */
+  async function lightWindow(db, { matchId }) {
+    if (!isUuid(matchId)) return null;
+    const { rows } = await db.query(
+      `select m.status, m.resource_id, t.status as tournament_status, t.ends_at, t.match_minutes
+         from bl.tournament_matches m join bl.tournaments t on t.id = m.tournament_id where m.id = $1`,
+      [matchId],
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      status: r.status,
+      tournament_status: r.tournament_status,
+      resource_id: r.resource_id,
+      until_max: lightLimit(r).toISOString(),
+    };
   }
 
   /**
@@ -1574,6 +1726,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     onRefund,
     step,
     holds,
+    lightWindow,
     schedule,
     flush,
     OPEN,

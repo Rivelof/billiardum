@@ -183,8 +183,24 @@ describe('публичный поток турнира tournament:{id}', () => {
     });
   }
 
-  it('без входа: только канал турнира и только публичные события; лимит потоков с IP; неверный id — 400', async () => {
+  /** Турнир клуба A в базе: status registration — опубликован, draft — черновик. */
+  async function tournament(status) {
     const id = randomUUID();
+    const t0 = Date.now();
+    await t.admin.query(
+      `insert into bl.tournaments (id, club_id, title, discipline, format, race_to, fee_kopecks, places, match_minutes, starts_at, ends_at,
+                                   registration_closes_at, status, created_at, updated_at)
+       values ($1, $2, 'Поток', 'pool', 'single_elim', 2, 0, 8, 60, $3, $4, $3, $5, now(), now())`,
+      [id, CLUB_A, new Date(t0 + 86_400_000), new Date(t0 + 90_000_000), status],
+    );
+    return id;
+  }
+
+  it('без входа: только канал турнира и только публичные события; лимит потоков с IP; неверный id — 400', async () => {
+    const id = await tournament('registration');
+    // M4-7: поток — только у опубликованного турнира: несуществующий и черновик — 404.
+    assert.equal((await t.request('GET', `/api/public/stream?tournament=${randomUUID()}`)).status, 404);
+    assert.equal((await t.request('GET', `/api/public/stream?tournament=${await tournament('draft')}`)).status, 404);
     const s = await openStream(`/api/public/stream?tournament=${id}`);
     assert.equal(s.status, 200);
     assert.match(s.headers['content-type'], /text\/event-stream/);

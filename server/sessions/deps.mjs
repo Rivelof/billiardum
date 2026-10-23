@@ -71,8 +71,8 @@ function stubs(log) {
     bookings: { async nextBookingStart() { return null; }, async nextBooking() { return null; } },
     // Без Бильярдум+ (M4) ников нет: участники — { user_id, nick: null, label: 'Игрок N' }.
     plus: { async nicksOf() { return {}; } },
-    // Без модуля турниров (M4) интервалов турнира нет.
-    tournaments: { async tournamentHolds() { return []; } },
+    // Без модуля турниров (M4) интервалов турнира нет; окна света матча нет — продления нет (№147).
+    tournaments: { async tournamentHolds() { return []; }, async matchLightWindow() { return null; } },
   };
 }
 

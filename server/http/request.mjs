@@ -121,6 +121,18 @@ export function parseCidrs(list) {
   });
 }
 
+/**
+ * В production доверенные сети — только узкие (M4-I4): не шире /24 для IPv4 и /120 для IPv6
+ * (Caddy и сайт — конкретные адреса, а не «все частные сети»).
+ */
+export const PRODUCTION_MIN_PREFIX = Object.freeze({ 32: 24, 128: 120 });
+
+/** Записи списка шире допустимого в production (исходные строки); разбор — как parseCidrs. */
+export function tooWideCidrs(list, minPrefix = PRODUCTION_MIN_PREFIX) {
+  const parsed = parseCidrs(list);
+  return list.filter((_, i) => parsed[i].bits - Number(parsed[i].shift) < minPrefix[parsed[i].bits]);
+}
+
 export function ipInCidrs(ip, cidrs) {
   const v = ipToBigInt(ip);
   if (!v) return false;

@@ -9,7 +9,7 @@ import { after, before, describe, it } from 'node:test';
 import { compilePath, createRouter, loadRoutes, SECURITY_HEADERS } from '../../api/router.mjs';
 import { clientIp, ipInCidrs, parseCidrs, parseCookies, serializeCookie } from '../http/request.mjs';
 import { createRateLimiter } from '../http/rate-limit.mjs';
-import { createSseHub, formatEvent } from '../http/sse.mjs';
+import { createSseHub, formatEvent, MAX_ANON_CLIENTS, MAX_CLIENTS, MAX_CLIENTS_PER_USER, sourceOf } from '../http/sse.mjs';
 import { httpRequest } from '../lib/http-client.mjs';
 import { createTelegramBot } from '../lib/telegram-bot.mjs';
 import { createHttpHandler } from '../http/server.mjs';
@@ -360,6 +360,41 @@ describe('хаб SSE', () => {
     a.writableLength = 2 * 1024 * 1024;
     hub.publish(`club:${CLUB}`, 'hall', {});
     assert.equal(hub.size, 0);
+  });
+
+  it('M4-7: источник анонимного потока — IPv4 адрес, IPv6 сеть /64, IPv4 в IPv6 — как IPv4', () => {
+    assert.equal(sourceOf('203.0.113.5'), '203.0.113.5');
+    assert.equal(sourceOf('::ffff:203.0.113.5'), '203.0.113.5');
+    assert.equal(sourceOf('2001:db8::1'), '2001:db8:0:0::/64');
+    assert.equal(sourceOf('2001:DB8:0:0:ffff:1:2:3'), '2001:db8:0:0::/64');
+    assert.equal(sourceOf('2001:db8:0:1::1'), '2001:db8:0:1::/64', 'соседняя /64 — другой источник');
+    assert.equal(sourceOf('fe80::1%eth0'), 'fe80:0:0:0::/64');
+    assert.equal(sourceOf(''), null);
+    assert.equal(sourceOf('не адрес'), 'не адрес');
+  });
+
+  it('M4-7: одна сеть /64 — не больше 10 потоков; анонимных — не больше четверти хаба, вошедшим место остаётся', () => {
+    const timers = { setInterval: () => ({ unref() {} }), clearInterval() {} };
+    const T = (i) => `tournament:11111111-1111-4111-8111-${String(i).padStart(12, '0')}`;
+    const hub = createSseHub({ timers });
+    let ok = 0;
+    for (let i = 0; i < 200; i += 1) if (hub.attach(fakeRes(), { channels: [T(i)], key: `ip:2001:db8::${i.toString(16)}` }).ok) ok += 1;
+    assert.equal(ok, MAX_CLIENTS_PER_USER, '200 адресов одной /64 — один источник');
+    assert.ok(hub.attach(fakeRes(), { channels: [T(1)], key: 'ip:2001:db8:0:1::1' }).ok, 'соседняя /64 — свой предел');
+    hub.closeAll();
+    assert.equal(MAX_ANON_CLIENTS, MAX_CLIENTS / 4);
+    let anon = 0;
+    for (let i = 0; i < MAX_CLIENTS; i += 1) {
+      const ip = `2001:db8:${(i >> 16).toString(16)}:${(i & 0xffff).toString(16)}::1`;
+      if (hub.attach(fakeRes(), { channels: [T(i)], key: `ip:${ip}` }).ok) anon += 1;
+    }
+    assert.equal(anon, MAX_ANON_CLIENTS, 'анонимы упираются в свою долю');
+    assert.equal(hub.attach(fakeRes(), { channels: [T(0)], key: 'ip:198.51.100.1' }).ok, false);
+    const staff = hub.attach(fakeRes(), { channels: [`club:${CLUB}`], userId: USER });
+    assert.equal(staff.ok, true, 'ресепшн подключается');
+    const guest = hub.attach(fakeRes(), { channels: ['user:a1000000-0000-4000-8000-0000000000ff'], userId: 'a1000000-0000-4000-8000-0000000000ff' });
+    assert.equal(guest.ok, true, 'гость подключается');
+    hub.closeAll();
   });
 });
 

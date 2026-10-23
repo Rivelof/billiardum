@@ -6,6 +6,8 @@
 //       опубликованного турнира (registration, closed, running; черновик — нет), где этот стол — стол турнира,
 //       и удержания идущих матчей на столе (scheduled_at–hold_until, могут выйти за ends_at).
 //       Брони и игры по QR на эти интервалы не принимаются — и между матчами.
+//   matchLightWindow(db, { matchId }) → { status, tournament_status, resource_id, until_max } | null
+//       Окно света матча (№147): light продлевает только матч playing и не дальше until_max.
 //   События outbox:
 //       tournament.match_finished { match_id, tournament_id, club_id, discipline, player_a, player_b, winner_id, loser_id,
 //         score: { winner, loser }, score_a, score_b, stage, revision, corrected, finished_at }
@@ -48,8 +50,31 @@ function service() {
   return standalone;
 }
 
+/**
+ * publicTournamentExists(db, { tournamentId }) → boolean — турнир опубликован (не черновик) у
+ * действующего клуба: только для такого открывается публичный поток (M4-7). Кэш 60 с (publicDetail).
+ */
+export async function publicTournamentExists(db, { tournamentId }) {
+  try {
+    await service().publicDetail(db, { tournamentId });
+    return true;
+  } catch (err) {
+    if (err?.code === 'not_found') return false;
+    throw err;
+  }
+}
+
 export function tournamentHolds(db, { resourceId, from, to }) {
   return service().holds(db, { resourceId, from, to });
+}
+
+/**
+ * matchLightWindow(db, { matchId }) → { status, tournament_status, resource_id, until_max } | null —
+ * для light (extendFromTournament, решение №147): продлевать свет можно только матчу playing идущего
+ * турнира и не дальше until_max = ends_at + match_minutes. db — контекст клуба матча.
+ */
+export function matchLightWindow(db, { matchId }) {
+  return service().lightWindow(db, { matchId });
 }
 
 /**

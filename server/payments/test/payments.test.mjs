@@ -225,6 +225,18 @@ describe('котировка и план оплаты', () => {
     assert.throws(() => checkNeighborResult({ error: 'table_busy' }), (e) => e.code === 'table_busy');
     assert.deepEqual(checkNeighborResult({ ok: true }), { ok: true });
   });
+
+  it('M4-I1: стол турнира — table_busy с reason и busy_until доходит до QR; лишнее и не того вида отбрасывается', () => {
+    const busy = '2026-10-26T09:00:00.000Z';
+    const light = Object.assign(new Error('table_busy: tournament'), { code: 'table_busy', data: { reason: 'tournament', busy_until: busy } });
+    const e = fromNeighbor(light);
+    assert.ok(e instanceof MoneyError);
+    assert.deepEqual([e.status, e.code, e.data], [409, 'table_busy', { reason: 'tournament', busy_until: busy }]);
+    const dirty = fromNeighbor(Object.assign(new Error('x'), { code: 'table_busy', data: { reason: 'Турнир до 14:00', busy_until: 'завтра', phone: '+79991234567' } }));
+    assert.equal(dirty.data, undefined, 'свободный текст, не время и чужие поля не уходят клиенту');
+    const booking = fromNeighbor(Object.assign(new Error('x'), { code: 'booking_start_required', data: { booking_id: RES } }));
+    assert.deepEqual(booking.data, { booking_id: RES });
+  });
 });
 
 describe('провижининг разработки', () => {

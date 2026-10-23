@@ -11,6 +11,7 @@ import { HttpError } from '../../server/http/errors.mjs';
 import { hub, TOURNAMENT_EVENTS } from '../../server/http/sse.mjs';
 import { streamTarget, streamTokens as defaultTokens } from '../../server/http/stream-tokens.mjs';
 import { isUuid, withContext } from '../../server/lib/store.mjs';
+import { publicTournamentExists } from '../../server/tournaments/api.mjs';
 
 const CLUB_ROLES = ['owner', 'manager', 'reception'];
 /** Бармену (№97) из канала клуба — только события бара: без кассы, денег и зала. */
@@ -94,11 +95,14 @@ async function issueToken(ctx, req) {
 /**
  * GET /api/public/stream?tournament={id} — публичный поток турнира без входа (M4, ТВ-экран
  * и страница турнира): только канал tournament:{id}, только TOURNAMENT_EVENTS без ПДн;
- * не больше 10 потоков с одного IP.
+ * только опубликованный турнир (не черновик) действующего клуба, иначе 404 (M4-7);
+ * не больше 10 потоков с одного источника (IPv4 — адрес, IPv6 — сеть /64), анонимные потоки —
+ * не больше четверти хаба (server/http/sse.mjs).
  */
 async function publicStream(ctx, req) {
   const id = typeof req.query.tournament === 'string' ? req.query.tournament.toLowerCase() : '';
   if (!isUuid(id) || Object.keys(req.query).some((k) => k !== 'tournament')) throw new HttpError(400, 'bad_request');
+  if (!(await publicTournamentExists(ctx.db, { tournamentId: id }))) throw new HttpError(404, 'not_found');
   const sse = ctx.sse ?? hub;
   const channel = `tournament:${id}`;
   return {
@@ -115,7 +119,7 @@ async function publicStream(ctx, req) {
 }
 
 export const routes = [
-  { method: 'GET', path: '/api/public/stream', auth: 'none', db: false, stream: true, rateLimit: { max: 60, windowMs: 60_000 }, handler: publicStream },
+  { method: 'GET', path: '/api/public/stream', auth: 'none', stream: true, rateLimit: { max: 60, windowMs: 60_000 }, handler: publicStream },
   {
     method: 'GET',
     path: '/api/stream',

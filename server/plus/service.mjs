@@ -477,9 +477,15 @@ export function createPlusService({ deps, log, clock }) {
     for (const uid of [m.player_a, m.player_b]) await checkAchievementsSafe(db, uid);
   }
 
-  /** POST /api/plus/matches/{id}/confirm — второй игрок подтверждает; повтор безопасен. */
-  async function confirmMatch(db, { userId, matchId }) {
+  /**
+   * POST /api/plus/matches/{id}/confirm {score_a?, score_b?} — второй игрок подтверждает; повтор
+   * безопасен. Тело — счёт партии (players[0].score, players[1].score), который игрок видел:
+   * не совпал с текущим — 409 score_changed (как у турниров, M4-3); без тела — без сверки.
+   */
+  async function confirmMatch(db, { userId, matchId, body = null }) {
+    const seen = seenScore(body);
     let m = await playerMatch(db, { matchId, userId });
+    if (seen && (seen.a !== m.score_a || seen.b !== m.score_b)) fail('score_changed', `видел ${seen.a}:${seen.b}, в партии ${m.score_a}:${m.score_b}`);
     const t = now();
     const { rows: mine } = await db.query('select decision from bl.match_confirmations where match_id = $1 and user_id = $2', [m.id, userId]);
     if (mine[0]?.decision === 'confirm') return matchView(db, m);
@@ -496,6 +502,25 @@ export function createPlusService({ deps, log, clock }) {
     const { rows } = await db.query("select count(*)::int as n from bl.match_confirmations where match_id = $1 and decision = 'confirm'", [m.id]);
     if (rows[0].n >= 2) m = await finalize(db, m);
     return matchView(db, m);
+  }
+
+  function seenScore(body) {
+    if (body?.score_a === undefined && body?.score_b === undefined) return null;
+    const a = body.score_a;
+    const b = body.score_b;
+    if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0 || a > 1000 || b > 1000) fail('bad_request', 'score');
+    return { a, b };
+  }
+
+  /** Подпись сотрудника для владельца: имя или роль в клубе (без телефона). */
+  async function staffLabel(db, clubId, staffId) {
+    if (!isUuid(staffId)) return 'сотрудник';
+    const { rows } = await db.query(
+      `select u.name, m.role from bl.club_members m join bl.users u on u.id = m.user_id
+        where m.club_id = $1 and m.user_id = $2 order by m.active desc limit 1`,
+      [clubId, staffId],
+    );
+    return rows[0]?.name?.trim() || { owner: 'владелец', manager: 'управляющий' }[rows[0]?.role] || 'сотрудник';
   }
 
   async function expire(db, m) {
@@ -589,8 +614,36 @@ export function createPlusService({ deps, log, clock }) {
       objectType: 'match',
       objectId: m.id,
       reason: why,
+      actorType: 'user',
+      actorId: userId,
       data: { match_id: m.id, result, score_a: next.score_a, score_b: next.score_b, resource_id: m.resource_id },
     });
+    // Решение спора — ручное действие (инвариант 8, M4-I5): тревога manual_action владельцу сразу —
+    // кто, что решил и почему (как отмена турнира и исправление счёта).
+    const who = await staffLabel(db, clubId, userId);
+    const { rows: tbl } = await db.query('select number from bl.resources where id = $1', [m.resource_id]);
+    const where = tbl[0]?.number ? ` на столе ${tbl[0].number}` : '';
+    const what = result === 'annul' ? 'результат отменён' : `счёт ${next.score_a}:${next.score_b} (было ${m.score_a}:${m.score_b})`;
+    if (deps.alarms?.raise) {
+      await db.query('savepoint bl_plus_alarm');
+      try {
+        await deps.alarms.raise(db, clubId, {
+          type: 'manual_action',
+          level: 'important',
+          manual: true,
+          resourceId: m.resource_id ?? null,
+          data: { action: 'plus.match_resolve', match_id: m.id, result, staff_id: userId, reason: why },
+          dedupeKey: `plus_resolve:${m.id}`,
+          text: `Спор по партии${where} решён: ${what} — ${who}: ${why}`,
+        });
+        await db.query('release savepoint bl_plus_alarm');
+      } catch (err) {
+        await db.query('rollback to savepoint bl_plus_alarm');
+        log.warn('plus_alarm_failed', { match_id: m.id, error: err.message });
+      }
+    } else {
+      log.error('plus_alarm_unrouted', { match_id: m.id, action: 'plus.match_resolve' });
+    }
     if (result !== 'annul') next = await settle(db, m.id);
     const text = result === 'annul'
       ? 'Управляющий клуба отменил результат спорной партии — в рейтинг она не засчитана.'

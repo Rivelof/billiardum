@@ -61,6 +61,8 @@ export const ERROR_CODES = new Set([
   'match_not_pending',
   'match_not_disputed',
   'invite_not_pending',
+  // M4-3 (турниры, plus): счёт соперника изменился после того, как игрок его увидел (409).
+  'score_changed',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',

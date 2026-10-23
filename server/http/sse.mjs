@@ -5,9 +5,17 @@
 // Один процесс сервера: подписчики в памяти. Публиковать — после коммита
 // (afterCommit из server/lib/store.mjs), чтобы событие не опережало данные.
 
+import { isIP } from 'node:net';
+
 export const KEEP_ALIVE_MS = 25_000;
 export const MAX_CLIENTS = 2_000;
 export const MAX_CLIENTS_PER_USER = 10;
+/**
+ * Анонимные потоки (без входа: публичный поток и ТВ-экран турнира) — не больше четверти хаба:
+ * остальное остаётся персоналу и гостям (M4-7).
+ */
+export const ANON_SHARE = 0.25;
+export const MAX_ANON_CLIENTS = Math.floor(MAX_CLIENTS * ANON_SHARE);
 /** Медленный клиент с таким хвостом неотправленного отключается. */
 export const MAX_BUFFERED_BYTES = 1024 * 1024;
 
@@ -20,12 +28,58 @@ export function isChannel(value) {
   return typeof value === 'string' && CHANNEL.test(value);
 }
 
+/** Восемь групп IPv6 (числа) или null; хвост IPv4 (::ffff:1.2.3.4, 64:ff9b::1.2.3.4) — две группы. */
+function ipv6Groups(ip) {
+  let s = ip.toLowerCase();
+  const tail = s.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (tail) {
+    const [a, b, c, d] = tail.slice(1).map(Number);
+    s = `${s.slice(0, -tail[0].length)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const rest = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const groups = [...head, ...Array(fill).fill('0'), ...rest].map((g) => parseInt(g, 16));
+  return groups.length === 8 && groups.every((g) => Number.isInteger(g) && g >= 0 && g <= 0xffff) ? groups : null;
+}
+
+/**
+ * Источник анонимного потока для лимита: IPv4 — адрес; IPv6 — сеть /64 (у абонента обычно вся /64,
+ * M4-7); IPv4 внутри IPv6 (::ffff:1.2.3.4) — как IPv4. Не адрес — строка как есть.
+ */
+export function sourceOf(ip) {
+  if (typeof ip !== 'string' || ip === '') return null;
+  const bare = ip.replace(/%.*$/, '');
+  if (isIP(bare) === 4) return bare;
+  if (isIP(bare) !== 6) return ip;
+  const g = ipv6Groups(bare);
+  if (!g) return ip;
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+  return `${g.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`;
+}
+
+/** Ключ лимита: ip:… — по источнику (IPv6 — по /64); прочие ключи — как есть. */
+export function limitKeyOf(key) {
+  if (typeof key !== 'string' || !key.startsWith('ip:')) return key ?? null;
+  return `ip:${sourceOf(key.slice(3)) ?? ''}`;
+}
+
 /** Строка события SSE. data — JSON одной строкой (переводы строк JSON экранирует сам). */
 export function formatEvent(event, data) {
   return `event: ${event}\ndata: ${JSON.stringify(data ?? null)}\n\n`;
 }
 
-export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_MS, maxClients = MAX_CLIENTS, maxPerUser = MAX_CLIENTS_PER_USER, timers = globalThis } = {}) {
+export function createSseHub({
+  log: initialLog = null,
+  keepAliveMs = KEEP_ALIVE_MS,
+  maxClients = MAX_CLIENTS,
+  maxPerUser = MAX_CLIENTS_PER_USER,
+  maxAnon = Math.floor(maxClients * ANON_SHARE),
+  timers = globalThis,
+} = {}) {
   /** @type {Set<{ res: any, channels: Set<string>, userId: string|null, close: () => void }>} */
   const clients = new Set();
   let log = initialLog;
@@ -49,16 +103,25 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
      * revalidate — периодическая проверка (токен не отозван, права на канал не отняты);
      * false — поток закрывается. only — канал → разрешённые события (бармену из club:{id}
      * только события бара, decisions №97); каналы без записи — все события.
+     * Без userId поток анонимный: общий предел анонимных (maxAnon, четверть хаба) и предел на
+     * источник key (ip:… — IPv4 адрес или IPv6 сеть /64).
      * @returns {{ ok: true, client: object } | { ok: false, reason: string }}
      */
     attach(res, { channels, userId = null, key = null, revalidate = null, revalidateMs = 60_000, only = null }) {
       if (!channels.every(isChannel)) throw new Error('bad channel');
       if (clients.size >= maxClients) return { ok: false, reason: 'too_many_clients' };
-      // Лимит потоков на пользователя, у анонимного — на ключ (ip:… публичного канала).
-      const limitKey = userId ?? key;
+      // Анонимные потоки — не больше своей доли хаба (M4-7): вошедшим всегда остаётся место.
+      const anon = !userId;
+      if (anon) {
+        let n = 0;
+        for (const c of clients) if (c.anon) n += 1;
+        if (n >= maxAnon) return { ok: false, reason: 'too_many_clients' };
+      }
+      // Лимит потоков на пользователя, у анонимного — на источник (ip:…, IPv6 — сеть /64).
+      const limitKey = userId ?? limitKeyOf(key);
       if (limitKey) {
         let mine = 0;
-        for (const c of clients) if ((c.userId ?? c.key) === limitKey) mine += 1;
+        for (const c of clients) if (c.limitKey === limitKey) mine += 1;
         if (mine >= maxPerUser) return { ok: false, reason: 'too_many_clients' };
       }
       res.writeHead(200, {
@@ -76,6 +139,8 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
         res,
         userId,
         key,
+        anon,
+        limitKey,
         channels: new Set(channels),
         only: only ? new Map(Object.entries(only).map(([ch, evs]) => [ch, new Set(evs)])) : null,
         close() {

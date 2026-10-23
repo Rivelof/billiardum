@@ -3,7 +3,7 @@
 // поток идёт через него; иначе — через этот небольшой хаб с теми же правилами (keep-alive, предел
 // подключений всего и с одного адреса, медленный клиент отключается).
 
-import { formatEvent, KEEP_ALIVE_MS, MAX_BUFFERED_BYTES } from '../http/sse.mjs';
+import { formatEvent, KEEP_ALIVE_MS, MAX_BUFFERED_BYTES, sourceOf } from '../http/sse.mjs';
 
 export const TV_MAX_CLIENTS = 1_000;
 export const TV_MAX_PER_IP = 8;
@@ -41,9 +41,11 @@ export function createTvHub({ core = null, log = null, timers = globalThis, keep
         return out;
       }
       if (clients.size >= maxClients) return { ok: false, reason: 'too_many_clients' };
-      if (ip) {
+      // Предел на источник: IPv4 — адрес, IPv6 — сеть /64 (M4-7).
+      const src = sourceOf(ip);
+      if (src) {
         let mine = 0;
-        for (const c of clients) if (c.ip === ip) mine += 1;
+        for (const c of clients) if (c.src === src) mine += 1;
         if (mine >= maxPerIp) return { ok: false, reason: 'too_many_clients' };
       }
       res.writeHead(200, {
@@ -59,6 +61,7 @@ export function createTvHub({ core = null, log = null, timers = globalThis, keep
       const c = {
         res,
         ip,
+        src,
         channel,
         close() {
           if (!clients.delete(c)) return;
