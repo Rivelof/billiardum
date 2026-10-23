@@ -88,7 +88,12 @@ export const SAFE_ERROR_FIELDS = new Set([
   // M4: 409 rating_above_limit — лимит турнира и рейтинг игрока (целые).
   'limit',
   'rating',
+  // Причина занятости и т. п. — только код из SAFE_REASONS (409 table_busy {reason:'tournament', busy_until}).
+  'reason',
 ]);
+/** Допустимые значения reason в ошибке: закрытый список кодов, не свободный текст. */
+export const SAFE_REASONS = new Set(['tournament', 'booking', 'service', 'pending', 'offline', 'busy', 'reserved', 'waitlist', 'session', 'maintenance', 'closed']);
+const REASON_CODE = /^[a-z_]{1,32}$/;
 const SAFE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SAFE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
 
@@ -98,6 +103,10 @@ export function safeErrorData(data) {
   const out = {};
   for (const [k, v] of Object.entries(data)) {
     if (!SAFE_ERROR_FIELDS.has(k) || k === 'error') continue;
+    if (k === 'reason') {
+      if (typeof v === 'string' && REASON_CODE.test(v) && SAFE_REASONS.has(v)) out[k] = v;
+      continue;
+    }
     if (v === null || typeof v === 'boolean' || Number.isSafeInteger(v)) out[k] = v;
     else if (v instanceof Date && !Number.isNaN(v.getTime())) out[k] = v.toISOString();
     else if (typeof v === 'string' && (SAFE_ID.test(v) || SAFE_TIME.test(v))) out[k] = v;

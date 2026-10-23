@@ -193,6 +193,9 @@ describe('роутер', () => {
     assert.deepEqual([x.cache, x.rateLimit.max], [60, 120]);
     assert.equal(r.routes.find((c) => c.path === '/api/public/s').cache, undefined, 'поток без кэша');
     assert.deepEqual(safeErrorData({ limit: 1500, rating: 1620, nick: 'Иван' }), { limit: 1500, rating: 1620 });
+    // reason — только код из закрытого списка.
+    assert.deepEqual(safeErrorData({ reason: 'tournament', busy_until: '2026-10-23T18:00:00.000Z' }), { reason: 'tournament', busy_until: '2026-10-23T18:00:00.000Z' });
+    for (const reason of ['Стол занят Иваном +79990000000', 'unknown_code', 'TOURNAMENT', 'a'.repeat(40), 5]) assert.equal(safeErrorData({ reason }), null, String(reason));
   });
 
   it('маршрут объявлен дважды — ошибка при сборке', () => {
