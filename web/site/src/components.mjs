@@ -285,7 +285,7 @@ export function Bracket({ bracket }) {
               ${player(m.a, m.score_a, m.winner === 'a')}
               ${player(m.b, m.score_b, m.winner === 'b')}
             </ol>
-            <p class="bm__meta small">${m.status === 'live' ? html`<span class="tstatus tstatus--alert">Идёт</span>` : html`<span>${m.status === 'finished' ? 'Сыгран' : 'Ждёт'}</span>`}${m.table ? html`<span>стол ${m.table}</span>` : null}</p>
+            <p class="bm__meta small">${m.status === 'live' ? html`<span class="tstatus tstatus--alert">Идёт</span>` : html`<span>${m.status === 'finished' ? 'Сыгран' : m.status === 'canceled' ? 'Отменён' : 'Ждёт'}</span>`}${m.table && m.status !== 'canceled' ? html`<span>стол ${m.table}</span>` : null}</p>
           </li>`)}
         </ol>
       </li>`)}

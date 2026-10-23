@@ -13,7 +13,7 @@ import { useStore } from '../lib/store.js';
 import { linkHandler, navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { lastClub } from '../lib/flow.js';
-import { CLUB_ANSWER_KEY, REQUEST_STATUS, REVIEW_MAX, clubAnswerState, maskPhones, parseClubAnswer, peopleWords, zoneOf } from '../lib/plus.js';
+import { CLUB_ANSWER_KEY, REQUEST_STATUS, REVIEW_MAX, clubAnswerState, clubClosedText, maskPhones, parseClubAnswer, peopleWords, zoneOf } from '../lib/plus.js';
 import { minutesWords } from '../lib/words.js';
 import { local } from '../lib/store.js';
 import { DISCIPLINES, DISCIPLINE_WORD } from '@billiardum/shared/plus';
@@ -328,8 +328,9 @@ const WEEKDAY = (iso, tz) => new Intl.DateTimeFormat('ru-RU', { weekday: 'long',
 
 /**
  * Ответ клуба без программы на заявку гостя (T25, Д1): ссылка из уведомления `/app/club-request/{id}?t=…`, без входа.
- * Заявка с телефоном гостя, «Принять» и «Отказать» с текстом ответа. Ссылка одноразовая и живёт 24 часа:
- * после ответа сервер стирает токен (404), поэтому «Вы уже ответили» — по отметке этого браузера.
+ * Заявка с телефоном гостя, «Принять» и «Отказать» с текстом ответа; время — по поясу клуба (timezone в ответе).
+ * Ссылка живёт 24 часа (дальше 404); на решённую заявку — 409 request_closed {status}: «На заявку уже ответили»,
+ * «Заявка у оператора», «Заявка закрыта». Отметка этого браузера добавляет «Вы уже ответили» и что именно.
  */
 export function ClubAnswerScreen({ id, search }) {
   const token = new URLSearchParams(search ?? '').get('t');
@@ -341,12 +342,18 @@ export function ClubAnswerScreen({ id, search }) {
   const [error, setError] = useState(null);
   const [attempt, setAttempt] = useState(0);
   const [justNow, setJustNow] = useState(false);
+  // Пояс клуба из ответа сервера — помним и после ответа (заявка уже сброшена)
+  const [clubTz, setClubTz] = useState(null);
   useEffect(() => {
     if (!token) return undefined;
     let alive = true;
     setLoadError(null);
     api.clubRequestByToken(id, token).then(
-      (r) => alive && setRequest(r ?? null),
+      (r) => {
+        if (!alive) return;
+        setRequest(r ?? null);
+        setClubTz(r?.timezone ?? r?.club?.timezone ?? null);
+      },
       (err) => alive && (setLoadError(err), setRequest(null)),
     );
     return () => {
@@ -354,8 +361,9 @@ export function ClubAnswerScreen({ id, search }) {
     };
   }, [id, token, attempt]);
   const state = clubAnswerState({ token, request, error: loadError, answered: Boolean(answered) });
-  // Пояс клуба сервер в этой ссылке не отдаёт — время как на устройстве (клуб и телефон обычно в одном городе)
-  const tz = zoneOf(request?.timezone);
+  // Пояс клуба; если сервер его не прислал — устройства (клуб и телефон обычно в одном городе)
+  const tz = zoneOf(clubTz);
+  const closed = clubClosedText(loadError?.data?.status ?? request?.status);
 
   const send = async (decision) => {
     setBusy(decision);
@@ -368,12 +376,10 @@ export function ClubAnswerScreen({ id, search }) {
       setJustNow(true);
       setRequest(null);
     } catch (err) {
-      // Ссылка истекла или уже использована, на заявку ответил кто-то другой — показываем это вместо формы
-      if (err?.code === 'not_found') {
+      // Ссылка истекла (404) или на заявку уже ответили — другой сотрудник, оператор, гость отменил (409 {status})
+      if (err?.code === 'not_found' || err?.code === 'request_closed') {
         setLoadError(err);
         setRequest(null);
-      } else if (err?.code === 'request_closed') {
-        setRequest((r) => (r ? { ...r, status: 'closed' } : r));
       } else setError(err);
     } finally {
       setBusy(null);
@@ -407,17 +413,17 @@ export function ClubAnswerScreen({ id, search }) {
         {state === 'invalid' ? (
           <div class="note note--lamp" role="alert">
             <Icon name="info" />
-            <p class="note__title">Ссылка больше не работает</p>
+            <p class="note__title">Ссылка не работает</p>
             <p class="note__body">
-              Ссылка на заявку действует 24 часа и только для одного ответа. Скорее всего, на заявку уже ответили — вы, другой сотрудник или оператор Бильярдума, — или гость её отменил. Если вы не отвечали, заявку обработает оператор: гость без ответа не останется.
+              Ссылка на заявку действует 24 часа — возможно, срок вышел или она открылась не целиком. Откройте её ещё раз из уведомления. Если срок вышел, заявку обработает оператор Бильярдума: гость без ответа не останется.
             </p>
           </div>
         ) : null}
-        {request && state === 'closed' ? (
+        {state === 'closed' ? (
           <div class="note note--lamp" role="status">
             <Icon name="info" />
-            <p class="note__title">На заявку уже ответили</p>
-            <p class="note__body">{(REQUEST_STATUS[request.status] ?? REQUEST_STATUS.closed).title}. Ответить по этой ссылке уже нельзя.</p>
+            <p class="note__title">{closed.title}</p>
+            <p class="note__body">{closed.text} Ответить по этой ссылке уже нельзя.</p>
           </div>
         ) : null}
         {request && state === 'open' ? (

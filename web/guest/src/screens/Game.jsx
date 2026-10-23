@@ -11,7 +11,7 @@ import { Pay } from './Pay.jsx';
 import { api, streamSession } from '../lib/api.js';
 import { auth } from '../lib/auth.js';
 import { useStore } from '../lib/store.js';
-import { clockSkew, gameView, timerTexts, maxExtendMinutes, lampState, pulseLamp, timeLeftShare } from '../lib/game.js';
+import { clockSkew, gameView, timerTexts, maxExtendMinutes, lampState, pulseLamp, timeLeftShare, isTournamentBusy, tournamentExtendText } from '../lib/game.js';
 import { durationWords, minutesWords, optionLabel, tableName } from '../lib/words.js';
 import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -297,11 +297,14 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
   const [quote, setQuote] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Что ограничивает продление: турнир узнаём из 409 table_busy {reason: 'tournament'} котировки
+  const [limitBy, setLimitBy] = useState(null);
   const max = maxExtendMinutes(session);
   const paidUntil = Date.parse(session.paid_until);
   const from = Math.max(paidUntil, Date.now());
   // Бронь после игры (№106): к вариантам добавляем «до 20:55» — ровно до предела, если он не совпал с вариантом
-  const limitText = extendLimitText(session, (x) => formatTime(x, tz));
+  const limitText = extendLimitText(session, (x) => formatTime(x, tz), { by: limitBy });
+  const tournamentNote = tournamentExtendText(error, session, (x) => formatTime(x, tz));
   const options = max !== null && max >= 5 && !EXTEND_OPTIONS.includes(max) ? [...EXTEND_OPTIONS.filter((m) => m < max), max] : EXTEND_OPTIONS;
 
   useEffect(() => {
@@ -337,7 +340,9 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
       setQuote(q);
     } catch (err) {
       setError(err);
-      if (err?.code === 'session_not_active' || err?.code === 'booking_conflict') reload();
+      // Турнир на столе: объясняем на месте и не перечитываем экран — предел уже в сессии (extend_limit_until)
+      if (isTournamentBusy(err)) setLimitBy('tournament');
+      else if (err?.code === 'session_not_active' || err?.code === 'booking_conflict') reload();
     } finally {
       setBusy(false);
     }
@@ -380,7 +385,15 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
             Игра без лимита оплачена до <span class="mono">{formatTime(session.paid_until, tz)}</span>. Продлите сейчас: картой — новая заморозка,
             по СБП — следующий блок. Платите всё равно только за сыгранное.
           </p>
-          <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
+          {tournamentNote ? (
+            <div class="note note--error" role="alert">
+              <Icon name="alert" />
+              <p class="note__title">{tournamentNote.title}</p>
+              <p class="note__body">{tournamentNote.action}</p>
+            </div>
+          ) : (
+            <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
+          )}
           <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
             {busy ? 'Считаем цену…' : 'Рассчитать продление'}
           </button>
@@ -404,7 +417,7 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
                     <input type="radio" name="extend" value={m} checked={minutes === m} disabled={blocked} onChange={() => setMinutes(m)} />
                     <span class="choice__box">
                       <span class="choice__title">{toLimit ? `До ${formatTime(session.extend_limit_until, tz)}` : optionLabel(m)}</span>
-                      <span class="choice__sub">{blocked ? 'Стол забронирован' : `До ${formatTime(from + m * 60000, tz)}`}</span>
+                      <span class="choice__sub">{blocked ? (limitBy === 'tournament' ? 'Турнир' : 'Стол занят') : `До ${formatTime(from + m * 60000, tz)}`}</span>
                     </span>
                   </label>
                 );
@@ -417,7 +430,15 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
               <span class="note__title">{limitText}</span>
             </p>
           ) : null}
-          <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
+          {tournamentNote ? (
+            <div class="note note--error" role="alert">
+              <Icon name="alert" />
+              <p class="note__title">{tournamentNote.title}</p>
+              <p class="note__body">{tournamentNote.action}</p>
+            </div>
+          ) : (
+            <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
+          )}
           <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || (max !== null && minutes > max)}>
             {busy ? 'Считаем цену…' : `Рассчитать цену за ${minutesWords(minutes, { accusative: true })}`}
           </button>

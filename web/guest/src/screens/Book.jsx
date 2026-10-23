@@ -393,7 +393,8 @@ export function BookScreen({ clubId }) {
                 <span class="note__body">Отмените одну в «Моих бронях» или дождитесь, когда ближайшая начнётся.</span>
               </p>
             ) : (
-              <ErrorNote error={error} />
+              // Бронь в окне турнира — 409 table_busy {reason: 'tournament', busy_until}: «Стол занят турниром до 21:30»
+              <ErrorNote error={error} timeZone={tz} />
             )}
           </section>
         ) : null}
@@ -871,7 +872,7 @@ export function BookingScreen({ id }) {
           </div>
         </dl>
 
-        <ErrorNote error={error} />
+        <ErrorNote error={error} timeZone={tz} />
 
         {terms.allowed && bookingOpen(b) ? (
           <>
@@ -889,7 +890,7 @@ export function BookingScreen({ id }) {
             {tableName(b.resource?.number)}, {formatDate(b.starts_at, tz)}, {fmtT(b.starts_at)}–{fmtT(b.ends_at)}.
           </p>
           <p class="hint">{terms.text}</p>
-          <ErrorNote error={error} />
+          <ErrorNote error={error} timeZone={tz} />
           <button type="button" class="btn btn--danger btn--block btn--lg" disabled={busy} onClick={cancel}>
             {busy ? 'Отменяем…' : 'Отменить бронь'}
           </button>
@@ -988,7 +989,7 @@ export function WaitlistOffer({ id }) {
       <Header back={{ href: BASE, label: 'На главную' }} />
       <main class="wrap content book">
         {status === 'anon' ? <SignIn title="Войдите, чтобы занять стол" /> : null}
-        <ErrorNote error={error} />
+        <ErrorNote error={error} timeZone={tz} />
         {entry === undefined && status === 'user' && !error ? <p class="muted loading">Проверяем стол…</p> : null}
         {entry === null ? <p class="empty"><Ill name="pocket" />Этой записи в очереди уже нет: стол заняли или вы вышли из очереди.</p> : null}
         {entry ? (

@@ -49,6 +49,8 @@ test('посев олимпийской системы: 1 — с последн�
   assert.equal(done.rounds[1].matches[0].b.nick, first[1].a.nick);
   assert.equal(champion(done), null);
   assert.equal(liveMatches({ rounds: [{ title: 'Финал', matches: [{ a: { nick: 'x' }, b: { nick: 'y' }, status: 'playing' }] }] }).length, 1);
+  // Д2: матчи отменённого турнира (canceled) — не в «Сейчас играют»
+  assert.equal(liveMatches({ rounds: [{ title: 'Финал', matches: [{ a: { nick: 'x' }, b: { nick: 'y' }, status: 'canceled' }] }] }).length, 0);
   assert.ok(advance(br).rounds.length === 3);
 });
 

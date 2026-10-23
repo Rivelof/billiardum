@@ -98,6 +98,7 @@ export function TournamentTv({ id }) {
                         <span class="tvm__score mono">{score ?? ''}</span>
                       </p>
                     ))}
+                    {m.status === 'canceled' ? <p class="tvm__meta">{BRACKET_MATCH.canceled}</p> : null}
                   </li>
                 ))}
               </ul>

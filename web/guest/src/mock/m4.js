@@ -603,19 +603,22 @@ export function m4Routes(ctx) {
       return { status: 201, body: { id: uuid(), status: 'new' } };
     }],
     ['GET', /^\/api\/clubs\/requests\/([^/]+)$/, (m) => (S().requests[m[1]] ? ok(requestView(S().requests[m[1]])) : err(404, 'not_found'))],
-    // Ответ клуба по ссылке из уведомления — без входа, одноразовый токен на 24 часа (как server/directory/requests.mjs)
+    // Ответ клуба по ссылке из уведомления — без входа, токен на 24 часа; решённая заявка — 409 request_closed {status}
+    // (как server/directory/requests.mjs)
     ['GET', /^\/api\/clubs\/requests\/([^/]+)\/answer$/, (m, _b, q) => {
       const r = byToken(m[1], q?.get?.('t'));
       if (!r) return err(404, 'not_found');
-      return ok({ id: r.id, status: r.status, club: { name: r.listing.name }, starts_at: r.starts_at, minutes: r.minutes, people: r.people, comment: r.comment || null, guest_phone: r.guest_phone ?? null, created_at: iso(r.created) });
+      if (!['sent', 'operator'].includes(r.status)) return { status: 409, body: { error: 'request_closed', status: r.status } };
+      const tz = r.listing.timezone;
+      return ok({ id: r.id, status: r.status, timezone: tz, club: { name: r.listing.name, timezone: tz }, starts_at: r.starts_at, minutes: r.minutes, people: r.people, comment: r.comment || null, guest_phone: r.guest_phone ?? null, created_at: iso(r.created) });
     }],
     ['POST', /^\/api\/clubs\/requests\/([^/]+)\/answer$/, (m, b) => {
       const r = byToken(m[1], b?.t);
       if (!r) return err(404, 'not_found');
+      if (!['sent', 'operator'].includes(r.status)) return { status: 409, body: { error: 'request_closed', status: r.status } };
       if (!['accept', 'decline'].includes(b.decision)) return err(400, 'bad_request');
-      if (!['sent', 'operator'].includes(r.status)) return err(409, 'request_closed');
       const text = String(b.text ?? '').trim().slice(0, 500);
-      Object.assign(r, { status: b.decision === 'accept' ? 'accepted' : 'declined', answer_text: text || null, token: null, token_until: null, updated: now() });
+      Object.assign(r, { status: b.decision === 'accept' ? 'accepted' : 'declined', answer_text: text || null, updated: now() });
       return ok(requestView(r));
     }],
   ];

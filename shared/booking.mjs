@@ -213,17 +213,24 @@ export function cancelText(booking, { formatMoney, formatTime }) {
 }
 
 /**
- * Продление перед бронью (№106): «Стол забронирован на 21:00, можно продлить до 20:55».
- * @param {{ extend_limit_until?: string | null, next_booking_at?: string | null, unlimited?: boolean }} session
+ * Продление перед бронью или турниром (№106, №146): «Стол забронирован на 21:00, можно продлить до 20:55».
+ * Что впереди — по полям сессии или по подсказке экрана (opts.by): next_booking_at — бронь,
+ * extend_limit_by: 'tournament' или by: 'tournament' — турнир. Неизвестно (предел сервера учитывает и бронь,
+ * и окно турнира) — нейтрально: «Стол занят с 21:00».
+ * @param {{ extend_limit_until?: string | null, next_booking_at?: string | null, extend_limit_by?: string | null, unlimited?: boolean }} session
+ * @param {(x: number) => string} formatTime
+ * @param {{ by?: 'booking' | 'tournament' | null }} [opts]
  * @returns {string | null}
  */
-export function extendLimitText(session, formatTime) {
+export function extendLimitText(session, formatTime, opts = {}) {
   if (!session || session.unlimited || !session.extend_limit_until) return null;
   const limit = ms(session.extend_limit_until);
-  const booking = session.next_booking_at ? ms(session.next_booking_at) : limit + 5 * MIN;
+  const by = opts.by ?? session.extend_limit_by ?? (session.next_booking_at ? 'booking' : null);
+  const at = session.next_booking_at && by === 'booking' ? ms(session.next_booking_at) : limit + 5 * MIN;
   const paid = session.paid_until ? ms(session.paid_until) : null;
-  if (paid !== null && limit <= paid) return `Стол забронирован на ${formatTime(booking)}, продлить игру нельзя.`;
-  return `Стол забронирован на ${formatTime(booking)}, можно продлить до ${formatTime(limit)}.`;
+  const what = by === 'tournament' ? `На столе турнир с ${formatTime(at)}` : by === 'booking' ? `Стол забронирован на ${formatTime(at)}` : `Стол занят с ${formatTime(at)}`;
+  if (paid !== null && limit <= paid) return `${what}, продлить игру нельзя.`;
+  return `${what}, можно продлить до ${formatTime(limit)}.`;
 }
 
 /**

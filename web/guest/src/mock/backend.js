@@ -238,6 +238,8 @@ export function createBackend(storage) {
       Object.assign(state.tables['4K7P9QW2XM'], { status: 'free', session_id: null, busy_until: null });
     }
     if (name === 'limit') mk({ extend_limit_until: t + 65 * MIN + 40 * MIN, next_booking_at: t + 65 * MIN + 45 * MIN });
+    // M4 (№146): на столе турнир через 45 минут после конца оплаты — предел продления без next_booking_at
+    if (name === 'tourlimit') mk({ extend_limit_until: t + 65 * MIN + 40 * MIN, tournament_at: t + 65 * MIN + 45 * MIN, tournament_until: t + 65 * MIN + 6 * 60 * MIN });
     // M2: бар — заказы и счёт стола
     if (name === 'barorders') mk({});
     if (name === 'closedtab') {
@@ -332,7 +334,11 @@ export function createBackend(storage) {
         if (!s || ['closed', 'cancelled'].includes(sessionView(s).status)) return err(409, 'session_not_active');
         from = Math.max(s.paid_until, t);
         // M3 (№106): перед бронью продлить можно до её начала минус 5 минут
-        if (s.extend_limit_until && !s.unlimited && body.minutes !== null && from + body.minutes * MIN > s.extend_limit_until) return err(409, 'booking_conflict');
+        if (s.extend_limit_until && !s.unlimited && body.minutes !== null && from + body.minutes * MIN > s.extend_limit_until) {
+          // Окно турнира — как у server/payments/quotes.mjs: 409 table_busy {reason: 'tournament', busy_until}
+          if (s.tournament_at) return { status: 409, body: { error: 'table_busy', reason: 'tournament', busy_until: new Date(s.tournament_until).toISOString() } };
+          return err(409, 'booking_conflict');
+        }
       }
       const minutes = body.minutes === null ? 120 : body.minutes;
       const { amount_kopecks, breakdown } = amountFor(from, minutes);

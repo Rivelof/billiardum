@@ -118,7 +118,10 @@ test('продление перед бронью: «Стол заброниро�
   const f = (x) => formatTime(x, TZ);
   const s = { paid_until: new Date(at(20)).toISOString(), extend_limit_until: new Date(at(20, 55)).toISOString(), next_booking_at: new Date(at(21)).toISOString() };
   assert.equal(extendLimitText(s, f), 'Стол забронирован на 21:00, можно продлить до 20:55.');
-  assert.equal(extendLimitText({ ...s, next_booking_at: null }, f), 'Стол забронирован на 21:00, можно продлить до 20:55.', 'без next_booking_at — лимит плюс 5 минут');
+  assert.equal(extendLimitText({ ...s, next_booking_at: null }, f), 'Стол занят с 21:00, можно продлить до 20:55.', 'без next_booking_at — лимит плюс 5 минут, бронь или турнир — неизвестно');
+  // №146: предел из окна турнира
+  assert.equal(extendLimitText({ ...s, next_booking_at: null }, f, { by: 'tournament' }), 'На столе турнир с 21:00, можно продлить до 20:55.');
+  assert.equal(extendLimitText({ ...s, next_booking_at: null, extend_limit_by: 'tournament', paid_until: new Date(at(20, 55)).toISOString() }, f), 'На столе турнир с 21:00, продлить игру нельзя.');
   assert.equal(extendLimitText({ ...s, paid_until: new Date(at(20, 55)).toISOString() }, f), 'Стол забронирован на 21:00, продлить игру нельзя.');
   assert.equal(extendLimitText({ ...s, unlimited: true }, f), null, 'у «Без лимита» extend_limit_until — предел заморозки');
   assert.equal(extendLimitText({ paid_until: s.paid_until }, f), null);

@@ -96,19 +96,28 @@ export const REQUEST_STATUS = {
 
 /**
  * Ответ клуба на заявку по ссылке из уведомления (T25, Д1 приёмки M4), без входа: что показать.
- * Ссылка одноразовая — после ответа сервер стирает токен и отвечает 404, поэтому «Вы уже ответили» узнаём
- * по отметке этого браузера (answered). Открытая заявка с сервера важнее отметки.
+ * На уже решённую заявку живая ссылка отвечает 409 request_closed {status} (GET и POST); неверный или
+ * истёкший токен — 404. Отметка этого браузера (answered) уточняет: «Вы уже ответили» и что именно.
  * @param {{ token?: string | null, request?: { status: string } | null, error?: { code?: string } | null, answered?: boolean }} p
  * @returns {'loading' | 'open' | 'answered' | 'closed' | 'invalid' | 'error'}
  */
 export function clubAnswerState({ token, request, error, answered }) {
   if (request && ['sent', 'operator'].includes(request.status)) return 'open';
-  // Ответили здесь: сразу после ответа (заявка сброшена) или при повторном входе (сервер уже не узнаёт токен — 404)
-  if (answered && (request !== undefined || !token) && (!error || error.code === 'not_found')) return 'answered';
+  const closed = error?.code === 'request_closed' || Boolean(request);
+  // Ответили здесь: сразу после ответа (заявка сброшена) или при повторном входе (409 или 404)
+  if (answered && (request !== undefined || !token) && (!error || closed || error.code === 'not_found')) return 'answered';
   if (!token) return 'invalid';
-  if (request) return 'closed';
+  if (closed) return 'closed';
   if (error) return error.code === 'not_found' ? 'invalid' : 'error';
   return 'loading';
+}
+
+/** Уже решённая заявка по ссылке клуба: заголовок и пояснение по status из 409 request_closed. */
+export function clubClosedText(status) {
+  if (status === 'accepted') return { title: 'На заявку уже ответили', text: 'Заявку приняли — гость получил уведомление, что стол его ждёт.' };
+  if (status === 'declined') return { title: 'На заявку уже ответили', text: 'В заявке отказали — гость получил уведомление.' };
+  if (status === 'operator') return { title: 'Заявка у оператора', text: 'Оператор Бильярдума уже занимается заявкой и сам свяжется с гостем.' };
+  return { title: 'Заявка закрыта', text: 'Гость отменил заявку или её закрыл оператор Бильярдума. Отвечать не нужно.' };
 }
 
 /** Отметка «на эту заявку здесь уже ответили» — только решение и время, без данных гостя. */

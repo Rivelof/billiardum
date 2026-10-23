@@ -141,3 +141,29 @@ export function timeLeftShare(view, session) {
   if (!(end > start)) return null;
   return Math.min(1, Math.max(0, view.ms / (end - start)));
 }
+
+/** Котировка на столе турнира: 409 table_busy {reason: 'tournament', busy_until} (M4, №146). */
+export function isTournamentBusy(err) {
+  return err?.code === 'table_busy' && err?.data?.reason === 'tournament';
+}
+
+/**
+ * Продление не помещается до турнира: «Продлить нельзя: на столе турнир с 21:00». Начало окна — предел продления
+ * сессии плюс 5 минут (сервер считает extend_limit_until по окну турнира); без предела — «до» конца занятости.
+ * @param {unknown} err ошибка котировки
+ * @param {{ extend_limit_until?: string | null, paid_until?: string, unlimited?: boolean }} session
+ * @param {(ms: number) => string} fmt время клуба
+ * @returns {{ title: string, action: string } | null}
+ */
+export function tournamentExtendText(err, session, fmt) {
+  if (!isTournamentBusy(err)) return null;
+  const rest = 'Доиграйте оплаченное время — дальше стол нужен турниру.';
+  const limit = session && !session.unlimited && session.extend_limit_until ? Date.parse(session.extend_limit_until) : NaN;
+  if (Number.isFinite(limit)) {
+    const paid = Date.parse(session.paid_until ?? '');
+    const room = Number.isFinite(paid) ? Math.floor((limit - paid) / 60000) : 0;
+    return { title: `Продлить нельзя: на столе турнир с ${fmt(limit + 5 * 60000)}.`, action: room >= 5 ? `Продлить можно только до ${fmt(limit)} — выберите вариант покороче.` : rest };
+  }
+  const until = Date.parse(err.data?.busy_until ?? '');
+  return { title: Number.isFinite(until) ? `Продлить нельзя: стол занят турниром до ${fmt(until)}.` : 'Продлить нельзя: на столе турнир.', action: rest };
+}

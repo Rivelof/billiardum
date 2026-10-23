@@ -528,6 +528,10 @@ a.pg__nick:hover { color: var(--cloth); }
 }
 .bm--playing { box-shadow: inset 0 0 0 2px var(--lamp); }
 .bm--disputed { box-shadow: inset 0 0 0 1.5px var(--ball-red); }
+/* Отменён (турнир отменили): приглушён и с пунктиром; слово «Отменён» — в подписи матча */
+.bm--canceled { box-shadow: inset 0 0 0 1px var(--line); background: var(--card-2); }
+.bm--canceled .bm__side { color: var(--ink-2); }
+.bm--canceled .bm__meta { font-weight: 700; }
 .bm__side { display: grid; grid-template-columns: 22px minmax(0, 1fr) 24px; gap: 6px; align-items: center; min-height: 34px; padding: 4px 10px; border-bottom: 1px solid var(--line); }
 .bm__seed { font-size: var(--fs-13); color: var(--ink-3); }
 .bm__nick { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

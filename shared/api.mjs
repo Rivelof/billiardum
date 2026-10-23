@@ -45,6 +45,8 @@ export const ERROR_FIELDS = Object.freeze([
   'rating',
   // M4 light: 409 table_busy { reason: 'tournament' } — стол занят турниром
   'reason',
+  // M4 T25: ссылка клуба на заявку — 409 request_closed { status: accepted|declined|operator|closed }
+  'status',
 ]);
 
 const CODE_RE = /^[a-z][a-z0-9_]{1,63}$/;

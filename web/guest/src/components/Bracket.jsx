@@ -19,7 +19,7 @@ export function Bracket({ bracket, myNick }) {
                   <Side side={m.a} score={m.score_a} win={m.winner === 'a'} me={myNick} />
                   <Side side={m.b} score={m.score_b} win={m.winner === 'b'} me={myNick} />
                   <p class="bm__meta">
-                    {m.table_number && m.status !== 'done' ? `Стол ${m.table_number} · ` : ''}
+                    {m.table_number && !['done', 'canceled'].includes(m.status) ? `Стол ${m.table_number} · ` : ''}
                     {BRACKET_MATCH[m.status] ?? ''}
                   </p>
                 </li>

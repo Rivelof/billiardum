@@ -528,7 +528,10 @@ function MyMatch({ match, raceTo, onChange }) {
   };
   return (
     <section class="mymatch" aria-labelledby="mm-title" data-theme="dark">
-      <p class="mymatch__kicker">Ваш матч{match.table_number ? ` · стол ${match.table_number}` : ''}</p>
+      <p class="mymatch__kicker">
+        Ваш матч{match.table_number && match.status !== 'canceled' ? ` · стол ${match.table_number}` : ''}
+        {match.status === 'canceled' ? ' · отменён' : ''}
+      </p>
       <h2 class="mymatch__title display" id="mm-title">
         против {match.opponent_nick}
       </h2>
@@ -556,6 +559,10 @@ function MyMatch({ match, raceTo, onChange }) {
         </>
       ) : match.status === 'disputed' ? (
         <p class="mymatch__hint">Счёт не совпал — организатор проверит и внесёт результат.</p>
+      ) : match.status === 'canceled' ? (
+        <p class="mymatch__hint">
+          <b>Матч отменён.</b> Турнир отменили — счёт вносить не нужно, стол свободен.
+        </p>
       ) : (
         <>
           <p class="mymatch__hint">

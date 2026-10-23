@@ -32,7 +32,8 @@ function cityModel(c) {
 }
 
 const TSTATUS = { running: 'live', canceled: 'cancelled' };
-const MSTATUS = { playing: 'live', pending_confirm: 'live', disputed: 'live', done: 'finished' };
+// Матчи отменённого турнира — canceled (Д2): «Отменён», без стола
+const MSTATUS = { playing: 'live', pending_confirm: 'live', disputed: 'live', done: 'finished', canceled: 'canceled' };
 
 export function createApi(data) {
   async function cities() {

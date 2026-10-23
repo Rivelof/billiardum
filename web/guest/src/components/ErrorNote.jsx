@@ -4,13 +4,14 @@ import { lastClub } from '../lib/flow.js';
 import { Icon } from './Icon.jsx';
 
 /** Ошибка словами: что случилось и что делать. role=alert — диктор прочтёт сразу. */
-export function ErrorNote({ error, busyUntil, limitUntil, children, class: cls = '' }) {
+export function ErrorNote({ error, busyUntil, limitUntil, timeZone, children, class: cls = '' }) {
   if (!error) return null;
-  // busy_until из ответа (стол занят, в т. ч. турниром) — временем клуба, если экран не передал своё
+  // busy_until из ответа (стол занят, в т. ч. турниром: «Стол занят турниром до 21:30») — временем клуба:
+  // пояс экрана (timeZone), иначе последнего клуба, иначе устройства
   let until = busyUntil;
   if (!until && error?.data?.busy_until) {
     try {
-      until = formatTime(error.data.busy_until, lastClub()?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
+      until = formatTime(error.data.busy_until, timeZone || lastClub()?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
     } catch {
       until = undefined;
     }

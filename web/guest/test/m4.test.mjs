@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBackend } from '../src/mock/backend.js';
 import { notCountedText } from '@billiardum/shared/plus';
-import { entryState, filterTournaments, opponents, placesLeft, sortMatches, disciplineOfTable, seasonNow, maskPhones, shownMatchScore, shownTournamentScore, canDispute, clubAnswerState, parseClubAnswer, peopleWords } from '../src/lib/plus.js';
+import { entryState, filterTournaments, opponents, placesLeft, sortMatches, disciplineOfTable, seasonNow, maskPhones, shownMatchScore, shownTournamentScore, canDispute, clubAnswerState, clubClosedText, parseClubAnswer, peopleWords } from '../src/lib/plus.js';
 import { CLUB_REQUEST_LINKS } from '../src/mock/m4.js';
 import { matchRoute } from '../src/lib/router.js';
+import { isTournamentBusy, tournamentExtendText } from '../src/lib/game.js';
+import { BRACKET_MATCH } from '@billiardum/shared/plus';
 import { ROUTES } from '../src/lib/routes.js';
 
 const memory = () => {
@@ -203,6 +205,14 @@ test('Д1: маршрут ссылки клуба /app/club-request/{id}?t= и �
   assert.equal(clubAnswerState({ token: 'x', request: null, answered: true }), 'answered', 'сразу после ответа');
   assert.equal(clubAnswerState({ token: 'x', request: undefined, answered: true }), 'loading', 'сначала спрашиваем сервер');
   assert.equal(clubAnswerState({ token: 'x', request: null, error: { code: 'network' }, answered: true }), 'error');
+  const rc = (status) => ({ code: 'request_closed', data: { status } });
+  assert.equal(clubAnswerState({ token: 'x', request: null, error: rc('accepted') }), 'closed', 'ответили с другого устройства');
+  assert.equal(clubAnswerState({ token: 'x', request: null, error: rc('declined'), answered: true }), 'answered', 'ответили здесь — с отметкой');
+  assert.equal(clubClosedText('accepted').title, 'На заявку уже ответили');
+  assert.equal(clubClosedText('declined').title, 'На заявку уже ответили');
+  assert.equal(clubClosedText('operator').title, 'Заявка у оператора');
+  assert.equal(clubClosedText('closed').title, 'Заявка закрыта');
+  assert.equal(clubClosedText(undefined).title, 'Заявка закрыта');
   assert.equal(clubAnswerState({ token: 'x', request: null, error: nf }), 'invalid', 'неверный или просроченный токен');
   assert.equal(clubAnswerState({ token: null }), 'invalid', 'ссылка без токена');
   assert.equal(clubAnswerState({ token: 'x', request: { status: 'accepted' } }), 'closed');
@@ -216,7 +226,7 @@ test('Д1: маршрут ссылки клуба /app/club-request/{id}?t= и �
   assert.equal(peopleWords(5), '5 человек');
 });
 
-test('Д1 на заглушке: заявка по токену без входа, ответ одноразовый, чужой токен — 404', async () => {
+test('Д1 на заглушке: заявка по токену без входа с поясом клуба, повторный ответ — 409 request_closed {status}, чужой токен — 404', async () => {
   let now = T;
   const b = createBackend({ ...memory(), now: () => now });
   b.scenario('clubrequest');
@@ -229,13 +239,16 @@ test('Д1 на заглушке: заявка по токену без вход�
   assert.equal(got.body.people, 4);
   assert.equal(got.body.minutes, 120);
   assert.ok(got.body.guest_phone, 'телефон гостя — клубу нужно связаться');
+  assert.equal(got.body.timezone, 'Asia/Yekaterinburg', 'время — по поясу клуба');
   assert.equal((await b.handle('POST', `/api/clubs/requests/${a.id}/answer`, { t: a.token, decision: 'maybe' })).status, 400);
   const ans = await b.handle('POST', `/api/clubs/requests/${a.id}/answer`, { t: a.token, decision: 'accept', text: 'Ждём, стол 3' });
   assert.equal(ans.status, 200);
   assert.equal(ans.body.status, 'accepted');
   assert.equal(ans.body.answer_text, 'Ждём, стол 3');
-  assert.equal((await b.handle('GET', `/api/clubs/requests/${a.id}/answer`, undefined, q({ t: a.token }))).status, 404, 'ссылка одноразовая');
-  assert.equal((await b.handle('POST', `/api/clubs/requests/${a.id}/answer`, { t: a.token, decision: 'decline' })).status, 404);
+  const again = await b.handle('GET', `/api/clubs/requests/${a.id}/answer`, undefined, q({ t: a.token }));
+  assert.deepEqual([again.status, again.body], [409, { error: 'request_closed', status: 'accepted' }], 'повторный вход — уже ответили');
+  const twice = await b.handle('POST', `/api/clubs/requests/${a.id}/answer`, { t: a.token, decision: 'decline' });
+  assert.deepEqual([twice.status, twice.body.status], [409, 'accepted'], 'второй ответ не принимается');
   assert.equal((await b.handle('GET', `/api/clubs/requests/${op.id}/answer`, undefined, q({ t: op.token }))).body.status, 'operator');
   now += 25 * 60 * 60_000;
   assert.equal((await b.handle('GET', `/api/clubs/requests/${op.id}/answer`, undefined, q({ t: op.token }))).status, 404, 'через 24 часа ссылка не работает');
@@ -251,4 +264,20 @@ test('№150 на заглушке: запись на турнир без ник
   assert.equal((await b.handle('PATCH', '/api/plus/me', { nick: 'Новичок_1' })).status, 200);
   const yes = await b.handle('POST', `/api/tournaments/${open.id}/entries`, {});
   assert.equal(yes.status, 201);
+});
+
+test('№146: продление на столе турнира — «Продлить нельзя: на столе турнир с HH:MM»; матч canceled — «Отменён»', () => {
+  const fmt = (x) => new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(new Date(x));
+  const busy = { code: 'table_busy', data: { reason: 'tournament', busy_until: '2026-10-23T23:00:00Z' } };
+  assert.equal(isTournamentBusy(busy), true);
+  assert.equal(isTournamentBusy({ code: 'table_busy', data: {} }), false, 'стол занят не турниром — обычный текст');
+  assert.equal(tournamentExtendText({ code: 'booking_conflict' }, {}, fmt), null);
+  // Предел продления 18:55 — турнир с 19:00; оплачено до 18:00 — можно продлить до 18:55
+  const s = { paid_until: '2026-10-23T18:00:00Z', extend_limit_until: '2026-10-23T18:55:00Z' };
+  const t = tournamentExtendText(busy, s, fmt);
+  assert.equal(t.title, 'Продлить нельзя: на столе турнир с 19:00.');
+  assert.match(t.action, /только до 18:55/);
+  assert.match(tournamentExtendText(busy, { ...s, paid_until: '2026-10-23T18:55:00Z' }, fmt).action, /Доиграйте оплаченное время/);
+  assert.equal(tournamentExtendText(busy, { paid_until: s.paid_until }, fmt).title, 'Продлить нельзя: стол занят турниром до 23:00.', 'предела нет — до конца занятости');
+  assert.equal(BRACKET_MATCH.canceled, 'Отменён');
 });
