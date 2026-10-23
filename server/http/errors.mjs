@@ -68,6 +68,23 @@ export const ERROR_CODES = new Set([
   // №149: возврат взноса после старта — взнос не оплачен или уже возвращается (409).
   'not_paid',
   'already_refunded',
+  // M5.1 backend-B (m5-1.md §4): тарифы не покрывают неделю или пересекаются (400, с {weekday, from, to, kind}),
+  // файл .xlsx не разобран (400), QR с корпуса контроллера не BLD1 (400).
+  'tariff_gap',
+  'tariff_overlap',
+  'xlsx_invalid',
+  'qr_invalid',
+  // M5.1 backend-A (m5-1.md §4): четвёртый тестовый клуб (409), чек-лист запуска не выполнен
+  // (409 {failed: [...]}), клуб приостановлен платформой (409), магазин ЮKassa не принят при
+  // проверке GET /v3/me: неверная пара (400), режим не тот (400), у боевого нет фискализации (400);
+  // ЮKassa не ответила на проверку магазина (503).
+  'clubs_limit',
+  'checklist_incomplete',
+  'club_suspended',
+  'shop_invalid',
+  'shop_mode_mismatch',
+  'fiscalization_off',
+  'yookassa_unavailable',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',
@@ -101,11 +118,24 @@ export const SAFE_ERROR_FIELDS = new Set([
   'reason',
   // Статус заявки в клуб, на которую уже ответили — только из SAFE_STATUSES (409 request_closed {status}).
   'status',
+  // M5.1 (400 tariff_gap / tariff_overlap): день недели ISO 1–7, местное время 'HH:MM', тип стола из SAFE_KINDS.
+  'weekday',
+  'from',
+  'to',
+  'kind',
+  // M5.1 (409 checklist_incomplete): невыполненные пункты чек-листа запуска — только из SAFE_CHECKLIST.
+  'failed',
 ]);
 /** Допустимые значения reason в ошибке: закрытый список кодов, не свободный текст. */
 export const SAFE_REASONS = new Set(['tournament', 'booking', 'service', 'pending', 'offline', 'busy', 'reserved', 'waitlist', 'session', 'maintenance', 'closed']);
 /** Допустимые значения status в ошибке: статус закрытой заявки гостя в клуб (T25). */
 export const SAFE_STATUSES = new Set(['accepted', 'declined', 'operator', 'closed']);
+/** Допустимые значения kind в ошибке: тип стола (M5.1, tariff_gap). */
+export const SAFE_KINDS = new Set(['pyramid', 'pool', 'snooker', 'mixed']);
+/** Пункты чек-листа запуска (№160) в поле failed ошибки checklist_incomplete. */
+export const SAFE_CHECKLIST = new Set(['tables', 'devices', 'tariffs', 'shop_live', 'kkt', 'stickers', 'offer']);
+/** Местное время 'HH:MM' (00:00–24:00) в полях from и to ошибки тарифа. */
+const SAFE_HHMM = /^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/;
 const REASON_CODE = /^[a-z_]{1,32}$/;
 const SAFE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SAFE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -122,6 +152,18 @@ export function safeErrorData(data) {
     }
     if (k === 'status') {
       if (typeof v === 'string' && SAFE_STATUSES.has(v)) out[k] = v;
+      continue;
+    }
+    if (k === 'kind') {
+      if (typeof v === 'string' && SAFE_KINDS.has(v)) out[k] = v;
+      continue;
+    }
+    if (k === 'failed') {
+      if (Array.isArray(v) && v.length <= SAFE_CHECKLIST.size && v.every((x) => typeof x === 'string' && SAFE_CHECKLIST.has(x))) out[k] = [...new Set(v)];
+      continue;
+    }
+    if ((k === 'from' || k === 'to') && typeof v === 'string' && SAFE_HHMM.test(v)) {
+      out[k] = v;
       continue;
     }
     if (v === null || typeof v === 'boolean' || Number.isSafeInteger(v)) out[k] = v;

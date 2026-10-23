@@ -124,14 +124,24 @@ function parseBool(value, dflt) {
  * @returns {{ items: object[], errors: { line: number, field: string|null, code: string }[] }}
  */
 export function csvToProducts(text) {
-  const errors = [];
   let parsed;
   try {
     parsed = parseCsv(text);
   } catch {
     return { items: [], errors: [{ line: 0, field: null, code: 'bad_csv' }] };
   }
-  const [head, ...body] = parsed.rows;
+  return rowsToProducts(parsed.rows);
+}
+
+/**
+ * Строки таблицы ([{ line, fields }], первая — заголовки) → товары. Общий разбор CSV и .xlsx
+ * (xlsx.mjs, M5.1 №157): заголовки, проверки полей и ошибки по строкам одинаковые.
+ * @param {{ line: number, fields: string[] }[]} rows
+ * @param {{ maxRows?: number }} [options] сколько строк товаров допускается (CSV — MAX_ROWS)
+ */
+export function rowsToProducts(rows, { maxRows = MAX_ROWS } = {}) {
+  const errors = [];
+  const [head, ...body] = rows;
   if (!head) return { items: [], errors: [{ line: 0, field: null, code: 'empty' }] };
   const cols = {};
   head.fields.forEach((h, idx) => {
@@ -141,7 +151,7 @@ export function csvToProducts(text) {
   if (cols.name === undefined || cols.price === undefined) {
     return { items: [], errors: [{ line: head.line, field: cols.name === undefined ? 'name' : 'price', code: 'missing_column' }] };
   }
-  if (body.length > MAX_ROWS) return { items: [], errors: [{ line: 0, field: null, code: 'too_many_rows' }] };
+  if (body.length > maxRows) return { items: [], errors: [{ line: 0, field: null, code: 'too_many_rows' }] };
   const items = [];
   for (const r of body) {
     const get = (f) => (cols[f] === undefined ? '' : String(r.fields[cols[f]] ?? '').trim());

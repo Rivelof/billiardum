@@ -204,6 +204,46 @@ export function receiptTask({ kind, items, amountKopecks, taxSystemCode, payment
   return task;
 }
 
+/**
+ * Нефискальный документ «ТЕСТ» вместо чека (M5.1 №153): продажа в тестовом режиме клуба —
+ * денег нет, фискального чека нет. Позиции и итог печатаются для проверки ККТ и бумаги.
+ * @param {{ kind: 'sale'|'refund', items: object[], amountKopecks: number, operatorName?: string|null }} r
+ */
+export function testReceiptTask({ kind, items, amountKopecks, operatorName: op }) {
+  const { items: positions, totalKopecks } = atolItems(items);
+  if (totalKopecks !== Number(amountKopecks)) throw new ReceiptDataError(`сумма позиций ${totalKopecks} ≠ сумма чека ${amountKopecks}`);
+  const money = (k) => `${Math.floor(k / 100)},${String(k % 100).padStart(2, '0')}`;
+  const lines = [
+    { type: 'text', text: 'ТЕСТ', alignment: 'center', doubleWidth: true, doubleHeight: true },
+    { type: 'text', text: 'Тестовый режим клуба. Не чек: денег нет', alignment: 'center' },
+    { type: 'text', text: kind === 'refund' ? 'Возврат' : 'Продажа', alignment: 'left' },
+    ...positions.map((p) => ({ type: 'text', text: `${p.name.slice(0, 40)} ${p.quantity} × ${money(Math.round(p.price * 100))}`, alignment: 'left' })),
+    { type: 'text', text: `Итого ${money(totalKopecks)} ₽`, alignment: 'left' },
+    { type: 'text', text: `Кассир: ${operatorName(op)}`, alignment: 'left' },
+    { type: 'text', text: 'ТЕСТ', alignment: 'center', doubleWidth: true },
+  ];
+  return { type: 'nonFiscal', items: lines, printFooter: false };
+}
+
+/**
+ * Отчёт о закрытии смены тестового режима клуба (M5.1 №153) — нефискальный «ТЕСТ»: смена ККТ в
+ * тестовом режиме не открывается и не закрывается, фискальных документов нет.
+ * @param {{ number?: number|null, operatorName?: string|null, sales?: { count: number, kopecks: number }|null }} r
+ */
+export function testShiftReportTask({ number = null, operatorName: op = null, sales = null } = {}) {
+  const money = (k) => `${Math.floor(k / 100)},${String(k % 100).padStart(2, '0')}`;
+  const lines = [
+    { type: 'text', text: 'ТЕСТ', alignment: 'center', doubleWidth: true, doubleHeight: true },
+    { type: 'text', text: 'Тестовый режим клуба', alignment: 'center' },
+    { type: 'text', text: 'Отчёт о закрытии смены. Не фискальный', alignment: 'center' },
+    ...(Number.isInteger(number) ? [{ type: 'text', text: `Смена №${number}`, alignment: 'left' }] : []),
+    ...(sales ? [{ type: 'text', text: `Тестовых продаж: ${sales.count} на ${money(sales.kopecks)} ₽`, alignment: 'left' }] : []),
+    { type: 'text', text: `Кассир: ${operatorName(op)}`, alignment: 'left' },
+    { type: 'text', text: 'ТЕСТ', alignment: 'center', doubleWidth: true },
+  ];
+  return { type: 'nonFiscal', items: lines, printFooter: false };
+}
+
 /** Задание смены ККТ. */
 export function shiftTask(kind, name) {
   return { type: kind === 'open_shift' ? 'openShift' : 'closeShift', operator: { name: operatorName(name) } };

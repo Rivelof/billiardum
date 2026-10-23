@@ -91,6 +91,8 @@ export async function init(ctx) {
     encKey: ctx.config.encKey,
     mqttPublicUrl: publicMqttUrl(ctx.config),
     dynsec: () => dynsecConn.get(),
+    // №162: в проде — только устройства из заводского реестра.
+    requireFactory: ctx.config?.production === true,
   });
 
   // SSE после коммита: session:{id} и club:{id} (контракт §7, server/http/sse.mjs).

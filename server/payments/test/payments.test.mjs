@@ -272,6 +272,9 @@ describe('провижининг разработки', () => {
     assert.ok(ins.params[2].startsWith('v1:'));
     assert.ok(!ins.params[2].includes('emu-secret-123'));
     assert.equal(decryptSecret(ins.params[2], key, yookassaSecretContext(r.club_id)).toString(), 'emu-secret-123');
+    // M5.1 №154: тестовая пара — тот же магазин эмулятора, свой контекст шифрования.
+    assert.equal(decryptSecret(ins.params[3], key, yookassaSecretContext(r.club_id, 'test')).toString(), 'emu-secret-123');
+    assert.throws(() => decryptSecret(ins.params[3], key, yookassaSecretContext(r.club_id)));
     assert.ok(!JSON.stringify(logs).includes('emu-secret-123'));
   });
 });

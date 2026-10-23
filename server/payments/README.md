@@ -133,3 +133,13 @@
 - Отчёт смены (`server/reports`, backend-kkt): `kind = 'tournament'` сейчас попадает в «прочее»; нужна строка «Турниры» — `categoryOf('tournament') → 'tournaments'` и поле `revenue.tournaments` (возвраты взносов — `kind = 'refund'` по платежам `tournament`).
 - Турнирный матч (light, `sessions.source = 'tournament'`, без плательщика): депозит ресепшена — `table_busy`, продление оплатой — `bad_request` (без падения на пустом плательщике).
 - Стол турнира (M4-I1): котировка QR и оплата отвечают как light — `409 table_busy {reason: 'tournament', busy_until}`; `MoneyError` пропускает из ошибки соседа `booking_id`, `reason` (код) и `busy_until` (время ISO), `errors.mjs` `PUBLIC_DATA_FIELDS`.
+
+## M5.1: два магазина ЮKassa клуба и тестовый режим (№153, №154; `1001`, `1002`)
+
+- **Пары магазина.** `live` — прежние `club_payment_settings.shop_id`, `secret_key_enc` (контекст шифрования `yookassa_secret/<club_id>`); `test` — `test_shop_id`, `test_secret_key_enc` (контекст `yookassa_secret/<club_id>/test`). `loadPaymentSettings(db, clubId, { mode | isTest })`: без параметров — пара по режиму клуба (`test` и приостановленный после `test` — тестовая, иначе боевая); `isTest` — по записи (`payments.is_test`, `refunds.is_test`, `receipts.is_test`). Ответ дополнен `shop_mode` и `club_mode`; `shop_id`/`secret_key_enc` — выбранной пары; `clientFor` расшифровывает ключ контекстом этой пары.
+- **Новый платёж** (котировка, оплата, бар, бронь, пакет, турнир) — пара по режиму клуба; **всё о существующем платеже** (сверка `syncPayment`, вебхук, списание и отмена заморозки `captureOrRelease`, возврат `refund`, поздний возврат, чек зачёта, отмена пакета, сверка смены) — пара по `is_test` платежа: платёж тестового режима не уходит в боевой магазин и после перехода клуба в `live`.
+- **Вебхук** `POST /api/webhooks/yookassa/{club_id}`: пара — по нашей записи; неизвестный объект перепроверяется сначала тестовым, затем боевым магазином. Вебхук отмечает `payments.webhook_at` (и для уже обработанного платежа); проверочный платёж 1 ₽ (`bl.shop_checks`) обрабатывает `server/clubs/shops.mjs` (`onShopCheckWebhook`). Нет ни одной пары — `404`.
+- **Тестовые записи** (`is_test`, ставит триггер базы по режиму клуба) не входят в отчёт смены, сводку, наличные смены и сверку онлайн-оплат (сверяется только боевой магазин) — `server/reports`, `server/shifts`.
+- `club_suspended` (409) — котировка `start` и депозит на ресепшене в приостановленном клубе (№160).
+- Сид разработки (`provision-dev.mjs`): магазин эмулятора — в обе пары; проверка `GET /v3/me` при этом не делается.
+- Клиент ЮKassa: `getMe()` — `GET /v3/me` (`account_id`, `test`, `fiscalization_enabled`).

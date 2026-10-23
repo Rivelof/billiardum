@@ -102,12 +102,19 @@ export function createPublicService({ deps, log, clock }) {
     return new Map(rows.map((r) => [r.card_id, { avg: r.avg, count: r.n }]));
   }
 
+  /**
+   * Карточка клуба в программе с живыми данными: status platform и клуб в боевом режиме (M5.1 №153:
+   * тестовый или приостановленный клуб на публичных страницах — как карточка без программы).
+   */
+  const onPlatform = (card) => card.status === 'platform' && Boolean(card.club_id) && card.club_mode === 'live';
+  const publicStatus = (card) => (card.status === 'platform' && !onPlatform(card) ? 'claimed' : card.status);
+
   /** Краткая карточка для каталога города. */
   async function summary(db, card, rating) {
     let live = null;
     let priceFrom = card.price_from_kopecks === null ? null : Number(card.price_from_kopecks);
     let disciplines = card.disciplines;
-    if (card.status === 'platform' && card.club_id) {
+    if (onPlatform(card)) {
       live = await clubLiveStatus(db, { clubId: card.club_id });
       await enterClub(db, card.club_id);
       try {
@@ -124,10 +131,10 @@ export function createPublicService({ deps, log, clock }) {
       slug: card.slug,
       path: `/${card.city_slug}/${card.slug}/`,
       name: card.name,
-      status: card.status,
+      status: publicStatus(card),
       // Клуб программы (рейтинг клуба, бронь в приложении); у карточки без программы — null.
-      club_id: card.status === 'platform' ? card.club_id : null,
-      booking: card.status === 'platform' ? 'online' : 'request',
+      club_id: onPlatform(card) ? card.club_id : null,
+      booking: onPlatform(card) ? 'online' : 'request',
       address: card.address,
       location: card.lat === null ? null : { lat: Number(card.lat), lng: Number(card.lng) },
       hours_text: card.hours_text,
@@ -150,8 +157,9 @@ export function createPublicService({ deps, log, clock }) {
     return cached('cities', async () => {
       const { rows } = await db.query(
         `select c.slug, c.name, c.name_in, c.region,
-                count(p.id)::int as clubs, count(p.id) filter (where p.status = 'platform')::int as online_clubs,
-                coalesce(array_agg(p.club_id) filter (where p.status = 'platform' and p.club_id is not null), '{}') as club_ids
+                count(p.id)::int as clubs,
+                count(p.id) filter (where p.status = 'platform' and bl.club_mode(p.club_id) = 'live')::int as online_clubs,
+                coalesce(array_agg(p.club_id) filter (where p.status = 'platform' and p.club_id is not null and bl.club_mode(p.club_id) = 'live'), '{}') as club_ids
            from bl.cities c left join bl.club_public p on p.city_id = c.id and p.visible
           where c.active
           group by c.id order by count(p.id) desc, c.name`,
@@ -200,7 +208,7 @@ export function createPublicService({ deps, log, clock }) {
       const { rows: c } = await db.query('select id, slug, name, region, timezone from bl.cities where slug = $1 and active', [slug]);
       if (!c[0]) fail('not_found', 'city');
       const { rows: cards } = await db.query(
-        `select p.*, $2::text as city_slug from bl.club_public p where p.city_id = $1 and p.visible order by p.name limit 500`,
+        `select p.*, $2::text as city_slug, bl.club_mode(p.club_id) as club_mode from bl.club_public p where p.city_id = $1 and p.visible order by p.name limit 500`,
         [c[0].id, slug],
       );
       const ratings = await ratingsOf(db, cards.map((x) => x.id));
@@ -262,7 +270,7 @@ export function createPublicService({ deps, log, clock }) {
     if (typeof citySlug !== 'string' || !SLUG.test(citySlug) || typeof slug !== 'string' || !SLUG.test(slug)) fail('not_found', 'club');
     return cached(`club:${citySlug}:${slug}`, async () => {
       const { rows } = await db.query(
-        `select p.*, c.slug as city_slug, c.name as city_name, c.timezone as city_timezone
+        `select p.*, c.slug as city_slug, c.name as city_name, c.timezone as city_timezone, bl.club_mode(p.club_id) as club_mode
            from bl.club_public p join bl.cities c on c.id = p.city_id
           where c.slug = $1 and p.slug = $2 and p.visible and c.active`,
         [citySlug, slug],
@@ -274,7 +282,7 @@ export function createPublicService({ deps, log, clock }) {
       let live = null;
       let prices = [];
       let tournaments = [];
-      if (card.status === 'platform' && card.club_id) {
+      if (onPlatform(card)) {
         live = await clubLiveStatus(db, { clubId: card.club_id });
         await enterClub(db, card.club_id);
         try {
@@ -290,7 +298,7 @@ export function createPublicService({ deps, log, clock }) {
         club: {
           ...base,
           city: { slug: card.city_slug, name: card.city_name, timezone: card.city_timezone },
-          club_id: card.status === 'platform' ? card.club_id : null,
+          club_id: onPlatform(card) ? card.club_id : null,
           phone: card.phone,
           url: card.url,
           max_url: card.max_url,
@@ -309,7 +317,9 @@ export function createPublicService({ deps, log, clock }) {
   /** GET /api/public/listings/{id} → { id, name, city, address, status } (m4-api: заявка T25). */
   async function listing(db, { id }) {
     const { rows } = await db.query(
-      `select p.id, p.name, c.name as city, p.address, p.status from bl.club_public p join bl.cities c on c.id = p.city_id
+      `select p.id, p.name, c.name as city, p.address,
+              case when p.status = 'platform' and bl.club_mode(p.club_id) is distinct from 'live' then 'claimed' else p.status end as status
+         from bl.club_public p join bl.cities c on c.id = p.city_id
         where p.id = $1 and p.visible`,
       [id],
     );

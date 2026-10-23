@@ -94,7 +94,8 @@ describe('стол по коду', () => {
     const r = await h.call(TABLE_ROUTE, { params: { code: 'TEST000001' } });
     assert.equal(r.status, 200);
     const t = r.json;
-    assert.deepEqual(t.club, { id: CLUB_A, name: 'Тестовый клуб', timezone: 'Asia/Yekaterinburg' });
+    // mode (M5.1 №153): режим клуба — гостю для плашки «Тестовый режим клуба».
+    assert.deepEqual(t.club, { id: CLUB_A, name: 'Тестовый клуб', timezone: 'Asia/Yekaterinburg', mode: 'live' });
     assert.deepEqual(t.resource, { id: TABLE_1, number: 1, type: 'billiard_pyramid', title: 'Стол 1' });
     assert.equal(t.status, 'free');
     assert.equal(t.busy_until, null);

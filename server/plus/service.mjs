@@ -438,6 +438,12 @@ export function createPlusService({ deps, log, clock }) {
   /** Итог партии и Эло — один раз (bl.plus_settle_match), затем уведомления и достижения. */
   async function settle(db, matchId) {
     const t = now();
+    // M5.1 №153: партия тестового режима клуба в рейтинг и достижения не входит (остаётся confirmed).
+    const test = await db.query('select is_test from bl.matches where id = $1', [matchId]);
+    if (test.rows[0]?.is_test) {
+      log.info('plus_match_test_mode', { match_id: matchId });
+      return loadMatch(db, matchId);
+    }
     const { rows } = await db.query('select status, reject_reason, applied from bl.plus_settle_match($1, $2)', [matchId, t]);
     const r = rows[0] ?? null;
     const m = await loadMatch(db, matchId);
@@ -839,12 +845,12 @@ export function createPlusService({ deps, log, clock }) {
       const { rows } = await db.query(
         `with own as (
            select s.id, s.club_id, s.started_at from bl.sessions s
-            where s.status = 'closed' and exists (select 1 from bl.session_participants p where p.session_id = s.id and p.user_id = $1)
+            where s.status = 'closed' and not s.is_test and exists (select 1 from bl.session_participants p where p.session_id = s.id and p.user_id = $1)
          ), tz as (select id, timezone from bl.public_clubs())
          select
-           exists (select 1 from bl.matches m where m.status = 'counted' and m.source = 'session' and m.discipline = 'pyramid'
+           exists (select 1 from bl.matches m where m.status = 'counted' and not m.is_test and m.source = 'session' and m.discipline = 'pyramid'
                      and m.winner_id = $1 and greatest(m.score_a, m.score_b) = 8 and least(m.score_a, m.score_b) = 0) as dry,
-           exists (select 1 from bl.matches m where m.status = 'counted' and m.source = 'tournament' and $1 in (m.player_a, m.player_b)) as tournament,
+           exists (select 1 from bl.matches m where m.status = 'counted' and not m.is_test and m.source = 'tournament' and $1 in (m.player_a, m.player_b)) as tournament,
            coalesce((select max(n) from (select count(*) as n from own group by club_id) x), 0) >= 10 as regular,
            (select count(distinct club_id) from own) >= 5 as five_clubs,
            (select count(*) from own o join tz on tz.id = o.club_id

@@ -13,7 +13,8 @@
 //   PATCH /api/catalog/modifier-groups/{id}           — {name?, min_select?, max_select?, sort?, active?}
 //   POST  /api/catalog/modifier-groups/{id}/modifiers — {name, price_delta_kopecks?, stock_factor?, is_default?, sort?}
 //   PATCH /api/catalog/modifiers/{id}                 — те же поля, частично; active
-//   POST  /api/clubs/{club}/catalog/import            — {csv, dry_run?}: импорт меню из CSV (PRODUCT §16.4)
+//   POST  /api/clubs/{club}/catalog/import            — {csv, dry_run?}: импорт меню из CSV (PRODUCT §16.4);
+//                                                       или файл .xlsx/CSV телом (?dry_run=1) либо multipart (M5.1 №157)
 // Каждое изменение — журнал catalog.*.
 
 import { ALL_ROLES } from '../router.mjs';
@@ -26,6 +27,7 @@ import {
   createProduct,
   fullCatalog,
   importCsv,
+  importFile,
   setStopList,
   updateCategory,
   updateGroup,
@@ -34,6 +36,7 @@ import {
 } from '../../server/catalog/service.mjs';
 import { PosError } from '../../server/orders/errors.mjs';
 import { inClub, posRoute } from '../../server/orders/route.mjs';
+import { XLSX_MAX_FILE_BYTES, XLSX_MIME } from '../../server/catalog/xlsx.mjs';
 
 const MANAGER = [...ROLES.MANAGER_UP];
 const RECEPTION = [...ROLES.RECEPTION_UP];
@@ -134,6 +137,10 @@ export const routes = [
     path: '/api/clubs/{club}/catalog/import',
     auth: 'staff',
     roles: MANAGER,
-    handler: posRoute(({ db, deps, info }) => importCsv(db, deps, info)),
+    // M5.1 №157: и файлом — .xlsx (или CSV) телом запроса с ?dry_run=1, или multipart/form-data
+    // (file, dry_run). До 2 МБ; разбор и лимиты — server/catalog/xlsx.mjs.
+    rawBody: { types: [XLSX_MIME, 'text/csv', 'application/octet-stream', 'multipart/form-data'], maxBytes: XLSX_MAX_FILE_BYTES + 64 * 1024 },
+    rateLimit: { max: 30, windowMs: 60_000 },
+    handler: posRoute(({ db, deps, info, req }) => (req.rawBody ? importFile(db, deps, info, req.rawBody) : importCsv(db, deps, info))),
   },
 ];

@@ -38,6 +38,8 @@ export const MODULES = [
   { name: 'directory', spec: '../directory/index.mjs' },
   { name: 'plus', spec: '../plus/index.mjs' },
   { name: 'tournaments', spec: '../tournaments/index.mjs' },
+  // M5.1: подключение клуба (backend-A): проверочные платежи, тревога вебхука, карточка каталога при live.
+  { name: 'clubs', spec: '../clubs/index.mjs' },
 ];
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
 

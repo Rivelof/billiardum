@@ -24,6 +24,10 @@
 //   POST /__emu/fault { kind: 'forget_request', times }    задание выполнено (документ в ФН), но веб-сервер
 //                                                         его «забыл»: GET по UUID — 404 (исход неизвестен у моста)
 //   POST /__emu/shift { expired: true }                   смена ККТ старше 24 часов
+//   POST /__emu/fiscal { on }                             ККТ фискальная (deviceStatus.fiscal, fnFiscal) или нет
+//                                                         (M5.1 №160: чек-лист запуска клуба)
+// Нефискальный документ (задача nonFiscal, M5.1 №153 — «ТЕСТ» тестового режима клуба): печатается без ФД,
+// в /__emu/documents — с kind nonFiscal и строками text.
 // Выдаёт номер ФД (сквозной), ФП (10 цифр, HMAC от ФН и ФД), номер чека в смене и номер смены.
 // Оплаты чека: cash, electronically, prepaid (зачёт предоплаты), credit, other. Сумма оплат = сумма чека
 // (больше — только наличными, сдача); зачёт предоплаты — не больше позиций «полный расчёт» (позиции
@@ -49,7 +53,7 @@ export const PAYMENT_TYPES = ['cash', 'electronically', 'prepaid', 'credit', 'ot
 const PREPAYMENT_METHODS = new Set(['fullPrepayment', 'prepayment', 'advance']);
 const zeroTotals = () => Object.fromEntries(PAYMENT_TYPES.map((t) => [t, 0]));
 const FISCAL = new Set(['sell', 'sellReturn', 'openShift', 'closeShift']);
-const KNOWN = new Set([...FISCAL, 'getShiftStatus', 'getDeviceStatus', 'getFnStatus', 'continuePrint', 'reportX']);
+const KNOWN = new Set([...FISCAL, 'getShiftStatus', 'getDeviceStatus', 'getFnStatus', 'continuePrint', 'reportX', 'nonFiscal']);
 
 class TaskError extends Error {
   constructor(code, description) {
@@ -106,6 +110,7 @@ export function createAtolEmulator({
   function reset() {
     st = {
       power: true,
+      fiscal: true,
       offlineMode: 'error',
       paper: true,
       paperMode: 'error',
@@ -146,8 +151,8 @@ export function createAtolEmulator({
       blocked: false,
       coverOpened: false,
       paperPresent: st.paper,
-      fiscal: true,
-      fnFiscal: true,
+      fiscal: st.fiscal,
+      fnFiscal: st.fiscal,
       fnPresent: true,
       cashDrawerOpened: false,
       currentDateTime: kktDateTime(clock.now()),
@@ -236,6 +241,16 @@ export function createAtolEmulator({
     }
     if (type === 'reportX') {
       if (!st.paper) throw new TaskError(CODES.NO_PAPER);
+      return { result: {} };
+    }
+    if (type === 'nonFiscal') {
+      // Нефискальный документ: без ФД и ФН, смена не нужна.
+      if (!Array.isArray(task.items) || task.items.length === 0 || task.items.length > 200) throw new TaskError(CODES.INVALID_PARAM, 'Неверный параметр: items');
+      for (const [i, it] of task.items.entries()) {
+        if (it?.type !== 'text' || typeof it.text !== 'string' || it.text.length > 256) throw new TaskError(CODES.INVALID_PARAM, `Неверный параметр: items[${i}]`);
+      }
+      if (!st.paper) throw new TaskError(CODES.NO_PAPER);
+      st.documents.push({ fd: null, kind: 'nonFiscal', at: clock.now().toISOString(), printed: true, lines: task.items.map((it) => it.text) });
       return { result: {} };
     }
 
@@ -452,6 +467,7 @@ export function createAtolEmulator({
       offline_mode: st.offlineMode,
       paper: st.paper,
       paper_mode: st.paperMode,
+      fiscal: st.fiscal,
       fn_error: st.fnError,
       delay_ms: st.delayMs,
       fd: st.fd,
@@ -492,6 +508,9 @@ export function createAtolEmulator({
     fault(kind, times = 1) {
       if (kind !== 'lose_after_fiscal' && kind !== 'forget_request') throw new HttpFail(400, 'kind: lose_after_fiscal | forget_request');
       st.faults.push({ kind, remaining: Number.isInteger(times) && times > 0 ? times : 1 });
+    },
+    fiscal(on) {
+      st.fiscal = Boolean(on);
     },
     expireShift() {
       if (st.shift.state !== 'opened') openShiftDoc('Эмулятор');
@@ -558,6 +577,7 @@ export function createAtolEmulator({
       else if (path === '/__emu/delay' && m === 'POST') control.delay(body.ms);
       else if (path === '/__emu/fault' && m === 'POST') control.fault(body.kind, body.times);
       else if (path === '/__emu/shift' && m === 'POST' && body.expired === true) control.expireShift();
+      else if (path === '/__emu/fiscal' && m === 'POST') control.fiscal(body.on);
       else throw new HttpFail(404, `Нет такого метода: ${m} ${path}`);
       return send(res, 200, publicState());
     }

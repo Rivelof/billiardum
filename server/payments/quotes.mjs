@@ -31,7 +31,7 @@ function tariffFail(err) {
 /** Строка стола и клуба в контексте клуба. */
 async function loadTable(db, resourceId) {
   const { rows } = await db.query(
-    `select r.id, r.number, r.type, r.title, r.active, c.id as club_id, c.name as club_name, c.timezone
+    `select r.id, r.number, r.type, r.title, r.active, c.id as club_id, c.name as club_name, c.timezone, c.mode as club_mode
        from bl.resources r join bl.clubs c on c.id = r.club_id
       where r.id = $1`,
     [resourceId],
@@ -75,7 +75,9 @@ export async function tableByCode(db, deps, { code, userId = null }) {
   const options = [60, 120, 180];
   if (settings.card || settings.sbp) options.push('unlimited');
   return {
-    club: { id: t.club_id, name: t.club_name, timezone: t.timezone },
+    // mode (M5.1 №153): test — гость видит плашку «Тестовый режим клуба — деньги не списываются»;
+    // suspended — клуб приостановлен, новую игру не начать (409 club_suspended).
+    club: { id: t.club_id, name: t.club_name, timezone: t.timezone, mode: t.club_mode },
     resource: { id: t.id, number: t.number, type: t.type, title: t.title },
     status: status?.status ?? 'offline',
     busy_until: status?.busy_until ?? null,
@@ -187,6 +189,8 @@ export async function createQuote(db, deps, info, config) {
   const { userId } = await requireGuestReady(db, info);
   const table = await loadTable(db, req.resourceId);
   if (!table || !table.active) throw new MoneyError('not_found', 'стол');
+  // M5.1 №160: приостановленный клуб — новую игру не начать; продление идущей оплаченной игры можно.
+  if (req.kind === 'start' && table.club_mode === 'suspended') throw new MoneyError('club_suspended');
   const now = deps.clock.now();
   const validUntil = new Date(now.getTime() + QUOTE_TTL_MS);
   const settings = await loadPaymentSettings(db, clubId);

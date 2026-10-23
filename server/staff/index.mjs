@@ -41,8 +41,28 @@ export async function listStaff(db, { now }) {
   };
 }
 
+/** Роль в тексте приглашения (M5.1 №158): «на роль …». */
+export const ROLE_TITLES = Object.freeze({ manager: 'управляющего', reception: 'администратора ресепшена', installer: 'монтажника', bar: 'бармена' });
+
+/**
+ * Ссылка и текст приглашения (M5.1 №158): SMS-провайдера нет, владелец пересылает текст сам
+ * («Скопировать» или «Поделиться»). Вход — /club/ по телефону, на который выписано приглашение;
+ * сам телефон в текст не попадает. publicHost — хост без схемы (PUBLIC_HOST).
+ */
+export function inviteMessage({ clubName, role, publicHost, expiresAt, timezone = 'Europe/Moscow' }) {
+  if (!/^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/.test(String(publicHost ?? ''))) throw new Error('inviteMessage: publicHost');
+  const url = `https://${publicHost}/club/`;
+  const until = expiresAt ? ` до ${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: timezone }).format(new Date(expiresAt))}` : '';
+  const name = String(clubName ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const text =
+    `Вас пригласили в программу клуба «${name}» на роль ${ROLE_TITLES[role] ?? 'сотрудника'}. ` +
+    `Откройте ссылку и войдите по номеру телефона, на который пришло это приглашение: ${url} ` +
+    `Приглашение действует${until || ' 7 дней'}.`;
+  return { invite_url: url, invite_text: text };
+}
+
 /** Пригласить по телефону с ролью. Повторное приглашение того же номера продлевает и меняет роль. */
-export async function invite(db, { clubId, phone, role, byUserId, now }) {
+export async function invite(db, { clubId, phone, role, byUserId, now, publicHost = null }) {
   const e164 = typeof phone === 'string' ? normalizePhone(phone) : null;
   if (!e164 || !phone.trim().startsWith('+')) throw new HttpError(400, 'bad_request', { detail: 'phone' });
   if (!INVITE_ROLES.includes(role)) throw new HttpError(400, 'bad_request', { detail: 'role' });
@@ -78,7 +98,9 @@ export async function invite(db, { clubId, phone, role, byUserId, now }) {
     actorId: byUserId,
     data: { invite_id: row.id, role, phone_masked: maskPhone(e164), expires_at: iso(row.expires_at) },
   });
-  return inviteJson(row);
+  if (!publicHost) return inviteJson(row);
+  const club = (await db.query('select name, timezone from bl.clubs where id = $1', [clubId])).rows[0];
+  return { ...inviteJson(row), ...inviteMessage({ clubName: club?.name ?? '', role, publicHost, expiresAt: row.expires_at, timezone: club?.timezone }) };
 }
 
 export async function revokeInvite(db, { inviteId, byUserId, now }) {

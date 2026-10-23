@@ -377,7 +377,7 @@ export async function syncRefund(db, deps, config, refundId) {
   if (!f || f.status !== 'pending' || !f.provider_refund_id) return { result: 'skipped' };
   const now = deps.clock.now();
   await db.query('update bl.refunds set checked_at = $2 where id = $1', [f.id, now]);
-  const settings = await loadPaymentSettings(db, f.club_id);
+  const settings = await loadPaymentSettings(db, f.club_id, { isTest: f.is_test });
   const remote = await clientFor(settings, config).getRefund(f.provider_refund_id);
   if (remote?.id !== f.provider_refund_id || remote?.payment_id !== f.provider_payment_id) {
     deps.log?.error?.('refund_mismatch', { club_id: f.club_id, refund_id: f.id });
@@ -417,7 +417,7 @@ export async function refund(db, args, injected) {
   // Игра минутами баланса (пакеты часов): деньги не двигались — минуты возвращаются в партии (п. 2).
   if (p.provider === 'balance') return refundBalance(db, deps, p, { key, amountKopecks, reason, args, now });
 
-  const settings = await loadPaymentSettings(db, p.club_id);
+  const settings = await loadPaymentSettings(db, p.club_id, { isTest: p.is_test });
   const { rows: res } = await db.query('select number from bl.resources where id = $1', [p.resource_id]);
   const number = res[0]?.number;
   // Позиции чека возврата: у бара — от кассы (что именно возвращается), у стола — «Игра, стол N».
@@ -718,7 +718,7 @@ export async function revokePackageLot(db, args, injected) {
   const now = inj.deps.clock.now();
   const { lot, payment } = await revokeLot(db, inj.deps, { ...args, now });
   const { rows: pk } = await db.query('select * from bl.tariff_packages where id = $1', [lot.package_id]);
-  const settings = await loadPaymentSettings(db, lot.club_id);
+  const settings = await loadPaymentSettings(db, lot.club_id, { isTest: payment.is_test });
   const amount = Number(lot.price_kopecks);
   // Ключ pkr-<lot>; после возврата, отменённого ЮKassa (партия восстановлена), — pkr-<lot>-<n>.
   const { rows: tries } = await db.query("select count(*)::int as n from bl.refunds where payment_id = $1 and idempotence_key like $2 and status = 'canceled'", [payment.id, `pkr-${lot.id}%`]);

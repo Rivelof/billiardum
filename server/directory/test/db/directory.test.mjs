@@ -349,6 +349,17 @@ describe('каталог клубов', { skip }, () => {
     const p = await h.request('PATCH', `/api/platform/leads/${lead.id}`, { token: operator.token, body: { status: 'contacted', note: 'Созвонились' } });
     assert.equal(p.json.status, 'contacted');
     assert.equal(p.json.note, 'Созвонились');
+    // M5.1 №159: «Заказать комплект» — заявка kind 'kit', свой текст Андрею, фильтр в воронке.
+    const kit = await h.request('POST', '/api/leads', { body: { ...form, kind: 'kit', tables_count: 2 }, ip: '10.1.2.1' });
+    assert.equal(kit.status, 201, kit.text);
+    const [kitLead] = await h.q("select * from bl.leads where kind = 'kit'");
+    assert.equal(kitLead.tables_count, 2);
+    const kn = await h.notifications(admin.id, 'platform.lead');
+    assert.ok(kn.some((x) => x.text === 'Заказ комплекта контроллеров: «Клуб Лузa», Пермь, 2 стола. Контакт — Иван.'), JSON.stringify(kn.map((x) => x.text)));
+    assert.equal((await h.request('POST', '/api/leads', { body: { ...form, kind: 'other' }, ip: '10.1.2.2' })).status, 400);
+    const kits = await h.request('GET', '/api/platform/leads?kind=kit', { token: admin.token });
+    assert.deepEqual(kits.json.items.map((x) => [x.id, x.kind]), [[kitLead.id, 'kit']]);
+    assert.equal(list.json.items.find((x) => x.id === lead.id).kind, 'program');
   });
 
   it('отзывы: только после игры за 90 дней, один на гостя, маска телефонов, ответ клуба, жалоба → оператор скрывает', async () => {

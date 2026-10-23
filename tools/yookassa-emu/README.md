@@ -17,7 +17,9 @@ npm run start -w @billiardum/yookassa-emu
 |---|---|---|
 | `YOOKASSA_EMU_PORT` | `8090` | порт |
 | `YOOKASSA_EMU_HOST` | `127.0.0.1` | адрес; в Compose — `0.0.0.0` |
-| `YOOKASSA_EMU_SHOP_ID`, `YOOKASSA_EMU_SECRET` | — | магазин (Basic `shopId:secretKey`); те же значения берёт `server/payments/provision-dev.mjs` для тестового клуба |
+| `YOOKASSA_EMU_SHOP_ID`, `YOOKASSA_EMU_SECRET` | — | магазин (Basic `shopId:secretKey`); те же значения берёт `server/payments/provision-dev.mjs` для тестового клуба (обе пары магазина клуба) |
+| `YOOKASSA_EMU_SHOP_TEST` | `1` | `0` — магазин боевой: `GET /v3/me` `test: false`, у платежей `test: false` (M5.1 №154) |
+| `YOOKASSA_EMU_SHOP_FISCALIZATION` | `1` | `0` — у магазина выключена отправка чеков: `GET /v3/me` `fiscalization_enabled: false` |
 | `YOOKASSA_EMU_WEBHOOK_URL` | — | адрес вебхука; `{club_id}` заменяется на `metadata.club_id` платежа (у настоящей ЮKassa адрес задаётся в личном кабинете магазина) |
 | `YOOKASSA_EMU_PUBLIC_URL` | `http://localhost:{port}` | внешний адрес для `confirmation_url` (страница `/pay/{id}` открывается в браузере гостя) |
 | `YOOKASSA_EMU_WEBHOOK_DELAY_MS` | `0` | задержка перед вебхуком |
@@ -33,6 +35,7 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 |---|---|
 | `POST /v3/payments` | `amount {value: "1600.00", currency: "RUB"}`, `capture` (по умолчанию `false`, как у ЮKassa), `confirmation {type: "redirect", return_url}` или `{type: "qr"}` (только СБП; в ответе `confirmation {type: "qr", confirmation_data}` — в эмуляторе это ссылка на `/pay/{id}`, её можно отсканировать телефоном), `payment_method_data.type` (`bank_card`, `sbp`), `description` ≤ 128, `metadata` (≤ 16 строк), **`receipt` обязателен**. Ответ — платёж `pending` с `confirmation.confirmation_url = {PUBLIC_URL}/pay/{id}` |
 | `GET /v3/payments/{id}` | платёж своего магазина (чужой — `404`) |
+| `GET /v3/me` | сведения о магазине (M5.1 №154): `{account_id, test, fiscalization_enabled, payment_methods, status}` — сервер проверяет пару магазина клуба при сохранении |
 | `POST /v3/payments/{id}/capture` | только `waiting_for_capture`; `amount` ≤ заморожённой; при другой сумме — чек на неё обязателен |
 | `POST /v3/payments/{id}/cancel` | только `waiting_for_capture` → `canceled` (`merchant`, `canceled_by_merchant`) |
 | `POST /v3/refunds` | `payment_id` (`succeeded`), `amount` ≤ остатка, **`receipt` обязателен**; сразу `succeeded` |
@@ -44,7 +47,7 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 
 Допущение decisions №26: СБП только одностадийная — `sbp` с `capture: false` даёт `400`.
 
-Объект платежа: `id` (вид `xxxxxxxx-000f-5000-8000-xxxxxxxxxxxx`), `status` (`pending`, `waiting_for_capture`, `succeeded`, `canceled`), `paid`, `amount`, `income_amount`, `description`, `recipient`, `payment_method {type, id, saved, title?, card?}`, `captured_at`, `created_at`, `expires_at` (заморозка, 7 дней), `confirmation` (только в `pending`), `test: true`, `refunded_amount`, `refundable`, `receipt_registration`, `metadata`, `cancellation_details {party, reason}`. Ошибка: `{type: "error", id, code, description, parameter?}`.
+Объект платежа: `id` (вид `xxxxxxxx-000f-5000-8000-xxxxxxxxxxxx`), `status` (`pending`, `waiting_for_capture`, `succeeded`, `canceled`), `paid`, `amount`, `income_amount`, `description`, `recipient`, `payment_method {type, id, saved, title?, card?}`, `captured_at`, `created_at`, `expires_at` (заморозка, 7 дней), `confirmation` (только в `pending`), `test` (по магазину), `refunded_amount`, `refundable`, `receipt_registration`, `metadata`, `cancellation_details {party, reason}`. Ошибка: `{type: "error", id, code, description, parameter?}`.
 
 ## Страница подтверждения
 
@@ -58,7 +61,7 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 | `POST /__emu/payments/{id}/cancel[?wait=1]` | как «Отказ» (заморозка — `expired_on_capture`) |
 | `POST /__emu/payments/{id}/webhook?repeat=N[&event=…]` | повтор вебхука N раз (до 50); тело `{override: {...}}` — подмена полей объекта, `{raw: "..."}` — тело как есть, `{url}` — другой адрес (для pentester) |
 | `POST /__emu/config` | `{webhook_delay_ms, webhook_retries, webhook_retry_delay_ms, webhook_url, fail_next: {count, status}, lose_next_response, down}`: задержка вебхуков, сбой следующих N запросов API (по умолчанию 500, операция не выполняется), «ответ потерян» (см. ниже), API недоступен (503) |
-| `POST /__emu/shops` | `{shop_id, secret, webhook_url?}` — ещё магазин (второй клуб) |
+| `POST /__emu/shops` | `{shop_id, secret, webhook_url?, test?, fiscalization_enabled?}` — ещё магазин (второй клуб; `test: false` — боевой, `fiscalization_enabled: false` — без чеков; по умолчанию оба `true`); тот же `shop_id` — замена |
 | `GET /__emu/payments`, `GET /__emu/payments/{id}` | платежи с чеками (`receipt`, `receipts`: платёж, списание, возвраты) |
 | `GET /__emu/receipts` | отдельные чеки (зачёты) |
 | `GET /__emu/webhooks` | доставки вебхуков и попытки со статусами |

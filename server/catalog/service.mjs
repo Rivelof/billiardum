@@ -8,6 +8,8 @@
 import { afterCommit } from '../lib/store.mjs';
 import { PosError } from '../orders/errors.mjs';
 import { csvToProducts, validPhoto } from './csv.mjs';
+import { looksLikeZip, XLSX_MAX_FILE_BYTES, XLSX_MIME, XlsxError, xlsxToProducts } from './xlsx.mjs';
+import { parseMultipart } from '../http/multipart.mjs';
 import { isUuid } from './api.mjs';
 import { balances, milliToNumber } from '../stock/api.mjs';
 
@@ -479,6 +481,64 @@ export async function importCsv(db, deps, info) {
   if (typeof csv !== 'string' || csv.length === 0 || csv.length > 60_000) throw bad('csv');
   if (typeof dryRun !== 'boolean') throw bad('dry_run');
   const { items, errors } = csvToProducts(csv);
+  return applyImport(db, deps, info, { items, errors, dryRun, source: 'csv' });
+}
+
+/**
+ * Предпросмотр импорта (M5.1 №157): при dry_run ответ несёт rows — все строки плана
+ * { line, action: create|update, category, name, price_kopecks, unit, is_alcohol, sku } (до 5 000).
+ */
+
+/**
+ * POST …/catalog/import файлом (M5.1 №157): тело application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+ * (или text/csv) с ?dry_run=1, либо multipart/form-data с частью file (и полем dry_run).
+ * .xlsx узнаётся по сигнатуре zip; иначе — CSV в UTF-8. Ответ — как у importCsv.
+ */
+export async function importFile(db, deps, info, rawBody) {
+  let data = rawBody.buffer;
+  let dryRunText = info.query?.dry_run;
+  let declared = rawBody.mime;
+  if (rawBody.mime === 'multipart/form-data') {
+    let parts;
+    try {
+      parts = parseMultipart(rawBody.buffer, rawBody.contentType);
+    } catch {
+      throw bad('multipart');
+    }
+    const file = parts.find((p) => p.name === 'file') ?? parts.find((p) => p.filename);
+    if (!file || file.data.length === 0) throw bad('file');
+    data = file.data;
+    declared = file.contentType ?? (/\.xlsx$/i.test(file.filename ?? '') ? XLSX_MIME : /\.csv$/i.test(file.filename ?? '') ? 'text/csv' : null);
+    const dr = parts.find((p) => p.name === 'dry_run');
+    if (dr) dryRunText = dr.data.toString('utf8').trim();
+  }
+  if (data.length > XLSX_MAX_FILE_BYTES) throw new PosError('bad_request', 'file too large', 413);
+  let dryRun = false;
+  if (dryRunText !== undefined) {
+    if (['1', 'true'].includes(String(dryRunText))) dryRun = true;
+    else if (!['0', 'false', ''].includes(String(dryRunText))) throw bad('dry_run');
+  }
+  let parsed;
+  let source;
+  if (looksLikeZip(data)) {
+    source = 'xlsx';
+    try {
+      parsed = xlsxToProducts(data);
+    } catch (err) {
+      if (err instanceof XlsxError) throw new PosError('xlsx_invalid', err.code, 400);
+      throw err;
+    }
+  } else {
+    if (declared === XLSX_MIME) throw new PosError('xlsx_invalid', 'not zip', 400);
+    source = 'csv';
+    const text = data.toString('utf8');
+    if (text.includes('\uFFFD')) throw bad('csv encoding');
+    parsed = csvToProducts(text);
+  }
+  return applyImport(db, deps, info, { ...parsed, dryRun, source });
+}
+
+async function applyImport(db, deps, info, { items, errors, dryRun, source }) {
   const clubId = info.clubId;
   const cats = (await db.query('select id, name from bl.product_categories where club_id = $1 and active', [clubId])).rows;
   const catByName = new Map(cats.map((c) => [c.name.toLowerCase(), c.id]));
@@ -503,7 +563,17 @@ export async function importCsv(db, deps, info) {
   }
   errors.sort((a, b) => a.line - b.line);
   const created = plan.filter((p) => !p.existing).length;
-  const summary = { created, updated: 0, unchanged: 0, categories_created: newCats, errors };
+  const rows = plan.map(({ it, existing }) => ({
+    line: it.line,
+    action: existing ? 'update' : 'create',
+    category: it.category,
+    name: it.name,
+    price_kopecks: it.price_kopecks,
+    unit: it.unit,
+    is_alcohol: it.is_alcohol,
+    sku: it.sku,
+  }));
+  const summary = { source, total: plan.length, created, updated: 0, unchanged: 0, categories_created: newCats, errors, ...(dryRun ? { rows } : {}) };
   if (errors.length > 0 || dryRun) {
     summary.updated = plan.length - created;
     return { applied: false, ...summary };
@@ -559,9 +629,9 @@ export async function importCsv(db, deps, info) {
     action: 'catalog.import',
     objectType: 'club',
     objectId: clubId,
-    data: { created, updated, unchanged, categories_created: newCats.length, price_changes: priceChanges, rows: items.length },
+    data: { created, updated, unchanged, categories_created: newCats.length, price_changes: priceChanges, rows: items.length, source },
     actorType: 'user',
     actorId: info.userId,
   });
-  return { applied: true, created, updated, unchanged, categories_created: newCats, errors: [] };
+  return { applied: true, source, total: plan.length, created, updated, unchanged, categories_created: newCats, errors: [] };
 }

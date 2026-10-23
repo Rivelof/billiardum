@@ -77,14 +77,14 @@ export async function cashTotals(db, { clubId, from, to }) {
   const sales = await db.query(
     `select coalesce(sum(amount_kopecks), 0)::bigint as total, count(*)::int as n
        from bl.payments
-      where club_id = $1 and method = 'cash' and status = 'succeeded' and confirmed_at >= $2 and confirmed_at <= $3`,
+      where club_id = $1 and method = 'cash' and status = 'succeeded' and confirmed_at >= $2 and confirmed_at <= $3 and not is_test`,
     [clubId, from, to],
   );
   const refunds = await db.query(
     `select coalesce(sum(f.amount_kopecks), 0)::bigint as total, count(*)::int as n
        from bl.refunds f join bl.payments p on p.id = f.payment_id
       where f.club_id = $1 and p.method = 'cash' and f.status in ('manual', 'succeeded') and f.kind = 'refund'
-        and f.created_at >= $2 and f.created_at <= $3`,
+        and f.created_at >= $2 and f.created_at <= $3 and not f.is_test`,
     [clubId, from, to],
   );
   return {

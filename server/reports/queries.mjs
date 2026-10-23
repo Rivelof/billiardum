@@ -6,6 +6,9 @@
 // «Без лимита» — списанная captured_kopecks (ещё не списанная — отдельно, holds). Возвраты —
 // bl.refunds, созданные в смене (succeeded и manual).
 //
+// M5.1 (№153): тестовые записи (is_test — сессии, платежи, возвраты, чеки тестового режима клуба)
+// не входят ни в отчёт смены, ни в утреннюю сводку, ни в выручку списка смен.
+//
 // M3 (предоплаты, decisions №52, №87, №112): выручка — только приём денег.
 // * Пакеты часов — своя строка packages: покупка в приложении (kind package) и доля пакетов в
 //   продаже кассы (bl.pos_sales.package_kopecks у платежа kind bar).
@@ -40,7 +43,7 @@ export async function shiftPayments(db, { clubId, from, to }) {
        from bl.payments p
        left join bl.pos_sales ps on ps.payment_id = p.id
       where p.club_id = $1 and p.confirmed_at >= $2 and p.confirmed_at <= $3 and p.status in ('succeeded', 'waiting_for_capture')
-        and p.provider <> 'balance'
+        and p.provider <> 'balance' and not p.is_test
       order by p.confirmed_at, p.id`,
     [clubId, from, to],
   );
@@ -79,6 +82,7 @@ async function refundsOfKind(db, { clubId, from, to, kind }) {
     `select f.id, f.payment_id, f.provider_refund_id, f.status, f.amount_kopecks, f.created_at, p.kind, p.method, p.provider, p.resource_id
        from bl.refunds f join bl.payments p on p.id = f.payment_id
       where f.club_id = $1 and f.created_at >= $2 and f.created_at <= $3 and f.status in ('succeeded', 'manual') and f.kind = $4
+        and not f.is_test
       order by f.created_at, f.id`,
     [clubId, from, to, kind],
   );
@@ -136,7 +140,7 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
             coalesce(sum(greatest(0, extract(epoch from (least(coalesce(s.ended_at, s.interrupted_at, $3), $3) - greatest(s.started_at, $2))))), 0)::float8 as secs
        from bl.sessions s
       where s.club_id = $1 and s.started_at <= $3 and coalesce(s.ended_at, s.interrupted_at, $3) >= $2
-        and s.status <> 'cancelled'
+        and s.status <> 'cancelled' and not s.is_test
       group by s.resource_id`,
     [clubId, from, to],
   );
@@ -403,5 +407,5 @@ export async function shiftLinks(db, { clubId, shiftId, from, to }) {
 export const REVENUE_TOTAL_SQL = `(select coalesce(sum(case when p.status = 'succeeded'
                      then case when p.capture then p.amount_kopecks else coalesce(p.captured_kopecks, 0) end else 0 end), 0)::bigint
           from bl.payments p
-         where p.club_id = s.club_id and p.status in ('succeeded', 'waiting_for_capture') and p.provider <> 'balance'
+         where p.club_id = s.club_id and p.status in ('succeeded', 'waiting_for_capture') and p.provider <> 'balance' and not p.is_test
            and p.confirmed_at >= s.opened_at and p.confirmed_at <= coalesce(s.closed_at, $NOW))`;

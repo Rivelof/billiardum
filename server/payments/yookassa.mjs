@@ -89,6 +89,8 @@ export function createYooKassaClient({ apiUrl, shopId, secretKey, timeoutMs = 10
     // Отдельный чек (зачёт предоплаты, №108): POST /v3/receipts, GET /v3/receipts/{id}.
     createReceipt: async (body, idempotenceKey) => request('POST', '/receipts', { body, idempotenceKey }),
     getReceipt: async (id) => request('GET', `/receipts/${checkId(id)}`),
+    // Сведения о магазине (M5.1 №154): account_id, test, fiscalization_enabled — проверка пары при сохранении.
+    getMe: async () => request('GET', '/me'),
   };
 }
 

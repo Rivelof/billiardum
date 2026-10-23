@@ -164,7 +164,8 @@ async function me(ctx) {
   const userId = ctx.user.id;
   await setContext(ctx.db, { clubId: null });
   const user = await userJson(ctx.db, userId, { consentVersion: ctx.config.consentVersion, configured: ctx.notify?.configured?.() ?? null });
-  let clubs = (await myMemberships(ctx.db, userId)).map((m) => ({ club_id: m.club_id, role: m.role, name: m.club_name, timezone: m.timezone }));
+  // mode — режим клуба (M5.1 №153): test | live | suspended (плашка «Тестовый режим» в программе клуба).
+  let clubs = (await myMemberships(ctx.db, userId)).map((m) => ({ club_id: m.club_id, role: m.role, name: m.club_name, timezone: m.timezone, mode: m.club_mode ?? null }));
   // Токен PIN действует только в клубе терминала.
   if (ctx.principal.kind === 'pin') clubs = clubs.filter((c) => c.club_id === ctx.principal.clubId);
   return {

@@ -7,6 +7,8 @@
 // Получатели — владелец и управляющий (уведомление по цепочке каналов). Отправка один раз:
 // строка bl.club_summaries (клуб, вид, рабочие сутки) пишется в той же транзакции.
 // Планировщик раз в минуту на ctx.clock — тесты двигают часы.
+// M5.1 (№153): клубу в тестовом режиме сводка не отправляется; тестовые записи (is_test) в сводку
+// не входят (запросы server/reports/queries.mjs).
 
 import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
 import { withContext as storeWithContext } from '../lib/store.mjs';
@@ -120,6 +122,7 @@ export async function tick({ pool, withContext = storeWithContext, clock, log })
       // Рабочие сутки, закончившиеся сегодня в day_start: начались вчера.
       const day = shiftDate(local.date, -1);
       const done = await withContext(pool, { clubId: c.club_id, actorType: 'system' }, async (db) => {
+        if ((await db.query('select bl.ctx_club_mode() as m')).rows[0].m === 'test') return false;
         const exists = await db.query("select 1 from bl.club_summaries where club_id = $1 and kind = 'morning' and day = $2", [c.club_id, day]);
         if (exists.rowCount > 0) return false;
         const data = await buildMorningSummary(db, { clubId: c.club_id, day, timezone: c.timezone, dayStartLocal: c.day_start_local });

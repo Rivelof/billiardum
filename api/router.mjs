@@ -23,6 +23,9 @@
 //   findClub  — async (db, req) => boolean: для 'staff' без клуба в запросе, когда у пользователя
 //               несколько подходящих клубов, — есть ли объект в клубе из контекста;
 //   queryAuth — async (app, token, query) => principal|null: вход по ?token= (одноразовый токен SSE);
+//   rawBody   — { types: ['application/…', 'multipart/form-data'], maxBytes } (M5.1 №157): тело с таким
+//               Content-Type читается как есть (Buffer до maxBytes) в req.rawBody = { mime, contentType, buffer },
+//               req.body = {}; иначе — JSON как у всех;
 //   db: false — auth 'none' или 'terminal': обработчик без транзакции запроса (ctx.db = null).
 //               Сам открывает короткие транзакции ctx.withContext(ctx.pool, …) ПО ОЧЕРЕДИ:
 //               обработчик не держит два соединения пула сразу (иначе параллельные запросы
@@ -30,8 +33,11 @@
 //               клуб терминала; есть setCookie, нет afterCommit и useClub.
 //
 // Обработчик: async handler(ctx, req) → { status?, json?, headers?, body?, stream? }.
-//   ctx = { ...общий контекст сервера, db, user, club, roles, principal, log, idempotencyKey,
-//           useClub(clubId), setCookie(header), afterCommit(fn) };
+//   ctx = { ...общий контекст сервера, db, user, club, clubMode, roles, principal, log, idempotencyKey,
+//           useClub(clubId), setCookie(header), afterCommit(fn), manual(entry) };
+//   clubMode — режим клуба запроса (M5.1 №153): 'test' | 'live' | 'suspended' | null (в транзакции —
+//           app.club_mode); manual(entry) — ручное действие (инвариант 8): причина, журнал manual.*,
+//           тревога владельцу (server/lib/manual.mjs).
 //   req = { method, path, params, query, body, headers, ip, user, club, roles, idempotencyKey, raw };
 //   stream: async (res) => {} — вызывается после коммита с сырым ответом (SSE).
 // Исключение HttpError (или { status, code }) — откат и ответ { error: code }. Возвращённый
@@ -44,9 +50,10 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveToken, SESSION_COOKIE } from '../server/auth/index.mjs';
 import { HttpError, toHttpError } from '../server/http/errors.mjs';
-import { clientIp, ipInCidrs, originAllowed, parseCookies, readJsonBody } from '../server/http/request.mjs';
+import { clientIp, ipInCidrs, originAllowed, parseCookies, readJsonBody, readRawBody, requestMime } from '../server/http/request.mjs';
 import { createRateLimiter, DEFAULT_LIMIT } from '../server/http/rate-limit.mjs';
-import { afterCommit, isUuid, setContext, withContext } from '../server/lib/store.mjs';
+import { afterCommit, contextClubMode, isUuid, setContext, withContext } from '../server/lib/store.mjs';
+import { recordManual } from '../server/lib/manual.mjs';
 
 export const ROUTES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'routes');
 export const ROLES = Object.freeze({
@@ -125,6 +132,13 @@ function validateRoute(r, file) {
   if (r.requires && !r.requires.every((x) => x === 'phone' || x === 'consent')) throw new Error(`${where}: requires`);
   if (r.actor && r.actor !== 'system' && r.actor !== 'user') throw new Error(`${where}: actor`);
   if (r.db === false && ((r.auth !== 'none' && r.auth !== 'terminal') || r.idempotent)) throw new Error(`${where}: db: false только для auth 'none' и 'terminal'`);
+  if (
+    r.rawBody !== undefined &&
+    (!Array.isArray(r.rawBody.types) || r.rawBody.types.length === 0 || r.rawBody.types.some((x) => typeof x !== 'string' || x === 'application/json') ||
+      !Number.isInteger(r.rawBody.maxBytes) || r.rawBody.maxBytes < 1 || r.rawBody.maxBytes > 16 * 1024 * 1024 || r.idempotent)
+  ) {
+    throw new Error(`${where}: rawBody — { types, maxBytes ≤ 16 МБ }, без idempotent`);
+  }
 }
 
 /**
@@ -295,7 +309,16 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
         if (origin !== undefined && !originAllowed(origin, allowedOrigins)) throw new HttpError(403, 'forbidden', { detail: 'origin' });
         if (tokenSource === 'cookie' && origin === undefined) throw new HttpError(403, 'forbidden', { detail: 'origin required' });
       }
-      const body = mutating ? await readJsonBody(req) : {};
+      let body = {};
+      let rawBody = null;
+      if (mutating) {
+        const mime = route.rawBody ? requestMime(req) : '';
+        if (route.rawBody && route.rawBody.types.includes(mime)) {
+          rawBody = { mime, contentType: String(req.headers['content-type']), buffer: await readRawBody(req, { maxBytes: route.rawBody.maxBytes }) };
+        } else {
+          body = await readJsonBody(req);
+        }
+      }
       const query = {};
       for (const [k, v] of url.searchParams) if (!(k in query)) query[k] = v;
 
@@ -368,6 +391,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
         params,
         query,
         body,
+        rawBody,
         headers: req.headers,
         ip,
         user: isUser ? { id: principal.userId, hasPhone: principal.hasPhone, consents: principal.consents, tokenKind: principal.kind } : null,
@@ -400,10 +424,13 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
             principal,
             user: reqInfo.user,
             club,
+            clubMode: null,
             roles: [],
             idempotencyKey,
             setCookie: (header) => cookies.push(header),
             afterCommit: (fn) => afterCommit(db, fn),
+            /** Ручное действие в клубе запроса (инвариант 8): причина, журнал manual.*, тревога владельцу. */
+            manual: (entry) => recordManual(db, { clubId: ctx.club, userId, alarms: app.alarms }, entry),
             /** Перейти в контекст клуба внутри транзакции; возвращает роли пользователя в нём. */
             async useClub(clubId) {
               if (clubId !== null && !isUuid(clubId)) throw new Error('useClub: clubId');
@@ -412,6 +439,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
               // Токен PIN даёт роли только в клубе своего терминала.
               const roles = principal?.clubId && principal.clubId !== clubId ? [] : await rolesIn(db, clubId, userId);
               ctx.club = clubId;
+              ctx.clubMode = clubId ? await contextClubMode(db) : null;
               ctx.roles = roles;
               reqInfo.club = clubId;
               reqInfo.roles = roles;
@@ -454,6 +482,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
           }
           reqInfo.club = ctx.club;
           reqInfo.roles = ctx.roles;
+          ctx.clubMode = ctx.club ? await contextClubMode(db) : null;
           if (route.auth === 'staff' && !ctx.roles.some((r) => route.roles.includes(r))) throw new HttpError(403, 'forbidden');
 
           // Идемпотентность: строка ключа вставляется первой; параллельный повтор ждёт коммита первого.

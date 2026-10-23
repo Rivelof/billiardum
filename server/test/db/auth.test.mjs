@@ -102,7 +102,7 @@ describe('вход для разработки и сессия', () => {
   it('персонал при входе получает клубы с ролью и запись auth.staff_login в журнале клуба', async () => {
     const { token } = await t.login('+70000000003');
     const me = await t.request('GET', '/api/me', { token });
-    assert.deepEqual(me.json.clubs, [{ club_id: CLUB_A, role: 'manager', name: 'Тестовый клуб', timezone: 'Asia/Yekaterinburg' }]);
+    assert.deepEqual(me.json.clubs, [{ club_id: CLUB_A, role: 'manager', name: 'Тестовый клуб', timezone: 'Asia/Yekaterinburg', mode: 'live' }]);
     assert.equal(me.json.user.name, 'Управляющий (тест)');
     assert.equal(me.json.user.phone_masked, '+7000***0003');
     const { rows } = await t.admin.query("select actor_id, data from bl.audit_log where club_id = $1 and action = 'auth.staff_login' and actor_id = $2", [

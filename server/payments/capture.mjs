@@ -10,7 +10,7 @@ import { amountForActual } from '../tariffs/index.mjs';
 import { enterClub, isUuid } from './context.mjs';
 import { yookassaReceipt } from './receipt.mjs';
 import { insertReceipt, receiptPhoneOf } from './records.mjs';
-import { clientFor, loadPaymentSettings } from './settings.mjs';
+import { clientFor, loadPaymentSettings, shopModeOf } from './settings.mjs';
 import { formatValue } from './yookassa.mjs';
 import { applyRemote } from './pay.mjs';
 
@@ -18,7 +18,9 @@ import { applyRemote } from './pay.mjs';
  * Списать amountKopecks с заморозки (0 — отменить заморозку). Чек — на списанную сумму.
  * @returns {Promise<{ captured: number }>}
  */
-export async function captureOrRelease(db, deps, config, payment, { amountKopecks, number, settings, minutes = null, now }) {
+export async function captureOrRelease(db, deps, config, payment, { amountKopecks, number, settings: given, minutes = null, now }) {
+  // Пара магазина — по самому платежу (M5.1 №154): заморозка тестового режима списывается тестовым магазином.
+  const settings = given?.shop_mode === shopModeOf(payment) ? given : await loadPaymentSettings(db, payment.club_id, { isTest: payment.is_test });
   const client = clientFor(settings, config);
   const cancelHoldReceipt = () =>
     db.query(`update bl.receipts set status = 'canceled', updated_at = $2 where payment_id = $1 and kind = 'sale' and status = 'pending'`, [
@@ -99,7 +101,7 @@ export async function onSessionClosed(db, deps, config, payload) {
 
   const already = holds.filter((h) => h.status === 'succeeded').reduce((sum, h) => sum + Number(h.captured_kopecks ?? 0), 0);
   let remaining = Math.max(0, actual.amount_kopecks - already);
-  const settings = await loadPaymentSettings(db, payload.club_id);
+  const settings = await loadPaymentSettings(db, payload.club_id, { isTest: waiting[0].is_test });
   const { rows: res } = await db.query('select number from bl.resources where id = $1', [resourceId]);
   const number = res[0]?.number;
   const now = deps.clock.now();

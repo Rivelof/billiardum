@@ -5,6 +5,10 @@
 // shopId и секрет — из YOOKASSA_EMU_SHOP_ID и YOOKASSA_EMU_SECRET (те же, что у эмулятора);
 // секрет шифруется SECRETS_ENC_KEY (AES-256-GCM, контекст yookassa_secret/<club_id>) и пишется
 // в bl.club_payment_settings через DATABASE_ADMIN_URL. Значения секретов не печатаются.
+// M5.1 №154: у клуба две пары магазина — тестовая (test_shop_id, test_secret_key_enc, контекст
+// yookassa_secret/<club_id>/test) и боевая (shop_id, secret_key_enc). Магазин эмулятора кладётся
+// в обе: клуб сида работает в live (как до M5.1), а при переводе в test (через платформу) —
+// тестовой парой. Проверка GET /v3/me при этом не делается (отметки verified_at не ставятся).
 //
 // Вызывает server/bin/provision-dev.mjs (core): provisionPayments({ client, env, log }).
 // Можно запустить отдельно: node server/payments/provision-dev.mjs
@@ -34,19 +38,22 @@ export async function provisionPayments({ client, env = process.env, log = () =>
   if (!/^[0-9A-Za-z_-]{1,64}$/.test(shopId)) throw new Error('YOOKASSA_EMU_SHOP_ID — до 64 символов [0-9A-Za-z_-]');
   if (secret.length < 8) throw new Error('YOOKASSA_EMU_SECRET — не короче 8 символов');
   const encKey = loadEncKey(env.SECRETS_ENC_KEY);
-  const enc = encryptShopSecret(secret, encKey, clubId);
+  const enc = encryptShopSecret(secret, encKey, clubId, 'live');
+  const encTest = encryptShopSecret(secret, encKey, clubId, 'test');
   const { rowCount } = await client.query('select 1 from bl.clubs where id = $1', [clubId]);
   if (rowCount === 0) {
     log('warn', 'payments_provision_skipped', { reason: 'нет клуба сида', club_id: clubId });
     return { status: 'skipped', reason: 'no_club' };
   }
   await client.query(
-    `insert into bl.club_payment_settings (club_id, shop_id, secret_key_enc, sbp_enabled, card_enabled, reception_enabled, vat_code, tax_system_code)
-     values ($1, $2, $3, true, true, true, 1, 2)
+    `insert into bl.club_payment_settings (club_id, shop_id, secret_key_enc, test_shop_id, test_secret_key_enc,
+                                           sbp_enabled, card_enabled, reception_enabled, vat_code, tax_system_code)
+     values ($1, $2, $3, $2, $4, true, true, true, 1, 2)
      on conflict (club_id) do update
        set shop_id = excluded.shop_id, secret_key_enc = excluded.secret_key_enc,
+           test_shop_id = excluded.test_shop_id, test_secret_key_enc = excluded.test_secret_key_enc,
            sbp_enabled = true, card_enabled = true, updated_at = now()`,
-    [clubId, shopId, enc],
+    [clubId, shopId, enc, encTest],
   );
   log('info', 'payments_provisioned', { club_id: clubId, shop_id: shopId, secret_length: secret.length });
   return { status: 'ok', club_id: clubId };

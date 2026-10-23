@@ -115,7 +115,7 @@ export async function sendSettlementReceipt(db, deps, config, payload) {
   );
   const r = rows[0];
   if (!r || r.channel !== 'yookassa' || r.provider_receipt_id || r.status !== 'receipt_pending') return { result: 'skipped' };
-  const settings = await loadPaymentSettings(db, r.club_id);
+  const settings = await loadPaymentSettings(db, r.club_id, { isTest: r.is_test });
   const phone = receiptPhone(r.customer_phone);
   const now = deps.clock.now();
   const fail = (code) => failSettlement(db, deps, r, code, now);
@@ -164,7 +164,7 @@ export async function pollSettlementReceipt(db, deps, config, receiptId) {
   const r = rows[0];
   if (!r || r.channel !== 'yookassa' || r.status !== 'pending' || !r.provider_receipt_id) return { result: 'skipped' };
   const now = deps.clock.now();
-  const settings = await loadPaymentSettings(db, r.club_id);
+  const settings = await loadPaymentSettings(db, r.club_id, { isTest: r.is_test });
   const remote = await clientFor(settings, config).getReceipt(r.provider_receipt_id);
   if (remote?.status === 'succeeded') {
     await db.query(`update bl.receipts set status = 'succeeded', updated_at = $2 where id = $1`, [r.id, now]);

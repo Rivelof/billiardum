@@ -9,7 +9,7 @@
 // Все функции — в транзакции с контекстом клуба (withContext), RLS отсекает чужое.
 
 import { formatMoney } from '@billiardum/shared/format';
-import { jobUuid, operatorName, ReceiptDataError, receiptTask, shiftTask } from './atol-task.mjs';
+import { jobUuid, operatorName, ReceiptDataError, receiptTask, shiftTask, testReceiptTask, testShiftReportTask } from './atol-task.mjs';
 
 /** Повтор задания «в полёте» тому же мосту, если результата нет столько времени. */
 export const RESEND_MS = 30_000;
@@ -60,10 +60,16 @@ async function receiptPayments(db, r) {
   return { payment, payments: [{ method: payment.method, amount_kopecks: Number(r.amount_kopecks) }] };
 }
 
-/** Собрать JSON-задание АТОЛ для чека. */
+/**
+ * Собрать JSON-задание АТОЛ для чека. Чек тестового режима клуба (receipts.is_test, M5.1 №153) —
+ * нефискальный документ «ТЕСТ» (testReceiptTask), мост получает test: true.
+ */
 export async function buildReceiptTask(db, r) {
   const { payment, payments } = await receiptPayments(db, r);
   const name = await receiptOperator(db, r, payment);
+  if (r.is_test) {
+    return { task: testReceiptTask({ kind: r.kind, items: r.items, amountKopecks: Number(r.amount_kopecks), operatorName: name }), payments, operatorName: name, test: true };
+  }
   const task = receiptTask({
     kind: r.kind,
     items: r.items,
@@ -92,6 +98,8 @@ function jobMessage(source, row, job) {
     request: [job.task],
     bridgeId: job.bridge_id,
     attempt: job.attempt,
+    // M5.1 №153: тестовый режим клуба — мост печатает только нефискальный документ.
+    ...(row.is_test ? { test: true } : {}),
   };
 }
 
@@ -156,13 +164,21 @@ export async function claimJob(db, { clubId, connected, now, deps }) {
     const { attempt, uuid } = nextUuid(row, prev);
     let task;
     let extra = {};
-    if (row.source === 'op') {
+    if (row.source === 'op' && row.is_test) {
+      // Тестовый режим (M5.1 №153): смена ККТ не открывается; закрытие — нефискальный отчёт «ТЕСТ».
+      if (row.kind !== 'close_shift') {
+        await db.query(`update bl.kkt_ops set status = 'skipped', result = $2, done_at = $3, updated_at = $3 where id = $1`, [row.id, { test: true, outcome: 'skipped' }, now]);
+        continue;
+      }
+      task = testShiftReportTask(await testShiftSummary(db, row));
+      extra = { test: true };
+    } else if (row.source === 'op') {
       task = shiftTask(row.kind, row.operator_name);
     } else {
       try {
         const built = await buildReceiptTask(db, row);
         task = built.task;
-        extra = { payments: built.payments, operator_name: built.operatorName };
+        extra = { payments: built.payments, operator_name: built.operatorName, ...(built.test ? { test: true } : {}) };
       } catch (err) {
         if (!(err instanceof ReceiptDataError)) throw err;
         deps.log?.warn?.('kkt_receipt_invalid', { receipt_id: row.id, error: err.message });
@@ -274,6 +290,8 @@ async function applyReceiptResult(db, deps, r, { bridgeId, msg, now }) {
   const current = job.uuid === msg.uuid;
   const fromSender = job.bridge_id === bridgeId;
   if (r.status === 'printed') return { ack: true, done: current, source: 'receipt', id: r.id };
+
+  if (msg.outcome === 'done' && r.is_test) return applyTestReceiptResult(db, deps, r, { bridgeId, msg, now, current });
 
   if (msg.outcome === 'done') {
     const f = fiscalOf(msg);
@@ -407,8 +425,62 @@ async function applyReceiptResult(db, deps, r, { bridgeId, msg, now }) {
   return { ack: true, done: true, retry: true, source: 'receipt', id: r.id, category: e.category };
 }
 
-/** Служебное задание смены ККТ, если такого же ещё нет в очереди. */
+/**
+ * Нефискальный «ТЕСТ» напечатан (M5.1 №153): чек тестового режима закрыт без фискальных реквизитов
+ * (fd, fp, fn пустые; fiscal.test = true). Фискального документа нет — сверка ФД не нужна.
+ */
+async function applyTestReceiptResult(db, deps, r, { bridgeId, msg, now, current }) {
+  const job = r.kkt_job ?? {};
+  const fiscal = { ...(r.fiscal ?? {}), test: true, kkt: { bridge_id: bridgeId, uuid: msg.uuid, non_fiscal: true } };
+  await db.query(
+    `update bl.receipts set status = 'printed', printed_at = $2, fiscal = $3, error = null, next_attempt_at = null, kkt_job = $4, updated_at = $2
+      where id = $1`,
+    [r.id, now, fiscal, { ...job, state: 'done', task_created: true, done_uuid: msg.uuid }],
+  );
+  await deps.outbox.enqueue(db, 'receipt.printed', { receipt_id: r.id, club_id: r.club_id, fd: null, fp: null, test: true });
+  await deps.audit.appendAudit(db, {
+    action: 'kkt.receipt_test_printed',
+    objectType: 'receipt',
+    objectId: r.id,
+    actorType: 'system',
+    actorId: null,
+    data: { receipt_id: r.id, kind: r.kind, payment_id: r.payment_id ?? null, sale_id: r.sale_id ?? null, amount_kopecks: Number(r.amount_kopecks), test: true },
+  });
+  deps.log?.info?.('kkt_receipt_test_printed', { receipt_id: r.id, club_id: r.club_id });
+  return { ack: true, done: current, printed: true, test: true, source: 'receipt', id: r.id };
+}
+
+/** Номер смены, кассир и тестовые продажи наличными и терминалом за смену — для отчёта «ТЕСТ». */
+async function testShiftSummary(db, op) {
+  if (!op.shift_id) return { operatorName: op.operator_name };
+  const { rows } = await db.query('select number, opened_at, closed_at from bl.shifts where id = $1', [op.shift_id]);
+  const s = rows[0];
+  if (!s) return { operatorName: op.operator_name };
+  const { rows: p } = await db.query(
+    `select count(*)::int as n, coalesce(sum(amount_kopecks), 0)::bigint as k from bl.payments
+      where club_id = $1 and is_test and status = 'succeeded' and method in ('cash', 'card_terminal')
+        and confirmed_at >= $2 and confirmed_at <= coalesce($3, now())`,
+    [op.club_id, s.opened_at, s.closed_at],
+  );
+  return { number: s.number, operatorName: op.operator_name, sales: { count: p[0].n, kopecks: Number(p[0].k) } };
+}
+
+/** Тестовый режим для задания смены: по смене клуба, без смены — по режиму клуба (как триггер bl.set_is_test). */
+async function opIsTest(db, clubId, shiftId) {
+  if (shiftId) {
+    const { rows } = await db.query('select is_test from bl.shifts where id = $1', [shiftId]);
+    if (rows[0]) return rows[0].is_test;
+  }
+  const { rows } = await db.query('select bl.club_mode($1) as m, (select mode_before_suspend from bl.clubs where id = $1) as b', [clubId]);
+  return rows[0].m === 'test' || (rows[0].m === 'suspended' && rows[0].b === 'test');
+}
+
+/**
+ * Служебное задание смены ККТ, если такого же ещё нет в очереди. Тестовый режим клуба (M5.1 №153):
+ * open_shift не создаётся (null) — смена ККТ не открывается; close_shift — нефискальный отчёт «ТЕСТ».
+ */
 export async function ensureOp(db, { clubId, kind, shiftId = null, operatorName: name = null, auto = false, now }) {
+  if (kind === 'open_shift' && (await opIsTest(db, clubId, shiftId))) return null;
   const { rows } = await db.query(`select id from bl.kkt_ops where club_id = $1 and kind = $2 and status = 'pending' limit 1`, [clubId, kind]);
   if (rows[0]) return rows[0].id;
   const ins = await db.query(
@@ -437,7 +509,7 @@ async function applyOpResult(db, deps, o, { bridgeId, msg, now }) {
       objectId: o.id,
       actorType: 'system',
       actorId: null,
-      data: { op_id: o.id, shift_id: o.shift_id ?? null, outcome: msg.outcome, fd: f?.fd ?? null, kkt_shift_number: f?.extra.shift_number ?? null, auto: Boolean(o.result?.auto) },
+      data: { op_id: o.id, shift_id: o.shift_id ?? null, outcome: msg.outcome, fd: f?.fd ?? null, kkt_shift_number: f?.extra.shift_number ?? null, auto: Boolean(o.result?.auto), ...(o.is_test ? { test: true } : {}) },
     });
     return { ack: true, done: true, source: 'op', id: o.id };
   }

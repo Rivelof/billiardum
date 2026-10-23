@@ -199,12 +199,20 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['auth_user_for', 'bl_definer'],
         // M3 booking (0600): дела планировщика броней и листа ожидания
         ['booking_due', 'bl_definer'],
+        // M5.1 backend-A (1000): переход в live владельцем, режим клуба, возобновление и приостановка платформой, создание клуба
+        ['club_go_live', 'bl_definer'],
+        ['club_mode', 'bl_definer'],
+        ['club_resume', 'bl_definer'],
+        ['club_suspend', 'bl_definer'],
+        ['create_club', 'bl_definer'],
         // M4 core (0710): роль платформы из контекста, получатели уведомлений платформы
         ['ctx_platform_role', 'bl_definer'],
         // M1 light (0300–0320)
         ['device_bind_window', 'bl_definer'],
         // M0
         ['device_club', 'bl_definer'],
+        // M5.1 backend-B (1051): заводской реестр контроллеров
+        ['device_factory_check', 'bl_definer'],
         ['device_total', 'bl_definer'],
         // M2 kkt (0500): чеки ККТ, не пробитые дольше 10 минут
         ['kkt_due', 'bl_definer'],
@@ -217,6 +225,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['money_object_club', 'bl_definer'],
         // M1 core
         ['notify_route', 'bl_definer'],
+        // M5.1 backend-A (1002): проверочные платежи и тревога «вебхук не настроен»
+        ['onboarding_due', 'bl_definer'],
         // M4 core (0710)
         ['platform_recipients', 'bl_definer'],
         // M4 plus (0850): итог партии и Эло, публичные поля игроков, таблицы, друзья в клубе, соперники
@@ -240,6 +250,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['resource_by_code', 'bl_definer'],
         ['resource_club', 'bl_definer'],
         ['session_club', 'bl_definer'],
+        // M5.1 backend-A (1001): is_test новой записи по режиму клуба (триггер)
+        ['set_is_test', 'bl_definer'],
         // M3 core (0701, 0702): сводки и персонал
         ['staff_accept_invites', 'bl_definer'],
         ['staff_revoke', 'bl_definer'],

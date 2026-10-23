@@ -353,6 +353,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     await useClub(db, clubId);
     const t = now();
     const club = await loadClub(db, clubId);
+    // M5.1 №160: приостановленный платформой клуб новых игр (и броней) не принимает.
+    if ((await db.query('select bl.club_mode($1) as m', [clubId])).rows[0].m === 'suspended') fail('club_suspended');
     const settings = bookingSettings(club.settings);
     await validateSlot(db, club, settings, startsAt, minutes, t, { guest: true });
     const res = await lockResource(db, resourceId);
@@ -407,6 +409,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const t = now();
     const club = await loadClub(db, clubId);
     if (!club) fail('not_found', 'club');
+    if ((await db.query('select bl.club_mode($1) as m', [clubId])).rows[0].m === 'suspended') fail('club_suspended');
     const settings = bookingSettings(club.settings);
     await validateSlot(db, club, settings, startsAt, body.minutes, t, { guest: false });
     const res = await lockResource(db, resourceId);

@@ -107,8 +107,11 @@ export async function withContext(pool, { clubId, userId = null, actorType }, fn
   try {
     await client.query('begin');
     afterCommitHooks.set(client, hooks);
+    // app.club_mode — режим клуба (M5.1 №153: test | live | suspended) для справки сервера;
+    // база сама опирается на bl.ctx_club_mode() (по таблице клубов), а не на это значение.
     await client.query(
-      "select set_config('app.club_id', $1, true), set_config('app.user_id', $2, true), set_config('app.actor_type', $3, true)",
+      `select set_config('app.club_id', $1, true), set_config('app.user_id', $2, true), set_config('app.actor_type', $3, true),
+              set_config('app.club_mode', coalesce(bl.club_mode(nullif($1, '')::uuid), ''), true)`,
       [clubId ?? '', userId ?? '', actorType],
     );
     result = await fn(client);
@@ -155,7 +158,10 @@ export async function afterCommit(client, fn) {
 export async function setContext(client, { clubId, userId, actorType } = {}) {
   if (clubId !== undefined) {
     checkUuid(clubId, 'clubId');
-    await client.query("select set_config('app.club_id', $1, true)", [clubId ?? '']);
+    await client.query(
+      "select set_config('app.club_id', $1, true), set_config('app.club_mode', coalesce(bl.club_mode(nullif($1, '')::uuid), ''), true)",
+      [clubId ?? ''],
+    );
   }
   if (userId !== undefined) {
     checkUuid(userId, 'userId');
@@ -165,6 +171,12 @@ export async function setContext(client, { clubId, userId, actorType } = {}) {
     if (!ACTOR_TYPES.includes(actorType)) throw new Error('неизвестный actorType');
     await client.query("select set_config('app.actor_type', $1, true)", [actorType]);
   }
+}
+
+/** Режим клуба из контекста транзакции (app.club_mode): 'test' | 'live' | 'suspended' | null. */
+export async function contextClubMode(client) {
+  const { rows } = await client.query("select nullif(current_setting('app.club_mode', true), '') as mode");
+  return rows[0]?.mode ?? null;
 }
 
 export function isUuid(value) {

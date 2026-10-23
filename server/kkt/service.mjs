@@ -285,6 +285,8 @@ export function createKktService({ pool, withContext, clock, log, outbox, alarms
       reason: typeof kkt.reason === 'string' ? kkt.reason.slice(0, 40) : null,
       paper: kkt.paper === false ? false : kkt.paper === true ? true : null,
       blocked: Boolean(kkt.blocked),
+      // M5.1 №160: ККТ фискальная (ФН зарегистрирован) — пункт чек-листа запуска «касса ресепшена».
+      fiscal: kkt.fiscal === true ? true : kkt.fiscal === false ? false : null,
     };
     const cameBack = next.online === true && conn.kkt.online !== true;
     const wasPaper = conn.kkt.reason === 'paper' || conn.kkt.blocked;

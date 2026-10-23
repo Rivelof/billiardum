@@ -1,4 +1,4 @@
-// Заявки клубов на программу (M4 §1 п. 6, §4). Логика — server/directory/leads.mjs (backend-directory).
+// Заявки клубов на программу (M4 §1 п. 6, §4) и заказ комплекта контроллеров (kind: 'kit', M5.1 №159). Логика — server/directory/leads.mjs (backend-directory).
 // POST без входа: пишет в контексте платформы (actor: system), антиспам — лимит по IP (роутер и
 // база), скрытое поле и время заполнения. Экран воронки — оператор и администратор платформы.
 
@@ -23,7 +23,7 @@ export const routes = [
     auth: 'platform',
     roles: OPERATOR,
     async handler(ctx, req) {
-      return { status: 200, json: await directory().leads.list(ctx.db, { status: req.query.status }) };
+      return { status: 200, json: await directory().leads.list(ctx.db, { status: req.query.status, kind: req.query.kind }) };
     },
   },
   {

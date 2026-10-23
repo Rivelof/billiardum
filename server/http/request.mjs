@@ -166,3 +166,32 @@ export function originAllowed(origin, allowed) {
   if (typeof origin !== 'string' || origin === 'null') return false;
   return allowed.includes(origin.toLowerCase());
 }
+
+/** MIME запроса без параметров, в нижнем регистре ('' — нет заголовка). */
+export function requestMime(req) {
+  return String(req.headers['content-type'] ?? '').toLowerCase().split(';')[0].trim();
+}
+
+/**
+ * Сырое тело (файл) до maxBytes: Buffer. Больше — 413, пустое — 400.
+ * Для маршрутов с rawBody (импорт меню .xlsx, M5.1 №157): JSON такие маршруты читают как обычно.
+ */
+export async function readRawBody(req, { maxBytes }) {
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    req.resume();
+    throw new HttpError(413, 'bad_request', { detail: 'body too large' });
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      req.resume();
+      throw new HttpError(413, 'bad_request', { detail: 'body too large' });
+    }
+    chunks.push(chunk);
+  }
+  if (size === 0) throw new HttpError(400, 'bad_request', { detail: 'empty body' });
+  return Buffer.concat(chunks, size);
+}

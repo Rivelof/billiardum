@@ -40,6 +40,14 @@
 - Протокол: мост → `hello`, `result`, `status`, `pong`; сервер → `welcome {bridge_id, club_id, ping_ms}`, `job {job_id, kind, uuid, request}`, `ack {uuid}` (результат записан — мост его забывает), `ping`. Подробно — `tools/kkt-bridge/README.md`.
 - Разработка: `node server/kkt/bin/provision-dev.mjs` (вызывает `scripts/dev.mjs`) — мост «Ресепшн (разработка)» тестового клуба с новым токеном, прежний отзывается; токен — только в файл `KKT_BRIDGE_TOKEN_FILE` (0600); `DATABASE_ADMIN_URL` из окружения или `.env`; ничего не печатает; при `NODE_ENV=production` — отказ.
 
+## Тестовый режим клуба (M5.1 №153) и фискальность ККТ (№160)
+
+- Чек `receipts.is_test` (продажа и возврат в тестовом режиме клуба) уходит мосту нефискальным документом «ТЕСТ»: `buildReceiptTask` → `testReceiptTask` (`atol-task.mjs`, задача АТОЛ `nonFiscal`: «ТЕСТ», позиции, итог, кассир), сообщение `job` с `test: true`. Мост сам тоже не печатает фискальный документ по заданию с `test: true` (`tools/kkt-bridge`).
+- Результат `done` по тестовому чеку — `printed` без ФД, ФП и ФН (`fiscal.test = true`), журнал `kkt.receipt_test_printed`, событие `receipt.printed` с `test: true`. База не даёт тестовому чеку фискальных реквизитов (`1001`).
+- Смена ККТ в тестовом режиме (решение оркестратора): фискальных документов нет вовсе. `ensureOp(open_shift)` для тестовой смены (или клуба в `test` без смены) не создаёт задание — смена ККТ не открывается; `close_shift` тестовой смены (`kkt_ops.is_test`, 1003: по `shifts.is_test`) уходит мосту с `test: true` нефискальным отчётом «ТЕСТ» (`testShiftReportTask`: номер смены, тестовые продажи наличными и терминалом, кассир); ответ `done` без ФД — задание `done`, журнал `kkt.shift_close` с `test: true`. Оставшееся в очереди тестовое `open_shift` — `skipped`.
+- Состояние ККТ от моста: `status.kkt.fiscal` (ККТ зарегистрирована, ФН фискализирован; `null` — неизвестно) сохраняется в `kkt_bridges.last_status.fiscal` — пункт `kkt` чек-листа запуска клуба (`server/clubs`).
+- Тестовые записи (`is_test`) не входят в отчёт смены, наличные смены и сверку ККТ (чеки зачёта — тоже).
+
 ## Смены (`server/shifts/`)
 
 - Открыть: размен `float_kopecks`; одна открытая смена на клуб (уникальный индекс, иначе `409 shift_open`); журнал `shift.open`; задание `open_shift` мосту, если у клуба есть мост и `clubs.settings.kkt_shift_sync` не `false`.

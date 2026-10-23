@@ -13,6 +13,12 @@
 //
 // Идемпотентность по UUID задания (= receipt_id, №78): сначала мост спрашивает АТОЛ о статусе
 // этого UUID и только если задания нет — ставит его. Повтор после обрыва не пробивает второй чек.
+//
+// Тестовый режим клуба (M5.1 №153): задание с test: true — только нефискальный документ «ТЕСТ».
+// Мост сам превращает в него чек (sell, sellReturn), фискальную смену ККТ (openShift, closeShift)
+// в тестовом задании не выполняет (ошибка invalid); нефискальный отчёт о закрытии смены «ТЕСТ»
+// печатает. Ответ — outcome done без фискальных реквизитов (test: true).
+// Состояние ККТ (status.kkt.fiscal): ККТ фискальная — по queryDeviceStatus (fiscal и fnFiscal).
 
 import { createAtolClient, AtolUnreachable, isFinal } from './atol.mjs';
 import { categoryOf } from './codes.mjs';
@@ -28,6 +34,41 @@ const OPEN_TIMEOUT_MS = 15_000;
 
 const JOB_KINDS = new Set(['receipt', 'open_shift', 'close_shift']);
 const UUID_LIKE = /^[0-9A-Za-z-]{8,64}$/;
+const FISCAL_TYPES = new Set(['sell', 'sellReturn', 'buy', 'buyReturn', 'sellCorrection', 'buyCorrection', 'openShift', 'closeShift']);
+
+const rub2 = (v) => {
+  const k = Math.round(Number(v) * 100);
+  return Number.isFinite(k) ? `${Math.floor(k / 100)},${String(Math.abs(k) % 100).padStart(2, '0')}` : '0,00';
+};
+
+/**
+ * Задание тестового режима → нефискальный документ «ТЕСТ» (M5.1 №153). Чек (sell, sellReturn) —
+ * печатью позиций и итога; nonFiscal — как есть; прочие фискальные задачи — null (не выполнять).
+ */
+export function toTestRequest(request) {
+  const out = [];
+  for (const task of request) {
+    if (task?.type === 'nonFiscal') {
+      out.push(task);
+      continue;
+    }
+    if (task?.type !== 'sell' && task?.type !== 'sellReturn') return null;
+    const items = Array.isArray(task.items) ? task.items.filter((it) => it && (it.type === undefined || it.type === 'position')) : [];
+    out.push({
+      type: 'nonFiscal',
+      printFooter: false,
+      items: [
+        { type: 'text', text: 'ТЕСТ', alignment: 'center', doubleWidth: true, doubleHeight: true },
+        { type: 'text', text: 'Тестовый режим клуба. Не чек: денег нет', alignment: 'center' },
+        { type: 'text', text: task.type === 'sellReturn' ? 'Возврат' : 'Продажа', alignment: 'left' },
+        ...items.slice(0, 100).map((it) => ({ type: 'text', text: `${String(it.name ?? '').slice(0, 40)} ${it.quantity} × ${rub2(it.price)}`, alignment: 'left' })),
+        { type: 'text', text: `Итого ${rub2(task.total ?? items.reduce((a, it) => a + Number(it.amount ?? 0), 0))} ₽`, alignment: 'left' },
+        { type: 'text', text: 'ТЕСТ', alignment: 'center', doubleWidth: true },
+      ],
+    });
+  }
+  return out.length > 0 && out.every((t) => !FISCAL_TYPES.has(t.type)) ? out : null;
+}
 
 /** Фискальные реквизиты из результата АТОЛ (fiscalParams). */
 export function parseFiscal(result) {
@@ -212,7 +253,7 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
     }
     // Тот же UUID уже в работе или в очереди — результат придёт один раз.
     if (current?.uuid === msg.uuid || queue.some((j) => j.uuid === msg.uuid)) return;
-    queue.push({ job_id: msg.job_id ?? null, kind: msg.kind, uuid: msg.uuid, request: msg.request });
+    queue.push({ job_id: msg.job_id ?? null, kind: msg.kind, uuid: msg.uuid, request: msg.request, test: msg.test === true });
     counters.jobs += 1;
     pump();
   }
@@ -264,6 +305,13 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
   /** Обработать задание: сначала статус UUID в АТОЛ, затем (если задания нет) поставить и ждать. */
   async function processJob(job) {
     const { uuid } = job;
+    if (job.test) {
+      // Тестовый режим клуба: фискальный документ не печатается ни при каких данных от сервера.
+      // Чек — «ТЕСТ» с позициями; закрытие смены — только присланный нефискальный отчёт; открытие смены — отказ.
+      const request = toTestRequest(job.request);
+      if (!request) return { outcome: 'error', task_created: false, test: true, error: { code: 'test_fiscal_task', category: 'invalid', description: 'в тестовом режиме — только нефискальный документ' } };
+      job = { ...job, request };
+    }
     let got = await safeGet(uuid);
     if (got.unreachable || got.error) {
       // АТОЛ не ответил: если задание уже отправляли — исход неизвестен, повторит сервер.
@@ -340,6 +388,8 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
         kkt = { ...kkt, blocked: false, reason: null };
         send({ type: 'status', kkt });
       }
+      // «ТЕСТ» напечатан: фискальных реквизитов нет и быть не должно.
+      if (job.test) return { outcome: 'done', task_created: true, test: true, fiscal: null };
       if (!fiscal) return { outcome: 'unknown', task_created: true, error: { code: 'no_fiscal_params', category: 'unknown' } };
       return { outcome: 'done', task_created: true, fiscal };
     }
@@ -364,7 +414,9 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
       const r = await atolClient.operation('queryDeviceStatus');
       if (r.ok) {
         const d = r.json?.deviceStatus ?? {};
-        next = { online: true, reason: d.paperPresent === false ? 'paper' : d.coverOpened ? 'cover' : null, paper: d.paperPresent !== false };
+        // ККТ фискальная — зарегистрирована и ФН фискализирован (M5.1 №160); поля нет — неизвестно.
+        const fiscal = typeof d.fiscal === 'boolean' ? d.fiscal && d.fnFiscal !== false : null;
+        next = { online: true, reason: d.paperPresent === false ? 'paper' : d.coverOpened ? 'cover' : null, paper: d.paperPresent !== false, fiscal };
       } else if (r.unsupported) {
         statusSupported = false;
         next = { online: null, reason: 'status_unsupported' };
@@ -376,7 +428,7 @@ export function createBridge({ config, log = null, WebSocketImpl = globalThis.We
       next = { online: false, reason: 'atol_unreachable' };
     }
     next.blocked = Boolean(kkt.blocked);
-    const changed = next.online !== kkt.online || next.reason !== kkt.reason;
+    const changed = next.online !== kkt.online || next.reason !== kkt.reason || next.fiscal !== kkt.fiscal;
     kkt = next;
     if (changed) {
       L.info('bridge_kkt_status', { online: kkt.online, reason: kkt.reason });

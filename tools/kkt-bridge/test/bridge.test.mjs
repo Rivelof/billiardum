@@ -418,6 +418,65 @@ describe('мост ККТ: процесс', () => {
   });
 });
 
+describe('мост ККТ: тестовый режим клуба (M5.1 №153) и фискальность ККТ (№160)', () => {
+  it('задание test: true — нефискальный «ТЕСТ», ФД не тратится, результат done без фискальных данных', async () => {
+    startBridge();
+    await server.wait((m) => m.type === 'hello');
+    const fdBefore = emu.control.state().fd;
+    const uuid = randomUUID();
+    // Сервер прислал по ошибке фискальный чек — мост всё равно печатает только «ТЕСТ».
+    server.send({ type: 'job', job_id: uuid, kind: 'receipt', uuid, request: [sellTask(300)], test: true });
+    const r = await server.wait((m) => m.type === 'result' && m.uuid === uuid);
+    assert.equal(r.outcome, 'done');
+    assert.equal(r.test, true);
+    assert.equal(r.fiscal, null);
+    assert.equal(emu.control.state().fd, fdBefore);
+    assert.equal(emu.control.state().receipts, 0);
+    const docs = emu.control.documents().filter((d) => d.kind === 'nonFiscal');
+    assert.equal(docs.length, 1);
+    assert.equal(docs[0].lines[0], 'ТЕСТ');
+    assert.ok(docs[0].lines.includes('Итого 300,00 ₽'));
+  });
+
+  it('смена ККТ в тестовом задании не выполняется (invalid)', async () => {
+    startBridge();
+    await server.wait((m) => m.type === 'hello');
+    const uuid = randomUUID();
+    server.send({ type: 'job', job_id: uuid, kind: 'open_shift', uuid, request: [{ type: 'openShift', operator: { name: 'Кассир' } }], test: true });
+    const r = await server.wait((m) => m.type === 'result' && m.uuid === uuid);
+    assert.equal(r.outcome, 'error');
+    assert.equal(r.error.code, 'test_fiscal_task');
+    assert.equal(r.error.category, 'invalid');
+    assert.equal(emu.control.state().shift.state, 'closed');
+  });
+
+  it('закрытие смены в тестовом задании — нефискальный отчёт, фискальная смена ККТ не трогается', async () => {
+    startBridge();
+    await server.wait((m) => m.type === 'hello');
+    const fdBefore = emu.control.state().fd;
+    const report = { type: 'nonFiscal', items: [{ type: 'text', text: 'ТЕСТ' }, { type: 'text', text: 'Отчёт о закрытии смены. Не фискальный' }] };
+    const uuid = randomUUID();
+    server.send({ type: 'job', job_id: uuid, kind: 'close_shift', uuid, request: [report], test: true });
+    const r = await server.wait((m) => m.type === 'result' && m.uuid === uuid);
+    assert.deepEqual([r.outcome, r.test, r.fiscal], ['done', true, null]);
+    assert.equal(emu.control.state().fd, fdBefore);
+    assert.equal(emu.control.state().shift.state, 'closed');
+    // Фискальное закрытие смены с test: true — отказ.
+    const bad = randomUUID();
+    server.send({ type: 'job', job_id: bad, kind: 'close_shift', uuid: bad, request: [{ type: 'closeShift', operator: { name: 'Кассир' } }], test: true });
+    const rb = await server.wait((m) => m.type === 'result' && m.uuid === bad);
+    assert.deepEqual([rb.outcome, rb.error.code], ['error', 'test_fiscal_task']);
+  });
+
+  it('состояние ККТ: fiscal из deviceStatus; ККТ не фискальная — fiscal: false', async () => {
+    startBridge();
+    await server.wait((m) => m.type === 'status' && m.kkt?.fiscal === true);
+    emu.control.fiscal(false);
+    const st = await server.wait((m) => m.type === 'status' && m.kkt?.fiscal === false, 3000);
+    assert.equal(st.kkt.online, true);
+  });
+});
+
 describe('мост ККТ: разбор и настройки', () => {
   it('parseFiscal: ФД обязателен, ФП и ФН — если есть; частичный результат помечен', () => {
     assert.equal(parseFiscal({}), null);

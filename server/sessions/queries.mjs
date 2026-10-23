@@ -26,7 +26,7 @@ export async function enterClub(db, clubId) {
   const cur = await currentClub(db);
   if (cur === clubId) return clubId;
   if (cur !== null) throw new LightError('not_found', 'другой клуб в контексте');
-  await db.query("select set_config('app.club_id', $1, true)", [clubId]);
+  await db.query("select set_config('app.club_id', $1, true), set_config('app.club_mode', coalesce(bl.club_mode($1::uuid), ''), true)", [clubId]);
   return clubId;
 }
 

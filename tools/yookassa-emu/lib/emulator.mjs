@@ -45,7 +45,9 @@ function rub(kopecks) {
 
 /**
  * @param {object} opts
- * @param {Array<{shopId: string, secret: string, webhookUrl?: string}>} [opts.shops]
+ * @param {Array<{shopId: string, secret: string, webhookUrl?: string, test?: boolean, fiscalization?: boolean}>} [opts.shops]
+ *   test — тестовый магазин (GET /v3/me, поле test платежей; по умолчанию true), fiscalization —
+ *   включена отправка чеков (GET /v3/me fiscalization_enabled; по умолчанию true). M5.1 №154.
  * @param {string} [opts.webhookUrl] адрес вебхука по умолчанию; {club_id} заменяется на metadata.club_id
  * @param {string} [opts.publicUrl] внешний адрес эмулятора для confirmation_url
  * @param {number} [opts.webhookDelayMs] задержка перед отправкой вебхука
@@ -84,11 +86,22 @@ export function createEmulator(opts = {}) {
     down: false,
   };
 
-  function addShop({ shopId, secret, webhookUrl = null }) {
+  function addShop({ shopId, secret, webhookUrl = null, test = true, fiscalization = true }) {
     if (!/^[0-9A-Za-z_-]{1,64}$/.test(String(shopId)) || typeof secret !== 'string' || secret.length < 1) {
       throw new EmuError(400, 'invalid_request', 'shop_id и secret обязательны', 'shop_id');
     }
-    shops.set(String(shopId), { shopId: String(shopId), secret, webhookUrl });
+    shops.set(String(shopId), { shopId: String(shopId), secret, webhookUrl, test: test !== false, fiscalization: fiscalization !== false });
+  }
+
+  /** GET /v3/me — сведения о магазине (M5.1 №154: сервер проверяет пару при сохранении). */
+  function meView(shop) {
+    return {
+      account_id: shop.shopId,
+      test: shop.test,
+      fiscalization_enabled: shop.fiscalization,
+      payment_methods: ['bank_card', 'sbp'],
+      status: 'enabled',
+    };
   }
   for (const s of opts.shops ?? []) addShop(s);
 
@@ -126,7 +139,7 @@ export function createEmulator(opts = {}) {
       created_at: p.createdAt,
       ...(p.status === 'waiting_for_capture' ? { expires_at: p.expiresAt } : {}),
       ...(p.status === 'pending' ? { confirmation: confirmationView(p) } : {}),
-      test: true,
+      test: shops.get(p.shopId)?.test ?? true,
       ...(p.refundedKopecks > 0 ? { refunded_amount: { value: formatValue(p.refundedKopecks), currency: 'RUB' } } : {}),
       refundable: p.status === 'succeeded' && p.refundedKopecks < p.amountKopecks,
       ...(p.receipt ? { receipt_registration: p.receiptRegistration } : {}),
@@ -543,6 +556,7 @@ export function createEmulator(opts = {}) {
     }
     const shop = authenticate(req);
     let m;
+    if (req.method === 'GET' && path === '/v3/me') return send(res, 200, meView(shop));
     if (req.method === 'POST' && path === '/v3/payments') {
       const body = await readJson(req);
       const r = idempotent(shop, req, 'payments', body, () => createPayment(shop, body));
@@ -651,7 +665,7 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
     }
     if (req.method === 'POST' && path === '/__emu/shops') {
       const b = await readJson(req);
-      addShop({ shopId: b.shop_id, secret: b.secret, webhookUrl: b.webhook_url ?? null });
+      addShop({ shopId: b.shop_id, secret: b.secret, webhookUrl: b.webhook_url ?? null, test: b.test, fiscalization: b.fiscalization_enabled });
       return send(res, 200, { ok: true });
     }
     if (req.method === 'POST' && path === '/__emu/config') {

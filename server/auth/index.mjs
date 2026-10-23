@@ -141,7 +141,7 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
 /** Членства пользователя во всех клубах (личный контекст: app.club_id пуст). */
 export async function myMemberships(db, userId) {
   const { rows } = await db.query(
-    `select m.club_id, m.role, c.name as club_name, c.timezone
+    `select m.club_id, m.role, c.name as club_name, c.timezone, c.mode as club_mode
        from bl.club_members m
        left join bl.clubs c on c.id = m.club_id
       where m.user_id = $1 and m.active

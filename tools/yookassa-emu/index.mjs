@@ -23,7 +23,13 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 
 const shops = [];
 if (env.YOOKASSA_EMU_SHOP_ID && env.YOOKASSA_EMU_SECRET) {
-  shops.push({ shopId: env.YOOKASSA_EMU_SHOP_ID, secret: env.YOOKASSA_EMU_SECRET });
+  // M5.1 №154: YOOKASSA_EMU_SHOP_TEST=0 — магазин боевой (GET /v3/me test: false), YOOKASSA_EMU_SHOP_FISCALIZATION=0 — без чеков.
+  shops.push({
+    shopId: env.YOOKASSA_EMU_SHOP_ID,
+    secret: env.YOOKASSA_EMU_SECRET,
+    test: env.YOOKASSA_EMU_SHOP_TEST !== '0',
+    fiscalization: env.YOOKASSA_EMU_SHOP_FISCALIZATION !== '0',
+  });
 } else {
   log('warn', 'emu_no_shop', { hint: 'YOOKASSA_EMU_SHOP_ID и YOOKASSA_EMU_SECRET не заданы: магазины — через POST /__emu/shops' });
 }

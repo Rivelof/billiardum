@@ -657,7 +657,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       const t0 = now();
       const { rows } = await db.query(
         `select * from bl.tournaments
-          where status <> 'draft'
+          where status <> 'draft' and not is_test
             and ($1::text is null or discipline = $1)
             and ($3::uuid is null or club_id = $3)
             and (case when $2::text is not null then status = $2
@@ -684,7 +684,8 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       if (!clubs.has(clubId)) fail('not_found', 'club inactive');
       await enterClub(db, clubId);
       const t = await loadT(db, tournamentId);
-      if (t.status === 'draft') fail('not_found');
+      // M5.1 №153: турнир тестового режима клуба на публичных страницах не показывается.
+      if (t.status === 'draft' || t.is_test) fail('not_found');
       const entries = await entriesOf(db, t.id);
       const matches = await matchesOf(db, t.id);
       return {

@@ -92,7 +92,7 @@ export async function settlementReceipts(db, { clubId, paymentIds = [], from = n
   const { rows } = await db.query(
     `select status, kkt_job ->> 'state' as job_state, amount_kopecks, settlement_kopecks
        from bl.receipts
-      where club_id = $1 and channel = 'kkt' and kind = 'sale' and settles_payment_id is not null
+      where club_id = $1 and channel = 'kkt' and kind = 'sale' and settles_payment_id is not null and not is_test
         and (payment_id = any($2::uuid[]) or settles_payment_id = any($2::uuid[])
              or ($3::timestamptz is not null and created_at >= $3 and created_at <= $4))`,
     [clubId, paymentIds, from, to ?? from],
@@ -138,7 +138,8 @@ export async function reconcileOnline(db, { clubId, payments, refunds, moneyConf
     return { ok: true, status: 'checked', ...base, yookassa_kopecks: 0, yookassa_refunds_kopecks: 0, diff_kopecks: 0, mismatches: [] };
   }
   if (online.length + onlineRefunds.length > MAX_ONLINE_CHECKS) return { ok: false, status: 'too_many', ...base, mismatches: [] };
-  const settings = await loadPaymentSettings(db, clubId);
+  // Тестовые платежи в сверку не входят (shiftPayments): сверяется боевой магазин (M5.1 №154).
+  const settings = await loadPaymentSettings(db, clubId, { mode: 'live' });
   if (!settings.online) return { ok: false, status: 'not_configured', ...base, mismatches: [] };
   let client;
   try {

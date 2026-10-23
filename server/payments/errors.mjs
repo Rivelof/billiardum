@@ -33,6 +33,8 @@ export const STATUS_BY_CODE = Object.freeze({
   already_refunded: 409,
   // Стол ждёт брони этого же гостя (light, M3): ответ 409 {error, booking_id}.
   booking_start_required: 409,
+  // M5.1 №160: клуб приостановлен платформой — новую игру не начать (оплаченная доигрывает).
+  club_suspended: 409,
 });
 
 /**

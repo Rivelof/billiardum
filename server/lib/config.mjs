@@ -9,6 +9,8 @@ import { loadEncKey } from './secrets.mjs';
 
 /** Версия текста согласия на обработку ПДн по умолчанию (docs/legal/consent.md). */
 export const DEFAULT_CONSENT_VERSION = '2026-10-21';
+/** Версия оферты платформы для клубов по умолчанию (M5.1 №160, пункт чек-листа «оферта принята»). */
+export const DEFAULT_CLUB_OFFER_VERSION = '2026-10-23';
 const HOST = /^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/;
 
 export const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -48,6 +50,8 @@ export function loadServerConfig(env = process.env) {
   }
   const consentVersion = env.CONSENT_VERSION || DEFAULT_CONSENT_VERSION;
   if (!/^[0-9A-Za-z._-]{1,32}$/.test(consentVersion)) throw new ConfigError('CONSENT_VERSION');
+  const clubOfferVersion = env.CLUB_OFFER_VERSION || DEFAULT_CLUB_OFFER_VERSION;
+  if (!/^[0-9A-Za-z._-]{1,32}$/.test(clubOfferVersion)) throw new ConfigError('CLUB_OFFER_VERSION');
   // Caddy: X-Forwarded-For принимается только с этих адресов. В разработке по умолчанию — loopback и
   // частные сети Docker; в production (M4-I4) список обязателен и только из узких сетей (≤ /24, ≤ /120).
   const list = (v) => (v ? v.split(',').map((x) => x.trim()).filter(Boolean) : []);
@@ -107,6 +111,7 @@ export function loadServerConfig(env = process.env) {
     allowDevLogin: !production && env.ALLOW_DEV_LOGIN === '1',
     devAllowAnyMinutes: !production && env.DEV_ALLOW_ANY_MINUTES === '1',
     consentVersion,
+    clubOfferVersion,
     trustedProxies,
     publicTrustedCidrs,
     pinPepper: createHmac('sha256', encKey).update('bl.pin-pepper.v1').digest(),

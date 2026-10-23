@@ -13,23 +13,45 @@ import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
 import { createDynsec, deviceRoleAcls, deviceRoleName } from '../lib/dynsec.mjs';
 import { deviceKeyContext, encryptSecret } from '../lib/secrets.mjs';
+import { HttpError } from '../http/errors.mjs';
 import { fail } from '../sessions/errors.mjs';
+import { parseDeviceQr } from './qr.mjs';
 import { enterClub, isUuid, loadResource, notifyLight, rolesIn } from '../sessions/queries.mjs';
 import { claimCodeHash, ROLES } from '../sessions/service.mjs';
 
 export const BIND_WINDOW_MS = 30 * 60_000;
 export const MAX_CLAIM_ATTEMPTS = 5;
-const CLAIM_CODE = /^[A-Za-z0-9-]{6,64}$/;
+// Код привязки — ещё и пароль точки доступа WPA2 контроллера (не длиннее 63): 8…63 символа (protocol §7).
+export const CLAIM_CODE = /^[A-Za-z0-9-]{8,63}$/;
 
 /**
  * @param {{ pool, withContext, clock, log, audit, encKey: Buffer, mqttPublicUrl: string,
- *           dynsec: () => Promise<{ ensureRole, ensureClient }> }} opts
+ *           dynsec: () => Promise<{ ensureRole, ensureClient }>, requireFactory?: boolean }} opts
+ *   requireFactory — только устройства из заводского реестра bl.device_factory (№162: NODE_ENV=production);
+ *   устройство без записи — 403 и при bind, и при claim.
  */
-export function createBinding({ pool, withContext, clock, log, audit, encKey, mqttPublicUrl, dynsec }) {
+export function createBinding({ pool, withContext, clock, log, audit, encKey, mqttPublicUrl, dynsec, requireFactory = false }) {
   const now = () => clock.now();
 
-  /** POST /api/clubs/{club}/devices/bind — окно привязки 30 минут. */
-  async function bind(db, { clubId, userId, deviceId, resourceId, claimCode }) {
+  /**
+   * POST /api/clubs/{club}/devices/bind — окно привязки 30 минут.
+   * qr — текст QR с корпуса «BLD1:{device_id}:{claim_code}» (M5.1 №159) вместо device_id и claim_code;
+   * неверный формат — 400 qr_invalid. Устройство из заводского реестра (bl.device_factory) — код
+   * сверяется сразу: неверный — 403 (попытка засчитана, ответ возвращается без отката),
+   * после 5 неверных привязка устройства закрыта на 30 минут — 429 rate_limited.
+   * Возвращает { bind_until } или { __response } — готовый ответ, который фиксирует транзакцию.
+   */
+  async function bind(db, { clubId, userId, deviceId: rawDeviceId, resourceId, claimCode: rawClaimCode, qr }) {
+    let deviceId = rawDeviceId;
+    let claimCode = rawClaimCode;
+    if (qr !== undefined && qr !== null) {
+      const parsed = parseDeviceQr(qr);
+      if (!parsed) throw new HttpError(400, 'qr_invalid');
+      if ((deviceId !== undefined && deviceId !== null && String(deviceId).toLowerCase() !== parsed.deviceId) || (claimCode !== undefined && claimCode !== null && claimCode !== parsed.claimCode)) {
+        throw new HttpError(400, 'qr_invalid', { detail: 'qr и device_id/claim_code различаются' });
+      }
+      ({ deviceId, claimCode } = parsed);
+    }
     if (!isUuid(deviceId) || !isUuid(resourceId)) fail('bad_request', 'ids');
     if (typeof claimCode !== 'string' || !CLAIM_CODE.test(claimCode)) fail('bad_request', 'claim_code');
     await enterClub(db, clubId);
@@ -40,6 +62,15 @@ export function createBinding({ pool, withContext, clock, log, audit, encKey, mq
     const owner = await db.query('select bl.device_club($1) as club_id', [deviceId]);
     if (owner.rows[0].club_id && owner.rows[0].club_id !== clubId) fail('forbidden', 'device in another club');
     const t = now();
+    // Заводской реестр (M5.1 №159): код с наклейки сверяется до открытия окна.
+    const factory = (await db.query('select bl.device_factory_check($1, $2, $3) as r', [deviceId, claimCodeHash(deviceId, claimCode), t])).rows[0].r;
+    if (factory === 'unknown' && requireFactory) fail('forbidden', 'device not in factory registry');
+    if (factory === 'locked') throw new HttpError(429, 'rate_limited', { detail: 'factory bind locked' });
+    if (factory === 'bad') {
+      log.warn('device_bind_bad_code', { device_id: deviceId });
+      // Счётчик неверных кодов должен сохраниться: ответ без исключения фиксирует транзакцию.
+      return { __response: { status: 403, json: { error: 'forbidden' } } };
+    }
     const until = new Date(t.getTime() + BIND_WINDOW_MS);
     await db.query(
       'update bl.device_bind_windows set closed_at = $2 where device_id = $1 and claimed_at is null and closed_at is null',
@@ -56,9 +87,9 @@ export function createBinding({ pool, withContext, clock, log, audit, encKey, mq
       objectId: deviceId,
       actorType: 'user',
       actorId: userId,
-      data: { device_id: deviceId, resource_id: resourceId, until: until.toISOString() },
+      data: { device_id: deviceId, resource_id: resourceId, until: until.toISOString(), factory: factory === 'ok', via: qr ? 'qr' : 'code' },
     });
-    return { bind_until: until.toISOString() };
+    return { bind_until: until.toISOString(), device_id: deviceId };
   }
 
   async function countFailure(clubId, windowId) {
@@ -77,6 +108,10 @@ export function createBinding({ pool, withContext, clock, log, audit, encKey, mq
   async function claim(db, { deviceId, claimCode }) {
     if (!isUuid(deviceId) || typeof claimCode !== 'string' || !CLAIM_CODE.test(claimCode)) fail('bad_request', 'claim');
     const t = now();
+    if (requireFactory && !(await db.query('select bl.device_factory_known($1) as ok', [deviceId])).rows[0].ok) {
+      log.warn('device_claim_not_in_factory', { device_id: deviceId });
+      fail('forbidden', 'device not in factory registry');
+    }
     const w = await db.query('select window_id, club_id from bl.device_bind_window($1, $2)', [deviceId, t]);
     if (w.rowCount === 0) fail('forbidden', 'no bind window');
     const { window_id: windowId, club_id: clubId } = w.rows[0];

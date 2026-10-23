@@ -87,12 +87,12 @@ describe('сервер со всеми модулями M2', () => {
     const missing = log.lines.filter((l) => l.msg === 'module_missing').map((l) => l.module);
     // Модули M3 и M4 соседей появляются по ходу волны: их может ещё не быть.
     assert.ok(missing.every((m) => ['packages', 'bookings', 'waitlist', 'directory', 'plus', 'tournaments'].includes(m)), `нет модулей: ${missing}`);
-    const order = ['setup', 'light', 'money', 'catalog', 'stock', 'pos', 'kkt', 'packages', 'bookings', 'waitlist', 'summaries', 'directory', 'plus', 'tournaments'].filter(
+    const order = ['setup', 'light', 'money', 'catalog', 'stock', 'pos', 'kkt', 'packages', 'bookings', 'waitlist', 'summaries', 'directory', 'plus', 'tournaments', 'clubs'].filter(
       (m) => !missing.includes(m),
     );
     assert.deepEqual(started, order);
     // Маршруты всех модулей: core, light, money, pos (каталог, касса, склад), kkt (мосты, смены).
-    for (const p of ['/api/me', '/t/{code}', '/api/sessions/{id}', '/api/t/{code}', '/api/clubs/{club}/catalog', '/api/clubs/{club}/pos/sales', '/api/clubs/{club}/stock', '/api/clubs/{club}/kkt/status', '/api/clubs/{club}/shifts']) {
+    for (const p of ['/api/me', '/t/{code}', '/api/sessions/{id}', '/api/t/{code}', '/api/clubs/{club}/catalog', '/api/clubs/{club}/pos/sales', '/api/clubs/{club}/stock', '/api/clubs/{club}/kkt/status', '/api/clubs/{club}/shifts', '/api/clubs/{club}/onboarding']) {
       assert.ok(app.router.routes.some((r) => r.path === p), `маршрут ${p}`);
     }
     const { server, port } = await listen(app);

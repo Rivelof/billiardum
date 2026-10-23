@@ -293,6 +293,8 @@ export async function createDeposit(db, deps, info) {
   if (!rows[0].club_id) throw new MoneyError('not_found', 'стол');
   const clubId = await enterClub(db, rows[0].club_id);
   await requireStaff(db, info, clubId, STAFF_ROLES);
+  // M5.1 №160: приостановленный платформой клуб новую игру не начинает.
+  if ((await db.query('select bl.club_mode($1) as m', [clubId])).rows[0].m === 'suspended') throw new MoneyError('club_suspended');
   const prev = (await db.query('select * from bl.payments where club_id = $1 and request_key = $2 and deposit', [clubId, key])).rows[0];
   if (prev) {
     if (prev.resource_id !== b.resource_id || Number(prev.amount_kopecks) !== b.amount_kopecks) throw new MoneyError('idempotency_conflict');

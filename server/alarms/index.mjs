@@ -62,6 +62,8 @@ export const ALARM_TEXTS = {
   terminal_locked: 'Терминал ресепшена заблокирован: 10 неверных PIN за час. Разблокируйте в настройках клуба',
   // M4 (№147): матч турнира упёрся в предел света (конец турнира + время матча).
   tournament_match_overdue: 'Матч турнира затянулся: свет погаснет в конце отведённого времени',
+  // M5.1 (№154): платёж подтверждён сверкой, а вебхука ЮKassa нет 10 минут.
+  yookassa_webhook_missing: 'Вебхук ЮKassa не настроен: укажите адрес уведомлений в кабинете ЮKassa',
 };
 
 /**
@@ -99,6 +101,7 @@ export const ALARM_LEVELS = {
   settlement_receipt_failed: 'important',
   terminal_locked: 'critical',
   tournament_match_overdue: 'important',
+  yookassa_webhook_missing: 'important',
 };
 
 /**

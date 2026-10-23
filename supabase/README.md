@@ -110,6 +110,12 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl.staff_accept_invites()` (0702) | `bl_definer` | `(invite_id, club_id, role)` привязанных | при входе: действующие приглашения на номер пользователя из `app.user_id` |
 | `bl.staff_revoke(user_id uuid) → integer` (0702) | `bl_definer` | число отозванных токенов; не участник клуба — `NULL` | отзыв доступа в клубе из `app.club_id`: членство, PIN, все токены; владельца — ошибка |
 | `bl.user_brief(user_id uuid)` (0103) | `bl_definer` | `phone_masked`, `has_phone` | персонал клуба видит гостя только маской; без контекста клуба — только себя |
+| `bl.club_mode(club uuid) → text` (1000, M5.1) | `bl_definer` | режим клуба `test`, `live`, `suspended` или `NULL` | `app.club_mode` в контексте запроса, публичные страницы; данных клуба не отдаёт |
+| `bl.create_club(name, city_name, city_id, timezone, listing_id) → uuid` (1000) | `bl_definer` | id клуба | вошедший пользователь в личном контексте создаёт клуб в `test` и становится владельцем; не больше 3 тестовых клубов (`BLC01`); карточка — только из своей одобренной заявки (`BLC02`); без телефона — `BLC04` |
+| `bl.club_go_live(club uuid, offer_version text) → timestamptz` (1000) | `bl_definer` | время перехода | владелец клуба из контекста: `test → live` (повтор — без изменений; приостановлен — `BLC03`) |
+| `bl.club_suspend(club, reason)`, `bl.club_resume(club, mode)` (1000) | `bl_definer` | прежний / новый режим | только `platform_admin` (`bl.ctx_platform_role()`): приостановка и возобновление в `test` или `live` |
+| `bl.set_is_test()` (1001, триггер) | `bl_definer` | — | `is_test` новой записи по режиму клуба или по родителю |
+| `bl.onboarding_due(now, limit)` (1002) | `bl_definer` | `(club_id, kind, id)`: проверочные платежи к сверке и возврату, тревоги «вебхук не настроен» | планировщик `server/clubs` |
 
 | `bl.resource_by_code(code text)` (0300, light) | `bl_definer` | `(resource_id, club_id)` активного стола по коду | `/api/t/{code}` до того, как известен клуб |
 | `bl.resource_club(resource_id uuid) → uuid` (0300, light) | `bl_definer` | клуб стола или `NULL` | маршруты `/api/resources/{id}/…` до проверки ролей |
@@ -239,6 +245,21 @@ alter event trigger bl_audit_guard_drop enable always;
 | `leads` | заявки клубов на программу (`/dlya-klubov/`): имя, клуб, город, телефон, столы, версия согласия, IP только хешем; воронка `new → contacted → demo → won / lost / spam` |
 | `reviews` | отзывы: карточка, клуб, автор, оценка 1–5, текст до 1 000, `published / hidden`, ответ клуба; один на гостя и клуб; оценку и текст меняет только автор, ответ — только клуб, скрывает — платформа (триггер `reviews_guard`) |
 | `review_reports` | жалобы на отзывы → оператору: `new → hidden / kept`, решение с причиной; одна открытая на отзыв и автора жалобы |
+
+## Подключение клуба без выезда (M5.1 backend-A, 1000–1003)
+
+Контракт `docs/contracts/m5-1.md`, решения №152–154, №160; модуль — `server/clubs/README.md`.
+
+| Миграция | Таблица, поле | Суть |
+|---|---|---|
+| `1000` | `clubs.mode` (`test`, `live`, `suspended`; по умолчанию `live` — клубы администратора базы и клубы до M5.1), `mode_before_suspend`, `created_by`, `city_id`, `listing_id` (уникален), `went_live_at`, `offer_version`, `offer_accepted_at`, `offer_accepted_by`, `suspended_at`, `suspended_reason` | режим клуба; меняют только узкие функции. У `app_api` `UPDATE` на `clubs` сужен до `name`, `city`, `timezone`, `settings`, `address`. `bl.public_clubs()` — только `live` |
+| `1001` | `is_test` у `sessions`, `payments`, `refunds`, `receipts`, `orders`, `pos_sales`, `shifts`, `bookings`, `matches`, `tournaments`, `tournament_entries` | тестовая запись: ставит триггер `bl.set_is_test` при вставке (по режиму клуба; возвраты и чеки — по платежу, записи турнира — по турниру, партии — по турниру или сессии); изменить нельзя (`bl.is_test_guard`). Чек `is_test` может быть `printed` без ФД и не может иметь ФД, ФП, ФН |
+| `1002` | `club_payment_settings.test_shop_id`, `test_secret_key_enc`, `{test,live}_verified_at`, `{test,live}_me` | тестовая пара магазина ЮKassa (боевая — прежние `shop_id`, `secret_key_enc`) и последняя проверка `GET /v3/me` |
+| `1002` | `payments.webhook_at`, `webhook_alarm_at` | пришёл ли вебхук по платежу; тревога «вебхук не настроен» поднята |
+| `1003` | `kkt_ops.is_test` | задание смены ККТ тестового режима (по `shifts.is_test`, без смены — по режиму клуба; триггер `bl.set_is_test`): открытие не создаётся, закрытие — нефискальный «ТЕСТ». `bl_definer` видит `shifts(id, is_test)` |
+| `1002` | `shop_checks` | проверочный платёж 1 ₽ магазина клуба: пара, статус, подтверждение (вебхук или сверка), возврат, вебхук, тревога; RLS по клубу |
+
+`bl_definer` дополнительно видит: `clubs(mode, mode_before_suspend, created_by, city_id, listing_id, went_live_at)` и вставляет и меняет столбцы режима, `directory_claims(id, kind, card_id, user_id, status)`, `club_public(id, club_id, status, city_id)`, `cities(id, name, timezone, active)`, `club_payment_settings(club_id)` (вставка строки нового клуба), `is_test` платежей, возвратов, сессий и турниров, поля вебхука платежей и `shop_checks`. Тесты — `server/clubs/test/db`.
 
 ## Деньги
 

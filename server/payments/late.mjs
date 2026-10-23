@@ -87,7 +87,7 @@ async function lateRefund(db, deps, client, p, amount, now) {
   const key = `late-${p.id}`;
   const prev = await db.query('select * from bl.refunds where club_id = $1 and idempotence_key = $2', [p.club_id, key]);
   if (prev.rows[0]) return prev.rows[0].id;
-  const settings = await loadPaymentSettings(db, p.club_id);
+  const settings = await loadPaymentSettings(db, p.club_id, { isTest: p.is_test });
   const phone = await receiptPhoneOf(db, p.id);
   // Чек возврата повторяет чек продажи (предмет и способ расчёта те же); нет его — «Игра, стол N».
   const { rows: sale } = await db.query(

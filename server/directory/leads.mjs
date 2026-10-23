@@ -10,6 +10,8 @@ import { fail, iso, isUuid, notifyPlatform, phone, text } from './common.mjs';
 export const MIN_FILL_MS = 3_000;
 export const IP_DAY_LIMIT = 5;
 const STATUSES = ['new', 'contacted', 'demo', 'won', 'lost', 'spam'];
+/** Вид заявки: program — на программу (сайт, M4), kit — заказ комплекта контроллеров (мастер, M5.1 №159). */
+export const LEAD_KINDS = ['program', 'kit'];
 
 /**
  * @param {{ deps: object, log: object, clock: { now(): Date }, config: object }} opts
@@ -19,12 +21,15 @@ export function createLeadsService({ deps, log, clock, config }) {
   const ipHash = (ip) => createHash('sha256').update(`bl.leads:${pepper}:${ip ?? ''}`).digest('hex');
 
   /**
-   * POST /api/leads {name, club_name, city, phone, tables_count?, comment?, consent: true,
+   * POST /api/leads {kind?: 'program'|'kit', name, club_name, city, phone, tables_count?, comment?, consent: true,
    *                  website (скрытое поле, пустое), elapsed_ms (сколько заполняли форму)} → 201 {ok: true}.
+   * kind 'kit' — «Заказать комплект» из мастера подключения: tables_count — сколько столов оснастить.
    * Бот (заполнено скрытое поле, форма заполнена быстрее 3 с) получает тот же ответ, запись не делается.
    */
   async function create(db, { body, ip }) {
     const b = body ?? {};
+    const kind = b.kind === undefined || b.kind === null ? 'program' : b.kind;
+    if (!LEAD_KINDS.includes(kind)) fail('bad_request', 'kind');
     if (b.consent !== true) fail('consent_required', 'согласие', 403);
     const honeypot = typeof b.website === 'string' && b.website.trim() !== '';
     const elapsed = Number(b.elapsed_ms);
@@ -52,27 +57,29 @@ export function createLeadsService({ deps, log, clock, config }) {
     );
     if (recent[0].n >= IP_DAY_LIMIT) fail('rate_limited', 'заявок с IP за сутки', 429);
     const { rows } = await db.query(
-      `insert into bl.leads (name, club_name, city, phone, tables_count, comment, consent_version, ip_hash, status, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, 'new', $9, $9) returning id`,
-      [name, clubName, city, tel, tables, comment, config?.consentVersion ?? 'site', hash, t],
+      `insert into bl.leads (kind, name, club_name, city, phone, tables_count, comment, consent_version, ip_hash, status, created_at, updated_at)
+       values ($10, $1, $2, $3, $4, $5, $6, $7, $8, 'new', $9, $9) returning id`,
+      [name, clubName, city, tel, tables, comment, config?.consentVersion ?? 'site', hash, t, kind],
     );
-    await deps.audit.appendAudit(db, { action: 'platform.lead_create', objectType: 'lead', objectId: rows[0].id, actorType: 'system', data: { lead_id: rows[0].id, city } });
+    await deps.audit.appendAudit(db, { action: 'platform.lead_create', objectType: 'lead', objectId: rows[0].id, actorType: 'system', data: { lead_id: rows[0].id, city, kind } });
+    const what = kind === 'kit' ? 'Заказ комплекта контроллеров' : 'Заявка на программу';
     // Андрею: без телефона в тексте (маскируется core), телефон — на экране оператора.
     await notifyPlatform(db, deps, log, 'platform_admin', {
       kind: 'platform.lead',
       level: 'important',
       // Без сокращения «ст.» и точки после имени: иначе «8 ст..» и «Иван И..» (Д10 приёмки M4).
-      text: `Заявка на программу: «${clubName}», ${city}${tables ? `, ${tables} ${plural(tables, ['стол', 'стола', 'столов'])}` : ''}. Контакт — ${name.replace(/[.\s]+$/u, '')}.`,
+      text: `${what}: «${clubName}», ${city}${tables ? `, ${tables} ${plural(tables, ['стол', 'стола', 'столов'])}` : ''}. Контакт — ${name.replace(/[.\s]+$/u, '')}.`,
       data: { lead_id: rows[0].id },
       actions: [{ id: 'open', title: 'Заявки клубов', url: '/club/platform/leads' }],
     });
-    log.info('lead_created', { lead_id: rows[0].id });
+    log.info('lead_created', { lead_id: rows[0].id, kind });
     return { ok: true };
   }
 
   function view(l) {
     return {
       id: l.id,
+      kind: l.kind ?? 'program',
       name: l.name,
       club_name: l.club_name,
       city: l.city,
@@ -86,12 +93,13 @@ export function createLeadsService({ deps, log, clock, config }) {
     };
   }
 
-  /** GET /api/platform/leads?status= → {items}. */
-  async function list(db, { status }) {
+  /** GET /api/platform/leads?status=&kind= → {items}. */
+  async function list(db, { status, kind }) {
     if (status !== undefined && !STATUSES.includes(status)) fail('bad_request', 'status');
+    if (kind !== undefined && !LEAD_KINDS.includes(kind)) fail('bad_request', 'kind');
     const { rows } = await db.query(
-      `select * from bl.leads where ($1::text is null or status = $1) order by created_at desc limit 300`,
-      [status ?? null],
+      `select * from bl.leads where ($1::text is null or status = $1) and ($2::text is null or kind = $2) order by created_at desc limit 300`,
+      [status ?? null, kind ?? null],
     );
     return { items: rows.map(view) };
   }

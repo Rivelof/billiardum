@@ -446,7 +446,7 @@ export async function cancelLocal(db, deps, payment, { reason, now }) {
 /** Перепроверить платёж по API ЮKassa и применить (опрос гостя, планировщик). */
 export async function syncPayment(db, deps, config, payment, { source = 'sync' } = {}) {
   if (payment.provider !== 'yookassa') return { result: 'already', payment };
-  const settings = await loadPaymentSettings(db, payment.club_id);
+  const settings = await loadPaymentSettings(db, payment.club_id, { isTest: payment.is_test });
   const client = clientFor(settings, config);
   let remote;
   try {

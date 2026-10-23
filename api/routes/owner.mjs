@@ -4,7 +4,7 @@
 import { ack, alarmJson } from '../../server/alarms/index.mjs';
 import { HttpError } from '../../server/http/errors.mjs';
 import { endpointAllowed } from '../../server/notify/webpush.mjs';
-import { stickersPdf } from '../../server/qr/stickers.mjs';
+import { printStickers } from '../../server/setup/stickers.mjs';
 import { isUuid } from '../../server/lib/store.mjs';
 
 const OWNER = ['owner'];
@@ -58,7 +58,7 @@ async function now(ctx) {
     const { rows } = await ctx.db.query(
       `select method, coalesce(sum(coalesce(captured_kopecks, amount_kopecks)), 0)::bigint as total
          from bl.payments
-        where status = 'succeeded' and confirmed_at >= $1 and confirmed_at < $2
+        where status = 'succeeded' and confirmed_at >= $1 and confirmed_at < $2 and not is_test
         group by method`,
       [day.start, ctx.clock.now()],
     );
@@ -225,16 +225,18 @@ async function vapidKey(ctx) {
   return { status: 200, json: { public_key: key } };
 }
 
-async function qrStickers(ctx) {
-  const club = (await ctx.db.query('select name from bl.clubs where id = $1', [ctx.club])).rows[0];
-  if (!club) throw new HttpError(404, 'not_found');
-  const hasCode = (
-    await ctx.db.query("select exists (select 1 from information_schema.columns where table_schema = 'bl' and table_name = 'resources' and column_name = 'code') as ok")
-  ).rows[0].ok;
-  if (!hasCode) throw new HttpError(404, 'not_found', { detail: 'resources.code' });
-  const { rows } = await ctx.db.query('select number, code from bl.resources where active and code is not null order by number');
-  if (rows.length === 0) throw new HttpError(404, 'not_found');
-  const pdf = stickersPdf({ clubName: club.name, publicHost: ctx.config.publicHost, resources: rows });
+/**
+ * QR-наклейки столов: все столы в работе или выбранные (?resources=id,id, M5.1 №159);
+ * выгрузка отмечается (resources.sticker_printed_at, журнал qr.stickers_printed) — server/setup/stickers.mjs.
+ */
+async function qrStickers(ctx, req) {
+  const pdf = await printStickers(ctx.db, {
+    clubId: req.params.club,
+    userId: ctx.user?.id ?? null,
+    publicHost: ctx.config.publicHost,
+    resources: req.query.resources,
+    now: ctx.clock.now(),
+  });
   return {
     status: 200,
     headers: {
