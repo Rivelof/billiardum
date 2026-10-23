@@ -78,6 +78,9 @@ export function createEmulator(opts = {}) {
     webhookRetryDelayMs: opts.webhookRetryDelayMs ?? 500,
     controlToken: opts.controlToken ?? null,
     failNext: { count: 0, status: 500 },
+    // «Операция выполнена, ответ потерян»: следующие N изменяющих запросов (POST) выполняются,
+    // результат сохраняется под Idempotence-Key, а клиент получает 500 или обрыв соединения.
+    loseNext: { count: 0, path: null, method: 'POST', mode: 'error' },
     down: false,
   };
 
@@ -499,6 +502,39 @@ export function createEmulator(opts = {}) {
     }
   }
 
+  /** lose_next_response: N | { path?, method?, count?, mode?: 'error' | 'reset' }. */
+  function parseLoseNext(v) {
+    if (typeof v === 'number') return { count: Math.max(0, Math.floor(v) || 0), path: null, method: 'POST', mode: 'error' };
+    if (!v || typeof v !== 'object') throw new EmuError(400, 'invalid_request', 'lose_next_response — число или объект', 'lose_next_response');
+    const method = typeof v.method === 'string' ? v.method.toUpperCase() : 'POST';
+    const path = typeof v.path === 'string' && v.path.startsWith('/v3/') ? v.path : null;
+    if (v.path !== undefined && path === null) throw new EmuError(400, 'invalid_request', 'path — путь API /v3/…', 'lose_next_response.path');
+    const mode = v.mode === 'reset' ? 'reset' : 'error';
+    return { count: Math.max(0, Math.floor(Number(v.count ?? 1)) || 0), path, method, mode };
+  }
+
+  /** Потерять этот ответ? path совпадает точно или как префикс (/v3/payments — и /v3/payments/{id}/capture). */
+  function shouldLose(req, path) {
+    const l = config.loseNext;
+    if (l.count <= 0 || req.method !== l.method) return false;
+    if (l.path && path !== l.path && !path.startsWith(`${l.path.replace(/\/+$/, '')}/`)) return false;
+    l.count -= 1;
+    return true;
+  }
+
+  /** Ответ изменяющей операции: результат уже сохранён (idempotent), поэтому его можно «потерять». */
+  function respond(req, res, path, r) {
+    if (shouldLose(req, path)) {
+      res.lostResponse = true;
+      if (config.loseNext.mode === 'reset') {
+        req.socket.destroy();
+        return;
+      }
+      throw new EmuError(500, 'internal_server_error', 'Эмулятор: операция выполнена, ответ потерян (lose_next_response)');
+    }
+    send(res, r.status, r.body);
+  }
+
   async function handleApi(req, res, path) {
     if (config.down) throw new EmuError(503, 'internal_server_error', 'Эмулятор: API недоступен (down)');
     if (config.failNext.count > 0) {
@@ -510,7 +546,7 @@ export function createEmulator(opts = {}) {
     if (req.method === 'POST' && path === '/v3/payments') {
       const body = await readJson(req);
       const r = idempotent(shop, req, 'payments', body, () => createPayment(shop, body));
-      return send(res, r.status, r.body);
+      return respond(req, res, path, r);
     }
     if (req.method === 'GET' && (m = /^\/v3\/payments\/([\w-]{1,64})$/.exec(path))) {
       return send(res, 200, view(getPayment(shop, m[1])));
@@ -518,17 +554,17 @@ export function createEmulator(opts = {}) {
     if (req.method === 'POST' && (m = /^\/v3\/payments\/([\w-]{1,64})\/capture$/.exec(path))) {
       const body = await readJson(req, { optional: true });
       const r = idempotent(shop, req, `capture/${m[1]}`, body, () => capturePayment(shop, m[1], body));
-      return send(res, r.status, r.body);
+      return respond(req, res, path, r);
     }
     if (req.method === 'POST' && (m = /^\/v3\/payments\/([\w-]{1,64})\/cancel$/.exec(path))) {
       const body = await readJson(req, { optional: true });
       const r = idempotent(shop, req, `cancel/${m[1]}`, body, () => cancelPayment(shop, m[1]));
-      return send(res, r.status, r.body);
+      return respond(req, res, path, r);
     }
     if (req.method === 'POST' && path === '/v3/receipts') {
       const body = await readJson(req);
       const r = idempotent(shop, req, 'receipts', body, () => createReceipt(shop, body));
-      return send(res, r.status, r.body);
+      return respond(req, res, path, r);
     }
     if (req.method === 'GET' && (m = /^\/v3\/receipts\/([\w-]{1,64})$/.exec(path))) {
       return send(res, 200, getReceiptObject(shop, m[1]));
@@ -536,7 +572,7 @@ export function createEmulator(opts = {}) {
     if (req.method === 'POST' && path === '/v3/refunds') {
       const body = await readJson(req);
       const r = idempotent(shop, req, 'refunds', body, () => createRefund(shop, body));
-      return send(res, r.status, r.body);
+      return respond(req, res, path, r);
     }
     if (req.method === 'GET' && (m = /^\/v3\/refunds\/([\w-]{1,64})$/.exec(path))) {
       return send(res, 200, getRefund(shop, m[1]));
@@ -608,6 +644,7 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       state.webhooks.length = 0;
       state.requests.length = 0;
       config.failNext = { count: 0, status: 500 };
+      config.loseNext = { count: 0, path: null, method: 'POST', mode: 'error' };
       config.down = false;
       config.webhookDelayMs = opts.webhookDelayMs ?? 0;
       return send(res, 200, { ok: true });
@@ -623,6 +660,7 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       if (b.webhook_retries !== undefined) config.webhookRetries = Math.max(1, Math.min(20, Number(b.webhook_retries) || 1));
       if (b.webhook_retry_delay_ms !== undefined) config.webhookRetryDelayMs = Math.max(0, Number(b.webhook_retry_delay_ms) || 0);
       if (b.fail_next !== undefined) config.failNext = { count: Math.max(0, Number(b.fail_next.count ?? 1)), status: Number(b.fail_next.status ?? 500) };
+      if (b.lose_next_response !== undefined) config.loseNext = parseLoseNext(b.lose_next_response);
       if (b.down !== undefined) config.down = Boolean(b.down);
       if (b.webhook_url !== undefined) config.webhookUrl = b.webhook_url;
       return send(res, 200, { ok: true, config: { ...config, controlToken: undefined } });
@@ -676,11 +714,13 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       else if (path.startsWith('/__emu/')) await handleControl(req, res, path, url);
       else if (path === '/health') send(res, 200, { ok: true });
       else throw new EmuError(404, 'not_found', 'Не найдено');
-      entry.status = res.statusCode;
+      entry.status = res.lostResponse ? 'reset' : res.statusCode;
+      if (res.lostResponse) entry.lost = true;
     } catch (err) {
       const e = err instanceof EmuError ? err : new EmuError(500, 'internal_server_error', 'Внутренняя ошибка эмулятора');
       if (!(err instanceof EmuError)) log.warn('emu_error', { error: err.message });
       entry.status = e.status;
+      if (res.lostResponse) entry.lost = true;
       if (!res.headersSent) send(res, e.status, errorBody(e));
       else res.end();
     }

@@ -57,7 +57,7 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 | `POST /__emu/payments/{id}/succeed[?wait=1]` | как «Оплатить» (`wait=1` — ответ после доставки вебхука) |
 | `POST /__emu/payments/{id}/cancel[?wait=1]` | как «Отказ» (заморозка — `expired_on_capture`) |
 | `POST /__emu/payments/{id}/webhook?repeat=N[&event=…]` | повтор вебхука N раз (до 50); тело `{override: {...}}` — подмена полей объекта, `{raw: "..."}` — тело как есть, `{url}` — другой адрес (для pentester) |
-| `POST /__emu/config` | `{webhook_delay_ms, webhook_retries, webhook_retry_delay_ms, webhook_url, fail_next: {count, status}, down}`: задержка вебхуков, сбой следующих N запросов API (по умолчанию 500), API недоступен (503) |
+| `POST /__emu/config` | `{webhook_delay_ms, webhook_retries, webhook_retry_delay_ms, webhook_url, fail_next: {count, status}, lose_next_response, down}`: задержка вебхуков, сбой следующих N запросов API (по умолчанию 500, операция не выполняется), «ответ потерян» (см. ниже), API недоступен (503) |
 | `POST /__emu/shops` | `{shop_id, secret, webhook_url?}` — ещё магазин (второй клуб) |
 | `GET /__emu/payments`, `GET /__emu/payments/{id}` | платежи с чеками (`receipt`, `receipts`: платёж, списание, возвраты) |
 | `GET /__emu/receipts` | отдельные чеки (зачёты) |
@@ -70,3 +70,7 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 `npm test -w @billiardum/yookassa-emu` — 26 тестов: авторизация, ключ идемпотентности, отказ без чека и при несовпадении суммы позиций, форма объекта, QR для СБП, страница подтверждения, вебхуки с повтором до 200, двухстадийный платёж, возвраты, управление.
 
 Поля, в которых эмулятор опирается на память, а не на проверенную документацию (сверить с настоящим магазином, когда откроется `api.yookassa.ru`): ответ на повтор `Idempotence-Key` с другим телом; `capture` по умолчанию; требование чека при `capture` с меньшей суммой и при возврате; `quantity` числом или строкой; диапазон `vat_code` (1–12, включая ставки 5 %, 7 % и 22 % с 2026 года); поддержка СБП в двухстадийной оплате; `expires_at` заморозки.
+
+### «Операция выполнена, ответ потерян»
+
+`POST /__emu/config {"lose_next_response": N}` или `{"lose_next_response": {"path": "/v3/refunds", "method": "POST", "count": 1, "mode": "error" | "reset"}}`: следующие `count` изменяющих запросов (создание платежа, списание и отмена заморозки, возврат, чек; по умолчанию любой `POST /v3/…`, `path` — точный путь или префикс) выполняются, результат сохраняется под `Idempotence-Key`, а клиент получает `500` (`mode: error`, по умолчанию) или обрыв соединения (`mode: reset`). Повтор тем же ключом отдаёт сохранённый результат — второй операции нет. В `/__emu/requests` у такого запроса `lost: true` (статус `500` или `reset`). `/__emu/reset` снимает режим.

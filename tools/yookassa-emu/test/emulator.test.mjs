@@ -407,6 +407,42 @@ describe('управление /__emu', () => {
     assert.equal((await api('GET', '/v3/payments/x')).status, 404);
   });
 
+  it('lose_next_response: операция выполнена, ответ потерян (500); повтор тем же ключом — сохранённый результат', async () => {
+    await api('POST', '/__emu/config', { shop: null, body: { lose_next_response: 1 } });
+    const k = key();
+    const before = (await api('GET', '/__emu/payments', { shop: null })).json.length;
+    const lost = await api('POST', '/v3/payments', { body: payment(), key: k });
+    assert.equal(lost.status, 500);
+    const all = (await api('GET', '/__emu/payments', { shop: null })).json;
+    assert.equal(all.length, before + 1, 'платёж создан');
+    const again = await api('POST', '/v3/payments', { body: payment(), key: k });
+    assert.equal(again.status, 200);
+    assert.equal(again.json.id, all.at(-1).id, 'тот же платёж');
+    assert.equal((await api('GET', '/__emu/payments', { shop: null })).json.length, before + 1, 'второго платежа нет');
+    const log = (await api('GET', '/__emu/requests', { shop: null })).json.filter((e) => e.idempotence_key === k);
+    assert.deepEqual(log.map((e) => [e.status, Boolean(e.lost)]), [[500, true], [200, false]]);
+    // GET ответы не теряются; счётчик исчерпан.
+    assert.equal((await api('POST', '/v3/payments', { body: payment(), key: key() })).status, 200);
+  });
+
+  it('lose_next_response по пути: возврат выполнен, соединение оборвано (reset); другие запросы не затронуты; повтор — тот же возврат', async () => {
+    const p = (await api('POST', '/v3/payments', { body: payment(), key: key() })).json;
+    await api('POST', `/__emu/payments/${p.id}/succeed?wait=1`, { shop: null });
+    await api('POST', '/__emu/config', { shop: null, body: { lose_next_response: { path: '/v3/refunds', count: 1, mode: 'reset' } } });
+    // Платёж (другой путь) отвечает как обычно.
+    assert.equal((await api('POST', '/v3/payments', { body: payment(), key: key() })).status, 200);
+    const k = key();
+    const body = { payment_id: p.id, amount: { value: '100.00', currency: 'RUB' }, receipt: receipt('100.00') };
+    await assert.rejects(api('POST', '/v3/refunds', { body, key: k }), 'соединение оборвано');
+    assert.equal((await api('GET', `/v3/payments/${p.id}`)).json.refunded_amount.value, '100.00', 'возврат проведён');
+    const again = await api('POST', '/v3/refunds', { body, key: k });
+    assert.equal(again.status, 200);
+    assert.equal((await api('GET', `/v3/refunds/${again.json.id}`)).json.amount.value, '100.00');
+    assert.equal((await api('GET', `/v3/payments/${p.id}`)).json.refunded_amount.value, '100.00', 'второго возврата нет');
+    const bad = await api('POST', '/__emu/config', { shop: null, body: { lose_next_response: { path: '/x' } } });
+    assert.equal(bad.status, 400);
+  });
+
   it('задержка вебхука', async () => {
     await api('POST', '/__emu/config', { shop: null, body: { webhook_delay_ms: 150 } });
     const p = (await api('POST', '/v3/payments', { body: payment(), key: key() })).json;
