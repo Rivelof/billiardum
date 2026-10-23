@@ -1,4 +1,4 @@
-import { formatDate } from '@billiardum/shared/format';
+import { formatDate, plural } from '@billiardum/shared/format';
 import { html, Icon, Raw } from '../html.mjs';
 import { APP, Crumbs, Empty } from '../components.mjs';
 import { getArticle, listArticles } from '../journal.mjs';
@@ -140,4 +140,17 @@ export function unavailablePage() {
       Сервер клубов сейчас не отвечает. Игры в клубах при этом идут как обычно. Попробуйте обновить страницу через минуту.<//>
   </div>`;
   return { status: 503, path: '/', title: 'Сервис временно недоступен — Бильярдум', description: 'Сервер клубов не отвечает.', body, noindex: true };
+}
+
+/** 429: гость упёрся в лимит сайта (M4-6). retryAfter — секунды из заголовка Retry-After. */
+export function rateLimitedPage(retryAfter = 60) {
+  const sec = Math.max(1, Math.round(retryAfter));
+  const wait = sec >= 60 ? 'минуту' : `${sec} ${plural(sec, ['секунду', 'секунды', 'секунд'])}`;
+  const body = html`<div class="wrap page page--center">
+    <h1 class="visually-hidden">Слишком много запросов</h1>
+    <${Empty} ill="cue" title="Слишком много запросов с вашего адреса"
+      action=${html`<a class="btn btn--primary" href="">Обновить страницу</a>`}>
+      За последнюю минуту отсюда открыли очень много страниц подряд, и мы притормозили, чтобы сайт работал у всех. Подождите ${wait} и обновите страницу.<//>
+  </div>`;
+  return { status: 429, path: '/', title: 'Слишком много запросов — Бильярдум', description: 'Слишком много запросов с одного адреса.', body, noindex: true };
 }

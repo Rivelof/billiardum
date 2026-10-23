@@ -218,7 +218,8 @@ export const api = {
   },
   /** Внести партию: { session_id, discipline, opponent_id, my_score, opponent_score } → match (ждёт подтверждения соперника 30 минут). */
   addMatch: (body) => client.post('/plus/matches', body),
-  confirmMatch: (id) => client.post(`/plus/matches/${e(id)}/confirm`),
+  /** Подтвердить счёт, который видел игрок: { score_a, score_b }. Соперник успел переписать — 409 score_changed (M4-3). */
+  confirmMatch: (id, score) => client.post(`/plus/matches/${e(id)}/confirm`, { score_a: score.score_a, score_b: score.score_b }),
   disputeMatch: (id, reason) => client.post(`/plus/matches/${e(id)}/dispute`, { reason }),
   /**
    * Таблица: { discipline, scope: club|city|country, club?, city?, season: YYYY-MM|all } → { items, me }.
@@ -246,7 +247,8 @@ export const api = {
     once(moneyKeys, `tournament:${id}`, (key) => client.post(`/tournaments/${e(id)}/entries`, { return_url: `${BASE}tournaments/${e(id)}?paid=1` }, { idempotencyKey: key })),
   leaveTournament: (id) => client.request('DELETE', `/tournaments/${e(id)}/entries/me`),
   tournamentScore: (matchId, scoreA, scoreB) => client.post(`/tournaments/matches/${e(matchId)}/score`, { score_a: scoreA, score_b: scoreB }),
-  confirmTournamentScore: (matchId) => client.post(`/tournaments/matches/${e(matchId)}/confirm`),
+  /** Подтвердить показанный счёт соперника: { score_a, score_b }; переписан — 409 score_changed (M4-3). */
+  confirmTournamentScore: (matchId, score) => client.post(`/tournaments/matches/${e(matchId)}/confirm`, { score_a: score.score_a, score_b: score.score_b }),
 
   // ---------- M4: отзывы и заявка в клуб без программы (T25) ----------
   myReview: (clubId) => client.get('/reviews/mine', { query: { club_id: clubId } }),

@@ -16,7 +16,7 @@ import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { lastClub } from '../lib/flow.js';
 import { safeRedirectUrl } from '../lib/urls.js';
-import { entryState, filterTournaments, placesLeft, zoneOf } from '../lib/plus.js';
+import { entryState, filterTournaments, placesLeft, shownTournamentScore, zoneOf } from '../lib/plus.js';
 import '../styles/m4.css';
 
 const PLACES = ['место', 'места', 'мест'];
@@ -414,7 +414,7 @@ function MyMatch({ match, raceTo, onChange }) {
   const mineKey = match.side === 'a' ? 'score_a' : 'score_b';
   const theirKey = match.side === 'a' ? 'score_b' : 'score_a';
   // Внесённый счёт: свой (если внёс я) или соперника — { score_a, score_b, at } (server/tournaments)
-  const report = (match.i_confirmed ? match.my_report : match.opponent_report) ?? { score_a: match.score_a, score_b: match.score_b };
+  const report = shownTournamentScore(match);
   const [mine, setMine] = useState(raceTo);
   const [theirs, setTheirs] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -441,9 +441,12 @@ function MyMatch({ match, raceTo, onChange }) {
     setBusy(true);
     setError(null);
     try {
-      await api.confirmTournamentScore(match.id);
+      // Подтверждаем ровно показанный счёт: соперник успел переписать — 409 score_changed (M4-3)
+      await api.confirmTournamentScore(match.id, report);
       onChange();
     } catch (err) {
+      // Свежий счёт — перечитываем матч; текст ошибки остаётся: «Соперник изменил счёт — проверьте ещё раз»
+      if (err?.code === 'score_changed') onChange();
       setError(err);
     } finally {
       setBusy(false);

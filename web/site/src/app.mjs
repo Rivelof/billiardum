@@ -16,9 +16,12 @@ import { clubPage } from './pages/club.mjs';
 import { tournamentPage, tournamentsPage } from './pages/tournaments.mjs';
 import { plusPage, ratingPage } from './pages/plus.mjs';
 import { ownersPage } from './pages/owners.mjs';
-import { articlePage, businessPage, journalPage, notFoundPage, unavailablePage } from './pages/misc.mjs';
+import { articlePage, businessPage, journalPage, notFoundPage, rateLimitedPage, unavailablePage } from './pages/misc.mjs';
+import { RateLimited, budget, createRateLimiter, rateKey, requestBudget } from './ratelimit.mjs';
 
 const HTML_CACHE = 'public, max-age=60';
+// 404 — ненадолго: адрес мог появиться (новый клуб), но поток случайных адресов не должен каждый раз рисовать страницу заново
+const NOT_FOUND_CACHE = 'public, max-age=30';
 
 function parseCookies(header = '') {
   const out = {};
@@ -62,7 +65,11 @@ function checkLead(v) {
   return null;
 }
 
-export function createSite({ cfg, data, now: clock = () => Date.now(), mockApi = null }) {
+/**
+ * @param {{ cfg: object, data: object, now?: () => number, mockApi?: object | null,
+ *   limiter?: ReturnType<typeof createRateLimiter> | null }} opts limiter — по умолчанию из cfg.ratePerMinute (0 — без лимита)
+ */
+export function createSite({ cfg, data, now: clock = () => Date.now(), mockApi = null, limiter = cfg.ratePerMinute > 0 ? createRateLimiter({ perMinute: cfg.ratePerMinute }) : null }) {
   const api = createApi(data);
 
   function respondPage(p) {
@@ -71,7 +78,7 @@ export function createSite({ cfg, data, now: clock = () => Date.now(), mockApi =
     const headers = {
       'content-type': 'text/html; charset=utf-8',
       'content-security-policy': csp,
-      'cache-control': !ok ? 'no-store' : p.vary || p.cookie ? 'private, max-age=60' : HTML_CACHE,
+      'cache-control': p.status === 404 ? NOT_FOUND_CACHE : !ok ? 'no-store' : p.vary || p.cookie ? 'private, max-age=60' : HTML_CACHE,
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'same-origin',
     };
@@ -211,7 +218,7 @@ export function createSite({ cfg, data, now: clock = () => Date.now(), mockApi =
       if (path === '/og/site.png') res = await og('site');
       else if (seg[1] === 'club' && seg.length === 4 && SLUG.test(seg[2]) && /^[a-z0-9-]+\.png$/.test(seg[3])) res = await og('club', { city: seg[2], club: seg[3].slice(0, -4) });
       else if (seg[1] === 'turnir' && seg.length === 3 && seg[2].endsWith('.png') && UUID.test(seg[2].slice(0, -4))) res = await og('turnir', { id: seg[2].slice(0, -4) });
-      return res ?? text(404, 'Не найдено', 'text/plain; charset=utf-8');
+      return res ?? text(404, 'Не найдено', 'text/plain; charset=utf-8', { 'cache-control': NOT_FOUND_CACHE });
     }
 
     // Страницы — с косой чертой на конце
@@ -237,14 +244,32 @@ export function createSite({ cfg, data, now: clock = () => Date.now(), mockApi =
     return respondPage(p);
   }
 
+  /** 429 (M4-6): страница в стиле сайта или JSON для формы заявки; Retry-After — секунды до следующего жетона. */
+  function tooMany(ctx, retryAfter) {
+    const extra = { 'cache-control': 'no-store', 'retry-after': String(retryAfter) };
+    if (/application\/json/.test(ctx.headers.accept ?? '')) {
+      return text(429, JSON.stringify({ ok: false, message: 'Слишком много запросов с вашего адреса. Подождите минуту и отправьте снова.' }), 'application/json; charset=utf-8', extra);
+    }
+    const res = respondPage(rateLimitedPage(retryAfter));
+    Object.assign(res.headers, extra);
+    return res;
+  }
+
   /** @param {{ method: string, url: string | URL, headers?: object, body?: string, ip?: string }} req */
   return async function handle(req) {
     const url = req.url instanceof URL ? req.url : new URL(req.url, 'http://site');
     const headers = req.headers ?? {};
     const ctx = { method: req.method ?? 'GET', url, headers, body: req.body ?? '', ip: req.ip ?? null, cfg, data, now: clock(), cookies: parseCookies(headers.cookie) };
+    // Лимит по IP гостя (IPv6 — /64): жетон списывается только за поход в API (промах кэша, заявка)
+    const scope = requestBudget(limiter, rateKey(ctx.ip));
     try {
-      return await route(ctx);
+      const res = await budget.run(scope, () => route(ctx));
+      // Страница могла поймать отказ лимита и дорисоваться без части данных — такую не отдаём
+      if (scope.denied) return tooMany(ctx, scope.denied.retryAfter);
+      return res;
     } catch (err) {
+      if (err instanceof RateLimited) return tooMany(ctx, err.retryAfter);
+      if (scope.denied) return tooMany(ctx, scope.denied.retryAfter);
       if (err instanceof ApiUnavailable) {
         const res = respondPage(unavailablePage());
         res.headers['retry-after'] = '60';

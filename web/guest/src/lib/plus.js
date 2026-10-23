@@ -88,3 +88,21 @@ export const REVIEW_MAX = 1000;
 export function maskPhones(text) {
   return String(text ?? '').replace(/\+?\d[\d\s()-]{8,}\d/g, (m) => (m.replace(/\D/g, '').length >= 10 ? '***' : m));
 }
+
+/**
+ * Счёт партии Бильярдум+, который видит игрок, — для подтверждения (M4-3): сервер сверяет его с текущим
+ * и отвечает 409 score_changed, если соперник успел переписать. players[0] — сторона a, players[1] — b.
+ */
+export function shownMatchScore(match) {
+  const [a, b] = match?.players ?? [];
+  return { score_a: a?.score ?? null, score_b: b?.score ?? null };
+}
+
+/**
+ * Счёт турнирного матча на экране: внесённый мной (жду соперника) или соперником (подтверждаю);
+ * если отчётов нет — счёт матча. → { score_a, score_b }.
+ */
+export function shownTournamentScore(match) {
+  const r = (match?.i_confirmed ? match.my_report : match?.opponent_report) ?? match ?? {};
+  return { score_a: r.score_a ?? null, score_b: r.score_b ?? null };
+}

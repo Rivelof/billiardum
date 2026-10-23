@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBackend } from '../src/mock/backend.js';
-import { entryState, filterTournaments, opponents, placesLeft, sortMatches, disciplineOfTable, seasonNow, maskPhones } from '../src/lib/plus.js';
+import { entryState, filterTournaments, opponents, placesLeft, sortMatches, disciplineOfTable, seasonNow, maskPhones, shownMatchScore, shownTournamentScore } from '../src/lib/plus.js';
 
 const memory = () => {
   let s = null;
@@ -113,4 +113,45 @@ test('«Добавить клуб» и «Подтвердить клуб» на 
   assert.equal((await b.handle('POST', '/api/directory/add', { city: 'Пермь' })).body.error, 'bad_request');
   assert.equal((await b.handle('POST', '/api/directory/claim', { listing_id: 'c1000000-0000-4000-8000-000000000001' })).status, 201);
   assert.equal((await b.handle('POST', '/api/directory/claim', { listing_id: 'c1000000-0000-4000-8000-000000000002' })).body.error, 'already_claimed');
+});
+
+test('M4-3 на заглушке: подтверждается показанный счёт; соперник переписал — 409 score_changed, свежий счёт, повтор проходит', async () => {
+  const b = createBackend({ ...memory(), now: () => T });
+  b.scenario('plusrace');
+  const me = (await b.handle('GET', '/api/me')).body.user.id;
+  const pending = (await b.handle('GET', '/api/plus/matches')).body.items.find((x) => x.status === 'pending');
+  assert.ok(pending, 'партия Андрея ждёт подтверждения');
+  const seen = shownMatchScore(pending);
+  assert.deepEqual(seen, { score_a: 8, score_b: 5 });
+  const raced = await b.handle('POST', `/api/plus/matches/${pending.id}/confirm`, seen);
+  assert.equal(raced.status, 409);
+  assert.deepEqual(raced.body, { error: 'score_changed' });
+  const fresh = (await b.handle('GET', '/api/plus/matches')).body.items.find((x) => x.id === pending.id);
+  assert.equal(fresh.status, 'pending', 'партия не подтверждена');
+  assert.deepEqual(shownMatchScore(fresh), { score_a: 8, score_b: 3 });
+  const ok = await b.handle('POST', `/api/plus/matches/${pending.id}/confirm`, shownMatchScore(fresh));
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.players.find((p) => p.user_id === me).confirmed, true);
+
+  // Матч турнира: внесённый счёт подтверждается только тем же счётом
+  b.scenario('tour');
+  const running = (await b.handle('GET', '/api/public/tournaments')).body.items.find((t) => t.status === 'running');
+  const my = (await b.handle('GET', `/api/tournaments/${running.id}/me`)).body.match;
+  const id = encodeURIComponent(my.id);
+  assert.equal((await b.handle('POST', `/api/tournaments/matches/${id}/score`, { score_a: 2, score_b: 1 })).status, 200);
+  const shown = shownTournamentScore((await b.handle('GET', `/api/tournaments/${running.id}/me`)).body.match);
+  assert.deepEqual(shown, { score_a: 2, score_b: 1 });
+  const bad = await b.handle('POST', `/api/tournaments/matches/${id}/confirm`, { score_a: 1, score_b: 2 });
+  assert.equal(bad.status, 409);
+  assert.equal(bad.body.error, 'score_changed');
+  assert.equal((await b.handle('POST', `/api/tournaments/matches/${id}/confirm`, shown)).status, 200);
+});
+
+test('M4-3: показанный счёт для подтверждения — партия и матч турнира', () => {
+  assert.deepEqual(shownMatchScore({ players: [{ score: 8 }, { score: 6 }] }), { score_a: 8, score_b: 6 });
+  assert.deepEqual(shownMatchScore(null), { score_a: null, score_b: null });
+  // Подтверждаю соперника — его отчёт; ждём соперника — свой; отчётов нет — счёт матча
+  assert.deepEqual(shownTournamentScore({ i_confirmed: false, opponent_report: { score_a: 1, score_b: 3, at: 'x' }, my_report: null, score_a: null, score_b: null }), { score_a: 1, score_b: 3 });
+  assert.deepEqual(shownTournamentScore({ i_confirmed: true, my_report: { score_a: 3, score_b: 2 }, opponent_report: null }), { score_a: 3, score_b: 2 });
+  assert.deepEqual(shownTournamentScore({ i_confirmed: false, opponent_report: null, score_a: 3, score_b: 0 }), { score_a: 3, score_b: 0 });
 });

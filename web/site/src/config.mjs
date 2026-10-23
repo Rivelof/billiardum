@@ -11,6 +11,8 @@
  *   BL_SITE_NOINDEX      1 — запретить индексацию (стенды): robots.txt Disallow: /, meta robots noindex
  *   SITE_TRUSTED_PROXIES доверенные прокси (CIDR через запятую): только от них сайт верит X-Forwarded-For;
  *                        по умолчанию 127.0.0.1/32,::1/128. В Compose — подсеть, откуда приходит Caddy
+ *   BL_SITE_RATE_PER_MIN лимит запросов в API на IP гостя в минуту (IPv6 — на /64), по умолчанию 120;
+ *                        0 — без лимита. Статика и страницы из кэша не считаются (M4-6)
  */
 
 import process from 'node:process';
@@ -32,6 +34,7 @@ export function loadConfig(env = process.env) {
     cacheMs: Number(env.BL_SITE_CACHE_MS) >= 0 && env.BL_SITE_CACHE_MS !== undefined && env.BL_SITE_CACHE_MS !== '' ? Number(env.BL_SITE_CACHE_MS) : 60_000,
     noindex: env.BL_SITE_NOINDEX === '1',
     trustedProxies: parseCidrs(env.SITE_TRUSTED_PROXIES?.trim() ? env.SITE_TRUSTED_PROXIES : '127.0.0.1/32,::1/128'),
+    ratePerMinute: /^\d{1,6}$/.test(env.BL_SITE_RATE_PER_MIN ?? '') ? Number(env.BL_SITE_RATE_PER_MIN) : 120,
     dev: env.BL_SITE_DEV === '1',
   });
 }

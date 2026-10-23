@@ -160,3 +160,14 @@ test('loginChoice: только настроенные мессенджеры; �
   assert.deepEqual(loginChoice(null).channels, ['max', 'telegram'], 'нет ответа — как раньше');
   assert.equal(loginChoice(['telegram'], { unavailable: ['telegram'] }).empty, true);
 });
+
+test('котировка QR на столе турнира: 409 table_busy { reason, busy_until } доходит до текста «Стол занят турниром»', async () => {
+  const { errorMessage } = await import('../errors.mjs');
+  const f = fakeFetch(() => json(409, { error: 'table_busy', reason: 'tournament', busy_until: '2026-10-23T18:00:00Z' }));
+  const err = await createClient({ fetch: f }).post('/quotes', { resource_id: 'r', kind: 'start', minutes: 60 }).catch((e) => e);
+  assert.ok(err instanceof ApiError);
+  assert.equal(err.code, 'table_busy');
+  assert.deepEqual(err.data, { busy_until: '2026-10-23T18:00:00Z', reason: 'tournament' });
+  assert.equal(errorMessage(err, { audience: 'guest', busyUntil: '23:00' }).title, 'Стол занят турниром до 23:00.');
+  assert.match(errorMessage(err).action, /после турнира/);
+});

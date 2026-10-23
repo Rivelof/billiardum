@@ -72,3 +72,13 @@ test('M4: стол занят турниром — «Стол занят тур�
   assert.equal(errorMessage(err).title, 'Стол занят турниром.');
   assert.equal(errorMessage({ code: 'table_busy' }, { busyUntil: '21:40' }).title, 'Стол занят до 21:40.');
 });
+
+test('M4-3: score_changed — соперник переписал счёт, проверить ещё раз', () => {
+  assert.ok(KNOWN_CODES.includes('score_changed'));
+  for (const audience of ['guest', 'staff']) {
+    const m = errorMessage(new ApiError('score_changed', { status: 409 }), { audience });
+    assert.equal(m.title, 'Соперник изменил счёт — проверьте ещё раз.');
+    assert.match(m.action, /[А-ЯЁ].*\.$/u);
+    assert.doesNotMatch(m.text, /\b[a-z_]{4,}\b/);
+  }
+});

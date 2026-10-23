@@ -1,7 +1,10 @@
 /**
  * Данные сайта — только из публичного API сервера (контракт M4 §1 п.1, §4). В базу сайт не ходит.
  * Ответы GET кэшируются в памяти на cacheMs (60 с): одна страница — один запрос к API в минуту.
+ * Ответы «нет такого» (404 и 400 → null) — отдельно и ненадолго (missMs, 30 с): поток случайных адресов
+ * не вытесняет из кэша живые страницы (M4-6).
  * Если API недоступен, а в кэше есть устаревший ответ — отдаём его (до 10 минут), иначе ApiUnavailable.
+ * Каждый поход в API списывает жетон лимита текущего запроса сайта (ratelimit.mjs, charge).
  *
  *   const data = createData({ apiUrl, mock, cacheMs });
  *   await data.get('/api/public/cities')          → JSON | null (404)
@@ -16,12 +19,17 @@ export class ApiUnavailable extends Error {
   }
 }
 
+import { charge } from './ratelimit.mjs';
+
 const STALE_MS = 10 * 60_000;
 const MAX_ENTRIES = 500;
+const MAX_MISSES = 2000;
+const MISS_MS = 30_000;
 const TIMEOUT_MS = 4000;
 
-export function createData({ apiUrl = null, mock = !apiUrl, cacheMs = 60_000, fetchImpl = globalThis.fetch, mockApi = null, now = () => Date.now() } = {}) {
+export function createData({ apiUrl = null, mock = !apiUrl, cacheMs = 60_000, missMs = Math.min(cacheMs, MISS_MS), fetchImpl = globalThis.fetch, mockApi = null, now = () => Date.now() } = {}) {
   const cache = new Map(); // path → { at, value }
+  const misses = new Map(); // path → at: ответ «нет такого» (null)
   const inflight = new Map();
   let mockModule = mockApi;
 
@@ -75,9 +83,21 @@ export function createData({ apiUrl = null, mock = !apiUrl, cacheMs = 60_000, fe
     const hit = cache.get(path);
     const t = now();
     if (hit && t - hit.at < cacheMs) return hit.value;
+    const missAt = misses.get(path);
+    if (missAt !== undefined && t - missAt < missMs) return null;
     if (inflight.has(path)) return inflight.get(path);
+    charge(); // промах кэша — запрос в API: жетон лимита гостя (нет жетона — RateLimited)
     const p = load(path)
       .then((value) => {
+        if (value === null) {
+          // «Нет такого» — в отдельный короткий кэш; прежний живой ответ по этому адресу больше не нужен
+          misses.delete(path);
+          misses.set(path, now());
+          if (misses.size > MAX_MISSES) misses.delete(misses.keys().next().value);
+          cache.delete(path);
+          return value;
+        }
+        misses.delete(path);
         cache.delete(path);
         cache.set(path, { at: now(), value });
         if (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value);
@@ -94,6 +114,7 @@ export function createData({ apiUrl = null, mock = !apiUrl, cacheMs = 60_000, fe
 
   /** POST без кэша: заявки (leads, заявки гостей). IP гостя уходит в X-Forwarded-For для лимитов API. */
   async function post(path, body, { ip } = {}) {
+    charge();
     try {
       return await request('POST', path, body, ip ? { 'x-forwarded-for': ip } : {});
     } catch (err) {
@@ -101,5 +122,13 @@ export function createData({ apiUrl = null, mock = !apiUrl, cacheMs = 60_000, fe
     }
   }
 
-  return { get, post, clear: () => cache.clear(), mock };
+  return {
+    get,
+    post,
+    clear: () => {
+      cache.clear();
+      misses.clear();
+    },
+    mock,
+  };
 }

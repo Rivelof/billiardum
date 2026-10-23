@@ -4,7 +4,8 @@
  * матча), отзыв о клубе, заявка в клуб без программы (T25). Формы ответов — как в письме координатору (контракт M4 §4).
  *
  * Сценарии: plus (профиль и история) | plusnew (ника ещё нет) | plusgame (игра на столе 4 с Андреем: три партии пары
- * уже засчитаны сегодня, четвёртая не попадёт в рейтинг — T23) | tour (турниры: запись, лимит рейтинга, мой матч)
+ * уже засчитаны сегодня, четвёртая не попадёт в рейтинг — T23) | plusrace (игра на столе 4: Андрей внёс счёт и переписывает
+ * его, пока вы подтверждаете — 409 score_changed, M4-3) | tour (турниры: запись, лимит рейтинга, мой матч)
  */
 
 import { levelOf } from '@billiardum/shared/plus';
@@ -97,11 +98,21 @@ export function m4Routes(ctx) {
     S().invites = {};
     const inv = { id: uuid(), from: shark, to: id, discipline: 'pyramid', club_id: club.id, starts_at: Math.ceil((t + 26 * 60 * MIN) / (30 * MIN)) * 30 * MIN, minutes: 120, status: 'pending', booking_id: null, created: t - 40 * MIN };
     S().invites[inv.id] = inv;
+    if (scenario === 'plusrace') {
+      // M4-3: Андрей внёс 8:5 в свою пользу и ждёт подтверждения; при первом «Подтвердить» он уже переписал на 8:3
+      addMatch({ a: andrey, b: id, discipline: 'pyramid', sa: 8, sb: 5, at: t - 3 * MIN, status: 'pending', counted: null, reason: null, delta: null, session_id: ctx.sessionId, confirmedA: true, confirmedB: false }).race = { sa: 8, sb: 3 };
+    }
     if (scenario === 'plusgame') {
       // T23: с Андреем уже три засчитанные партии за эти сутки клуба
       const sid = ctx.sessionId;
       for (let i = 0; i < 3; i += 1) addMatch({ a: id, b: andrey, discipline: 'pyramid', sa: i === 1 ? 5 : 8, sb: i === 1 ? 8 : 4, at: t - (50 - i * 12) * MIN, status: 'confirmed', counted: true, reason: null, delta: i === 1 ? -9 : 11, session_id: sid });
     }
+  }
+
+  /** Тело подтверждения со счётом, который видел игрок, не совпадает с текущим (M4-3). Без счёта — как раньше. */
+  function scoreChanged(body, sa, sb) {
+    if (!body || (body.score_a === undefined && body.score_b === undefined)) return false;
+    return body.score_a !== sa || body.score_b !== sb;
   }
 
   function addMatch({ a, b, discipline, sa, sb, at, status, counted, reason, delta, session_id = null, confirmedA = true, confirmedB = true }) {
@@ -362,13 +373,17 @@ export function m4Routes(ctx) {
       const m = addMatch({ a: me(), b: b.opponent_id, discipline: b.discipline, sa: b.my_score, sb: b.opponent_score, at: now(), status: 'pending', counted: null, reason: null, delta: null, session_id: s.id, confirmedA: true, confirmedB: false });
       return { status: 201, body: matchView(m) };
     }],
-    ['POST', /^\/api\/plus\/matches\/([^/]+)\/confirm$/, (m) => {
+    ['POST', /^\/api\/plus\/matches\/([^/]+)\/confirm$/, (m, b) => {
       const x = S().matches[m[1]];
       if (!x) return err(404, 'not_found');
       if (x.status !== 'pending') return err(409, 'match_closed');
+      if (x.a !== me() && x.b !== me()) return err(403, 'match_not_participant');
+      // Сценарий plusrace: соперник переписывает счёт, пока игрок смотрит на старый (M4-3)
+      if (x.race) Object.assign(x, { race: false, ...x.race });
+      // Подтверждается показанный счёт { score_a, score_b }; переписан — 409 score_changed, как у backend-plus
+      if (scoreChanged(b, x.sa, x.sb)) return err(409, 'score_changed');
       if (x.a === me()) x.ca = true;
-      else if (x.b === me()) x.cb = true;
-      else return err(403, 'match_not_participant');
+      else x.cb = true;
       settle(x);
       return ok(matchView(x));
     }],
@@ -507,6 +522,7 @@ export function m4Routes(ctx) {
         S().tmatches[key] = { sa: b.score_a, sb: b.score_b, status: 'pending_confirm', by: me() };
       } else {
         if (!st) return err(409, 'match_closed');
+        if (scoreChanged(b, st.sa, st.sb)) return err(409, 'score_changed');
         st.status = 'done';
       }
       const x = S().tournaments[key.split(':')[0]];

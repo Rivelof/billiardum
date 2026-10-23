@@ -6,7 +6,7 @@ import { Dialog } from './Dialog.jsx';
 import { ErrorNote } from './ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { lastClub } from '../lib/flow.js';
-import { sides, zoneOf } from '../lib/plus.js';
+import { shownMatchScore, sides, zoneOf } from '../lib/plus.js';
 
 /** Карточка партии: счёт, статус, «Подтвердить» / «Оспорить», причина «не засчитана». Используется и на экране игры. */
 export function MatchCard({ match, meId, onChange, onDispute, big = false }) {
@@ -19,8 +19,17 @@ export function MatchCard({ match, meId, onChange, onDispute, big = false }) {
     setBusy(true);
     setError(null);
     try {
-      onChange(await api.confirmMatch(match.id));
+      // Подтверждаем ровно тот счёт, что на экране: соперник успел переписать — 409 score_changed (M4-3)
+      onChange(await api.confirmMatch(match.id, shownMatchScore(match)));
     } catch (err) {
+      if (err?.code === 'score_changed') {
+        // Показываем свежий счёт и просим проверить ещё раз; не подгрузился — остаётся текст ошибки
+        try {
+          onChange(await api.match(match.id));
+        } catch {
+          // ничего: игрок обновит экран сам
+        }
+      }
       setError(err);
     } finally {
       setBusy(false);
