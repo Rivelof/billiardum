@@ -315,6 +315,7 @@ describe('каталог клубов', { skip }, () => {
     const n = await h.notifications(admin.id, 'platform.lead');
     assert.equal(n.length, 1);
     assert.ok(!n[0].text.includes('5556677'));
+    assert.equal(n[0].text, 'Заявка на программу: «Клуб Лузa», Пермь, 8 столов. Контакт — Иван.');
     // Лимит по IP.
     let last;
     for (let i = 0; i < 6; i += 1) last = await h.request('POST', '/api/leads', { body: form, ip: '10.1.1.9' });

@@ -92,5 +92,5 @@ DATABASE_ADMIN_URL=postgres://supabase_admin:…@127.0.0.1:PORT/postgres \
 ## M4: бронь на двоих и турниры
 
 - `createBooking(db, { userId, resourceId, startsAt, minutes, participants, source? })` (`api.mjs`) — для «Сыграем?» Бильярдум+: участники (до 3, миграция 0602 `bookings.participants`) видят бронь в `GET /api/me/bookings` (`my_role: 'participant'`, `participants_count`), могут начать игру у стола (платит начавший), получают уведомления брони; платит и отменяет владелец. Через HTTP участников не передать.
-- Брони не принимаются на интервалы `tournamentHolds(db, { resourceId, from, to })` (`server/tournaments/api.mjs`, необязательная зависимость) — `booking_conflict`; в доступности такие интервалы — `kind: 'tournament'`.
+- Брони не принимаются на интервалы `tournamentHolds(db, { resourceId, from, to })` (`server/tournaments/api.mjs`, необязательная зависимость) — `409 table_busy {reason: 'tournament', busy_until}` (Д7 приёмки M4; `busy_until` — конец окна вместе с примыкающими удержаниями матчей; проверка раньше пересечения с бронями); ранний приход по брони, если до её начала на столе турнир, — то же; в доступности такие интервалы — `kind: 'tournament'`.
 - Необязательные шаги (уведомления, данные соседей) — в точке сохранения (`safely`): ошибка соседа не оставляет транзакцию в состоянии ошибки, при котором COMMIT молча стал бы ROLLBACK.

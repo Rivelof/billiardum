@@ -68,7 +68,7 @@ describe('бронь M4', { skip }, () => {
     await assert.rejects(inTx(a.id, (db) => createBooking(db, { userId: a.id, resourceId: table(3), startsAt: new Date(start), minutes: 60, participants: [a.id] })), (e) => e.code === 'bad_request');
   });
 
-  it('интервалы турнира: бронь на них — booking_conflict, в доступности — tournament', async () => {
+  it('интервалы турнира: бронь на них — 409 table_busy {reason: tournament, busy_until} (Д7), в доступности — tournament', async () => {
     h.clock.set(T0 + DAY);
     const u = await h.login('+79996660003');
     const from = T0 + DAY + 180 * MIN;
@@ -76,7 +76,7 @@ describe('бронь M4', { skip }, () => {
     try {
       const clash = await h.request('POST', '/api/bookings', { token: u.token, body: { resource_id: table(4), starts_at: new Date(from + 60 * MIN).toISOString(), minutes: 60 } });
       assert.equal(clash.status, 409);
-      assert.equal(clash.json.error, 'booking_conflict');
+      assert.deepEqual(clash.json, { error: 'table_busy', reason: 'tournament', busy_until: new Date(from + 120 * MIN).toISOString() });
       const ok = await h.request('POST', '/api/bookings', { token: u.token, body: { resource_id: table(4), starts_at: new Date(from + 120 * MIN).toISOString(), minutes: 60 } });
       assert.equal(ok.status, 201, ok.text);
       const other = await h.request('POST', '/api/bookings', { token: u.token, body: { resource_id: table(5), starts_at: new Date(from).toISOString(), minutes: 60 } });
@@ -84,6 +84,19 @@ describe('бронь M4', { skip }, () => {
       const day = await h.request('GET', `/api/clubs/${CLUB_A}/availability?date=2026-10-27`);
       const t4 = day.json.resources.find((x) => x.number === 4);
       assert.ok(t4.busy.some((x) => x.kind === 'tournament' && x.from === new Date(from).toISOString()));
+      // Матч вышел за окно турнира: busy_until — конец примыкающего удержания матча.
+      h.lightHooks.tournamentHolds = async (_db, a) =>
+        a.resourceId === table(6)
+          ? [
+              { from: new Date(from).toISOString(), to: new Date(from + 120 * MIN).toISOString(), match_id: null },
+              { from: new Date(from + 90 * MIN).toISOString(), to: new Date(from + 150 * MIN).toISOString(), match_id: 'm' },
+              { from: new Date(from + 600 * MIN).toISOString(), to: new Date(from + 700 * MIN).toISOString(), match_id: null },
+            ]
+          : [];
+      const chained = await h.request('POST', '/api/bookings', { token: u.token, body: { resource_id: table(6), starts_at: new Date(from - 30 * MIN).toISOString(), minutes: 60 } });
+      assert.deepEqual([chained.status, chained.json], [409, { error: 'table_busy', reason: 'tournament', busy_until: new Date(from + 150 * MIN).toISOString() }]);
+      const before = await h.request('POST', '/api/bookings', { token: u.token, body: { resource_id: table(6), starts_at: new Date(from - 60 * MIN).toISOString(), minutes: 60 } });
+      assert.equal(before.status, 201, before.text);
     } finally {
       h.lightHooks.tournamentHolds = null;
     }

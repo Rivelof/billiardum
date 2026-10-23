@@ -65,6 +65,8 @@ export const DISCIPLINES = ['pyramid', 'pool', 'snooker'];
 export const FORMATS = ['single_elim', 'groups_playoff'];
 const RESOURCE_TYPE = { pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker' };
 const LIVE = ['playing', 'pending_confirm', 'disputed'];
+/** Матчи, которые отмена турнира закрывает статусом canceled (наружу scheduled — waiting и ready). */
+const OPEN_MATCH = ['waiting', 'ready', ...LIVE];
 const ROLE_TITLE = { owner: 'владелец', manager: 'управляющий', reception: 'администратор' };
 const OPEN = ['registration', 'closed', 'running'];
 export const ORGANIZER_ROLES = ['owner', 'manager'];
@@ -722,12 +724,13 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     return Math.max(0, Math.min(4000, rating));
   }
 
+  /** Ник профиля Бильярдум+ или null (профиля нет). Ошибка plus — не «нет профиля», а отказ (500). */
   async function nickFor(db, userId) {
-    if (typeof deps.plus.playerCard !== 'function') return null;
+    if (typeof deps.plus.playerCard !== 'function') fail('not_configured', 'plus.playerCard', 501);
     const r = await savepoint(db, () => deps.plus.playerCard(db, { userId, viewerId: userId }));
     if (!r.ok) {
       log.warn('tournament_nick_failed', { error: r.error?.message });
-      return null;
+      throw r.error;
     }
     const nick = typeof r.value?.nick === 'string' ? r.value.nick.trim() : '';
     return nick.length >= 1 && nick.length <= 32 ? nick : null;
@@ -758,6 +761,13 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       entry = null;
     }
 
+    // Новая запись — только с профилем Бильярдум+ (ник в сетке, на ТВ и в рейтинге ×1,5, №150).
+    let nick = null;
+    if (!entry) {
+      nick = await nickFor(db, userId);
+      if (!nick) fail('no_profile');
+    }
+
     // Рейтинг дисциплины (T24): выше лимита — отказ с объяснением (limit, rating).
     const rating = await ratingFor(db, userId, t.discipline);
     if (t.rating_max !== null && rating > t.rating_max) fail('rating_above_limit', undefined, 409, { limit: t.rating_max, rating });
@@ -765,7 +775,6 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
 
     if (!entry) {
       if ((await seatsTaken(db, t.id, t0)) >= t.places) fail('full');
-      const nick = await nickFor(db, userId);
       const free = Number(t.fee_kopecks) === 0;
       const { rows } = await db.query(
         `insert into bl.tournament_entries (club_id, tournament_id, user_id, nick, rating, status, fee_kopecks, pay_until, confirmed_at, created_at, updated_at)
@@ -1649,7 +1658,17 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
         refundedIds.push(e.id);
       }
     }
-    for (const m of (await matchesOf(db, t.id)).filter((x) => LIVE.includes(x.status))) await stopLight(db, m);
+    // Открытые матчи закрываются отменой (Д2 приёмки M4): свет идущих гаснет, удержания столов
+    // снимаются — стол свободен сразу, а не до hold_until матча.
+    const openMatches = (await matchesOf(db, t.id)).filter((x) => OPEN_MATCH.includes(x.status));
+    for (const m of openMatches.filter((x) => LIVE.includes(x.status))) await stopLight(db, m);
+    if (openMatches.length > 0) {
+      await db.query(
+        `update bl.tournament_matches set status = 'canceled', hold_until = case when hold_until > $2 then $2 else hold_until end, updated_at = $2
+          where tournament_id = $1 and status = any($3::text[])`,
+        [t.id, t0, OPEN_MATCH],
+      );
+    }
     await db.query("update bl.tournaments set status = 'canceled', canceled_at = $2, entries_count = 0, updated_at = $2 where id = $1", [t.id, t0]);
     // Отмена — ручное действие (инвариант 8): причина в журнал, владельцу — сразу.
     await audit(db, {
@@ -1659,7 +1678,15 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       actorType: 'user',
       actorId: staffId,
       reason,
-      data: { tournament_id: t.id, from: t.status, entries: live.length, refunds: refunded, refund: refundAll ? 'all' : 'none', ...(code ? { reason_code: code } : {}) },
+      data: {
+        tournament_id: t.id,
+        from: t.status,
+        entries: live.length,
+        refunds: refunded,
+        refund: refundAll ? 'all' : 'none',
+        matches_canceled: openMatches.length,
+        ...(code ? { reason_code: code } : {}),
+      },
     });
     const who = started ? await staffLabel(db, t.club_id, staffId) : null;
     if (code) {
@@ -1936,9 +1963,10 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
   }
 
   /**
-   * Интервалы блокировки стола турниром (для броней и light, решение №146): всё окно турнира
-   * (starts_at–ends_at) опубликованного турнира (registration, closed, running; черновик столы не держит)
-   * на его столах и удержания идущих матчей (могут выйти за ends_at). [{ from, to, tournament_id, match_id? }].
+   * Интервалы блокировки стола турниром (для броней, light и котировок money, решение №146): всё окно
+   * турнира (starts_at–ends_at) опубликованного турнира (registration, closed, running; черновик столы не
+   * держит) на его столах и удержания матчей идущего (running) турнира (могут выйти за ends_at); отменённый
+   * или завершённый турнир стол не держит. [{ from, to, tournament_id, match_id? }].
    */
   async function holds(db, { resourceId, from, to }) {
     if (!isUuid(resourceId)) fail('bad_request', 'resourceId');
@@ -1952,9 +1980,9 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
           and t.starts_at < $3 and t.ends_at > $2
        union all
        select m.tournament_id, m.id, m.scheduled_at, m.hold_until
-         from bl.tournament_matches m
+         from bl.tournament_matches m join bl.tournaments t on t.id = m.tournament_id
         where m.resource_id = $1 and m.club_id = bl.ctx_club_id() and m.status in ('playing', 'pending_confirm', 'disputed')
-          and m.scheduled_at < $3 and m.hold_until > $2
+          and t.status = 'running' and m.scheduled_at < $3 and m.hold_until > $2
        order by 3`,
       [resourceId, f, u],
     );

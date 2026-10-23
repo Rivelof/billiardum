@@ -4,6 +4,8 @@
 // * kind start ставит столу pending на 3 минуты за этим гостем (light: holdPending):
 //   второй гость получает 409 table_pending.
 // * kind extend считает от paid_until сессии; продлить может любой участник (№46).
+// * Бронь и окно турнира (№106, №146): игра — до их начала минус 5 минут (extend_limit_until);
+//   не помещается — 409 booking_conflict (бронь) или table_busy {reason: 'tournament', busy_until}.
 // * minutes null — «Без лимита»: сумма заморозки за unlimited_hold_minutes (карта) и
 //   первый блок sbp_block_minutes (СБП, decisions №26).
 // * DEV_ALLOW_ANY_MINUTES=1 (не в проде, №54) — любые минуты от 1, без шага и минимума.
@@ -114,18 +116,62 @@ export function parseQuoteRequest(body, { devAllowAnyMinutes = false } = {}) {
 
 /** Зазор перед бронью: продлить можно до начала брони минус 5 минут (M3, decisions №106). */
 export const BOOKING_GAP_MS = 5 * 60_000;
+/** Сколько вперёд смотреть окна турнира (как light: сутки). */
+const TOURNAMENT_LOOKAHEAD_MS = 24 * 3600_000;
 
 /**
- * Предел игры перед ближайшей бронью стола: { limitUntil, maxMinutes } или нули, если брони нет.
- * Брони уже нет места даже на минуту — booking_conflict.
+ * Окна турнира на столе (server/tournaments tournamentHolds, №146) от now до from + сутки:
+ * { start, busyUntil } — начало ближайшего (уже идущее — его начало в прошлом) и конец занятости
+ * (с примыкающими интервалами, например матч после окна); null — турнира нет. Ошибка модуля
+ * турниров — без окна (как light), с логом: light всё равно обрежет игру или вернёт оплату.
  */
-export async function bookingLimit(db, deps, { resourceId, from }) {
+export async function tournamentWindow(db, deps, { resourceId, now, from }) {
+  if (typeof deps.tournaments?.tournamentHolds !== 'function') return null;
+  let list;
+  await db.query('savepoint money_tournament_holds');
+  try {
+    list = await deps.tournaments.tournamentHolds(db, { resourceId, from: now, to: new Date(from.getTime() + TOURNAMENT_LOOKAHEAD_MS) });
+    await db.query('release savepoint money_tournament_holds');
+  } catch (err) {
+    await db.query('rollback to savepoint money_tournament_holds');
+    deps.log?.error?.('quote_tournament_holds_failed', { resource_id: resourceId, error: err?.message });
+    return null;
+  }
+  const ivs = (Array.isArray(list) ? list : [])
+    .map((x) => ({ a: new Date(x.from).getTime(), b: new Date(x.to).getTime() }))
+    .filter((x) => Number.isFinite(x.a) && Number.isFinite(x.b) && x.b > now.getTime())
+    .sort((x, y) => x.a - y.a);
+  if (ivs.length === 0) return null;
+  let busyUntil = ivs[0].b;
+  for (const x of ivs.slice(1)) if (x.a <= busyUntil) busyUntil = Math.max(busyUntil, x.b);
+  return { start: new Date(ivs[0].a), busyUntil: new Date(busyUntil) };
+}
+
+/** 409 table_busy {reason: 'tournament', busy_until} — как у QR на столе турнира (M4-I1, Д3). */
+function tournamentBusy(win, detail) {
+  return new MoneyError('table_busy', detail, 409, { reason: 'tournament', busy_until: win.busyUntil.toISOString() });
+}
+
+/**
+ * Предел игры перед ближайшей бронью стола или окном турнира (№106, №123, №146):
+ * { limitUntil, maxMinutes, by: 'booking'|'tournament'|null, tournament } или нули, если впереди ничего нет.
+ * Места нет даже на минуту — booking_conflict (бронь) или table_busy {reason: 'tournament', busy_until}.
+ * now — момент котировки (для окна турнира, которое уже идёт); по умолчанию from.
+ */
+export async function bookingLimit(db, deps, { resourceId, from, now = from }) {
   const next = await deps.bookings.nextBookingStart(db, { resourceId, after: from });
-  if (!next) return { limitUntil: null, maxMinutes: null };
-  const limitUntil = new Date(new Date(next).getTime() - BOOKING_GAP_MS);
+  const win = await tournamentWindow(db, deps, { resourceId, now, from });
+  const bookingAt = next ? new Date(next).getTime() - BOOKING_GAP_MS : null;
+  const tournamentAt = win ? win.start.getTime() - BOOKING_GAP_MS : null;
+  if (bookingAt === null && tournamentAt === null) return { limitUntil: null, maxMinutes: null, by: null, tournament: null };
+  const by = tournamentAt !== null && (bookingAt === null || tournamentAt <= bookingAt) ? 'tournament' : 'booking';
+  const limitUntil = new Date(by === 'tournament' ? tournamentAt : bookingAt);
   const maxMinutes = Math.floor((limitUntil.getTime() - from.getTime()) / 60_000);
-  if (maxMinutes < 1) throw new MoneyError('booking_conflict', `бронь в ${new Date(next).toISOString()}`);
-  return { limitUntil, maxMinutes };
+  if (maxMinutes < 1) {
+    if (by === 'tournament') throw tournamentBusy(win, `турнир с ${win.start.toISOString()}`);
+    throw new MoneyError('booking_conflict', `бронь в ${new Date(next).toISOString()}`);
+  }
+  return { limitUntil, maxMinutes, by, tournament: by === 'tournament' ? win : null };
 }
 
 /**
@@ -167,8 +213,8 @@ export async function createQuote(db, deps, info, config) {
     from = new Date(session.paid_until);
   }
 
-  // Бронь стола впереди: игра заканчивается за 5 минут до её начала (№106).
-  const { limitUntil, maxMinutes } = await bookingLimit(db, deps, { resourceId: req.resourceId, from });
+  // Бронь или окно турнира впереди: игра заканчивается за 5 минут до начала (№106, №146).
+  const { limitUntil, maxMinutes, by: limitBy, tournament } = await bookingLimit(db, deps, { resourceId: req.resourceId, from, now });
   const capped = (m) => (maxMinutes === null ? m : Math.min(m, maxMinutes));
 
   // Цена до удержания стола: если тарифа нет, стол не держим.
@@ -186,6 +232,7 @@ export async function createQuote(db, deps, info, config) {
     throw tariffFail(err);
   }
   if (maxMinutes !== null && (priced.minutes > maxMinutes || (block && block.minutes > maxMinutes))) {
+    if (limitBy === 'tournament') throw tournamentBusy(tournament, `можно до ${limitUntil.toISOString()}`);
     throw new MoneyError('booking_conflict', `можно до ${limitUntil.toISOString()}`);
   }
 
@@ -249,7 +296,7 @@ export async function createQuote(db, deps, info, config) {
     valid_until: validUntil.toISOString(),
     breakdown: priced.breakdown.map(({ from: f, to, price_per_hour_kopecks: p, amount_kopecks: a }) => ({ from: f, to, price_per_hour_kopecks: p, amount_kopecks: a })),
   };
-  // До какого момента можно играть перед ближайшей бронью (null — брони нет).
+  // До какого момента можно играть перед ближайшей бронью или турниром (null — впереди ничего нет).
   out.extend_limit_until = limitUntil ? limitUntil.toISOString() : null;
   if (req.useBalance) {
     out.balance_minutes = balanceMinutes;

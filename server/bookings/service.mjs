@@ -212,10 +212,12 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       if (h.kind === 'service') fail('table_service');
       if (h.kind === 'pending' && h.user_id !== userId && ms(from) < ms(t) + 5 * MIN) fail('table_pending');
     }
+    // M4 №138, №146: окно турнира и удержания его матчей — брони не принимаются; ответ как у QR
+    // (409 table_busy {reason: 'tournament', busy_until}), чтобы гость видел «турнир до HH:MM» (Д7).
+    const busyUntil = await tournamentBusyUntil(db, resourceId, from, to);
+    if (busyUntil) fail('table_busy', 'турнир', 409, { reason: 'tournament', busy_until: new Date(busyUntil).toISOString() });
     const other = await overlapping(db, resourceId, from, to, exceptBooking);
     if (other.length > 0) fail('booking_conflict', 'пересечение с бронью');
-    // M4 №138: столы турнира на время матчей — брони не принимаются.
-    if (await tournamentBusy(db, resourceId, from, to)) fail('booking_conflict', 'турнир');
     // №129: на столе ждёт оплаты котировка (старт или продление), конец которой заходит в бронь.
     const pending = await pendingPlayUntil(db, resourceId, t);
     if (pending && ms(pending) + EXTEND_GAP_MS > ms(from)) fail('booking_conflict', 'ждёт оплаты котировка');
@@ -228,8 +230,25 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     return Array.isArray(list) ? list : [];
   }
 
-  async function tournamentBusy(db, resourceId, from, to) {
-    return (await tournamentHolds(db, resourceId, from, to)).some((x) => ms(x.from) < ms(to) && ms(x.to) > ms(from));
+  /**
+   * Интервал [from, to) задевает турнир: конец занятости (мс) — конец самого позднего из пересекающих
+   * интервалов и примыкающих к ним; иначе null.
+   */
+  async function tournamentBusyUntil(db, resourceId, from, to) {
+    // Сутки после интервала — чтобы busy_until дошёл до конца примыкающих интервалов (матч после окна).
+    const list = (await tournamentHolds(db, resourceId, from, ms(to) + 24 * 3600_000))
+      .map((x) => ({ a: ms(x.from), b: ms(x.to) }))
+      .filter((x) => Number.isFinite(x.a) && Number.isFinite(x.b))
+      .sort((x, y) => x.a - y.a);
+    let until = null;
+    for (const x of list) {
+      if (until === null) {
+        if (x.a < ms(to) && x.b > ms(from)) until = x.b;
+      } else if (x.a <= until) {
+        until = Math.max(until, x.b);
+      }
+    }
+    return until;
   }
 
   /**
@@ -672,7 +691,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     let extra = 0;
     if (early) {
       if ((await overlapping(db, b.resource_id, t, b.starts_at, b.id)).length > 0) fail('booking_conflict', 'ранний приход');
-      if (await tournamentBusy(db, b.resource_id, t, b.starts_at)) fail('booking_conflict', 'турнир');
+      const busyUntil = await tournamentBusyUntil(db, b.resource_id, t, b.starts_at);
+      if (busyUntil) fail('table_busy', 'турнир, ранний приход', 409, { reason: 'tournament', busy_until: new Date(busyUntil).toISOString() });
       extra = await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((startMs - ms(t)) / MIN)), false);
     }
     // Опоздал (пришёл после начала) — цена только с прихода до конца брони (№113); иначе цена брони.

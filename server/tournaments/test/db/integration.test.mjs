@@ -16,6 +16,7 @@ import { appPool, memoryLog, ORIGIN, testConfig } from '../../../test/db/helpers
 import { CLUB_A, createDb, player, STAFF, table, waitFor } from './harness.mjs';
 
 const lightSvc = await import('../../../sessions/service.mjs');
+const tournamentsApi = await import('../../api.mjs');
 const moneyApi = await import('../../../payments/api.mjs');
 const plusApi = await import('../../../plus/api.mjs').catch(() => null);
 const ready =
@@ -73,6 +74,7 @@ async function start() {
           tariffs: { amountFor, amountForActual, pricesAround },
           payments: { refund: moneyApi.refund },
           bookings: { nextBookingStart: async () => null, nextBooking: async () => null },
+          tournaments: { tournamentHolds: tournamentsApi.tournamentHolds, matchLightWindow: tournamentsApi.matchLightWindow },
         },
       });
       ctx.sessionsApi = {
@@ -96,7 +98,7 @@ async function start() {
     },
     async stop() {},
   };
-  const routes = await loadRoutes({ config, only: ['auth.mjs', 'tournaments.mjs', 'payments.mjs', 'webhooks.mjs'] });
+  const routes = await loadRoutes({ config, only: ['auth.mjs', 'tournaments.mjs', 'payments.mjs', 'webhooks.mjs', 'quotes.mjs'] });
   const app = await createApp({
     config,
     log,
@@ -139,12 +141,23 @@ async function start() {
     assert.equal(c.status, 200);
     const out = { token: r.json.token, id: r.json.user.id };
     tokens.set(phone, out);
+    // Профиль Бильярдум+ (ник) — запись на турнир только с ним (№150).
+    const nick = `${phone.startsWith('+7999') ? 'Игрок' : 'Штат'}${phone.slice(-4)}`;
+    await admin.query('insert into bl.players (user_id, nick, created_at, updated_at) values ($1, $2, now(), now()) on conflict do nothing', [out.id, nick]);
     return out;
+  }
+  async function loginNoProfile(phone) {
+    const r = await request('POST', '/api/auth/dev', { body: { phone } });
+    assert.equal(r.status, 200, r.text);
+    const c = await request('POST', '/api/auth/consent', { body: { version: config.consentVersion }, token: r.json.token });
+    assert.equal(c.status, 200);
+    return { token: r.json.token, id: r.json.user.id };
   }
   const q = async (sql, params) => (await admin.query(sql, params)).rows;
   return {
     request,
     login,
+    loginNoProfile,
     q,
     async succeed(paymentId) {
       const [p] = await q('select provider_payment_id from bl.payments where id = $1', [paymentId]);
@@ -266,5 +279,64 @@ describe('турнир с настоящими plus, money и light', { skip: re
     assert.equal(plusMatch[0].multiplier_x10, 15);
     const rA = await plusApi.ratingOf({ query: (...a) => h.q(...a).then((rows) => ({ rows })) }, { userId: m.user_a, discipline: 'pyramid' }).catch(() => null);
     if (rA) assert.ok(rA.rating > 1200, 'победитель получил рейтинг');
+  });
+
+  it('№150: без профиля Бильярдум+ — 409 no_profile по настоящему plus', async () => {
+    const manager = await h.login(STAFF.manager);
+    const now = Date.now();
+    const t = await h.request('POST', `/api/clubs/${CLUB_A}/tournaments`, {
+      token: manager.token,
+      body: { title: 'Без ника нельзя', discipline: 'pyramid', format: 'single_elim', race_to: 2, fee_kopecks: 0, places: 4, starts_at: new Date(now + 26 * 3600_000).toISOString(), ends_at: new Date(now + 30 * 3600_000).toISOString(), resource_ids: [table(3)], publish: true },
+    });
+    assert.equal(t.status, 201, t.text);
+    const u = await h.loginNoProfile(player(9));
+    const r = await h.request('POST', `/api/tournaments/${t.json.id}/entries`, { token: u.token, key: randomUUID(), body: {} });
+    assert.deepEqual([r.status, r.json], [409, { error: 'no_profile' }]);
+  });
+
+  it('Д2: после отмены идущего турнира стол свободен сразу — QR даёт котировку', async () => {
+    const manager = await h.login(STAFF.manager);
+    const now = Date.now();
+    const t = await h.request('POST', `/api/clubs/${CLUB_A}/tournaments`, {
+      token: manager.token,
+      body: { title: 'Отменят', discipline: 'pyramid', format: 'single_elim', race_to: 2, fee_kopecks: 0, places: 2, match_minutes: 60, starts_at: new Date(now + 2 * 3600_000).toISOString(), ends_at: new Date(now + 6 * 3600_000).toISOString(), resource_ids: [table(2)], publish: true },
+    });
+    assert.equal(t.status, 201, t.text);
+    const tid = t.json.id;
+    for (const n of [11, 12]) {
+      const p = await h.login(player(n));
+      const r = await h.request('POST', `/api/tournaments/${tid}/entries`, { token: p.token, key: randomUUID(), body: {} });
+      assert.equal(r.status, 201, r.text);
+    }
+    let r = await h.request('POST', `/api/clubs/${CLUB_A}/tournaments/${tid}/start`, { token: manager.token });
+    assert.equal(r.status, 200, r.text);
+    const [m] = await h.q('select * from bl.tournament_matches where tournament_id = $1', [tid]);
+    assert.equal(m.status, 'playing');
+    assert.equal(m.resource_id, table(2));
+    // В сиде у будней нет тарифа 06:00–12:00: тест идёт по настоящим часам — дополнить.
+    await h.q(
+      `insert into bl.tariff_rules (club_id, resource_type, days, start_local, end_local, price_per_hour, step_minutes, min_minutes, priority)
+       select $1, 'billiard_pyramid', '{1,2,3,4,5,6,7}', '06:00', '12:00', 50000, 1, 30, 0
+        where not exists (select 1 from bl.tariff_rules where club_id = $1 and resource_type = 'billiard_pyramid' and start_local = '06:00')`,
+      [CLUB_A],
+    );
+    const guest = await h.login(player(13));
+    const quote = () => h.request('POST', '/api/quotes', { token: guest.token, body: { resource_id: table(2), kind: 'start', minutes: 60 } });
+    r = await quote();
+    assert.equal(r.status, 409, 'матч идёт — стол турнира');
+    assert.equal(r.json.error, 'table_busy');
+    assert.equal(r.json.reason, 'tournament');
+    r = await h.request('POST', `/api/clubs/${CLUB_A}/tournaments/${tid}/cancel`, { token: manager.token, body: { reason: 'Отменили' } });
+    assert.equal(r.status, 200, r.text);
+    const [m2] = await h.q('select status from bl.tournament_matches where id = $1', [m.id]);
+    assert.equal(m2.status, 'canceled');
+    const [s] = await h.q('select status from bl.sessions where id = $1', [m.session_id]);
+    assert.equal(s.status, 'closed', 'свет матча погашен');
+    const holds = await h.q("select count(*)::int as n from bl.resource_holds where resource_id = $1 and released_at is null and until > now() and source = 'tournament'", [table(2)]);
+    assert.equal(holds[0].n, 0, 'удержание турнира снято');
+    r = await quote();
+    assert.equal(r.status, 200, r.text);
+    assert.ok(r.json.quote_id);
+    assert.equal(r.json.extend_limit_until, null);
   });
 });

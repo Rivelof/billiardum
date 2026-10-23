@@ -212,7 +212,9 @@ export async function setup() {
       tokens.set(phone, out);
     }
     if (rating !== undefined) ratings.set(out.id, rating);
+    // Запись на турнир — только с ником (№150): по умолчанию у игрока есть профиль; nick: null — нет.
     if (nick !== undefined) nicks.set(out.id, nick);
+    else if (!nicks.has(out.id)) nicks.set(out.id, `Игрок${phone.slice(-4)}`);
     return out;
   }
 
