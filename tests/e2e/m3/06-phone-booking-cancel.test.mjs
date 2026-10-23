@@ -70,7 +70,7 @@ after(async () => {
 /** Открытая тревога manual_action стола (ручные действия склеиваются по столу, count растёт). */
 async function manualAlarm(n) {
   const { rows } = await db.query(
-    "select id, type, level, count, data, raised_at from bl.alarms where club_id = $1 and type = 'manual_action' and resource_id = $2 and acked_at is null order by raised_at desc limit 1",
+    "select id, type, level, count, data, raised_at from bl.alarms where club_id = $1 and type = 'manual_action' and resource_id = $2 and acked_at is null order by last_raised_at desc limit 1",
     [CLUB_A, `e1000000-0000-4000-8000-${String(n).padStart(12, '0')}`],
   );
   assert.ok(rows[0], 'тревога manual_action по столу');
