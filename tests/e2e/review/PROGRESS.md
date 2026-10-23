@@ -39,3 +39,13 @@
 - R1 (№128): стол без связи в окне удержания брони не признаётся недоступным — предоплата удержана 100 %. `server/bookings/service.mjs:903–911` (getResourceStatus отдаёт reserved раньше проверки связи, `server/sessions/service.mjs:161–163`), `unavailableInWindow` 916–932 связь не учитывает. Доказательство: стол 5, device_offline 03:04:30 – device_online 03:07:02, окно 03:05–03:07, expire_reason no_show, settled 30 000.
 - R2: сервисный свет и удержание брони на одном столе. Сервис включён (03:00:47), бронь подтверждена — первый тик пишет удержание reserved (не показано), второй тик (03:01:02) видит своё удержание reserved вместо сервиса → state.reserved контроллеру в сервисе → wrong_session → сверка шлёт service.stop (cause sync): сервисный свет погас, в базе сервис до 03:15:47, бронь стала reserved. `server/sessions/service.mjs` setReserved (`activeHold` → reserved, `shown = !busy && h?.kind !== 'service'`) и actualState в device-logic (reserved выигрывает у service). Доказательство: device_commands стола 3 queue 1168–1171, resource_holds стола 3.
 - R3: тревога booking_table_unavailable склеивается по столу: вторая бронь того же стола (другая booking_id) — только count 2, data прежней брони, владельцу уведомления-тревоги нет (только info о возврате). №128 требует тревогу владельцу. Ключ склейки без booking_id (alarms DEDUPE_FIELDS). Доказательство: bl.alarms booking_table_unavailable стол 3 count 2, data.booking_id 1b750823 (первая бронь), уведомлений alarm владельцу 1 (03:07), за 04:17 — только refund.
+
+## После исправлений R1–R3 (ff3ad88, 3ec4eb3; эмулятор e22aa8a), логи reg4
+| Файл | Итог | Примечание |
+|---|---|---|
+| review/06 возврат кассы | PASS 3/3 (reg4/review-06.log) | 500 до выполнения; «выполнено, ответ потерян» error и reset: первый ответ 503, повтор тем же ключом 201, в ЮKassa один возврат (запросы 500/reset → 200 одним ключом), один чек, один pos.refund |
+| review/03 стол недоступен | PASS (reg4/review-03.log) | сервис: свет service до конца (отказов и сверки нет), после — синий; table_unavailable, возврат 300 ₽; без связи: table_unavailable, возврат 300 ₽ (R1 исправлен); две отдельные тревоги владельцу при открытой тревоге прошлой брони стола 3 (R3) |
+| m3/02 T19 | PASS (reg4/m3-02.log) | stop→reserved без отказов |
+| m3/09 депозит | PASS 2/2 (reg4/m3-09.log) | расхождение 0 |
+| m3/05 старт по брони | PASS 4/4 (reg4/m3-05.log) | игра ровно до конца брони; повтор чека зачёта |
+| m1/13 журнал | ℹ pass 2 ℹ fail 0  (reg4/m1-13.log) | |
