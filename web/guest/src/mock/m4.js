@@ -7,6 +7,7 @@
  * уже засчитаны сегодня, четвёртая не попадёт в рейтинг — T23) | plusrace (игра на столе 4: Андрей внёс счёт и переписывает
  * его, пока вы подтверждаете — 409 score_changed, M4-3) | pluslimit (игра на столе 4 с Андреем: у гостя уже 6 засчитанных
  * партий за сутки — следующая не попадёт в рейтинг, №148, и обоим уходит plus.match_not_counted) | tour (турниры: запись, лимит рейтинга, мой матч)
+ * | clubrequest (заявки гостей в клуб без программы — ответ клуба по ссылке без входа, Д1; ссылки — CLUB_REQUEST_LINKS)
  */
 
 import { levelOf } from '@billiardum/shared/plus';
@@ -24,6 +25,12 @@ const PLAYERS = [
   { id: 'b0000000-0000-4000-8000-0000000000a6', nick: 'Борт', pyramid: 1201, pool: 1199, games: 12 },
   { id: 'b0000000-0000-4000-8000-0000000000a7', nick: 'Свояк', pyramid: 1834, pool: 1500, games: 330 },
   { id: 'b0000000-0000-4000-8000-0000000000a8', nick: 'Лузер_нет', pyramid: 1150, pool: 1100, games: 8 },
+];
+
+/** Ссылки «Ответить на заявку» сценария clubrequest: /app/club-request/{id}?t={token}. */
+const CLUB_REQUEST_LINKS = [
+  { id: 'c3000000-0000-4000-8000-000000000001', token: 'mock-answer-token-0123456789', status: 'sent' },
+  { id: 'c3000000-0000-4000-8000-000000000002', token: 'mock-answer-token-operator-01', status: 'operator' },
 ];
 
 const LISTINGS = [
@@ -506,6 +513,8 @@ export function m4Routes(ctx) {
       const x = S().tournaments[m[1]];
       if (!x) return err(404, 'not_found');
       if (x.status !== 'registration') return err(409, 'registration_closed');
+      // №150: запись только с ником Бильярдум+
+      if (!player(me())?.nick) return err(409, 'no_profile');
       if (x.entrants.includes(me()) || S().entries[x.id]?.status === 'confirmed') return err(409, 'already_entered');
       if (x.entrants.length >= x.places) return err(409, 'tournament_full');
       const rating = player(me())?.ratings[x.discipline]?.rating ?? 1200;
@@ -594,7 +603,27 @@ export function m4Routes(ctx) {
       return { status: 201, body: { id: uuid(), status: 'new' } };
     }],
     ['GET', /^\/api\/clubs\/requests\/([^/]+)$/, (m) => (S().requests[m[1]] ? ok(requestView(S().requests[m[1]])) : err(404, 'not_found'))],
+    // Ответ клуба по ссылке из уведомления — без входа, одноразовый токен на 24 часа (как server/directory/requests.mjs)
+    ['GET', /^\/api\/clubs\/requests\/([^/]+)\/answer$/, (m, _b, q) => {
+      const r = byToken(m[1], q?.get?.('t'));
+      if (!r) return err(404, 'not_found');
+      return ok({ id: r.id, status: r.status, club: { name: r.listing.name }, starts_at: r.starts_at, minutes: r.minutes, people: r.people, comment: r.comment || null, guest_phone: r.guest_phone ?? null, created_at: iso(r.created) });
+    }],
+    ['POST', /^\/api\/clubs\/requests\/([^/]+)\/answer$/, (m, b) => {
+      const r = byToken(m[1], b?.t);
+      if (!r) return err(404, 'not_found');
+      if (!['accept', 'decline'].includes(b.decision)) return err(400, 'bad_request');
+      if (!['sent', 'operator'].includes(r.status)) return err(409, 'request_closed');
+      const text = String(b.text ?? '').trim().slice(0, 500);
+      Object.assign(r, { status: b.decision === 'accept' ? 'accepted' : 'declined', answer_text: text || null, token: null, token_until: null, updated: now() });
+      return ok(requestView(r));
+    }],
   ];
+
+  function byToken(id, token) {
+    const r = S().requests[id];
+    return r?.token && typeof token === 'string' && token === r.token && r.token_until > now() ? r : null;
+  }
 
   function ensureMe() {
     seedMe(now(), S().scenario);
@@ -634,6 +663,21 @@ export function m4Routes(ctx) {
     return { id: r.id, status: r.status, club: { name: r.listing.name, city: r.listing.city, address: r.listing.address }, starts_at: r.starts_at, minutes: r.minutes, people: r.people, comment: r.comment, answer_text: r.answer_text, updated_at: iso(r.updated), timezone: r.listing.timezone };
   }
 
+  /**
+   * Сценарий clubrequest (Д1): две заявки гостей в «Абриколь» (клуб без программы) — ответ клуба по ссылке без входа.
+   * Ссылки — в CLUB_REQUEST_LINKS; демо-телефон гостя — только заглушка.
+   */
+  function seedClubRequests(t) {
+    const at = Math.ceil((t + 26 * 60 * MIN) / (60 * MIN)) * 60 * MIN;
+    for (const [i, x] of CLUB_REQUEST_LINKS.entries()) {
+      S().requests[x.id] = {
+        id: x.id, listing: LISTINGS[0], starts_at: iso(at + i * 2 * 60 * MIN), minutes: i ? 90 : 120, people: i ? 2 : 4,
+        comment: i ? '' : 'Стол под пирамиду, если можно — у окна', guest_phone: '+79990001122', status: x.status,
+        created: t - (i ? 20 : 2) * MIN, updated: t - (i ? 5 : 2) * MIN, answer_text: null, token: x.token, token_until: t + 24 * 60 * MIN,
+      };
+    }
+  }
+
   /** Оплата взноса в заглушке ЮKassa. */
   function confirm(p, success) {
     const x = S().tournaments[p.tournament_id];
@@ -668,9 +712,10 @@ export function m4Routes(ctx) {
     seed(name, t) {
       ctx.state().m4 = freshM4(t, name);
       seedMe(t, name);
+      if (name === 'clubrequest') seedClubRequests(t);
     },
     tournamentBracket: (id) => (S().tournaments[id] ? bracketOf(S().tournaments[id])?.rounds : null),
   };
 }
 
-export { LISTINGS };
+export { LISTINGS, CLUB_REQUEST_LINKS };

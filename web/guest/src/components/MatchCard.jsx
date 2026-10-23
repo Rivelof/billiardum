@@ -6,7 +6,7 @@ import { Dialog } from './Dialog.jsx';
 import { ErrorNote } from './ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { lastClub } from '../lib/flow.js';
-import { shownMatchScore, sides, zoneOf } from '../lib/plus.js';
+import { canDispute, shownMatchScore, sides, zoneOf } from '../lib/plus.js';
 
 /** Карточка партии: счёт, статус, «Подтвердить» / «Оспорить», причина «не засчитана». Используется и на экране игры. */
 export function MatchCard({ match, meId, onChange, onDispute, big = false }) {
@@ -63,15 +63,14 @@ export function MatchCard({ match, meId, onChange, onDispute, big = false }) {
       ) : null}
       {match.status === 'pending' && !st.canConfirm ? <p class="mcard__hint">Соперник подтверждает в своём телефоне — до {formatTime(match.confirm_until, zoneOf(lastClub()?.timezone))}.</p> : null}
       <ErrorNote error={error} />
-      {st.canConfirm || (match.status === 'confirmed' && Date.now() < Date.parse(match.confirm_until ?? 0)) ? (
+      {st.canConfirm ? (
         <div class="mcard__actions">
-          {st.canConfirm ? (
-            <button type="button" class="btn btn--primary btn--sm" disabled={busy} onClick={confirm}>
-              <Icon name="check" />
-              {busy ? 'Подтверждаем…' : 'Подтвердить счёт'}
-            </button>
-          ) : null}
-          {onDispute && (st.canConfirm || (match.status === 'confirmed' && Date.now() < Date.parse(match.confirm_until ?? 0))) ? (
+          <button type="button" class="btn btn--primary btn--sm" disabled={busy} onClick={confirm}>
+            <Icon name="check" />
+            {busy ? 'Подтверждаем…' : 'Подтвердить счёт'}
+          </button>
+          {/* Спор — только пока партия ждёт моего подтверждения (сервер: иначе 409 match_not_pending) */}
+          {onDispute && canDispute(match, meId) ? (
             <button type="button" class="btn btn--quiet btn--sm" onClick={onDispute}>
               Счёт неверный
             </button>

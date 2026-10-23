@@ -60,7 +60,7 @@
 .tactions { align-items: center; }
 
 /* Сетка организатора: матч — кнопка «исправить счёт» */
-.abracket { overflow-x: auto; padding-bottom: 10px; outline: none; }
+.abracket { position: relative; overflow-x: auto; padding-bottom: 10px; outline: none; }
 .abracket:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
 .abracket__rounds { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px, 340px); gap: 16px; }
 .abracket__round { display: grid; grid-template-rows: auto 1fr; gap: 8px; }

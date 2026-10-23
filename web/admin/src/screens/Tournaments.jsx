@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useId, useState } from 'preact/hooks';
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { BRACKET_MATCH, DISCIPLINES, DISCIPLINE_WORD, FORMAT_WORD, TOURNAMENT_STATUS } from '@billiardum/shared/plus';
 import { Shell } from '../components/Shell.jsx';
@@ -570,8 +570,15 @@ function Detail({ clubId, id, base, timeZone }) {
 
 /** Сетка для организатора: матч — кнопка (исправить счёт). */
 function AdminBracket({ bracket, onPick }) {
+  // Имя кнопки матча — её видимый текст (WCAG 2.5.3, Д8); что она делает — в описании
+  const hint = `abr-hint-${useId()}`;
   return (
     <div class="abracket" role="region" aria-label="Турнирная сетка" tabIndex={0}>
+      {onPick ? (
+        <p class="visually-hidden" id={hint}>
+          Исправить счёт матча
+        </p>
+      ) : null}
       <ol class="abracket__rounds">
         {bracket.rounds.map((r, ri) => (
           <li class="abracket__round" key={`${r.title}${ri}`}>
@@ -592,7 +599,7 @@ function AdminBracket({ bracket, onPick }) {
                 return (
                   <li key={m.id}>
                     {pickable ? (
-                      <button type="button" class={`am am--${m.status}`} onClick={() => onPick(m)} aria-label={`${m.a.nick} — ${m.b.nick}${m.score_a !== null ? `, ${m.score_a}:${m.score_b}` : ''}. Исправить счёт`}>
+                      <button type="button" class={`am am--${m.status}`} onClick={() => onPick(m)} aria-describedby={hint}>
                         {body}
                       </button>
                     ) : (

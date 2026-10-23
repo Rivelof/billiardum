@@ -13,7 +13,9 @@ import { useStore } from '../lib/store.js';
 import { linkHandler, navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { lastClub } from '../lib/flow.js';
-import { REQUEST_STATUS, REVIEW_MAX, maskPhones, zoneOf } from '../lib/plus.js';
+import { CLUB_ANSWER_KEY, REQUEST_STATUS, REVIEW_MAX, clubAnswerState, maskPhones, parseClubAnswer, peopleWords, zoneOf } from '../lib/plus.js';
+import { minutesWords } from '../lib/words.js';
+import { local } from '../lib/store.js';
 import { DISCIPLINES, DISCIPLINE_WORD } from '@billiardum/shared/plus';
 // Дни-фишки (.days, .day) и списки — из стилей M3
 import '../styles/m3.css';
@@ -314,6 +316,178 @@ export function RequestStatusScreen({ id }) {
                 Отменить заявку
               </button>
             ) : null}
+          </>
+        ) : null}
+      </main>
+    </div>
+  );
+}
+
+const ANSWER_MAX = 500;
+const WEEKDAY = (iso, tz) => new Intl.DateTimeFormat('ru-RU', { weekday: 'long', timeZone: tz }).format(new Date(iso));
+
+/**
+ * Ответ клуба без программы на заявку гостя (T25, Д1): ссылка из уведомления `/app/club-request/{id}?t=…`, без входа.
+ * Заявка с телефоном гостя, «Принять» и «Отказать» с текстом ответа. Ссылка одноразовая и живёт 24 часа:
+ * после ответа сервер стирает токен (404), поэтому «Вы уже ответили» — по отметке этого браузера.
+ */
+export function ClubAnswerScreen({ id, search }) {
+  const token = new URLSearchParams(search ?? '').get('t');
+  const [request, setRequest] = useState(undefined);
+  const [loadError, setLoadError] = useState(null);
+  const [answered, setAnswered] = useState(() => parseClubAnswer(local.get(CLUB_ANSWER_KEY(id))));
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
+  const [justNow, setJustNow] = useState(false);
+  useEffect(() => {
+    if (!token) return undefined;
+    let alive = true;
+    setLoadError(null);
+    api.clubRequestByToken(id, token).then(
+      (r) => alive && setRequest(r ?? null),
+      (err) => alive && (setLoadError(err), setRequest(null)),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [id, token, attempt]);
+  const state = clubAnswerState({ token, request, error: loadError, answered: Boolean(answered) });
+  // Пояс клуба сервер в этой ссылке не отдаёт — время как на устройстве (клуб и телефон обычно в одном городе)
+  const tz = zoneOf(request?.timezone);
+
+  const send = async (decision) => {
+    setBusy(decision);
+    setError(null);
+    try {
+      await api.answerClubRequest(id, token, decision, text.trim());
+      const mark = { decision, at: new Date().toISOString() };
+      local.set(CLUB_ANSWER_KEY(id), JSON.stringify(mark));
+      setAnswered(mark);
+      setJustNow(true);
+      setRequest(null);
+    } catch (err) {
+      // Ссылка истекла или уже использована, на заявку ответил кто-то другой — показываем это вместо формы
+      if (err?.code === 'not_found') {
+        setLoadError(err);
+        setRequest(null);
+      } else if (err?.code === 'request_closed') {
+        setRequest((r) => (r ? { ...r, status: 'closed' } : r));
+      } else setError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div class="screen screen--paper">
+      <Header />
+      <main class="wrap content plus">
+        <h1 class="page-title display">Заявка гостя</h1>
+        {state === 'loading' ? <p class="muted loading">Загружаем заявку…</p> : null}
+        {state === 'error' ? (
+          <>
+            <ErrorNote error={loadError} />
+            <button type="button" class="btn btn--secondary btn--block" onClick={() => setAttempt((n) => n + 1)}>
+              Загрузить заявку ещё раз
+            </button>
+          </>
+        ) : null}
+        {state === 'answered' ? (
+          <div class="empty" role="status">
+            <Ill name="lamp" />
+            <p class="step__title">{justNow ? 'Ответ отправлен гостю' : 'Вы уже ответили на эту заявку'}</p>
+            <p class="hint">
+              {answered.decision === 'accept' ? 'Вы приняли заявку — гость получил уведомление, что стол его ждёт.' : 'Вы отказали — гость получил уведомление и подберёт другое время или клуб.'}
+              {answered.at && !justNow ? ` Ответ отправлен ${formatDate(answered.at, tz)} в ${formatTime(answered.at, tz)}.` : ''} Ссылка одноразовая — изменить ответ по ней уже нельзя.
+            </p>
+          </div>
+        ) : null}
+        {state === 'invalid' ? (
+          <div class="note note--lamp" role="alert">
+            <Icon name="info" />
+            <p class="note__title">Ссылка больше не работает</p>
+            <p class="note__body">
+              Ссылка на заявку действует 24 часа и только для одного ответа. Скорее всего, на заявку уже ответили — вы, другой сотрудник или оператор Бильярдума, — или гость её отменил. Если вы не отвечали, заявку обработает оператор: гость без ответа не останется.
+            </p>
+          </div>
+        ) : null}
+        {request && state === 'closed' ? (
+          <div class="note note--lamp" role="status">
+            <Icon name="info" />
+            <p class="note__title">На заявку уже ответили</p>
+            <p class="note__body">{(REQUEST_STATUS[request.status] ?? REQUEST_STATUS.closed).title}. Ответить по этой ссылке уже нельзя.</p>
+          </div>
+        ) : null}
+        {request && state === 'open' ? (
+          <>
+            <p class="lead">{request.club?.name}</p>
+            <p class="hint">Гость просит стол и ждёт ответа. Ответьте — он сразу получит уведомление.</p>
+            <dl class="tfacts">
+              <div>
+                <dt>Когда</dt>
+                <dd>
+                  {formatDate(request.starts_at, tz)}, {WEEKDAY(request.starts_at, tz)}
+                </dd>
+              </div>
+              <div>
+                <dt>Во сколько</dt>
+                <dd class="mono">{formatTime(request.starts_at, tz)}</dd>
+              </div>
+              <div>
+                <dt>Сколько играют</dt>
+                <dd>{minutesWords(request.minutes)}</dd>
+              </div>
+              <div>
+                <dt>Гостей</dt>
+                <dd>{peopleWords(request.people)}</dd>
+              </div>
+              {request.comment ? (
+                <div class="tfacts__wide">
+                  <dt>Пожелания</dt>
+                  <dd>{request.comment}</dd>
+                </div>
+              ) : null}
+              <div class="tfacts__wide">
+                <dt>Телефон гостя</dt>
+                <dd>
+                  {request.guest_phone ? (
+                    <a class="mono" href={`tel:${String(request.guest_phone).replace(/[^\d+]/g, '')}`}>
+                      {request.guest_phone}
+                    </a>
+                  ) : (
+                    'не указан'
+                  )}
+                </dd>
+              </div>
+            </dl>
+            {request.status === 'operator' ? (
+              <p class="note note--lamp" role="status">
+                <Icon name="clock" />
+                <span class="note__title">Заявку уже передали оператору Бильярдума — ответить всё ещё можно: гость получит ваш ответ сразу.</span>
+              </p>
+            ) : null}
+            <div class="field">
+              <label class="field__label" for="ca-text">
+                Ответ гостю
+              </label>
+              <textarea id="ca-text" class="field__input field__input--area" rows={3} maxLength={ANSWER_MAX} value={text} aria-describedby="ca-hint" onInput={(e) => setText(e.currentTarget.value)} />
+              <p class="field__hint" id="ca-hint">
+                Необязательно. Гость увидит его в уведомлении. Например: «Ждём, стол 3 у окна» или «Всё занято, свободно с 21:00».
+              </p>
+            </div>
+            <ErrorNote error={error} />
+            <div class="answer-actions">
+              <button type="button" class="btn btn--primary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => send('accept')}>
+                <Icon name="check" />
+                {busy === 'accept' ? 'Отправляем…' : 'Принять заявку'}
+              </button>
+              <button type="button" class="btn btn--quiet btn--block btn--lg" disabled={Boolean(busy)} onClick={() => send('decline')}>
+                {busy === 'decline' ? 'Отправляем…' : 'Отказать'}
+              </button>
+            </div>
+            <p class="muted small">Ссылка действует 24 часа и только для одного ответа.</p>
           </>
         ) : null}
       </main>

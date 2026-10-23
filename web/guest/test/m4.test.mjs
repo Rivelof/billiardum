@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBackend } from '../src/mock/backend.js';
 import { notCountedText } from '@billiardum/shared/plus';
-import { entryState, filterTournaments, opponents, placesLeft, sortMatches, disciplineOfTable, seasonNow, maskPhones, shownMatchScore, shownTournamentScore } from '../src/lib/plus.js';
+import { entryState, filterTournaments, opponents, placesLeft, sortMatches, disciplineOfTable, seasonNow, maskPhones, shownMatchScore, shownTournamentScore, canDispute, clubAnswerState, parseClubAnswer, peopleWords } from '../src/lib/plus.js';
+import { CLUB_REQUEST_LINKS } from '../src/mock/m4.js';
+import { matchRoute } from '../src/lib/router.js';
+import { ROUTES } from '../src/lib/routes.js';
 
 const memory = () => {
   let s = null;
@@ -175,4 +178,77 @@ test('M4-3: показанный счёт для подтверждения — 
   assert.deepEqual(shownTournamentScore({ i_confirmed: false, opponent_report: { score_a: 1, score_b: 3, at: 'x' }, my_report: null, score_a: null, score_b: null }), { score_a: 1, score_b: 3 });
   assert.deepEqual(shownTournamentScore({ i_confirmed: true, my_report: { score_a: 3, score_b: 2 }, opponent_report: null }), { score_a: 3, score_b: 2 });
   assert.deepEqual(shownTournamentScore({ i_confirmed: false, opponent_report: null, score_a: 3, score_b: 0 }), { score_a: 3, score_b: 0 });
+});
+
+test('Д4: «Счёт неверный» — только у партии pending и только тому, кто её ещё не подтвердил', () => {
+  const me = 'u-me';
+  const m = (status, confirmed) => ({ status, players: [{ user_id: me, confirmed }, { user_id: 'u-2', confirmed: true }] });
+  assert.equal(canDispute(m('pending', false), me), true);
+  assert.equal(canDispute(m('pending', true), me), false, 'уже подтвердил — ждёт соперника');
+  assert.equal(canDispute(m('confirmed', true), me), false, 'подтверждённую не оспорить (409 match_not_pending)');
+  assert.equal(canDispute(m('confirmed', false), me), false);
+  assert.equal(canDispute(m('disputed', false), me), false);
+  assert.equal(canDispute(m('pending', false), 'u-chuzhoy'), false, 'не участник');
+  assert.equal(canDispute(null, me), false);
+});
+
+test('Д1: маршрут ссылки клуба /app/club-request/{id}?t= и состояние экрана ответа', () => {
+  assert.deepEqual(matchRoute('/app/club-request/c3000000-0000-4000-8000-000000000001', ROUTES, '/app/'), { name: 'clubanswer', params: { id: 'c3000000-0000-4000-8000-000000000001' } });
+  const nf = { code: 'not_found' };
+  assert.equal(clubAnswerState({ token: 'x', request: undefined }), 'loading');
+  assert.equal(clubAnswerState({ token: 'x', request: { status: 'sent' } }), 'open');
+  assert.equal(clubAnswerState({ token: 'x', request: { status: 'operator' } }), 'open', 'после передачи оператору ответить ещё можно');
+  assert.equal(clubAnswerState({ token: 'x', request: { status: 'sent' }, answered: true }), 'open', 'открытая заявка с сервера важнее отметки');
+  assert.equal(clubAnswerState({ token: 'x', request: null, error: nf, answered: true }), 'answered', 'повторный вход после ответа');
+  assert.equal(clubAnswerState({ token: 'x', request: null, answered: true }), 'answered', 'сразу после ответа');
+  assert.equal(clubAnswerState({ token: 'x', request: undefined, answered: true }), 'loading', 'сначала спрашиваем сервер');
+  assert.equal(clubAnswerState({ token: 'x', request: null, error: { code: 'network' }, answered: true }), 'error');
+  assert.equal(clubAnswerState({ token: 'x', request: null, error: nf }), 'invalid', 'неверный или просроченный токен');
+  assert.equal(clubAnswerState({ token: null }), 'invalid', 'ссылка без токена');
+  assert.equal(clubAnswerState({ token: 'x', request: { status: 'accepted' } }), 'closed');
+  assert.equal(clubAnswerState({ token: 'x', request: null, error: { code: 'network' } }), 'error');
+  assert.deepEqual(parseClubAnswer('{"decision":"accept","at":"2026-10-23T15:00:00.000Z"}'), { decision: 'accept', at: '2026-10-23T15:00:00.000Z' });
+  assert.equal(parseClubAnswer('{"decision":"maybe"}'), null);
+  assert.equal(parseClubAnswer('не json'), null);
+  assert.equal(parseClubAnswer(null), null);
+  assert.equal(peopleWords(1), '1 человек');
+  assert.equal(peopleWords(4), '4 человека');
+  assert.equal(peopleWords(5), '5 человек');
+});
+
+test('Д1 на заглушке: заявка по токену без входа, ответ одноразовый, чужой токен — 404', async () => {
+  let now = T;
+  const b = createBackend({ ...memory(), now: () => now });
+  b.scenario('clubrequest');
+  const [a, op] = CLUB_REQUEST_LINKS;
+  assert.equal((await b.handle('GET', `/api/clubs/requests/${a.id}/answer`, undefined, q({ t: 'wrong-token-0000000000000' }))).status, 404);
+  assert.equal((await b.handle('GET', `/api/clubs/requests/${a.id}/answer`, undefined, q({ t: op.token }))).status, 404, 'токен другой заявки');
+  const got = await b.handle('GET', `/api/clubs/requests/${a.id}/answer`, undefined, q({ t: a.token }));
+  assert.equal(got.status, 200);
+  assert.equal(got.body.status, 'sent');
+  assert.equal(got.body.people, 4);
+  assert.equal(got.body.minutes, 120);
+  assert.ok(got.body.guest_phone, 'телефон гостя — клубу нужно связаться');
+  assert.equal((await b.handle('POST', `/api/clubs/requests/${a.id}/answer`, { t: a.token, decision: 'maybe' })).status, 400);
+  const ans = await b.handle('POST', `/api/clubs/requests/${a.id}/answer`, { t: a.token, decision: 'accept', text: 'Ждём, стол 3' });
+  assert.equal(ans.status, 200);
+  assert.equal(ans.body.status, 'accepted');
+  assert.equal(ans.body.answer_text, 'Ждём, стол 3');
+  assert.equal((await b.handle('GET', `/api/clubs/requests/${a.id}/answer`, undefined, q({ t: a.token }))).status, 404, 'ссылка одноразовая');
+  assert.equal((await b.handle('POST', `/api/clubs/requests/${a.id}/answer`, { t: a.token, decision: 'decline' })).status, 404);
+  assert.equal((await b.handle('GET', `/api/clubs/requests/${op.id}/answer`, undefined, q({ t: op.token }))).body.status, 'operator');
+  now += 25 * 60 * 60_000;
+  assert.equal((await b.handle('GET', `/api/clubs/requests/${op.id}/answer`, undefined, q({ t: op.token }))).status, 404, 'через 24 часа ссылка не работает');
+});
+
+test('№150 на заглушке: запись на турнир без ника — 409 no_profile, после ника — запись', async () => {
+  const b = createBackend({ ...memory(), now: () => T });
+  b.scenario('plusnew');
+  const open = (await b.handle('GET', '/api/public/tournaments')).body.items.find((t) => t.status === 'registration' && !t.rating_limit);
+  const no = await b.handle('POST', `/api/tournaments/${open.id}/entries`, {});
+  assert.equal(no.status, 409);
+  assert.equal(no.body.error, 'no_profile');
+  assert.equal((await b.handle('PATCH', '/api/plus/me', { nick: 'Новичок_1' })).status, 200);
+  const yes = await b.handle('POST', `/api/tournaments/${open.id}/entries`, {});
+  assert.equal(yes.status, 201);
 });

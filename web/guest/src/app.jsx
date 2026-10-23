@@ -41,6 +41,7 @@ const TITLES = {
   review: 'Отзыв о клубе — Бильярдум',
   request: 'Заявка в клуб — Бильярдум',
   requeststatus: 'Заявка в клуб — Бильярдум',
+  clubanswer: 'Заявка гостя — Бильярдум',
   diradd: 'Добавить клуб — Бильярдум',
   dirclaim: 'Подтвердить клуб — Бильярдум',
 };
@@ -206,6 +207,8 @@ export function App({ extra }) {
       return <Lazy key="club" chunk="club" label="Открываем форму…" render={(m) => <m.DirectoryAdd />} />;
     case 'dirclaim':
       return <Lazy key="club" chunk="club" label="Открываем клуб…" render={(m) => <m.DirectoryClaim key={params.listing} listingId={params.listing} />} />;
+    case 'clubanswer':
+      return <Lazy key="club" chunk="club" label="Открываем заявку гостя…" render={(m) => <m.ClubAnswerScreen key={params.id} id={params.id} search={search} />} />;
     case 'requeststatus':
       return <Lazy key="club" chunk="club" label="Загружаем заявку…" render={(m) => <m.RequestStatusScreen key={params.id} id={params.id} />} />;
     default:

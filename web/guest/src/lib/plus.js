@@ -2,6 +2,7 @@
  * Бильярдум+ и турниры гостя (M4): чистые функции экранов — проверяются в Node.
  */
 import { levelOf } from '@billiardum/shared/plus';
+import { plural } from '@billiardum/shared/format';
 
 /** Пояс для дат: клуба, если известен, иначе устройства. */
 export function zoneOf(...candidates) {
@@ -37,6 +38,16 @@ export function opponents(session, meId) {
 export function sortMatches(items, meId) {
   const needMe = (m) => m.status === 'pending' && m.players?.some((p) => p.user_id === meId && !p.confirmed);
   return [...(items ?? [])].sort((a, b) => Number(needMe(b)) - Number(needMe(a)) || String(b.played_at ?? b.created_at ?? '').localeCompare(String(a.played_at ?? a.created_at ?? '')));
+}
+
+/**
+ * «Счёт неверный»: только у партии, которая ждёт подтверждения (status pending), и только тому, кто её ещё не
+ * подтвердил. Подтверждённую сервер не даёт оспорить — 409 match_not_pending (Д4 приёмки M4).
+ */
+export function canDispute(match, meId) {
+  if (match?.status !== 'pending') return false;
+  const me = match.players?.find((p) => p.user_id === meId);
+  return Boolean(me) && !me.confirmed;
 }
 
 /** Моя сторона и соперник в партии. */
@@ -82,6 +93,39 @@ export const REQUEST_STATUS = {
   declined: { title: 'Клуб не сможет принять', text: 'На это время мест нет. Попробуйте другое время или другой клуб.', tone: 'alert', step: 3 },
   closed: { title: 'Заявка закрыта', text: 'Если нужен стол — отправьте новую заявку.', tone: 'off', step: 3 },
 };
+
+/**
+ * Ответ клуба на заявку по ссылке из уведомления (T25, Д1 приёмки M4), без входа: что показать.
+ * Ссылка одноразовая — после ответа сервер стирает токен и отвечает 404, поэтому «Вы уже ответили» узнаём
+ * по отметке этого браузера (answered). Открытая заявка с сервера важнее отметки.
+ * @param {{ token?: string | null, request?: { status: string } | null, error?: { code?: string } | null, answered?: boolean }} p
+ * @returns {'loading' | 'open' | 'answered' | 'closed' | 'invalid' | 'error'}
+ */
+export function clubAnswerState({ token, request, error, answered }) {
+  if (request && ['sent', 'operator'].includes(request.status)) return 'open';
+  // Ответили здесь: сразу после ответа (заявка сброшена) или при повторном входе (сервер уже не узнаёт токен — 404)
+  if (answered && (request !== undefined || !token) && (!error || error.code === 'not_found')) return 'answered';
+  if (!token) return 'invalid';
+  if (request) return 'closed';
+  if (error) return error.code === 'not_found' ? 'invalid' : 'error';
+  return 'loading';
+}
+
+/** Отметка «на эту заявку здесь уже ответили» — только решение и время, без данных гостя. */
+export const CLUB_ANSWER_KEY = (id) => `bl-club-answer:${id}`;
+export function parseClubAnswer(raw) {
+  try {
+    const v = JSON.parse(raw ?? 'null');
+    return v && ['accept', 'decline'].includes(v.decision) ? { decision: v.decision, at: typeof v.at === 'string' ? v.at : null } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** «1 человек», «4 человека», «5 человек». */
+export function peopleWords(n) {
+  return `${n} ${plural(n, ['человек', 'человека', 'человек'])}`;
+}
 
 /** Длина текста отзыва и маскирование телефонов перед отправкой (сервер маскирует тоже, №141). */
 export const REVIEW_MAX = 1000;

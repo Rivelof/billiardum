@@ -502,9 +502,13 @@ a.pg__nick:hover { color: var(--cloth); }
 .mymatch__actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .mymatch .stepper__label { color: var(--hall-text-2); }
 
-/* Сетка: раунды колонками, прокрутка вбок внутри своей области */
+/* Сетка: раунды колонками, прокрутка вбок внутри своей области.
+   position: relative — скрытые подписи (.visually-hidden «— победа», position: absolute) берут сетку
+   контейнером и обрезаются ею; без этого они вылезали за край и давали прокрутку всей страницы (Д5). */
 .bracket {
+  position: relative;
   overflow-x: auto;
+  overflow-y: hidden;
   margin-inline: calc(-1 * var(--gutter));
   padding: 4px var(--gutter) 12px;
   outline: none;
@@ -515,6 +519,7 @@ a.pg__nick:hover { color: var(--cloth); }
 .bracket__title { font-size: var(--fs-13); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brass-ink); }
 .bracket__matches { display: grid; align-content: space-around; gap: 10px; }
 .bm {
+  position: relative;
   display: grid;
   border-radius: var(--radius-sm);
   background: var(--card);
@@ -586,3 +591,10 @@ a.pg__nick:hover { color: var(--cloth); }
 .rsteps__item:last-child::after { display: none; }
 .rsteps__item--done { color: var(--ink); font-weight: 600; }
 .rsteps__item--done::before { background: var(--cloth); box-shadow: none; }
+
+/* Ответ клуба по ссылке: две кнопки друг под другом, не липкие — поле ответа и подсказка не закрыты */
+.answer-actions { display: grid; gap: 10px; }
+
+/* №150: ник перед записью на турнир */
+.nickgate { display: grid; gap: 12px; padding: 16px; border-radius: var(--radius-md); background: var(--card); box-shadow: inset 0 0 0 1px var(--line), inset 3px 0 0 var(--lamp); }
+.nickgate__title { font-size: var(--fs-20); font-weight: 700; }

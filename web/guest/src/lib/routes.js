@@ -34,6 +34,8 @@ export const ROUTES = [
   ['review/:club', 'review'],
   ['request/:club', 'request'],
   ['requests/:id', 'requeststatus'],
+  // Ответ клуба без программы на заявку гостя — ссылка из уведомления клубу (?t=токен), без входа (Д1)
+  ['club-request/:id', 'clubanswer'],
   // С сайта: «Добавить клуб» и «Подтвердить клуб» (заявки оператору платформы)
   ['directory/add', 'diradd'],
   ['directory/claim/:listing', 'dirclaim'],

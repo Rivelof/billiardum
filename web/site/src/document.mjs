@@ -43,8 +43,10 @@ export function sha256(s) {
   return `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`;
 }
 
-// Тема до первой отрисовки: тёмная по умолчанию, светлая — если её выбрали (тот же ключ, что у приложения гостя)
-const THEME_INIT = "try{if(localStorage.getItem('bl-theme')==='light')document.documentElement.setAttribute('data-theme','light')}catch(e){}";
+// Тема до первой отрисовки: тёмная по умолчанию, светлая — если её выбрали (тот же ключ, что у приложения гостя).
+// Класс js на <html> — тоже до отрисовки: то, что заменяют острова (кнопка «Показать клубы» у фильтров), скрыто
+// стилями сразу, а не после загрузки острова — без сдвига вёрстки (CLS, Д6 приёмки M4).
+const THEME_INIT = "document.documentElement.classList.add('js');try{if(localStorage.getItem('bl-theme')==='light')document.documentElement.setAttribute('data-theme','light')}catch(e){}";
 
 /** Остров → путь к файлу сборки (dist/manifest.json от scripts/build.mjs). Без сборки островов нет. */
 let manifestCache = null;
@@ -111,6 +113,7 @@ export function renderDocument(p) {
     '<link rel="icon" href="/favicon.svg" type="image/svg+xml">',
     '<link rel="preload" href="/shared/fonts/geologica-cyrillic-wght-normal.woff2" as="font" type="font/woff2" crossorigin>',
     '<link rel="preload" href="/shared/fonts/dela-gothic-one-cyrillic-400-normal.woff2" as="font" type="font/woff2" crossorigin>',
+    '<link rel="preload" href="/shared/fonts/geologica-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>',
     `<meta property="og:type" content="${esc(p.og?.type ?? 'website')}">`,
     '<meta property="og:site_name" content="Бильярдум">',
     '<meta property="og:locale" content="ru_RU">',

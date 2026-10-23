@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
-import { DISCIPLINE_WORD, FORMAT_WORD, TOURNAMENT_STATUS, raceScoreValid, ratingLimitText } from '@billiardum/shared/plus';
+import { DISCIPLINE_WORD, FORMAT_WORD, TOURNAMENT_STATUS, nickValid, raceScoreValid, ratingLimitText } from '@billiardum/shared/plus';
 import { Header } from '../components/Header.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { Ill } from '../components/Ill.jsx';
@@ -123,7 +123,9 @@ export function TournamentScreen({ id, search }) {
   const [mine, setMine] = useState(null);
   // Публичный турнир кэшируется на минуту (для сайта) — статус и число мест берём свежими из /me, если вошли
   const t = pub && mine?.tournament ? { ...pub, status: mine.tournament.status ?? pub.status, entries_count: mine.tournament.entries_count ?? pub.entries_count } : pub;
-  const [myNick, setMyNick] = useState(null);
+  // Профиль Бильярдум+: undefined — ещё не знаем, nick: null — ника нет, записаться нельзя (№150)
+  const [profile, setProfile] = useState(undefined);
+  const myNick = profile?.nick ?? null;
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [limit, setLimit] = useState(null);
@@ -146,8 +148,8 @@ export function TournamentScreen({ id, search }) {
     if (status === 'user')
       api
         .plusMe()
-        .then((m) => setMyNick(m?.nick ?? null))
-        .catch(() => {});
+        .then((m) => setProfile({ nick: m?.nick ?? null }))
+        .catch(() => setProfile(null));
   }, [status]);
   // Сетка вживую (SSE tournament:{id}) — пока турнир идёт
   useEffect(() => {
@@ -198,6 +200,8 @@ export function TournamentScreen({ id, search }) {
       await load();
     } catch (err) {
       if (err?.code === 'rating_above_limit' || err?.code === 'rating_below_limit') setLimit({ ...(err.data ?? {}), below: err.code === 'rating_below_limit' });
+      // №150: без ника записи нет — показываем форму ника вместо кнопки, запись продолжится после него
+      else if (err?.code === 'no_profile') setProfile({ nick: null });
       else setError(err);
     } finally {
       setBusy(false);
@@ -276,7 +280,16 @@ export function TournamentScreen({ id, search }) {
             <h2 class="visually-hidden" id="te-title">
               Запись
             </h2>
-            {state === 'open' ? (
+            {state === 'open' && profile?.nick === null ? (
+              <NickGate
+                fee={t.fee_kopecks}
+                onDone={(p) => {
+                  setProfile({ nick: p?.nick ?? null });
+                  if (p?.nick) enter();
+                }}
+              />
+            ) : null}
+            {state === 'open' && profile?.nick !== null ? (
               <>
                 <p class="hint">
                   {t.fee_kopecks ? 'Взнос возвращаем целиком, если отмените запись до её закрытия или клуб отменит турнир. После начала турнира взнос не возвращается.' : 'Участие бесплатное.'} Посев — по рейтингу в дисциплине.
@@ -370,6 +383,67 @@ export function TournamentScreen({ id, search }) {
         }}
       />
     </div>
+  );
+}
+
+/**
+ * №150: на турнир записывают только с ником Бильярдум+ (сетка, ТВ, рейтинг ×1,5). Вместо «Записаться» — короткая
+ * форма ника; после сохранения запись продолжается сама (со взносом — переход к оплате).
+ */
+function NickGate({ fee, onDone }) {
+  const [nick, setNick] = useState('');
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const ok = nickValid(nick.trim());
+  const submit = async (e) => {
+    e.preventDefault();
+    setTried(true);
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api.updatePlus({ nick: nick.trim() }));
+    } catch (err) {
+      setError(err);
+      setBusy(false);
+    }
+  };
+  return (
+    <form class="nickgate" onSubmit={submit} noValidate aria-labelledby="ng-title">
+      <h3 class="nickgate__title" id="ng-title">
+        Создайте ник, чтобы участвовать
+      </h3>
+      <p class="hint">Под ником вас увидят в сетке, на экране клуба и в рейтинге — турнирные матчи идут в него с коэффициентом 1,5. Телефон и фамилию другие игроки не видят.</p>
+      <div class="field">
+        <label class="field__label" for="ng-nick">
+          Ник
+        </label>
+        <input
+          id="ng-nick"
+          class="field__input"
+          autoComplete="nickname"
+          maxLength={20}
+          value={nick}
+          aria-invalid={tried && !ok ? 'true' : undefined}
+          aria-describedby="ng-hint"
+          onInput={(ev) => setNick(ev.currentTarget.value)}
+        />
+        {tried && !ok ? (
+          <p class="field__error" id="ng-hint">
+            От 3 до 20 букв и цифр, можно «_» и «-», без пробелов и номера телефона.
+          </p>
+        ) : (
+          <p class="field__hint" id="ng-hint">
+            Например: Кий_Мастер, Борт, Shark77. Поменять можно потом в Бильярдум+.
+          </p>
+        )}
+      </div>
+      <ErrorNote error={error} />
+      <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
+        {busy ? 'Сохраняем…' : fee ? `Сохранить ник и записаться за ${formatMoney(fee)}` : 'Сохранить ник и записаться'}
+      </button>
+    </form>
   );
 }
 

@@ -259,6 +259,14 @@ export const api = {
   clubRequest: (body) => client.post('/clubs/requests', body),
   clubRequestStatus: (id) => client.get(`/clubs/requests/${e(id)}`),
   cancelClubRequest: (id) => client.post(`/clubs/requests/${e(id)}/cancel`),
+  /**
+   * Клуб без программы отвечает по одноразовой ссылке из уведомления (без входа, токен t на 24 часа):
+   * → { id, status, club: { name }, starts_at, minutes, people, comment, guest_phone, created_at }; неверный,
+   * просроченный или уже использованный токен — 404 not_found.
+   */
+  clubRequestByToken: (id, t) => client.get(`/clubs/requests/${e(id)}/answer`, { query: { t } }),
+  /** { t, decision: 'accept' | 'decline', text? } → заявка для гостя; заявка уже закрыта — 409 request_closed. */
+  answerClubRequest: (id, t, decision, text) => client.post(`/clubs/requests/${e(id)}/answer`, { t, decision, ...(text ? { text } : {}) }),
   /** «Добавить клуб» (с сайта): { city, name, address, phone?, hours_text?, disciplines?, tables_count?, comment? } → { id, status: 'new' }. */
   directoryAdd: (body) => client.post('/directory/add', body),
   /** «Подтвердить клуб»: { listing_id, comment? } → { id, status: 'new' }; 409 already_claimed. */
