@@ -456,9 +456,31 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
 
   // --- Публичная афиша (сайт) ------------------------------------------------------------------------
 
+  /**
+   * Клубы для афиши: название, город, пояс (bl.public_clubs, core) и адрес страницы клуба на сайте
+   * «/{город}/{клуб}/» из видимой карточки каталога (bl.club_public, directory). Карточки нет или
+   * каталога ещё нет — path: null.
+   */
   async function publicClubs(db) {
-    const { rows } = await db.query('select id, name, city from bl.public_clubs()');
-    return new Map(rows.map((c) => [c.id, c]));
+    const { rows } = await db.query('select id, name, city, timezone from bl.public_clubs()');
+    const clubs = new Map(rows.map((c) => [c.id, { ...c, path: null }]));
+    const paths = await savepoint(db, async () =>
+      (
+        await db.query(
+          `select cp.club_id, ci.slug as city_slug, cp.slug from bl.club_public cp join bl.cities ci on ci.id = cp.city_id
+            where cp.club_id is not null and cp.visible`,
+        )
+      ).rows,
+    );
+    if (paths.ok) {
+      for (const r of paths.value) {
+        const c = clubs.get(r.club_id);
+        if (c) c.path = `/${r.city_slug}/${r.slug}/`;
+      }
+    } else {
+      log.warn('tournament_club_paths_failed', { code: paths.error?.code ?? null });
+    }
+    return clubs;
   }
 
   /**

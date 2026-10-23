@@ -23,7 +23,9 @@ export function tournamentView(t, club = null) {
     id: t.id,
     title: t.title,
     description: t.description ?? null,
-    club: club ? { id: club.id, name: club.name, city: club.city ?? null } : { id: t.club_id, name: null, city: null },
+    club: club
+      ? { id: club.id, name: club.name, city: club.city ?? null, timezone: club.timezone ?? null, path: club.path ?? null }
+      : { id: t.club_id, name: null, city: null, timezone: null, path: null },
     discipline: t.discipline,
     format: t.format,
     race_to: t.race_to,

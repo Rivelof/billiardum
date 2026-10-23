@@ -603,8 +603,12 @@ describe('публичная афиша и ТВ', () => {
     assert.ok(item);
     assert.equal(item.entries_count, 2);
     assert.equal(item.club.city, 'Екатеринбург');
+    // Сайт строит ссылку на клуб и время по поясу клуба без отдельных запросов.
+    assert.equal(item.club.timezone, 'Asia/Yekaterinburg');
+    assert.equal(item.club.path, '/ekaterinburg/testovyy-klub/');
     assert.ok(!list.json.items.some((x) => x.status === 'draft'));
     const one = await h.request('GET', `/api/public/tournaments/${t.id}`);
+    assert.deepEqual(one.json.club, { id: CLUB_A, name: 'Тестовый клуб', city: 'Екатеринбург', timezone: 'Asia/Yekaterinburg', path: '/ekaterinburg/testovyy-klub/' });
     assert.deepEqual(one.json.entries, [
       { nick: 'Шар', seed: null, rating: 1500 },
       { nick: 'Участник', seed: null, rating: 1400 },
@@ -615,6 +619,17 @@ describe('публичная афиша и ТВ', () => {
     for (const { user_id: id } of ids) assert.ok(!text.includes(id), 'user_id нет');
     const byCity = await h.request('GET', '/api/public/tournaments?city=Владивосток');
     assert.ok(!byCity.json.items.some((x) => x.id === t.id));
+    // Карточку клуба скрыли в каталоге — ссылки нет, афиша и пояс есть.
+    await h.admin.query('update bl.club_public set visible = false where club_id = $1', [CLUB_A]);
+    try {
+      const t2 = await h.createTournament({ title: 'Без карточки', fee_kopecks: 0 });
+      const r = await h.request('GET', `/api/public/tournaments/${t2.id}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.json.club.path, null);
+      assert.equal(r.json.club.timezone, 'Asia/Yekaterinburg');
+    } finally {
+      await h.admin.query('update bl.club_public set visible = true where club_id = $1', [CLUB_A]);
+    }
   });
 
   it('ТВ: поток SSE tournament:{id} отдаёт сетку сразу и после каждого изменения', async () => {
