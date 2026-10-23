@@ -137,6 +137,10 @@ test('T26-3: тариф «Будни и выходные» — проверка 
   });
   assert.equal(over.status, 400, short(over));
   assert.equal(over.json.error, 'tariff_overlap');
+  // №163: цена 0 ₽ — 400 bad_request.
+  const zero = await capi('PUT', `/api/clubs/${S.club}/tariffs`, { token: S.owner.token, club: S.club, body: { rules: rules.map((r, i) => (i === 1 ? { ...r, price_per_hour_kopecks: 0 } : r)) } });
+  assert.equal(zero.status, 400, short(zero));
+  assert.equal(zero.json.error, 'bad_request');
   const okr = await capi('PUT', `/api/clubs/${S.club}/tariffs`, { token: S.owner.token, club: S.club, body: { rules } });
   assert.equal(okr.status, 200, short(okr));
   const au = await clubAudit(db, S.club, { actions: ['tariff.update', 'manual.tariff_change'] });
@@ -148,7 +152,7 @@ test('T26-3: тариф «Будни и выходные» — проверка 
   // Цена у гостя: будни 600 ₽/ч или выходные 900 ₽/ч по местному времени клуба.
   const tbl = (await capi('GET', `/api/t/${S.tables[0].code}`)).json;
   assert.ok([60_000, 90_000].includes(tbl.price_now.price_per_hour_kopecks), JSON.stringify(tbl.price_now));
-  t.diagnostic(`шаблоны: ${ids.join(', ')}; только будни — 400 ${JSON.stringify(gap.json)}; лишнее правило — 400 ${JSON.stringify(over.json)}; сохранено ${rules.length} правила, журнал tariff.update без причины; у гостя сейчас ${tbl.price_now.price_per_hour_kopecks / 100} ₽/ч`);
+  t.diagnostic(`шаблоны: ${ids.join(', ')}; только будни — 400 ${JSON.stringify(gap.json)}; лишнее правило — 400 ${JSON.stringify(over.json)}; 0 ₽ — ${zero.status} ${JSON.stringify(zero.json)}; сохранено ${rules.length} правила, журнал tariff.update без причины; у гостя сейчас ${tbl.price_now.price_per_hour_kopecks / 100} ₽/ч`);
 });
 
 test('T26-4: меню из .xlsx — предпросмотр, затем загрузка; не-zip под типом xlsx — xlsx_invalid; алкоголь не в QR-меню', async (t) => {

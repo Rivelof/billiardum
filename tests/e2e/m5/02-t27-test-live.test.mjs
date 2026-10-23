@@ -258,6 +258,9 @@ test('T27-4: отчёт смены, «Сейчас», каталог и утре
   S.testShiftOps = ops;
   t.diagnostic(`тестовых платежей ${tp[0].n} на ${tp[0].k / 100} ₽; отчёт смены: выручка ${JSON.stringify(rv).slice(0, 200)}, игр ${rep.json.play.sessions}; «Сейчас» ${JSON.stringify(now.json.revenue_today_kopecks)}; /api/clubs и каталог города — клуба нет, карточек 0; сводка tick(${tomorrow10().toISOString()}) — клубу не отправлена; ожидаемые наличные смены ${cur.expected_cash_kopecks / 100} ₽ (= размен); закрытие — документы ККТ: ${z.map((d) => d.kind).join(', ')}, смена ККТ ${JSON.stringify(st2.shift?.state ?? st2.shift)}; журнал ${au.map((x) => `${x.action}${x.data?.test ? '(test)' : ''}`).join(', ') || 'нет'}; операции ККТ смены: ${ops.map((o) => `${o.kind}/${o.status}${o.err ? `/${o.err}` : ''}`).join(', ')}`);
   assert.ok(ops.every((o) => o.kind === 'close_shift' && o.status === 'done'), `закрытие тестовой смены — «ТЕСТ»-отчёт, операция done: ${JSON.stringify(ops)}`);
+  const kktAlarms = (await alarmsOf(db, C())).filter((a) => ['receipt_unknown', 'receipt_pending', 'kkt_shift_failed', 'receipt_failed'].includes(a.type));
+  t.diagnostic(`тревоги ККТ клуба: ${kktAlarms.map((a) => a.type).join(', ') || 'нет'}`);
+  assert.deepEqual(kktAlarms, [], 'тревог ККТ по тестовой кассе нет');
 });
 
 test('T27-5: исправить чек-лист — боевой магазин 800002, оферта — live, журнал, уведомление Андрею, карточка', { skip }, async (t) => {
@@ -323,23 +326,32 @@ test('T27-6: в live тариф и стол — только с причиной
   assert.equal(off.status, 200, short(off));
   const shopNo = await own('PUT', `/api/clubs/${C()}/payment-settings/live`, { shop_id: SHOPS.live.shop_id });
   assert.equal(shopNo.json?.error, 'reason_required', `магазин в live без причины: ${short(shopNo)}`);
-  // Тип стола (цена по типу) в live — без причины?
-  const kindChange = await own('PATCH', `/api/clubs/${C()}/resources/${st.tables[1].id}`, { kind: 'snooker' });
-  const kindBack = await own('PATCH', `/api/clubs/${C()}/resources/${st.tables[1].id}`, { kind: 'pool' });
+  // №164: тип стола (цена по типу) в live — ручное действие manual.resource_kind, без причины — 400.
+  const kindNo = await own('PATCH', `/api/clubs/${C()}/resources/${st.tables[1].id}`, { kind: 'snooker' });
+  assert.equal(kindNo.status, 400, short(kindNo));
+  assert.equal(kindNo.json.error, 'reason_required');
+  const { rows: kt } = await db.query('select type from bl.resources where id = $1', [st.tables[1].id]);
+  assert.equal(kt[0].type, 'billiard_pool', 'без причины тип не изменился');
+  const kindChange = await own('PATCH', `/api/clubs/${C()}/resources/${st.tables[1].id}`, { kind: 'snooker', reason: 'e2e: поставили сукно для снукера' });
+  assert.equal(kindChange.status, 200, short(kindChange));
+  assert.equal(kindChange.json.kind, 'snooker');
+  const kindBack = await own('PATCH', `/api/clubs/${C()}/resources/${st.tables[1].id}`, { kind: 'pool', reason: 'e2e: вернули сукно для пула' });
+  assert.equal(kindBack.status, 200, short(kindBack));
   await sleep(500);
   const au = await clubAudit(db, C(), { since: t0 });
   const manual = au.filter((x) => x.action.startsWith('manual.'));
   const al = await alarmsOf(db, C(), { since: t0, type: 'manual_action' });
   const { rows: ownerRow } = await db.query("select user_id from bl.club_members where club_id = $1 and role = 'owner'", [C()]);
   const notes = await notificationsFor(db, ownerRow[0].user_id, { since: t0 });
-  assert.deepEqual(manual.map((x) => x.action).sort(), ['manual.resource_add', 'manual.resource_remove', 'manual.tariff_change'].sort());
+  assert.deepEqual(manual.map((x) => x.action).sort(), ['manual.resource_add', 'manual.resource_kind', 'manual.resource_kind', 'manual.resource_remove', 'manual.tariff_change'].sort());
+  const kindRows = manual.filter((x) => x.action === 'manual.resource_kind');
+  assert.deepEqual(kindRows.map((x) => [x.data.changed?.kind?.from, x.data.changed?.kind?.to]), [['pool', 'snooker'], ['snooker', 'pool']], 'changed.kind в журнале');
   assert.ok(manual.every((x) => x.reason && x.reason.startsWith('e2e:')), 'причина в журнале');
   const manualNotes = notes.filter((n) => n.kind === 'alarm' && /Причина: e2e:/.test(n.text));
-  assert.equal(al.reduce((a, x) => a + Number(x.count ?? 1), 0), 3, 'три срабатывания тревоги manual_action');
-  assert.equal(manualNotes.length, 3, `уведомление владельцу на каждое действие: ${notes.map((n) => n.kind).join(', ')}`);
+  assert.equal(al.reduce((a, x) => a + Number(x.count ?? 1), 0), 5, 'пять срабатываний тревоги manual_action');
+  assert.equal(manualNotes.length, 5, `уведомление владельцу на каждое действие: ${notes.map((n) => n.kind).join(', ')}`);
   assert.ok(au.some((x) => x.action === 'resource.update' && x.data.changed?.plan_x), 'позиция — resource.update');
-  t.diagnostic(`тариф без причины — 400 reason_required, с причиной — 200; стол без причины — 400, с причиной — 201; позиция — 200 без причины (resource.update); вывод без причины — 400, с причиной — 200; магазин без причины — ${shopNo.status} ${shopNo.json?.error}; журнал: ${au.map((x) => `${x.action}${x.reason ? ` «${x.reason}»` : ''}`).join(', ')}; тревоги: ${al.map((a) => `${a.level} ${a.data.action}×${a.count}`).join(', ')}; уведомления владельцу: ${manualNotes.map((n) => `«${n.text}»`).join(' | ')}; смена типа стола в live без причины: ${kindChange.status}/${kindBack.status}`);
-  S.kindChange = kindChange.status;
+  t.diagnostic(`тариф без причины — 400 reason_required, с причиной — 200; стол без причины — 400, с причиной — 201; позиция — 200 без причины (resource.update); вывод без причины — 400, с причиной — 200; магазин без причины — ${shopNo.status} ${shopNo.json?.error}; журнал: ${au.map((x) => `${x.action}${x.reason ? ` «${x.reason}»` : ''}`).join(', ')}; тревоги: ${al.map((a) => `${a.level} ${a.data.action}×${a.count}`).join(', ')}; уведомления владельцу: ${manualNotes.map((n) => `«${n.text}»`).join(' | ')}; смена типа в live: без причины ${kindNo.status} ${kindNo.json?.error}, с причиной ${kindChange.status}/${kindBack.status}, журнал ${kindRows.map((x) => `${x.data.changed.kind.from}→${x.data.changed.kind.to} «${x.reason}»`).join(', ')}`);
 });
 
 test('T27-7: боевая игра (магазин 800002) и боевая смена с фискальным чеком — в отчётах; тестовые — нет', { skip }, async (t) => {

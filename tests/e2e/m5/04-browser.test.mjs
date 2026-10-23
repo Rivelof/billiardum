@@ -89,6 +89,7 @@ async function checkOne(t, page, name) {
   const w = await page.evaluate(() => ({ sw: globalThis.document.documentElement.scrollWidth, iw: globalThis.innerWidth }));
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: true });
   let serious = [];
+  let axeAll = [];
   let axe = 'axe нет';
   if (AXE) {
     if (!(await page.evaluate(() => Boolean(globalThis.axe)))) await page.addScriptTag({ content: AXE });
@@ -97,6 +98,7 @@ async function checkOne(t, page, name) {
       return r.violations.map((v) => ({ id: v.id, impact: v.impact, n: v.nodes.length, target: v.nodes[0]?.target?.join(' ') }));
     });
     serious = res.filter((v) => ['serious', 'critical'].includes(v.impact));
+    axeAll = res.map((v) => v.id);
     axe = res.length ? res.map((v) => `${v.id}/${v.impact}×${v.n}${['serious', 'critical'].includes(v.impact) ? ` [${v.target}]` : ''}`).join(',') : 'axe 0';
   }
   const focus = [];
@@ -115,7 +117,7 @@ async function checkOne(t, page, name) {
   }
   const noFocus = focus.filter((f) => f && !f.visible);
   const hs = w.sw > w.iw + 1;
-  summary.push({ name, hscroll: hs, serious, noFocus });
+  summary.push({ name, hscroll: hs, serious, noFocus, all: axeAll });
   t.diagnostic(`${name}: ${hs ? `ПРОКРУТКА ${w.sw}>${w.iw}` : 'без прокрутки'}; ${axe}; фокус ${focus.filter(Boolean).length}/3${noFocus.length ? ` (НЕ ВИДЕН: ${noFocus.map((f) => `${f.tag} «${f.label}»`).join(', ')})` : ' виден'}`);
 }
 
@@ -197,7 +199,7 @@ async function ownerFlow(t, { width, scheme, port, tag }) {
       await page.waitForTimeout(400);
       out.focusAfterDrag = await page.evaluate(() => globalThis.document.activeElement?.className ?? null);
       await page.keyboard.press('r');
-      await page.waitForTimeout(900);
+      await page.waitForTimeout(1500); // PATCH — через 600 мс после последней клавиши (Д2)
       out.rAfterDrag = (await db.query('select plan_rotation from bl.resources where club_id = $1 and number = 2', [clubId])).rows[0].plan_rotation;
       out.rAfterDragUi = await tbl.evaluate((el) => /rotate\((\d+)deg\)/.exec(el.style.transform)?.[1] ?? null);
       // Клавиатура: фокус на столе, стрелка и R.
@@ -340,6 +342,28 @@ async function ownerFlow(t, { width, scheme, port, tag }) {
     await page.goto(`${BASE}/club/c/${clubId}/`, { waitUntil: 'load' });
     await page.waitForTimeout(1500);
     out.bannerHome = await page.locator('.modenote').count();
+    if (width >= 1000) {
+      // №164: смена типа стола в live — окно с причиной; без причины не уходит.
+      await page.goto(`${BASE}/club/c/${clubId}/onboarding/hall`, { waitUntil: 'load' });
+      await page.waitForSelector('.pe__tbl');
+      await page.locator('.pe__tbl').nth(1).click();
+      await page.selectOption('#pe-kind', 'snooker');
+      await page.waitForSelector('dialog[open] #kind-reason');
+      const tKind = new Date();
+      await page.click('dialog[open] button[type=submit]');
+      await page.waitForTimeout(600);
+      const { rows: k0 } = await db.query('select type from bl.resources where club_id = $1 and number = 2', [clubId]);
+      out.kindNoReason = `${k0[0].type}; «${(await page.locator('#kind-reason-e').innerText()).trim()}»`;
+      await screen(t, page, `${tag}-18-kind-dialog`, scheme);
+      await page.fill('#kind-reason', 'e2e: поставили снукер вместо пула');
+      await page.click('dialog[open] button[type=submit]');
+      const k1 = await waitFor(async () => {
+        const { rows } = await db.query('select type from bl.resources where club_id = $1 and number = 2', [clubId]);
+        return rows[0].type === 'billiard_snooker' ? rows[0] : null;
+      }, { timeoutMs: 10_000, what: 'тип стола сменён' });
+      const { rows: kau } = await db.query("select action, reason, data from bl.audit_log where club_id = $1 and created_at >= $2 and action like 'manual.%'", [clubId, tKind]);
+      out.kind = { before: k0[0].type, after: k1.type, audit: kau.map((x) => `${x.action} «${x.reason}» ${JSON.stringify(x.data.changed?.kind ?? null)}`) };
+    }
     return out;
   } catch (err) {
     await page.screenshot({ path: path.join(SHOTS, `${tag}-FAIL.png`), fullPage: true }).catch(() => {});
@@ -359,6 +383,60 @@ test('владелец 1280 px, светлая тема (каждый экран
   assert.equal(out.banner, 0, 'плашки тестового режима нет');
   assert.equal(out.bannerHome, 0);
   assert.equal(String(out.rAfterDrag), String(out.rAfterDragUi), 'поворот клавишей R после перетаскивания сохранён (экран = база)');
+  t.diagnostic(`смена типа в live: без причины — ${out.kindNoReason}; с причиной — ${out.kind.before} → ${out.kind.after}; журнал ${out.kind.audit.join(', ')}`);
+  assert.equal(out.kind.before, 'billiard_pool', 'без причины тип не сменился');
+  assert.equal(out.kind.after, 'billiard_snooker');
+  assert.ok(out.kind.audit.some((x) => x.startsWith('manual.resource_kind «e2e:')), 'manual.resource_kind с причиной');
+  saveState({ ui1280Owner: out.phone });
+});
+
+test('управляющий: «Зал и тарифы» — план, тарифы, меню, наклейки; без магазинов, чек-листа и live (1280 и 360, обе темы)', { skip, timeout: 5 * 60_000 }, async (t) => {
+  const { loadState, loginRetry, capi } = await import('./helpers.mjs');
+  const st = loadState();
+  const clubId = st.ui1280;
+  const owner = await loginRetry(st.ui1280Owner, { consent: false });
+  const manPhone = staffPhone();
+  const inv = await capi('POST', `/api/clubs/${clubId}/staff/invites`, { token: owner.token, club: clubId, body: { phone: manPhone, role: 'manager' } });
+  assert.equal(inv.status, 201);
+  for (const [width, scheme] of [[1280, 'light'], [360, 'dark']]) {
+    const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width, height: width > 1000 ? 900 : 780 }, locale: 'ru-RU', timezoneId: 'Asia/Yekaterinburg', colorScheme: scheme, bypassCSP: true });
+    const r = await ctx.request.post(`${BASE}/api/auth/dev`, { data: { phone: manPhone } });
+    assert.ok(r.ok());
+    const page = await ctx.newPage();
+    watch(page, `manager-${width}`);
+    await page.goto(`${BASE}/club/c/${clubId}/`, { waitUntil: 'load' });
+    await page.waitForTimeout(1500);
+    const home = await bodyText(page);
+    let navHasHall = /Зал и тарифы/.test(home) ? 'в меню' : '';
+    if (!navHasHall) {
+      // Узкий экран: нижнее меню — 4 пункта и «Ещё».
+      await page.click('text=Ещё');
+      await page.waitForTimeout(1000);
+      navHasHall = /Зал и тарифы/.test(await bodyText(page)) ? 'в «Ещё»' : '';
+    }
+    await page.goto(`${BASE}/club/c/${clubId}/onboarding/hall`, { waitUntil: 'load' });
+    await page.waitForSelector('#ob-step-title');
+    await page.waitForTimeout(800);
+    const steps = (await page.locator('.ob__steptitle').allInnerTexts()).map((x) => x.trim());
+    const txt = await bodyText(page);
+    await screen(t, page, `manager-${width}-hall`, scheme);
+    await page.goto(`${BASE}/club/c/${clubId}/onboarding/tariffs`, { waitUntil: 'load' });
+    await page.waitForSelector('#ob-step-title');
+    await screen(t, page, `manager-${width}-tariffs`, scheme);
+    await page.goto(`${BASE}/club/c/${clubId}/onboarding/payments`, { waitUntil: 'load' });
+    await page.waitForTimeout(1500);
+    const pay = await bodyText(page);
+    const shopFields = await page.locator('#shop-shop_id, #shop-secret_key, #gl-offer').count();
+    await page.goto(`${BASE}/club/c/${clubId}/onboarding/go_live`, { waitUntil: 'load' });
+    await page.waitForTimeout(1500);
+    const gl = await page.locator('#gl-offer, .cl').count();
+    t.diagnostic(`управляющий ${width}: «Зал и тарифы» — ${navHasHall || 'НЕТ'}; шаги: ${steps.join(', ')}; заголовок «${/Зал и тарифы|Подключение/.exec(txt)?.[0]}»; /payments: полей магазина ${shopFields}, «${pay.slice(0, 120)}»; /go_live: чек-лист/оферта ${gl}`);
+    assert.ok(navHasHall, 'пункт «Зал и тарифы»');
+    assert.deepEqual(steps, ['План зала', 'Тарифы', 'Меню бара', 'QR-наклейки']);
+    assert.equal(shopFields, 0, 'магазинов нет');
+    assert.equal(gl, 0, 'чек-листа и перехода в live нет');
+    await ctx.close();
+  }
 });
 
 test('владелец 360 px, тёмная тема (каждый экран — и светлая): весь путь до live', { skip, timeout: 15 * 60_000 }, async (t) => {
@@ -403,8 +481,11 @@ test('итог по экранам: без прокрутки, без serious/cr
   const ax = summary.filter((s) => s.serious.length).map((s) => `${s.name}: ${s.serious.map((v) => `${v.id}/${v.impact}×${v.n} [${v.target}]`).join(', ')}`);
   const nf = summary.filter((s) => s.noFocus.length).map((s) => `${s.name}: ${s.noFocus.map((f) => `${f.tag} «${f.label}»`).join(', ')}`);
   t.diagnostic(`экранов ${summary.length}; прокрутка: ${hs.join(', ') || 'нет'}; axe serious/critical: ${ax.join(' | ') || 'нет'}; фокус не виден: ${nf.join(' | ') || 'нет'}; ошибки страниц: ${errors.join(' | ') || 'нет'}`);
+  const mod = summary.filter((s) => (/-01-start-/.test(s.name) && s.all.some((id) => ['landmark-one-main', 'region'].includes(id))) || (/tariffs-week/.test(s.name) && s.all.includes('heading-order'))).map((s) => `${s.name}: ${s.all.join(',')}`);
+  t.diagnostic(`moderate (main на «Подключить клуб», heading-order на неделе тарифов): ${mod.join(' | ') || 'нет'}; все moderate: ${[...new Set(summary.flatMap((s) => s.all))].join(', ') || 'нет'}`);
   assert.deepEqual(hs, []);
   assert.deepEqual(ax, []);
+  assert.deepEqual(mod, []);
   assert.deepEqual(errors, []);
 });
 
