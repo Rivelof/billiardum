@@ -46,6 +46,12 @@ export const OPTIONAL_SERVICES = [
     owner: 'backend-kkt',
     without: 'мост ККТ не запускаю, чеки ККТ останутся receipt_pending',
   },
+  {
+    service: 'site',
+    needs: ['web/site/server.mjs'],
+    owner: 'frontend-site',
+    without: 'публичный сайт не запускаю, / ответит 502',
+  },
 ];
 /** Профиль сервиса совпадает с его именем. */
 export const ALL_PROFILE_ARGS = OPTIONAL_SERVICES.flatMap((s) => ['--profile', s.service]);

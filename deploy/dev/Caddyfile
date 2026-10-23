@@ -1,11 +1,15 @@
 # Caddy для разработки «Бильярдума» (deploy/dev; контракты M0 §2 и M1 §11).
 # https://localhost:8443 на хосте → контейнер caddy:443:
 #
-#   /api/*, /t/*, /health → server:3000 (SSE /api/stream — без буферизации)
+#   /api/*, /t/*, /health → server:3000 (SSE /api/stream и /api/public/stream — без буферизации)
 #   /app/*                → web/guest/dist, приложение гостя (SPA)
 #   /club/*               → web/admin/dist, программа клуба (SPA)
 #   /pay/*                → yookassa-emu:8090, страница оплаты эмулятора ЮKassa
-#   /                     → /app/
+#   всё остальное         → site:3100, публичный сайт-агрегатор (web/site, M4): /, города,
+#                           клубы, /turniry/, /rejting/, /zhurnal/, /og/*, /assets/*,
+#                           sitemap.xml, robots.txt
+#
+# /t/{код} (QR на столе) по-прежнему у сервера: он ведёт на /app/t/{код}.
 #
 # dist собирает `npm run dev` на хосте (scripts/dev.mjs): у Vite нативный esbuild под
 # платформу хоста, в Linux-контейнере на macOS и Windows он не запустится. Caddy только
@@ -105,12 +109,13 @@ https://localhost, https://{$DEV_LAN_HOST:127.0.0.1} {
 	import security
 
 	# redir <путь> <куда> <код>: первый аргумент — точный путь.
-	redir / /app/ 302
 	redir /app /app/ 308
 	redir /club /club/ 308
 
-	# Поток событий (SSE): каждое событие уходит клиенту сразу.
-	handle /api/stream* {
+	# Потоки событий (SSE): каждое событие уходит клиенту сразу. /api/public/stream —
+	# публичный поток турнира для ТВ-экрана (M4), без входа.
+	@sse path /api/stream* /api/public/stream*
+	handle @sse {
 		import api
 		reverse_proxy server:3000 {
 			flush_interval -1
@@ -170,8 +175,23 @@ https://localhost, https://{$DEV_LAN_HOST:127.0.0.1} {
 		import spa "Программа клуба" "web/admin"
 	}
 
+	# Публичный сайт (web/site, M4): всё, что не забрали маршруты выше. CSP, Cache-Control
+	# и сжатие (br, gzip) сайт ставит сам; здесь — только если их нет (?) и encode для
+	# ответов, которые сайт не сжал (Caddy не сжимает ответ с Content-Encoding повторно).
+	# Острова /assets/* — с хешем в имени, кэш на год. Сайт не запущен — 502.
 	handle {
-		header Cache-Control "no-store"
-		respond "Не найдено" 404
+		encode zstd gzip
+		header /assets/* {
+			defer
+			Cache-Control "public, max-age=31536000, immutable"
+		}
+		header {
+			?Cache-Control "no-cache"
+			?Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		}
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy site:3100
 	}
 }

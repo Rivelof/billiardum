@@ -37,12 +37,15 @@ export const SERVICE_CODE = {
   'yookassa-emu': ['tools/yookassa-emu', ...DEPS],
   'kkt-emu': ['tools/kkt-bridge/emu', 'tools/kkt-bridge/lib', ...DEPS],
   'kkt-bridge': ['tools/kkt-bridge', 'deploy/dev/kkt-bridge.json', 'deploy/dev/kkt-bridge.token', ...DEPS],
+  // Сайт: свой код и shared. Сборку островов (dist/manifest.json) с BL_SITE_DEV=1 и статьи
+  // content/zhurnal/*.md сайт перечитывает сам, перезапуск для них не нужен.
+  site: ['web/site', 'shared', ...DEPS],
   // Не Node, но конфиг читает только при старте.
   caddy: ['deploy/dev/Caddyfile'],
 };
 
 /** Сервисы, которые перезапускает `npm run dev -- --restart`. */
-export const NODE_SERVICES = ['server', 'device-sim', 'yookassa-emu', 'kkt-emu', 'kkt-bridge'];
+export const NODE_SERVICES = ['server', 'device-sim', 'yookassa-emu', 'kkt-emu', 'kkt-bridge', 'site'];
 
 /** Запас на расхождение часов хоста и Docker (Docker Desktop — в своей ВМ). */
 export const CLOCK_SKEW_MS = 5000;

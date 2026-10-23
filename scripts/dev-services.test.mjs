@@ -31,12 +31,14 @@ const compose = readFileSync(join(ROOT, 'deploy', 'dev', 'compose.yml'), 'utf8')
 const serviceBlock = (name) => compose.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z][a-z-]*:\\n|\\nvolumes:)`))?.[1] ?? '';
 
 test('необязательные сервисы: у каждого свой профиль в compose.yml, порта наружу нет', () => {
-  assert.deepEqual(OPTIONAL_SERVICES.map((s) => s.service), ['yookassa-emu', 'kkt-emu', 'kkt-bridge']);
-  assert.deepEqual(ALL_PROFILE_ARGS, ['--profile', 'yookassa-emu', '--profile', 'kkt-emu', '--profile', 'kkt-bridge']);
+  assert.deepEqual(OPTIONAL_SERVICES.map((s) => s.service), ['yookassa-emu', 'kkt-emu', 'kkt-bridge', 'site']);
+  assert.deepEqual(ALL_PROFILE_ARGS, ['--profile', 'yookassa-emu', '--profile', 'kkt-emu', '--profile', 'kkt-bridge', '--profile', 'site']);
   for (const s of OPTIONAL_SERVICES) {
     const block = serviceBlock(s.service);
     assert.match(block, new RegExp(`profiles: \\[${s.service}\\]`), s.service);
-    assert.doesNotMatch(block, /\n {4}ports:/, `${s.service}: управление эмуляторов и мост — только внутри сети Compose`);
+    // Сайт открыт с этой машины для отладки (127.0.0.1:3101), наружу — только через Caddy.
+    if (s.service === 'site') assert.match(block, /\n {4}ports:\n {6}- "127\.0\.0\.1:3101:3100"\n/);
+    else assert.doesNotMatch(block, /\n {4}ports:/, `${s.service}: управление эмуляторов и мост — только внутри сети Compose`);
   }
   assert.match(serviceBlock('kkt-emu'), /command: \["node", "tools\/kkt-bridge\/emu\/index\.mjs"\]/);
   assert.match(serviceBlock('kkt-emu'), /ATOL_EMU_PORT: "16732"/);

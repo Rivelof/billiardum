@@ -6,11 +6,12 @@ import { test } from 'node:test';
 import { parseCiArgs, PIO_VERSION } from './ci.mjs';
 import { ROOT } from './dev-lib.mjs';
 
-test('этапы npm run ci: по умолчанию всё, кроме pio', () => {
+test('этапы npm run ci: по умолчанию всё, кроме pio и site', () => {
   assert.deepEqual(parseCiArgs([]), ['base', 'config', 'web', 'fw', 'db']);
   assert.deepEqual(parseCiArgs(['--db']), ['db']);
   assert.deepEqual(parseCiArgs(['--fw', '--web', '--web']), ['web', 'fw']);
   assert.deepEqual(parseCiArgs(['--pio']), ['pio']);
+  assert.deepEqual(parseCiArgs(['--site', '--web']), ['web', 'site']);
   assert.throws(() => parseCiArgs(['--all']), /--base/);
   assert.throws(() => parseCiArgs(['db']), /неизвестный параметр/);
 });

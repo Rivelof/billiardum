@@ -26,6 +26,8 @@ npm-debug.log*
 
 # Сборка и отчёты
 coverage/
+# Отчёты Lighthouse сайта (scripts/ci-lighthouse.mjs)
+.lighthouse/
 dist/
 .pio/
 

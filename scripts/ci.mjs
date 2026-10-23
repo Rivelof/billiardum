@@ -17,6 +17,10 @@
 //             базе — server/test/<модуль>/ и server/<модуль>/test/db/)
 //   --pio     pio run -e esp32dev и pio test -e native (нужен PlatformIO, см. PIO_VERSION);
 //             в CI — отдельная задача, в «всё» не входит
+//   --site    сборка островов web/site (бюджет ≤ 50 КБ gzip JS на страницу) и Lighthouse
+//             мобильный ≥ 90 (performance, accessibility, SEO) на главной, странице города
+//             и клуба — сайт на заглушке API, без сервера (scripts/ci-lighthouse.mjs; нужен
+//             Chrome или сеть, чтобы скачать его); в CI — отдельная задача, в «всё» не входит
 //
 //   npm run ci                  — base, config, web, fw, db
 //   npm run ci -- --web --fw    — только эти этапы
@@ -31,6 +35,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { checkCaddyWebSocket, WS_PATH } from './ci-caddy-ws.mjs';
+import { LIGHTHOUSE_VERSION } from './ci-lighthouse.mjs';
 import { dbTestEnv, lightItProblem, runDbTests } from './ci-test-db.mjs';
 import { uncoveredTests } from './ci-test-files.mjs';
 import {
@@ -61,9 +66,11 @@ export const CADDY_IMAGE = 'caddy:2.11.7-alpine';
 export const MOSQUITTO_IMAGE = 'eclipse-mosquitto:2.1.2-alpine';
 /** Образ сервисов Node в deploy/dev/compose.yml (x-node-service). */
 export const NODE_IMAGE = 'node:22.23.4-alpine';
+/** Образ сервиса site (Debian: нативный @resvg/resvg-js из node_modules хоста Linux). */
+export const SITE_NODE_IMAGE = 'node:22.23.4-bookworm-slim';
 const FW_NATIVE_DIR = join('firmware', 'test', 'native');
 
-export const STAGES = ['base', 'config', 'web', 'fw', 'db', 'pio'];
+export const STAGES = ['base', 'config', 'web', 'fw', 'db', 'pio', 'site'];
 const DEFAULT_STAGES = ['base', 'config', 'web', 'fw', 'db'];
 
 const containers = new Set();
@@ -171,7 +178,7 @@ async function stageBase() {
 
 /** Конфиги окружения разработки: Compose, Caddy, Mosquitto — их же образами. */
 async function stageConfig() {
-  log('docker compose config (все профили: yookassa-emu, kkt-emu, kkt-bridge; переменные из .env.example)');
+  log(`docker compose config (все профили: ${ALL_PROFILE_ARGS.filter((a) => a !== '--profile').join(', ')}; переменные из .env.example)`);
   await runChecked('docker', composeArgs(ENV_EXAMPLE, ...ALL_PROFILE_ARGS, 'config', '--quiet'), {}, 'docker compose config');
 
   log(`caddy validate (${CADDY_IMAGE})`);
@@ -292,7 +299,22 @@ async function stageDb() {
   }
 }
 
-const RUNNERS = { base: stageBase, config: stageConfig, web: stageWeb, fw: stageFirmwareNative, db: stageDb, pio: stagePio };
+/** Сайт: сборка островов (бюджет JS проверяет сама сборка) и Lighthouse мобильный. */
+async function stageSite() {
+  const dir = 'web/site';
+  if (!existsSync(join(ROOT, dir, 'package.json'))) {
+    notice(`${dir}: пакета ещё нет, сборка и Lighthouse пропущены`);
+    return;
+  }
+  const r = packageScript(dir, 'build');
+  if (!r.ok) fail(`${dir}: ${r.reason}`);
+  log(`сборка ${dir} (бюджет ≤ 50 КБ gzip JS на страницу)`);
+  await runNpm(['run', 'build', '-w', dir], { env: buildEnv() });
+  log(`Lighthouse ${LIGHTHOUSE_VERSION}, мобильный профиль: scripts/ci-lighthouse.mjs`);
+  await runChecked(process.execPath, [join(ROOT, 'scripts', 'ci-lighthouse.mjs')], { env: buildEnv() }, 'Lighthouse сайта');
+}
+
+const RUNNERS = { base: stageBase, config: stageConfig, web: stageWeb, fw: stageFirmwareNative, db: stageDb, pio: stagePio, site: stageSite };
 const NEEDS_DOCKER = new Set(['base', 'config', 'db']);
 
 async function main() {
@@ -308,6 +330,7 @@ async function main() {
     await RUNNERS[stage]();
   }
   if (!stages.includes('pio')) log(`pio run и pio test — отдельно: npm run ci -- --pio (PlatformIO ${PIO_VERSION}), в GitHub — задача firmware-pio`);
+  if (!stages.includes('site')) log('сборка сайта и Lighthouse — отдельно: npm run ci -- --site, в GitHub — задача site');
   log(`всё зелёное: ${stages.join(', ')}`);
   return 0;
 }

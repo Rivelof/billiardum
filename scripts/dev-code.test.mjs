@@ -116,7 +116,7 @@ test('staleReason: по записи — по отпечатку, без зап�
   assert.equal(staleReason({ id: 'c1', running: true, startedAt: 'нет' }, undefined, code('h1')), 'неизвестно время старта');
 });
 
-const ALL = ['server', 'device-sim', 'yookassa-emu', 'kkt-emu', 'kkt-bridge', 'caddy'];
+const ALL = ['server', 'device-sim', 'yookassa-emu', 'kkt-emu', 'kkt-bridge', 'site', 'caddy'];
 const ids = Object.fromEntries(ALL.map((s) => [s, `id-${s}`]));
 const containers = Object.fromEntries(ALL.map((s) => [s, running(ids[s])]));
 const state = Object.fromEntries(ALL.map((s) => [s, { container: ids[s], started: T0, code: `h-${s}` }]));
@@ -150,6 +150,15 @@ test('план: изменился server — заново provision:dev, пер
   const q = plan({ codes: { ...codes, server: code('new') }, kktRegister: false });
   assert.deepEqual(restarted(q), ['server', 'device-sim']);
   assert.equal(q.registerKkt, false);
+});
+
+test('план: изменился сайт — перезапускается только site, без provision:dev (M4)', () => {
+  const p = plan({ codes: { ...codes, site: code('new') } });
+  assert.deepEqual(restarted(p), ['site']);
+  assert.equal(p.provision, false);
+  assert.equal(p.registerKkt, false);
+  // Сайт не зависит от ключей устройств: server перезапускается — site нет.
+  assert.ok(!restarted(plan({ codes: { ...codes, server: code('new') } })).includes('site'));
 });
 
 test('план: --restart — все сервисы Node, caddy нет', () => {

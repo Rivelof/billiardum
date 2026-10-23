@@ -14,10 +14,11 @@
 // 7. Останавливает отставшие; с хоста — db:migrate (всегда, до старта server), db:seed,
 //    provision:dev и регистрация моста ККТ (только когда стартует server, нет ключей или
 //    --restart: они выдают новые ключи, и тогда перезапускаются device-sim и kkt-bridge).
-// 8. Собирает web/guest и web/admin на хосте (vite build): у Vite нативный esbuild
-//    под платформу хоста, в Linux-контейнере на macOS и Windows он не запустится.
+// 8. Собирает web/guest и web/admin (vite build) и острова сайта web/site (esbuild) на хосте:
+//    у esbuild нативный бинарник под платформу хоста, в Linux-контейнере на macOS и Windows
+//    он не запустится.
 // 9. `docker compose up` для server, device-sim, необязательных сервисов, чьи пакеты уже
-//    есть (yookassa-emu, kkt-emu, kkt-bridge), и caddy; записывает отпечатки кода
+//    есть (yookassa-emu, kkt-emu, kkt-bridge, site), и caddy; записывает отпечатки кода
 //    запущенных контейнеров (deploy/dev/code-state.json) и показывает логи.
 //
 //   npm run dev                  — всё по шагам выше
@@ -25,8 +26,9 @@
 //                                  даже если код не менялся (db, mosquitto, caddy — нет)
 //   npm run dev -- --check       — ничего не меняет: какие сервисы отстали от кода
 //                                  (код выхода 1 — npm run dev их перезапустит)
-//   npm run dev -- --watch-web   — ещё и `vite build --watch` обоих приложений на хосте
-//                                  рядом с логами (Ctrl+C останавливает и сборку)
+//   npm run dev -- --watch-web   — ещё и `vite build --watch` обоих приложений и пересборка
+//                                  островов сайта на хосте рядом с логами (Ctrl+C
+//                                  останавливает и сборку)
 
 import { spawn } from 'node:child_process';
 import { createECDH, generateKeyPairSync, randomBytes, randomInt } from 'node:crypto';
@@ -153,6 +155,13 @@ function checkEnvValues(env) {
   if (lan && (!/^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(lan) || ['localhost', '127.0.0.1'].includes(lan))) {
     fail('DEV_LAN_HOST в .env — IP или имя этой машины в локальной сети без порта (например 192.168.1.10), не localhost.');
   }
+  if (env.SITE_ORIGIN && !/^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/.test(env.SITE_ORIGIN)) {
+    fail('SITE_ORIGIN в .env — адрес сайта со схемой, без пути и косой черты в конце, например https://billiardum.ru. Пусто — https://{PUBLIC_HOST}.');
+  }
+  if (env.YANDEX_METRIKA_ID && !/^\d{4,12}$/.test(env.YANDEX_METRIKA_ID)) fail('YANDEX_METRIKA_ID в .env — номер счётчика Метрики, только цифры.');
+  if (env.SITE_API_SUBNET && !/^\d{1,3}(\.\d{1,3}){3}\/(2[4-9]|30)$/.test(env.SITE_API_SUBNET)) {
+    fail('SITE_API_SUBNET в .env — подсеть IPv4 от /24 до /30, например 10.231.47.0/29.');
+  }
   if (lan && env.PUBLIC_HOST.split(':')[0] !== lan) {
     log(`DEV_LAN_HOST задан, а PUBLIC_HOST — нет: ссылки QR и оплаты ведут на ${env.PUBLIC_HOST}. Для телефона: PUBLIC_HOST=${lan}:8443`);
   }
@@ -251,10 +260,15 @@ async function registerKktBridge(env) {
   if (!existsSync(KKT_TOKEN_FILE)) log(`${cmd.label} не создал deploy/dev/kkt-bridge.token — мост ККТ не запускаю`);
 }
 
-/** Приложения, которые собираются на хосте и раздаются Caddy (deploy/dev/Caddyfile). */
+/**
+ * Приложения, которые собираются на хосте (deploy/dev/Caddyfile): guest и admin раздаёт
+ * Caddy, острова сайта (web/site/dist) — сервис site. `missing` — что будет без сборки;
+ * `watch` — команда пересборки на лету от папки пакета, если в нём нет скрипта build:watch.
+ */
 export const WEB_APPS = [
-  { dir: 'web/guest', url: '/app/' },
-  { dir: 'web/admin', url: '/club/' },
+  { dir: 'web/guest', url: '/app/', owner: 'frontend', missing: 'Caddy ответит 503' },
+  { dir: 'web/admin', url: '/club/', owner: 'frontend', missing: 'Caddy ответит 503' },
+  { dir: 'web/site', url: '/', owner: 'frontend-site', missing: 'сайт отдаст страницы без островов', watch: ['scripts/build.mjs', '--watch'] },
 ];
 
 function checkPackages() {
@@ -390,7 +404,7 @@ async function buildWeb() {
   for (const app of WEB_APPS) {
     const r = packageScript(app.dir, 'build');
     if (!r.ok) {
-      const msg = `${app.url}: ${r.reason} (зона frontend) — сборка пропущена, Caddy ответит 503`;
+      const msg = `${app.url}: ${r.reason} (зона ${app.owner}) — сборка пропущена, ${app.missing}`;
       log(msg);
       warnings.push(msg);
       continue;
@@ -399,7 +413,7 @@ async function buildWeb() {
     const c = npm(['run', 'build', '-w', app.dir]);
     const code = await run(c.cmd, c.args, { env: webBuildEnv(), shell: c.shell });
     if (code !== 0) {
-      const msg = `${app.url}: сборка ${app.dir} упала (код ${code}) — Caddy отдаёт прежнюю сборку или 503`;
+      const msg = `${app.url}: сборка ${app.dir} упала (код ${code}) — работает прежняя сборка, без неё ${app.missing}`;
       log(msg);
       warnings.push(msg);
     }
@@ -407,9 +421,11 @@ async function buildWeb() {
   return warnings;
 }
 
-/** Команда пересборки на лету: свой скрипт build:watch пакета или `vite build --watch`. */
-function watchCommand(dir) {
+/** Команда пересборки на лету: свой скрипт build:watch пакета, app.watch или `vite build --watch`. */
+function watchCommand(app) {
+  const { dir } = app;
   if (packageScript(dir, 'build:watch').ok) return npm(['run', 'build:watch', '-w', dir]);
+  if (app.watch) return { cmd: process.execPath, args: app.watch, shell: false, cwd: join(ROOT, dir) };
   // vite из зависимостей пакета, без npm exec (тот мог бы скачать vite из сети).
   const req = createRequire(join(ROOT, dir, 'package.json'));
   const pkgFile = req.resolve('vite/package.json');
@@ -424,7 +440,7 @@ function startWebWatchers(apps) {
   for (const app of apps) {
     let c;
     try {
-      c = watchCommand(app.dir);
+      c = watchCommand(app);
     } catch {
       log(`${app.dir}: не нашёл vite в зависимостях — пересборка на лету не запущена`);
       continue;
@@ -545,6 +561,7 @@ async function main() {
 
   console.log(`
   Окружение запущено (проект Compose: billiardum)
+    ${pub}/         публичный сайт${optional.includes('site') ? '' : ' (сервиса site ещё нет)'}; напрямую — http://localhost:3101
     ${pub}/app/     приложение гостя (Caddy, tls internal)
     ${pub}/club/    программа клуба
     ${pub}/pay/     страница оплаты эмулятора ЮKassa${emu ? '' : ' (эмулятора ещё нет)'}

@@ -1,4 +1,4 @@
-# Окружение разработки «Бильярдума» (контракты M0 §2, M1 §11, M2 §2 и §6).
+# Окружение разработки «Бильярдума» (контракты M0 §2, M1 §11, M2 §2 и §6, M4 §2).
 # Запускать через `npm run dev` (scripts/dev.mjs): он создаёт .env и сертификаты,
 # применяет миграции, сид и провижининг до старта server и device-sim и собирает
 # фронтенд на хосте до старта caddy.
@@ -22,7 +22,8 @@ name: billiardum
 #
 # Порядок старта (дефект R4): кому нужна база или брокер, ждёт их healthy через
 # depends_on: condition: service_healthy (база и брокер нужны только server; device-sim
-# ждёт брокер и server, kkt-bridge и caddy — server, чей /health требует и базу, и брокер).
+# ждёт брокер и server, kkt-bridge, site и caddy — server, чей /health требует и базу, и
+# брокер; caddy — ещё и site, если он запускается).
 # depends_on соблюдает только Compose (`up`, `start`). После перезапуска демона Docker
 # или перезагрузки машины контейнеры поднимает сам Docker по restart-политике — все
 # сразу, без depends_on, поэтому server обязан сам переживать недоступную базу и брокер
@@ -154,6 +155,16 @@ services:
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
       MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      # M4: с этих адресов публичный API (/api/public/*) — без лимита 120 запросов в минуту
+      # с IP. Это сеть site-api, где из всех сервисов только site (ниже); Caddy в неё не
+      # входит, поэтому запросы браузеров через Caddy лимит не обходят.
+      PUBLIC_API_TRUSTED_CIDRS: ${PUBLIC_API_TRUSTED_CIDRS:-${SITE_API_SUBNET:-10.231.47.0/29}}
+    networks:
+      default:
+      site-api:
+        # Имя server-api есть только в сети site-api: сайт ходит в API по нему и всегда
+        # приходит с адреса из этой сети (имя server в двух сетях было бы неоднозначным).
+        aliases: [server-api]
     depends_on:
       db:
         condition: service_healthy
@@ -290,6 +301,62 @@ services:
         # Без эмулятора (профиль kkt-emu выключен) мост ждёт только сервер.
         required: false
 
+  # Публичный сайт-агрегатор (web/site, контракт M4 §1 п.1): серверный рендер на Node,
+  # в базу не ходит — данные из публичного API сервера (BL_API_URL), кэш 60 с. Наружу —
+  # через Caddy (/ и всё, кроме /api/, /app/, /club/, /t/, /pay/); напрямую — только с этой
+  # машины, http://localhost:3101 (3100 остаётся сайту на заглушке API: npm run dev -w
+  # web/site, без Docker). Острова (web/site/dist) собирает npm run dev на хосте, как фронтенд:
+  # у esbuild нативный бинарник под платформу хоста.
+  # Образ Debian (glibc), а не Alpine: OG-картинки в PNG рисует @resvg/resvg-js, нативный
+  # пакет из node_modules хоста; на хосте Linux (glibc) он подходит контейнеру, на macOS и
+  # Windows — нет, тогда сайт отдаёт OG как SVG (видно в логе при старте).
+  # Профиль: стартует, только когда есть web/site/server.mjs (scripts/dev.mjs).
+  site:
+    <<: *node-service
+    image: node:22.23.4-bookworm-slim
+    profiles: [site]
+    command: ["node", "web/site/server.mjs"]
+    ports:
+      - "127.0.0.1:3101:3100"
+    environment:
+      PORT: "3100"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # API сервера по сети site-api (PUBLIC_API_TRUSTED_CIDRS у server — её подсеть).
+      BL_API_URL: http://server-api:3000
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost:8443}
+      # Канонические адреса, sitemap.xml, OG; пусто — https://{PUBLIC_HOST}.
+      SITE_ORIGIN: ${SITE_ORIGIN:-https://${PUBLIC_HOST:-localhost:8443}}
+      # Яндекс Метрика и Вебмастер (контракт M4 §1 п.14): пусто — выключено.
+      YANDEX_METRIKA_ID: ${YANDEX_METRIKA_ID:-}
+      YANDEX_VERIFICATION: ${YANDEX_VERIFICATION:-}
+      # 1 — стенд не индексируется (robots.txt Disallow: /, meta noindex).
+      BL_SITE_NOINDEX: ${BL_SITE_NOINDEX:-}
+      # Разработка: manifest островов перечитывается на каждый запрос (npm run dev --
+      # --watch-web пересобирает острова без перезапуска сайта), строка лога на запрос.
+      BL_SITE_DEV: "1"
+      # Кэш OG-картинок на диске (том site-og): переживает перезапуск контейнера.
+      OG_CACHE_DIR: /var/cache/site-og
+    volumes:
+      - ../..:/repo:ro
+      - site-og:/var/cache/site-og
+    networks:
+      default:
+      site-api:
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3100/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
   caddy:
     image: caddy:2.11.7-alpine
     restart: unless-stopped
@@ -307,6 +374,10 @@ services:
     depends_on:
       server:
         condition: service_healthy
+      site:
+        condition: service_healthy
+        # Без сайта (профиль site выключен) Caddy ждёт только сервер; / тогда ответит 502.
+        required: false
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
       interval: 30s
@@ -315,6 +386,15 @@ services:
       start_period: 30s
       start_interval: 2s
 
+# Сеть сайта и API (M4): только server и site. Подсеть закреплена — по ней сервер узнаёт
+# сайт (PUBLIC_API_TRUSTED_CIDRS). Пересекается с вашей сетью или VPN — задайте другую в
+# SITE_API_SUBNET (.env) и пересоздайте сеть: npm run down, затем npm run dev.
+networks:
+  site-api:
+    ipam:
+      config:
+        - subnet: ${SITE_API_SUBNET:-10.231.47.0/29}
+
 volumes:
   db-data:
   db-config:
@@ -322,3 +402,4 @@ volumes:
   device-sim-nvs:
   caddy-data:
   caddy-config:
+  site-og:
