@@ -448,7 +448,7 @@ export function createPlusService({ deps, log, clock }) {
         await notify(db, uid, {
           kind: 'plus.match_not_counted',
           text: `Партия записана, но в рейтинг не засчитана: ${LIMIT_TEXTS[r.reject_reason]}.`,
-          data: { match_id: m.id, reason: r.reject_reason },
+          data: { match_id: m.id, reason: r.reject_reason, url: '/app/plus' },
         });
       }
     }

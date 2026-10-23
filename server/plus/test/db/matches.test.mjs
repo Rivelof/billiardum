@@ -337,6 +337,7 @@ describe('Бильярдум+: партии', { skip, concurrency: false }, () =
     assert.deepEqual(row, { status: 'rejected', reject_reason: 'player_daily_limit' });
     const note = (await h.notifications(b7.id, 'plus.match_not_counted')).at(-1);
     assert.match(note.text, /лимит партий за сутки/);
+    assert.deepEqual([note.data.reason, note.data.url], ['player_daily_limit', '/app/plus']);
     const me = await h.request('GET', '/api/plus/me', { token: a.token });
     assert.equal(me.json.history[0].not_counted_reason, 'player_daily_limit');
     // Соперник (у него 1 партия) играет с другим — у него свой счёт.

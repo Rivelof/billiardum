@@ -50,7 +50,8 @@
 | `PATCH /api/tournaments/matches/{id}/score {score_a, score_b, reason}` | управляющий, владелец | то же |
 | `GET /api/clubs/{club}/tournaments`, `GET …/{id}` | ресепшн и выше | `{items: [T]}`; T + `tables`, `match_minutes`, `entries: [{entry_id, nick, rating, seed, group, status, paid, paid_kopecks, refund_status, cancel_reason}]`, bracket со счетами игроков |
 | `POST /api/clubs/{club}/tournaments`, `PATCH …/{id}` | управляющий, владелец | тело — `{title, description?, discipline, format, race_to, rating_limit?, rating_min?, fee_kopecks, prize_text?, prize_kopecks?, places, group_count?, advance_per_group?, match_minutes?, starts_at, ends_at, registration_closes_at?, resource_ids, publish?}`; PATCH — те же поля и `status` |
-| `POST …/{id}/start`, `POST …/{id}/cancel {reason, refund?: 'all'\|'none', reason_code?: 'equipment'\|'venue'}` | управляющий, владелец | детали турнира; `{refunded}` |
+| `POST …/{id}/start` | управляющий, владелец | детали турнира |
+| `POST …/{id}/cancel {reason, refund?: 'all'\|'none', reason_code?: 'equipment'\|'venue'}` | управляющий, владелец | `{refunded}` — сколько записей получат возврат |
 | `POST …/{id}/extend {ends_at?, match_minutes?, reason}` | управляющий, владелец | детали турнира |
 | `POST …/{id}/entries/{entry_id}/refund {reason_code: 'health'\|'equipment'\|'venue', comment}` | управляющий, владелец | `{entry_id, refund_status: 'pending', reason_code, amount_kopecks}` |
 

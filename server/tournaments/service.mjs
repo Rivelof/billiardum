@@ -1754,6 +1754,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
         tournament_id: t.id,
         entry_id: e.id,
         scope: 'entry',
+        nick,
         reason_code: code,
         staff_id: staffId,
         staff_name: who,

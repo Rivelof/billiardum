@@ -263,6 +263,8 @@ describe('№149: взнос после старта', () => {
     assert.deepEqual([a.data.reason_code, a.data.scope, a.data.amount_kopecks], ['health', 'entry', 50_000]);
     const [al] = await h.q("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'entry_id' = $2", [CLUB_A, p1.entry_id]);
     assert.deepEqual([al.data.action, al.data.reason_code, al.data.staff_id], ['manual.tournament_refund', 'health', manager.id]);
+    assert.equal(al.data.nick, (await h.entry(p1.entry_id)).nick);
+    assert.match(al.data.nick, /^Игрок110\d$/);
     assert.equal(typeof al.data.staff_name, 'string');
     const owner = await h.login(STAFF.owner);
     const n = (await h.notifications(owner.id, 'alarm')).filter((x) => x.data.alarm_id === al.id);
