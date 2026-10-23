@@ -8,8 +8,8 @@
 // ANON_SHARE (25 %) хаба; вошедшие подключаются, когда анонимные упёрлись в предел. Проверка, что
 // турнир существует и опубликован, — в api/routes/stream.mjs publicStream (нужна база, покрыта test:db).
 //
-// Здесь — проверки, что защита держит: каждая попытка обхода должна провалиться. Плюс замечание M4-I6:
-// доля анонимных общая для всех турниров, и её занимает одна сеть /56 (50 сетей /64 по 10 потоков).
+// Здесь — проверки, что защита держит: каждая попытка обхода должна провалиться. M4-I6 (одна сеть /56
+// занимала всю долю анонимных) закрыто в f1ab6cc пределом MAX_ANON_PER_NET на /56 — тест-регресс ниже.
 //
 // Запуск: node --test tests/security/m4/sse_public.test.mjs   (без базы, хаб в памяти)
 
@@ -21,6 +21,7 @@ import {
   createSseHub,
   isChannel,
   MAX_ANON_CLIENTS,
+  MAX_ANON_PER_NET,
   MAX_CLIENTS,
   MAX_CLIENTS_PER_USER,
   sourceOf,
@@ -175,16 +176,23 @@ test('M4-7 выдержало: вошедшие подключаются, ког
   hub.closeAll();
 });
 
-test('замечание M4-I6: одна сеть /56 (обычная выдача абоненту) занимает всю долю анонимных — ТВ-экраны турниров без потока', () => {
+// Регресс M4-I6 (закрыто в f1ab6cc): анонимных потоков с одной сети IPv6 /56 — не больше MAX_ANON_PER_NET (50),
+// server/http/sse.mjs netOf/attach. Соседняя /56, IPv4-ТВ и вошедшие подключаются.
+test(`M4-I6 выдержало: с одной сети /56 — не больше ${MAX_ANON_PER_NET} анонимных потоков, соседняя /56 подключается`, () => {
   const hub = createSseHub({ timers });
   const nets = MAX_ANON_CLIENTS / MAX_CLIENTS_PER_USER; // 50 сетей /64 внутри 2001:db8:77:ff00::/56
   let ok = 0;
   for (let n = 0; n < nets; n += 1) {
     for (let k = 0; k < MAX_CLIENTS_PER_USER; k += 1) if (anon(hub, `2001:db8:77:ff${n.toString(16).padStart(2, '0')}::${(k + 1).toString(16)}`).ok) ok += 1;
   }
-  assert.equal(ok, MAX_ANON_CLIENTS);
-  // ТВ-экран турнира в другом клубе — отказ; вошедшие при этом подключаются (защита M4-7 держит).
-  assert.equal(tvOver(hub).attach(fakeRes(), { tournamentId: T, ip: '198.51.100.10' }).ok, false);
+  assert.equal(ok, MAX_ANON_PER_NET);
+  assert.ok(ok < MAX_ANON_CLIENTS, 'одна /56 не занимает всю анонимную долю');
+  // Ещё адрес той же /56 — отказ; соседняя /56 (2001:db8:77:fe00::/56) — подключается.
+  assert.equal(anon(hub, '2001:db8:77:ffaa::1').ok, false);
+  assert.equal(anon(hub, '2001:db8:77:fe00::1').ok, true);
+  assert.equal(anon(hub, '2001:db8:77:fe01::1').ok, true);
+  // ТВ-экран турнира в другом клубе и вошедшие подключаются.
+  assert.equal(tvOver(hub).attach(fakeRes(), { tournamentId: T, ip: '198.51.100.10' }).ok, true);
   assert.equal(hub.attach(fakeRes(), { channels: [`club:${CLUB}`], userId: STAFF }).ok, true);
   hub.closeAll();
 });
