@@ -113,7 +113,9 @@ export async function createTournamentFee(db, deps, config, args) {
 
 /**
  * Возврат взноса записи целиком (каждая оплаченная попытка), с чеком возврата.
- * @param {{ entryId: string, reason: string, requestedBy?: string }} args
+ * @param {{ entryId: string, paymentId?: string, reason: string, reasonCode?: string, requestedBy?: string }} args
+ *   paymentId — вернуть только эту попытку (лишняя повторная оплата); reasonCode — код причины
+ *   tournaments (в лог; текст причины — reason, в журнал и чек)
  * @param {Function} refund api.mjs refund (ЮKassa, лимит, журнал, outbox payment.refunded)
  * @returns {Promise<{ entry_id, status: 'refunded'|'not_paid', refunds: { payment_id, refund_id, status, amount_kopecks }[], amount_kopecks }>}
  */
@@ -122,9 +124,17 @@ export async function refundTournamentFee(db, deps, args, refund) {
   if (!UUID.test(entryId ?? '')) throw new MoneyError('bad_request', 'entryId');
   const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
   if (!reason || reason.length > 2000) throw new MoneyError('reason_required');
+  if (args.paymentId != null && !UUID.test(args.paymentId)) throw new MoneyError('bad_request', 'paymentId');
+  if (args.reasonCode != null && !/^[a-z][a-z0-9_]{0,31}$/.test(args.reasonCode)) throw new MoneyError('bad_request', 'reasonCode');
+  // paymentId — только эта попытка (лишняя повторная оплата записи); иначе все оплаченные попытки.
+  if (args.paymentId) {
+    const { rows } = await db.query("select 1 from bl.payments where id = $1 and entry_id = $2 and kind = 'tournament'", [args.paymentId, entryId]);
+    if (rows.length === 0) throw new MoneyError('not_found', 'платёж записи');
+  }
   const { rows: paid } = await db.query(
-    `select * from bl.payments where entry_id = $1 and kind = 'tournament' and status = 'succeeded' order by created_at, id for update`,
-    [entryId],
+    `select * from bl.payments where entry_id = $1 and kind = 'tournament' and status = 'succeeded'
+        and ($2::uuid is null or id = $2) order by created_at, id for update`,
+    [entryId, args.paymentId ?? null],
   );
   if (paid.length === 0) return { entry_id: entryId, status: 'not_paid', refunds: [], amount_kopecks: 0 };
   const out = [];
@@ -148,6 +158,7 @@ export async function refundTournamentFee(db, deps, args, refund) {
     });
     out.push({ payment_id: p.id, refund_id: r.refund_id, status: r.status, amount_kopecks: Number(p.amount_kopecks) });
   }
+  deps.log?.info?.('tournament_fee_refunded', { entry_id: entryId, payment_id: args.paymentId ?? null, reason_code: args.reasonCode ?? null, refunds: out.length });
   return { entry_id: entryId, status: 'refunded', refunds: out, amount_kopecks: out.reduce((x, r) => x + r.amount_kopecks, 0) };
 }
 

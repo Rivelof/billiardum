@@ -133,6 +133,28 @@ describe('взнос за турнир', () => {
     assert.equal(emuR.length, 1);
   });
 
+  it('paymentId: возврат только лишней попытки; остальная оплата записи цела; повтор — без второго возврата', async () => {
+    const entry = newKey();
+    const a = await fee({ entryId: entry }); // СБП, гость бросил
+    const b = await fee({ entryId: entry, method: 'card' }); // новая попытка картой
+    assert.notEqual(a.payment.id, b.payment.id);
+    await emuSucceed(b.payment.id);
+    await emuSucceed(a.payment.id); // гость всё же оплатил и старую — лишняя оплата
+    assert.deepEqual([(await payment(a.payment.id)).status, (await payment(b.payment.id)).status], ['succeeded', 'succeeded']);
+    await assert.rejects(asClub((db) => refundTournamentFee(db, { entryId: entry, paymentId: newKey(), reason: 'x' }, inj())), (e) => e.code === 'not_found');
+    await assert.rejects(asClub((db) => refundTournamentFee(db, { entryId: entry, paymentId: a.payment.id, reason: 'x', reasonCode: 'Bad Code' }, inj())), (e) => e.code === 'bad_request');
+    const r = await asClub((db) => refundTournamentFee(db, { entryId: entry, paymentId: a.payment.id, reason: 'Лишняя повторная оплата', reasonCode: 'duplicate_payment' }, inj()));
+    assert.deepEqual(r.refunds.map((x) => x.payment_id), [a.payment.id]);
+    assert.equal((await h.q('select count(*)::int as n from bl.refunds where payment_id = $1', [b.payment.id]))[0].n, 0, 'вторая оплата не тронута');
+    const again = await asClub((db) => refundTournamentFee(db, { entryId: entry, paymentId: a.payment.id, reason: 'Лишняя повторная оплата' }, inj()));
+    assert.equal(again.refunds[0].refund_id, r.refunds[0].refund_id);
+    // Без paymentId — все оплаченные попытки; уже возвращённая — тем же возвратом, не дважды.
+    const all = await asClub((db) => refundTournamentFee(db, { entryId: entry, reason: 'Игрок снялся' }, inj()));
+    assert.deepEqual(all.refunds.map((x) => x.payment_id).sort(), [a.payment.id, b.payment.id].sort());
+    assert.equal((await h.q('select count(*)::int as n from bl.refunds where payment_id = $1', [a.payment.id]))[0].n, 1);
+    assert.equal((await h.q('select count(*)::int as n from bl.refunds where payment_id = $1', [b.payment.id]))[0].n, 1);
+  });
+
   it('отмена турнира клубом: событие на каждую оплаченную запись (неоплаченная — без события); обработчик возвращает каждую', async () => {
     const T2 = newKey();
     const [e1, e2, e3] = [newKey(), newKey(), newKey()];
