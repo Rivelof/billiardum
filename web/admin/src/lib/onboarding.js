@@ -5,8 +5,9 @@ import { parseClaimCode, parseDeviceId } from './devices.js';
  * приглашение ссылкой. Чистые функции, без DOM.
  *
  * GET /api/clubs/{club}/onboarding → { mode, steps: [{ id, done }], checklist: { items: [{ id, ok, detail }], ready },
- *   hall?: { width, height }, payment_checks?: { test, live }, day_start_local?, offer_url?, kkt_enabled? }
- * Идентификаторы шагов и пунктов контракт не задал — ниже наши (допущение, согласуется с backend).
+ *   hall, payment_checks: { test, live }, shops, payment_settings, kkt_enabled, webhook_url,
+ *   offer: { version, accepted_at, accepted_version }, day_start_local } (server/clubs/README.md).
+ * Идентификаторы шагов и пунктов — как у сервера.
  */
 
 export const STEPS = Object.freeze([
@@ -42,7 +43,7 @@ export const CHECK_ITEMS = Object.freeze({
   devices: { title: 'У каждого стола в работе — контроллер, и он был на связи за последние 10 минут', step: 'devices' },
   tariffs: { title: 'Тарифы покрывают всю неделю', step: 'tariffs' },
   shop_live: { title: 'Боевой магазин ЮKassa проверен: не тестовый, чеки по 54-ФЗ включены', step: 'payments' },
-  kkt: { title: 'Касса ресепшена: мост ККТ был на связи за 10 минут, ККТ фискальная', screen: 'kkt' },
+  kkt: { title: 'Касса ресепшена: мост ККТ был на связи за 10 минут, ККТ фискальная (касса выключена — пункт выполнен)', step: 'payments', stepLabel: 'Касса ресепшена', screen: 'kkt' },
   stickers: { title: 'QR-наклейки напечатаны хотя бы раз', step: 'stickers' },
   offer: { title: 'Принята оферта Бильярдума для клубов', step: 'go_live' },
 });
@@ -66,6 +67,7 @@ export function checklistView(checklist, failed = []) {
       ok: it.ok === true && !failed.includes(id),
       title: known?.title ?? `Пункт «${id}»`,
       step: known?.step ?? null,
+      stepLabel: known?.stepLabel ?? null,
       screen: known?.screen ?? null,
       detail: typeof it.detail === 'string' && it.detail.length <= 200 ? it.detail : null,
     };
@@ -225,4 +227,11 @@ export function kitLeadBody(form, { clubId, clubName, city, elapsedMs }) {
     website: '',
     elapsed_ms: elapsedMs,
   };
+}
+
+/** Редакция оферты: '2026-10-23' → «от 23.10.2026»; иначе как есть. */
+export function offerVersionText(version) {
+  if (typeof version !== 'string' || !version) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(version);
+  return m ? `от ${m[3]}.${m[2]}.${m[1]}` : version;
 }

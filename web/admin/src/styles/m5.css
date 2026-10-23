@@ -317,3 +317,5 @@
   .cl__go { grid-column: 3; }
 }
 .ob__content > .panel > .btn, .ob__content > .panel > .row { justify-self: start; }
+.rcp-state { white-space: normal; max-width: 100%; }
+.shop__flags .badge { white-space: normal; }

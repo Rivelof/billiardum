@@ -12,6 +12,8 @@ import {
   buildRules,
   defaultTariffForm,
   hallTypes,
+  kindOfType,
+  ruleKind,
   previewGrid,
   priceKey,
   priceLevels,
@@ -45,7 +47,12 @@ export function TariffsStep({ ctx, ob, reload, live }) {
   const [notice, setNotice] = useState(null);
 
   useEffect(() => {
-    api.hall(clubId).then((h) => setTypes(hallTypes(h))).catch(() => setTypes(['billiard_pyramid']));
+    // Типы столов в работе — из списка столов (kind, и смешанный стол тоже)
+    api
+      .resources(clubId)
+      .then((r) => setTypes(hallTypes(r?.resources)))
+      .catch(() => setTypes(['pyramid']));
+    // GET …/tariffs → { timezone, day_start_local, rules, resource_rules, coverage }
     api.tariffs(clubId).then((r) => setCurrent(Array.isArray(r?.rules) && r.rules.length ? r.rules : null)).catch(() => setCurrent(null));
   }, [clubId]);
 
@@ -106,7 +113,9 @@ function TariffWizard({ clubId, types, dayStart, live, canCancel, onCancel, onSa
   const bands = tariffBands(form, dayStart);
   const need = templateNeeds(form.template);
   const multi = types.length > 1;
-  const highlight = error?.data?.weekday ? { weekday: error.data.weekday, from: error.data.from, to: error.data.to, type: error.data.resource_type } : null;
+  // 400 tariff_gap | tariff_overlap { kind, weekday, from, to }: день, часы и тип столов
+  const errKind = TYPE_WORD[error?.data?.kind] ? error.data.kind : kindOfType(error?.data?.resource_type);
+  const highlight = error?.data?.weekday ? { weekday: error.data.weekday, from: error.data.from, to: error.data.to, type: errKind } : null;
 
   const toPreview = (e) => {
     e.preventDefault();
@@ -219,7 +228,7 @@ function TariffWizard({ clubId, types, dayStart, live, canCancel, onCancel, onSa
           {multi ? (
             <label class="check">
               <input type="checkbox" checked={form.perType} onChange={(e) => set({ perType: e.currentTarget.checked })} />
-              <span>Разные цены для {types.map((t) => TYPE_WORD[t].toLowerCase()).join(' и ')}</span>
+              <span>Разные цены по типам столов: {types.map((t) => TYPE_WORD[t].toLowerCase()).join(', ')}</span>
             </label>
           ) : null}
           <div class="tw__prices">
@@ -305,7 +314,7 @@ function TariffWizard({ clubId, types, dayStart, live, canCancel, onCancel, onSa
               </p>
             </div>
           ) : null}
-          <ErrorNote error={error} />
+          <ErrorNote error={error}>{errKind ? <p class="small">Тип столов: {TYPE_WORD[errKind].toLowerCase()}.</p> : null}</ErrorNote>
           <div class="row">
             <button type="button" class="btn btn--primary btn--lg" disabled={busy} onClick={save}>
               {busy ? 'Сохраняем…' : 'Сохранить тарифы'}
@@ -345,10 +354,15 @@ function TimeField({ id, label, value, error, onChange }) {
 
 /** Неделя по типам столов: если цены разные — переключатель типа. */
 function TypedWeek({ rules, types, dayStart, highlight }) {
-  const present = types.filter((t) => rules.some((r) => !r.resource_type || r.resource_type === t));
-  const list = present.length ? present : types;
+  const known = highlight?.type && !types.includes(highlight.type) ? [...types, highlight.type] : types;
+  const present = known.filter((t) => rules.some((r) => !ruleKind(r) || ruleKind(r) === t));
+  const list = present.length ? present : known;
   const [type, setType] = useState(highlight?.type && list.includes(highlight.type) ? highlight.type : list[0]);
-  const same = list.length > 1 && JSON.stringify(rulesOf(rules, list[0])) === JSON.stringify(rulesOf(rules, list[1]));
+  useEffect(() => {
+    if (highlight?.type && list.includes(highlight.type)) setType(highlight.type);
+  }, [highlight?.type]);
+  // Все правила на все типы (kind: null) — неделя одна, переключатель не нужен
+  const same = rules.every((r) => !ruleKind(r));
   return (
     <div class="stack">
       {list.length > 1 && !same ? (
@@ -365,8 +379,6 @@ function TypedWeek({ rules, types, dayStart, highlight }) {
   );
 }
 
-const rulesOf = (rules, type) =>
-  rules.filter((r) => r.resource_type === type).map((r) => [r.days, r.start_local, r.end_local, r.price_per_hour_kopecks ?? r.price_per_hour]);
 
 /**
  * Предпросмотр недели: 7 дней × 24 часа от начала суток клуба. Сетка — картинка для глаз (aria-hidden),

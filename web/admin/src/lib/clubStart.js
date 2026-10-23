@@ -98,12 +98,22 @@ export function tzForCity(name, cities = []) {
   return CITY_TZ[norm(name)] ?? null;
 }
 
-/** Подтверждённые карточки пользователя (M4, «Подтвердить клуб»), которые можно связать с новым клубом. */
-export function approvedListings(res) {
+/**
+ * Карточки, которые можно связать с новым клубом (M4, одобренная «Подтвердить клуб»):
+ * GET /api/clubs/claimable-listings → { items: [{ listing_id, name, address, city, city_id, timezone }] }.
+ */
+export function claimableListings(res) {
   const items = Array.isArray(res) ? res : Array.isArray(res?.items) ? res.items : [];
   return items
-    .filter((c) => c?.status === 'approved' && c?.listing?.id && !c.listing.club_id)
-    .map((c) => ({ id: c.listing.id, name: c.listing.name ?? 'Карточка клуба', city: c.listing.city ?? null, timezone: ZONE_IDS.has(c.listing.timezone) ? c.listing.timezone : null }));
+    .filter((c) => typeof c?.listing_id === 'string' && c.listing_id)
+    .map((c) => ({
+      id: c.listing_id,
+      name: c.name ?? 'Карточка клуба',
+      address: c.address ?? null,
+      city: c.city ?? null,
+      city_id: c.city_id ?? null,
+      timezone: ZONE_IDS.has(c.timezone) ? c.timezone : null,
+    }));
 }
 
 /** Ошибки формы по полям. */
@@ -117,11 +127,15 @@ export function clubStartErrors(form) {
   return errors;
 }
 
-/** Тело POST /api/clubs: город из справочника — city_id (или slug, если id нет), иначе — название. */
-export function clubStartBody(form, cities = []) {
+/**
+ * Тело POST /api/clubs: город из справочника — city_id, иначе — название. listing — выбранная карточка:
+ * её city_id, если город в форме тот же.
+ */
+export function clubStartBody(form, cities = [], listing = null) {
   const body = { name: String(form.name).trim(), timezone: form.timezone };
   const c = findCity(form.city, cities);
   if (c?.id) body.city_id = c.id;
+  else if (listing?.city_id && norm(listing.city) === norm(form.city)) body.city_id = listing.city_id;
   else body.city_name = c?.name ?? String(form.city).trim();
   if (form.listing_id) body.listing_id = form.listing_id;
   return body;

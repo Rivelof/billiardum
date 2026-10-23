@@ -83,7 +83,82 @@ export function PaymentsStep({ ctx, ob, reload, live }) {
       <div role="tabpanel" id={`shop-panel-${tab}`} aria-labelledby={`shop-tab-${tab}`} class="tabs__panel">
         <Shop key={tab} mode={tab} clubId={clubId} ob={ob} reload={reload} live={live} timeZone={ctx.timeZone} />
       </div>
+      <Reception clubId={clubId} live={live} reload={reload} />
     </div>
+  );
+}
+
+/**
+ * Касса ресепшена (пункт чек-листа kkt): включена — гости могут платить на ресепшене наличными и картой,
+ * чек пробивает ККТ клуба через мост; выключена — только онлайн. PATCH …/payment-settings { reception_enabled, reason? }.
+ */
+function Reception({ clubId, live, reload }) {
+  const [settings, setSettings] = useState(undefined);
+  const [reason, setReason] = useState('');
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    api
+      .clubPaymentSettings(clubId)
+      .then((r) => setSettings(r?.settings ?? null))
+      .catch((err) => {
+        setSettings(null);
+        if (err?.code !== 'not_found') setError(err);
+      });
+  }, [clubId]);
+  if (settings === undefined) return null;
+  const on = settings?.reception_enabled === true;
+  const toggle = async () => {
+    setTried(true);
+    if (live && !reason.trim()) {
+      document.getElementById('rcp-reason')?.focus();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.updateClubPaymentSettings(clubId, { reception_enabled: !on, ...(live ? { reason: reason.trim() } : {}) });
+      setSettings(res?.settings ?? res ?? { ...settings, reception_enabled: !on });
+      setReason('');
+      setTried(false);
+      reload();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section class="panel" aria-labelledby="rcp-title">
+      <h3 class="section-title" id="rcp-title">
+        Касса ресепшена
+      </h3>
+      <p class={`badge rcp-state ${on ? 'badge--free' : 'badge--off'}`}>
+        <Icon name={on ? 'check' : 'minus'} />
+        {on ? 'Включена: оплата на ресепшене, чек — ККТ клуба' : 'Выключена: гости платят только онлайн'}
+      </p>
+      <p class="hint">
+        {on
+          ? 'Перед запуском мост ККТ должен быть на связи, а ККТ — фискальной: это пункт чек-листа. Настройка моста — на экране «Касса ККТ».'
+          : 'Включите, если ресепшн будет принимать наличные и карту и продавать бар. Понадобится ККТ клуба и мост — экран «Касса ККТ».'}
+      </p>
+      {live ? (
+        <div class="field">
+          <label class="field__label" for="rcp-reason">
+            Причина
+          </label>
+          <textarea id="rcp-reason" class="field__input field__input--area" rows={2} maxLength={300} value={reason} aria-invalid={tried && !reason.trim() ? 'true' : undefined} aria-describedby="rcp-reason-e" onInput={(e) => setReason(e.currentTarget.value)} />
+          <p class={tried && !reason.trim() ? 'field__error' : 'field__hint'} id="rcp-reason-e">
+            {tried && !reason.trim() ? 'Клуб в боевом режиме: без причины не изменить.' : 'Уйдёт в журнал и владельцу в уведомлении.'}
+          </p>
+        </div>
+      ) : null}
+      <ErrorNote error={error} />
+      <button type="button" class="btn btn--secondary" disabled={busy} onClick={toggle}>
+        {busy ? 'Сохраняем…' : on ? 'Выключить кассу ресепшена' : 'Включить кассу ресепшена'}
+      </button>
+    </section>
   );
 }
 
@@ -307,7 +382,7 @@ function PaymentCheck({ mode, clubId, check, reload }) {
       setPayUrl(typeof res?.confirmation_url === 'string' && /^https:\/\//.test(res.confirmation_url) ? res.confirmation_url : null);
       await reload();
     } catch (err) {
-      setError(err);
+      setError(err?.code === 'not_configured' ? { code: 'shop_invalid' } : err);
     } finally {
       setBusy(false);
     }

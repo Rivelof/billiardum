@@ -7,7 +7,7 @@ import { useStore } from '../lib/store.js';
 import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import '../styles/m5.css';
-import { RU_ZONES, approvedListings, cityList, clubStartBody, clubStartErrors, tzForCity } from '../lib/clubStart.js';
+import { RU_ZONES, claimableListings, cityList, clubStartBody, clubStartErrors, tzForCity } from '../lib/clubStart.js';
 
 /**
  * «Подключить клуб» (M5.1, №152): вошедший по телефону создаёт клуб сам. Клуб стартует в тестовом режиме,
@@ -25,7 +25,7 @@ export function ClubStart() {
 
   useEffect(() => {
     api.cities().then((r) => setCities(cityList(r))).catch(() => setCities([]));
-    api.myClaims().then((r) => setListings(approvedListings(r))).catch(() => setListings([]));
+    api.claimableListings().then((r) => setListings(claimableListings(r))).catch(() => setListings([]));
   }, []);
 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
@@ -52,7 +52,7 @@ export function ClubStart() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.createClub(clubStartBody(form, cities));
+      const res = await api.createClub(clubStartBody(form, cities, listings.find((l) => l.id === form.listing_id)));
       await loadMe();
       navigate(`${BASE}c/${encodeURIComponent(res.club_id)}/onboarding`, { replace: true });
     } catch (err) {
@@ -89,7 +89,7 @@ export function ClubStart() {
                     <input type="radio" name="cs-listing" checked={form.listing_id === l.id} onChange={() => pickListing(l)} />
                     <span class="rolechoice__box">
                       <span class="rolechoice__title">Связать с карточкой: {l.name}</span>
-                      <span class="rolechoice__sub">{l.city ?? 'Город не указан'}</span>
+                      <span class="rolechoice__sub">{[l.city, l.address].filter(Boolean).join(', ') || 'Город не указан'}</span>
                     </span>
                   </label>
                 ))}

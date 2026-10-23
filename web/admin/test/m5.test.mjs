@@ -5,6 +5,8 @@ import { formatMoney } from '@billiardum/shared/format';
 import { ApiError } from '@billiardum/shared/api';
 import {
   buildRules,
+  kindOfType,
+  ruleKind,
   defaultTariffForm,
   hallTypes,
   previewGrid,
@@ -28,6 +30,10 @@ import {
   nextSpot,
   numberError,
   placeUnset,
+  planTables,
+  hallSize,
+  retireBusyText,
+  resourceBody,
   pxToCm,
   resourcePatch,
   rotateTable,
@@ -37,6 +43,7 @@ import {
   STEPS,
   checklistView,
   guestTableUrl,
+  offerVersionText,
   inviteShare,
   kitLeadBody,
   nextStepOf,
@@ -50,7 +57,7 @@ import {
   stepsView,
   webhookUrl,
 } from '../src/lib/onboarding.js';
-import { approvedListings, cityList, clubStartBody, clubStartErrors, tzForCity } from '../src/lib/clubStart.js';
+import { claimableListings, cityList, clubStartBody, clubStartErrors, tzForCity } from '../src/lib/clubStart.js';
 import { clubMode } from '../src/lib/auth.js';
 import { createBackend } from '../src/mock/backend.js';
 
@@ -63,17 +70,13 @@ const DEV = 'd1000000-0000-4000-8000-000000000101';
 
 // ---------------- тарифы ----------------
 
-test('тарифы: шаблон «Будни и выходные × день и вечер» → правила с разрезом в полночь, как в сиде', () => {
+test('тарифы: шаблон «Будни и выходные × день и вечер» → правила сервера { kind: null, from, to } через полночь', () => {
   const form = { ...defaultTariffForm('weekend_day_evening'), weekend: [5, 6, 7], prices: { wd_day: '500', wd_eve: '800', we_day: '600', we_eve: '1 000' } };
-  assert.deepEqual(tariffFormErrors(form, ['billiard_pyramid']), {});
-  const rules = buildRules(form, ['billiard_pyramid']);
-  assert.equal(rules.length, 6, 'день + вечер до полуночи + ночь — для будней и выходных');
-  const eve = rules.filter((r) => r.price_per_hour_kopecks === 80000);
-  assert.deepEqual(eve.map((r) => [r.start_local, r.end_local]), [['17:00', '00:00'], ['00:00', '06:00']]);
-  assert.deepEqual(eve[0].days, [1, 2, 3, 4]);
-  assert.equal(rules[0].min_minutes, 30);
-  assert.equal(rules[0].step_minutes, 1);
-  const cov = weekCoverage(rules, 'billiard_pyramid');
+  assert.deepEqual(tariffFormErrors(form, ['pyramid']), {});
+  const rules = buildRules(form, ['pyramid', 'mixed']);
+  assert.equal(rules.length, 4, 'одна цена на все типы — по правилу на полосу, kind: null');
+  assert.deepEqual(rules[1], { kind: null, days: [1, 2, 3, 4], from: '17:00', to: '06:00', price_per_hour_kopecks: 80000, step_minutes: 1, min_minutes: 30 });
+  const cov = weekCoverage(rules, 'mixed');
   assert.equal(cov.gaps.length, 0);
   assert.equal(cov.overlaps.length, 0);
   // Ночь с пятницы на субботу — пятничная (№43): в пятницу 02:00 — цена выходного вечера
@@ -83,31 +86,35 @@ test('тарифы: шаблон «Будни и выходные × день и
 
 test('тарифы: ошибки формы словами — цена, граница вечера и ночи, выходные', () => {
   const f = { ...defaultTariffForm('day_evening_night'), evening: '06:00', night: '05:00', prices: { day: '0', eve: 'абв' } };
-  const e = tariffFormErrors(f, ['billiard_pyramid']);
+  const e = tariffFormErrors(f, ['pyramid']);
   assert.match(e.evening, /позже начала суток/);
   assert.match(e['price:day'], /от 1 ₽/);
   assert.ok(e['price:eve'] && e['price:night']);
-  const w = tariffFormErrors({ ...defaultTariffForm('weekend'), weekend: [], prices: { wd: '1', we: '1' } }, ['billiard_pyramid']);
+  const w = tariffFormErrors({ ...defaultTariffForm('weekend'), weekend: [], prices: { wd: '1', we: '1' } }, ['pyramid']);
   assert.match(w.weekend, /хотя бы один/);
-  const night = tariffFormErrors({ ...defaultTariffForm('day_evening_night'), evening: '20:00', night: '19:00', prices: { day: '1', eve: '1', night: '1' } }, ['billiard_pyramid']);
+  const night = tariffFormErrors({ ...defaultTariffForm('day_evening_night'), evening: '20:00', night: '19:00', prices: { day: '1', eve: '1', night: '1' } }, ['pyramid']);
   assert.match(night.night, /позже вечера/);
 });
 
-test('тарифы: разные цены по типам столов — поле на тип, правила на каждый тип', () => {
-  const types = ['billiard_pool', 'billiard_pyramid'];
-  const f = { ...defaultTariffForm('flat'), perType: true, prices: { 'all:billiard_pool': '500' } };
+test('тарифы: разные цены по типам столов, смешанный стол — свой тип со своим правилом', () => {
+  const types = ['pyramid', 'mixed'];
+  const f = { ...defaultTariffForm('flat'), perType: true, prices: { 'all:pyramid': '500' } };
   const e = tariffFormErrors(f, types);
-  assert.ok(e['price:all:billiard_pyramid']);
-  assert.equal(e['price:all:billiard_pool'], undefined);
-  const rules = buildRules({ ...f, prices: { ...f.prices, 'all:billiard_pyramid': '700' } }, types);
-  assert.deepEqual(rules.map((r) => [r.resource_type, r.price_per_hour_kopecks, r.start_local, r.end_local]), [
-    ['billiard_pool', 50000, '06:00', '00:00'],
-    ['billiard_pool', 50000, '00:00', '06:00'],
-    ['billiard_pyramid', 70000, '06:00', '00:00'],
-    ['billiard_pyramid', 70000, '00:00', '06:00'],
+  assert.ok(e['price:all:mixed'], 'у смешанного стола — своя цена');
+  assert.equal(e['price:all:pyramid'], undefined);
+  const rules = buildRules({ ...f, prices: { ...f.prices, 'all:mixed': '700' } }, types);
+  assert.deepEqual(rules.map((r) => [r.kind, r.price_per_hour_kopecks, r.from, r.to]), [
+    ['pyramid', 50000, '06:00', '06:00'],
+    ['mixed', 70000, '06:00', '06:00'],
   ]);
-  assert.deepEqual(hallTypes([{ resource: { type: 'billiard_pyramid' } }, { resource: { type: 'billiard_pool' } }, { resource: { type: 'x' } }]), ['billiard_pool', 'billiard_pyramid']);
-  assert.deepEqual(hallTypes([]), ['billiard_pyramid']);
+  assert.equal(weekCoverage(rules, 'mixed').gaps.length, 0);
+  assert.equal(weekCoverage(rules, 'pool').gaps.length, 7, 'у пула правил нет — дыра в каждом дне');
+  // типы столов: kind из списка столов, type 'billiard_*' из зала; выведенные не считаются
+  assert.deepEqual(hallTypes([{ kind: 'mixed' }, { resource: { type: 'billiard_pool' } }, { kind: 'snooker', active: false }, { resource: { type: 'x' } }]), ['pool', 'mixed']);
+  assert.deepEqual(hallTypes([]), ['pyramid']);
+  assert.equal(ruleKind({ kind: null, resource_type: 'billiard_pool' }), null);
+  assert.equal(ruleKind({ resource_type: 'billiard_mixed' }), 'mixed');
+  assert.equal(kindOfType('billiard_snooker'), 'snooker');
 });
 
 test('тарифы: дыры и пересечения недели; сетка по часам и подсветка ответа сервера', () => {
@@ -116,7 +123,7 @@ test('тарифы: дыры и пересечения недели; сетка 
     { resource_type: 'billiard_pyramid', days: [1, 2, 3, 4, 5, 6], start_local: '00:00', end_local: '06:00', price_per_hour_kopecks: 80000 },
     { resource_type: 'billiard_pyramid', days: [2], start_local: '17:00', end_local: '18:00', price_per_hour_kopecks: 90000 },
   ];
-  const cov = weekCoverage(rules, 'billiard_pyramid');
+  const cov = weekCoverage(rules, 'pyramid');
   assert.deepEqual(cov.gaps.map(({ weekday, from, to }) => ({ weekday, from, to })), [{ weekday: 7, from: '00:00', to: '06:00' }]);
   assert.deepEqual(cov.overlaps.map(({ weekday, from, to }) => ({ weekday, from, to })), [{ weekday: 2, from: '17:00', to: '18:00' }]);
   assert.equal(spanText(cov.gaps[0], 'gap'), 'В воскресенье с 00:00 до 06:00 нет цены.');
@@ -138,12 +145,16 @@ test('тарифы: дыры и пересечения недели; сетка 
 
 test('тарифы: неделя словами — одинаковые дни вместе; цена сервера из price_per_hour тоже читается', () => {
   const form = { ...defaultTariffForm('weekend'), prices: { wd: '500', we: '700' } };
-  const lines = weekSummary(weekCoverage(buildRules(form, ['billiard_pyramid']), 'billiard_pyramid'));
+  const lines = weekSummary(weekCoverage(buildRules(form, ['pyramid']), 'pyramid'));
   assert.deepEqual(lines, [
     { days: 'Пн–Пт', text: `круглые сутки — ${formatMoney(50000)} в час` },
     { days: 'Сб–Вс', text: `круглые сутки — ${formatMoney(70000)} в час` },
   ]);
   const legacy = weekCoverage([{ days: [1, 2, 3, 4, 5, 6, 7], start_local: '06:00', end_local: '06:00', price_per_hour: 40000 }], null);
+  // ответ сервера: '24:00' и kind
+  const srv = weekCoverage([{ kind: 'pool', days: [1, 2, 3, 4, 5, 6, 7], from: '06:00', to: '24:00', price_per_hour_kopecks: 1 }, { kind: 'pool', days: [1, 2, 3, 4, 5, 6, 7], from: '00:00', to: '06:00', price_per_hour_kopecks: 2 }], 'pool');
+  assert.equal(srv.gaps.length, 0);
+  assert.equal(srv.overlaps.length, 0);
   assert.equal(legacy.gaps.length, 0);
   assert.equal(legacy.days[3].price[0], 40000);
   assert.deepEqual(tariffBands({ ...defaultTariffForm('day_evening'), evening: '18:00' }).map((b) => b.time), ['06:00–18:00', '18:00–06:00']);
@@ -291,8 +302,9 @@ test('«Подключить клуб»: города, пояс по город�
   assert.deepEqual(clubStartBody({ name: 'Свояк', city: 'Урюпинск', timezone: 'Europe/Volgograd', listing_id: 'l1' }, cities), { name: 'Свояк', timezone: 'Europe/Volgograd', city_name: 'Урюпинск', listing_id: 'l1' });
   const e = clubStartErrors({ name: 'К', city: '', timezone: 'Europe/London' });
   assert.ok(e.name && e.city && e.timezone);
-  const listings = approvedListings({ items: [{ status: 'approved', listing: { id: 'l1', name: 'Свояк', city: 'Екатеринбург' } }, { status: 'new', listing: { id: 'l2' } }, { status: 'approved', listing: { id: 'l3', club_id: 'c' } }] });
-  assert.deepEqual(listings.map((l) => l.id), ['l1']);
+  const listings = claimableListings({ items: [{ listing_id: 'l1', name: 'Свояк', address: 'ул. Ленина, 1', city: 'Урюпинск', city_id: 'u1', timezone: 'Europe/Volgograd' }, { name: 'без id' }] });
+  assert.deepEqual(listings.map((l) => [l.id, l.city_id, l.timezone]), [['l1', 'u1', 'Europe/Volgograd']]);
+  assert.equal(clubStartBody({ name: 'Свояк', city: 'урюпинск', timezone: 'Europe/Volgograd', listing_id: 'l1' }, cities, listings[0]).city_id, 'u1', 'город карточки — её city_id');
   assert.equal(clubMode({ mode: 'test' }), 'test');
   assert.equal(clubMode({}), 'live', 'сервер не прислал режим — плашки нет');
 });
@@ -308,14 +320,13 @@ test('заглушка onboarding: новый пользователь без к
   const b = createBackend(memory());
   b.scenario('onboarding');
   assert.deepEqual((await req(b, 'GET', '/api/me')).body.clubs, []);
-  const claims = (await req(b, 'GET', '/api/directory/claims/mine')).body;
-  const listing = claims.items[0].listing.id;
+  const listing = claimableListings((await req(b, 'GET', '/api/clubs/claimable-listings')).body)[0].id;
   const c = await req(b, 'POST', '/api/clubs', { name: 'Тест', city_name: 'Пермь', timezone: 'Asia/Yekaterinburg', listing_id: listing });
   assert.equal(c.status, 201);
   assert.equal(c.body.mode, 'test');
   const me = (await req(b, 'GET', '/api/me')).body;
   assert.deepEqual(me.clubs.map((x) => [x.club_id, x.role, x.mode]), [[c.body.club_id, 'owner', 'test']]);
-  assert.equal(approvedListings((await req(b, 'GET', '/api/directory/claims/mine')).body).length, 0, 'карточка уже связана');
+  assert.equal(claimableListings((await req(b, 'GET', '/api/clubs/claimable-listings')).body).length, 0, 'карточка уже связана');
   await req(b, 'POST', '/api/clubs', { name: 'Тест 2', city_name: 'Пермь', timezone: 'Asia/Yekaterinburg' });
   await req(b, 'POST', '/api/clubs', { name: 'Тест 3', city_name: 'Пермь', timezone: 'Asia/Yekaterinburg' });
   assert.equal((await req(b, 'POST', '/api/clubs', { name: 'Тест 4', city_name: 'Пермь', timezone: 'Asia/Yekaterinburg' })).body.error, 'clubs_limit');
@@ -330,16 +341,25 @@ test('заглушка onboarding: зал, тариф с дырой (400 tariff_
   b.scenario('onboarding');
   const club = (await req(b, 'POST', '/api/clubs', { name: 'Тест', city_name: 'Пермь', timezone: 'Asia/Yekaterinburg' })).body.club_id;
   const base = `/api/clubs/${club}`;
-  assert.equal((await req(b, 'PUT', `${base}/hall`, { width: 1800, height: 1200 })).status, 200);
+  assert.deepEqual(hallSize((await req(b, 'PUT', `${base}/hall`, { width: 1800, height: 1200 })).body), { width: 1800, height: 1200 });
   const t1 = (await req(b, 'POST', `${base}/resources`, { number: 1, kind: 'pyramid', plan_x: 300, plan_y: 300, plan_rotation: 0 })).body;
+  const t2 = (await req(b, 'POST', `${base}/resources`, { number: 2, kind: 'mixed', plan_x: 900, plan_y: 300, plan_rotation: 0 })).body;
+  assert.equal(t2.type, 'billiard_mixed');
+  const listRes = (await req(b, 'GET', `${base}/resources`)).body;
+  assert.deepEqual(hallSize(listRes), { width: 1800, height: 1200 });
+  assert.deepEqual(planTables(listRes.resources).map((x) => [x.number, x.kind]), [[1, 'pyramid'], [2, 'mixed']]);
   assert.equal((await req(b, 'POST', `${base}/resources`, { number: 1, kind: 'pool', plan_x: 900, plan_y: 300, plan_rotation: 0 })).body.error, 'duplicate');
   assert.equal((await req(b, 'PATCH', `${base}/resources/${t1.id}`, { plan_x: 400, plan_rotation: 90 })).body.plan_rotation, 90);
 
-  const gap = await req(b, 'PUT', `${base}/tariffs`, { rules: [{ resource_type: 'billiard_pyramid', days: [1, 2, 3, 4, 5, 6, 7], start_local: '06:00', end_local: '00:00', price_per_hour_kopecks: 50000, step_minutes: 1, min_minutes: 30 }] });
+  // правила только для пирамиды — у смешанного стола дыра: 400 tariff_gap { kind: 'mixed', … }
+  const onlyPyramid = buildRules({ ...defaultTariffForm('flat'), perType: true, prices: { 'all:pyramid': '500' } }, ['pyramid']);
+  const gap = await req(b, 'PUT', `${base}/tariffs`, { rules: onlyPyramid });
   assert.equal(gap.status, 400);
-  assert.deepEqual([gap.body.error, gap.body.weekday, gap.body.from, gap.body.to], ['tariff_gap', 1, '00:00', '06:00']);
-  const rules = buildRules({ ...defaultTariffForm('flat'), prices: { all: '500' } }, ['billiard_pyramid']);
-  assert.equal((await req(b, 'PUT', `${base}/tariffs`, { rules })).status, 200);
+  assert.deepEqual([gap.body.error, gap.body.kind, gap.body.weekday, gap.body.from, gap.body.to], ['tariff_gap', 'mixed', 1, '06:00', '06:00']);
+  const rules = buildRules({ ...defaultTariffForm('flat'), prices: { all: '500' } }, hallTypes(listRes.resources));
+  const saved = (await req(b, 'PUT', `${base}/tariffs`, { rules })).body;
+  assert.equal(saved.coverage.ok, true);
+  assert.equal(saved.day_start_local, '06:00');
 
   assert.equal((await req(b, 'POST', `${base}/catalog/import?dry_run=1`, { __raw: new Uint8Array([1, 2]), __type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })).body.error, 'xlsx_invalid');
   const dry = (await req(b, 'POST', `${base}/catalog/import?dry_run=1`, { __raw: new Uint8Array([0x50, 0x4b, 3, 4]), __type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })).body;
@@ -366,9 +386,14 @@ test('заглушка onboarding: зал, тариф с дырой (400 tariff_
   const hall = (await req(b, 'GET', `${base}/hall`)).body;
   assert.equal(hall[0].device.online, true);
 
+  await req(b, 'POST', `${base}/devices/bind`, { qr: `BLD1:d1000000-0000-4000-8000-000000000102:CODE123`, resource_id: t2.id });
+  t += 6000;
+  // касса ресепшена включена, мост не на связи — пункт kkt не выполнен
+  assert.equal((await req(b, 'PATCH', `${base}/payment-settings`, { reception_enabled: true })).body.settings.reception_enabled, true);
   const fail = await req(b, 'POST', `${base}/go-live`, { accept_offer: true });
   assert.equal(fail.status, 409);
-  assert.deepEqual(fail.body.failed, ['shop_live', 'stickers']);
+  assert.deepEqual(fail.body.failed, ['shop_live', 'kkt', 'stickers']);
+  await req(b, 'PATCH', `${base}/payment-settings`, { reception_enabled: false });
   assert.equal((await req(b, 'GET', `${base}/qr-stickers.pdf?resources=${t1.id}`)).status, 200);
   await req(b, 'PUT', `${base}/payment-settings/live`, { shop_id: '506751', secret_key: 'live_abcdefgh1234' });
   assert.equal((await req(b, 'POST', `${base}/go-live`, { accept_offer: true })).body.mode, 'live');
@@ -376,7 +401,27 @@ test('заглушка onboarding: зал, тариф с дырой (400 tariff_
   // В боевом режиме тариф и вывод стола — только с причиной
   assert.equal((await req(b, 'PUT', `${base}/tariffs`, { rules })).body.error, 'reason_required');
   assert.equal((await req(b, 'PATCH', `${base}/resources/${t1.id}`, { active: false })).body.error, 'reason_required');
+  assert.equal((await req(b, 'POST', `${base}/resources`, { number: 3, kind: 'pool', plan_x: 300, plan_y: 900 })).body.error, 'reason_required', 'стол в live — с причиной');
+  assert.equal((await req(b, 'PATCH', `${base}/payment-settings`, { reception_enabled: true })).body.error, 'reason_required');
   assert.equal((await req(b, 'PATCH', `${base}/resources/${t1.id}`, { active: false, reason: 'Ремонт' })).body.active, false);
+  const after = (await req(b, 'GET', `${base}/resources`)).body.resources;
+  assert.equal(after.find((x) => x.id === t1.id).active, false, 'выведенный стол остаётся в списке');
+  assert.equal(planTables(after).length, 1);
+});
+
+test('вывод занятого стола: 409 table_busy { reason } — что мешает словами', async () => {
+  const b = createBackend(memory());
+  b.scenario('owner');
+  const busy = (await req(b, 'GET', '/api/clubs/c/hall')).body.find((x) => x.status === 'busy');
+  const res = await req(b, 'PATCH', `/api/clubs/c/resources/${busy.resource.id}`, { active: false, reason: 'x' });
+  assert.deepEqual([res.status, res.body.error, res.body.reason, res.body.resource_id], [409, 'table_busy', 'session', busy.resource.id]);
+  assert.match(retireBusyText('session', 3), /идёт игра/);
+  assert.match(retireBusyText('booking', 3), /бронь впереди/);
+  assert.match(retireBusyText('что-то', 3), /занят/);
+  assert.equal(kindOf({ type: 'billiard_mixed' }), 'mixed');
+  assert.deepEqual(resourceBody({ number: 1, kind: 'mixed', plan_x: 1, plan_y: 2, plan_rotation: 360 }, ' новый стол '), { number: 1, kind: 'mixed', plan_x: 1, plan_y: 2, plan_rotation: 0, reason: 'новый стол' });
+  assert.equal(offerVersionText('2026-10-23'), 'от 23.10.2026');
+  assert.equal(checklistView({ items: [{ id: 'kkt', ok: false }] })[0].stepLabel, 'Касса ресепшена');
 });
 
 test('заглушка: ресепшн не видит мастер, магазины и чек-лист (T28)', async () => {

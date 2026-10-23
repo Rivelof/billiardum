@@ -6,11 +6,11 @@ import { parseRubles } from './cash.js';
  *
  * Время — местное время клуба (инвариант 10). Сутки клуба начинаются в day_start_local (по умолчанию 06:00, №43):
  * ночь с пятницы на субботу 00:00–06:00 — пятничная. Поэтому шаблоны считают минуты от начала суток клуба
- * («рабочие минуты», 0…1440), а в правило уходит местное время, разрезанное в полночь — как в сиде:
- * 17:00–00:00 и 00:00–06:00 с теми же днями.
+ * («рабочие минуты», 0…1440); интервал правила может переходить через полночь (18:00–06:00), from = to — сутки.
  *
- * Правило — строка bl.tariff_rules: { resource_type, days: [1…7], start_local, end_local, price_per_hour_kopecks,
- * step_minutes, min_minutes }. День недели: 1 — понедельник … 7 — воскресенье.
+ * Правило мастера (server/setup/tariffs.mjs): { kind: pyramid | pool | snooker | mixed | null (все типы столов),
+ * days: [1…7], from: 'HH:MM', to: 'HH:MM', price_per_hour_kopecks, step_minutes, min_minutes }.
+ * Читаем и старую форму: resource_type 'billiard_*', start_local, end_local, price_per_hour. День недели: 1 — пн.
  */
 
 export const DAY_MIN = 1440;
@@ -19,8 +19,23 @@ export const WEEKDAY_SHORT = Object.freeze(['', 'Пн', 'Вт', 'Ср', 'Чт', 
 export const WEEKDAY_LONG = Object.freeze(['', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']);
 const ON_WEEKDAY = ['', 'в понедельник', 'во вторник', 'в среду', 'в четверг', 'в пятницу', 'в субботу', 'в воскресенье'];
 
-/** Типы столов в тарифе (bl.tariff_rules.resource_type) и их названия. */
-export const TYPE_WORD = Object.freeze({ billiard_pyramid: 'Пирамида', billiard_pool: 'Пул', billiard_snooker: 'Снукер' });
+/** Типы столов в тарифе (kind) и их названия; порядок — как в редакторе зала. */
+export const TYPE_WORD = Object.freeze({ pyramid: 'Пирамида', pool: 'Пул', snooker: 'Снукер', mixed: 'Пирамида и пул' });
+const KIND_ORDER = Object.keys(TYPE_WORD);
+
+/** Тип столов из 'billiard_*' (старые ответы, resource.type). */
+export function kindOfType(type) {
+  const m = /^billiard_(pyramid|pool|snooker|mixed)$/.exec(String(type ?? ''));
+  return m ? m[1] : null;
+}
+
+/** Тип столов правила: kind (null — все типы), иначе resource_type. */
+export function ruleKind(r) {
+  if (r?.kind !== undefined) return TYPE_WORD[r.kind] ? r.kind : null;
+  return kindOfType(r?.resource_type);
+}
+const ruleFrom = (r) => r?.from ?? r?.start_local;
+const ruleTo = (r) => r?.to ?? r?.end_local;
 
 /** 'HH:MM' → минуты от полуночи; не время — null. '24:00' — 0. */
 export function toMinutes(hhmm) {
@@ -173,28 +188,25 @@ export function tariffFormErrors(form, types, dayStart = '06:00') {
 }
 
 /**
- * Правила тарифа из формы: для каждого типа столов клуба и каждой полосы, с разрезом в местную полночь.
- * @returns {{ resource_type: string, days: number[], start_local: string, end_local: string, price_per_hour_kopecks: number, step_minutes: number, min_minutes: number }[]}
+ * Правила тарифа из формы: одна цена на все типы столов — правила с kind: null (подходят и к смешанному столу);
+ * разные цены — по правилу на каждый тип столов клуба. Интервал — по полосе шаблона, через полночь не режется.
+ * @returns {{ kind: string | null, days: number[], from: string, to: string, price_per_hour_kopecks: number, step_minutes: number, min_minutes: number }[]}
  */
 export function buildRules(form, types, dayStart = '06:00') {
   const rules = [];
-  const midnight = workMinute('00:00', dayStart);
-  for (const type of types) {
+  for (const kind of form.perType ? types : [null]) {
     for (const b of tariffBands(form, dayStart)) {
       if (!b.days.length || b.to <= b.from) continue;
-      const price = parseRubles(String(form.prices?.[priceKey(b.key, form.perType ? type : null)] ?? ''));
-      const cuts = midnight > b.from && midnight < b.to ? [[b.from, midnight], [midnight, b.to]] : [[b.from, b.to]];
-      for (const [from, to] of cuts) {
-        rules.push({
-          resource_type: type,
-          days: [...b.days],
-          start_local: localOf(from, dayStart),
-          end_local: localOf(to, dayStart),
-          price_per_hour_kopecks: price ?? 0,
-          step_minutes: form.step_minutes,
-          min_minutes: form.min_minutes,
-        });
-      }
+      const price = parseRubles(String(form.prices?.[priceKey(b.key, kind)] ?? ''));
+      rules.push({
+        kind,
+        days: [...b.days],
+        from: localOf(b.from, dayStart),
+        to: localOf(b.to, dayStart),
+        price_per_hour_kopecks: price ?? 0,
+        step_minutes: form.step_minutes,
+        min_minutes: form.min_minutes,
+      });
     }
   }
   return rules;
@@ -220,9 +232,10 @@ export function weekCoverage(rules, type, dayStart = '06:00') {
     }
   };
   for (const r of rules ?? []) {
-    if (type && r.resource_type && r.resource_type !== type) continue;
-    const s = workMinute(r.start_local, dayStart);
-    let e = workMinute(r.end_local, dayStart);
+    const k = ruleKind(r);
+    if (type && k && k !== type) continue;
+    const s = workMinute(ruleFrom(r), dayStart);
+    let e = workMinute(ruleTo(r), dayStart);
     if (s === null || e === null) continue;
     if (e <= s) e += DAY_MIN;
     for (const d of r.days ?? []) {
@@ -346,10 +359,19 @@ export function spanText(span, kind = 'gap') {
   return `${s[0].toUpperCase()}${s.slice(1)}.`;
 }
 
-/** Типы столов клуба для тарифа из зала: resource.type ('billiard_*'). Пусто — пирамида (ещё нет столов). */
+/**
+ * Типы столов клуба в работе (kind) из зала или списка столов: resource.kind, иначе resource.type 'billiard_*'.
+ * Пусто — пирамида (ещё нет столов).
+ */
 export function hallTypes(hall) {
-  const types = [...new Set((hall ?? []).map((t) => t.resource?.type).filter((t) => TYPE_WORD[t]))];
-  return types.length ? types.sort() : ['billiard_pyramid'];
+  const kinds = new Set();
+  for (const t of hall ?? []) {
+    const r = t.resource ?? t;
+    if (r.active === false) continue;
+    const k = TYPE_WORD[r.kind] ? r.kind : kindOfType(r.type);
+    if (k) kinds.add(k);
+  }
+  return kinds.size ? KIND_ORDER.filter((k) => kinds.has(k)) : ['pyramid'];
 }
 
 /** Тело PUT /api/clubs/{club}/tariffs: в боевом режиме — с причиной (инвариант 8). */

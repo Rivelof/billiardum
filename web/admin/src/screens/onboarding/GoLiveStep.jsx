@@ -6,7 +6,7 @@ import { api } from '../../lib/api.js';
 import { setClubMode } from '../../lib/auth.js';
 import { linkHandler } from '../../lib/router.js';
 import { BASE } from '../../lib/env.js';
-import { checklistView, stepById } from '../../lib/onboarding.js';
+import { checklistView, offerVersionText, stepById } from '../../lib/onboarding.js';
 
 /**
  * Шаг «Запуск» (№160): чек-лист сервера с переходом к шагу, оферта и «Перейти в боевой режим».
@@ -92,7 +92,7 @@ export function GoLiveStep({ ctx, ob, reload, live, goTo }) {
               </span>
               {!i.ok && i.step ? (
                 <a class="btn btn--secondary btn--sm cl__go" href={`${BASE}c/${encodeURIComponent(clubId)}/onboarding/${i.step}`} onClick={linkHandler}>
-                  {stepById(i.step)?.title ?? 'К шагу'}
+                  {i.stepLabel ?? stepById(i.step)?.title ?? 'К шагу'}
                   <Icon name="forward" />
                 </a>
               ) : null}
@@ -119,6 +119,7 @@ export function GoLiveStep({ ctx, ob, reload, live, goTo }) {
             ) : (
               'оферту Бильярдума для клубов'
             )}
+            {offerVersionText(ob.offer?.version) ? ` (редакция ${offerVersionText(ob.offer.version)})` : ''}
           </span>
         </label>
         {tried && !offer ? (

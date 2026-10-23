@@ -12,6 +12,8 @@ test('вид стола по типу ресурса', () => {
   assert.equal(tableKind(undefined), 'pyramid');
   assert.equal(typeLabel('billiard_pool'), 'Пул, 9 футов');
   assert.equal(typeLabel('billiard_snooker'), 'Снукер, 12 футов');
+  assert.equal(typeLabel('billiard_mixed'), 'Стол под пирамиду и пул', 'M5.1: смешанный стол');
+  assert.equal(typeLabel('billiard_mixed', 'Стол 3'), 'Стол под пирамиду и пул');
   assert.equal(typeLabel('billiard_pool', 'VIP-пул'), 'VIP-пул');
   assert.equal(typeLabel('billiard_pyramid', 'Стол 2'), 'Русская пирамида, 12 футов', 'название «Стол N» не повторяем');
   assert.equal(tableState({ status: 'fault' }).word, 'Неисправность');

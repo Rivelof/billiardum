@@ -18,6 +18,8 @@ const TYPE_LABEL = {
   pyramid: 'Русская пирамида, 12 футов',
   snooker: 'Снукер, 12 футов',
   pool: 'Пул, 9 футов',
+  // M5.1: стол под пирамиду и пул (billiard_mixed)
+  mixed: 'Стол под пирамиду и пул',
 };
 
 /**
@@ -38,6 +40,7 @@ export function typeLabel(type, title) {
   // Название вида «Стол 2» ничего не добавляет к номеру — тогда подпись по типу
   if (title && !/^стол\s*№?\s*\d+$/i.test(title.trim())) return title;
   if (/snooker/i.test(type ?? '')) return TYPE_LABEL.snooker;
+  if (/mixed/i.test(type ?? '')) return TYPE_LABEL.mixed;
   return TYPE_LABEL[tableKind(type)];
 }
 

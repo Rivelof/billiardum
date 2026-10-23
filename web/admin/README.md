@@ -117,16 +117,13 @@ M3 на других экранах: план зала (Ресепшн, Сейч
 - **Плашка режима** (`ModeNote` в `Shell` и на экране бара): «Тестовый режим» — строка под шапкой, прокручивается с экраном; владельцу — «Чек-лист запуска». `suspended` — красная плашка.
 - Чанки: `ClubStart` и `Onboarding` грузятся лениво (`components/Lazy.jsx`), их стили — `styles/m5.css`; в основной сборке — только `styles/m5-base.css` (плашка, сканер, приглашение).
 
-**Допущения по API (контракт молчит, backend подстраивается или оркестратор согласует):**
-- `GET /api/me` → `clubs[].mode` (`test | live | suspended`); без поля клуб считается боевым.
-- Идентификаторы шагов `steps[].id` и пунктов `checklist.items[].id` — как выше и `tables, devices, tariffs, shop_live, kkt, stickers, offer`; `detail` показывается, если это короткий текст.
-- `GET …/onboarding` дополнительно: `hall {width, height}` (см), `day_start_local`, `payment_checks {test, live}` = `{payment_id, status: pending|succeeded|canceled, refunded, webhook_at, created_at}`, необязательные `offer_url`, `webhook_url`.
-- Правило тарифа: `{resource_type, days, start_local, end_local, price_per_hour_kopecks, step_minutes, min_minutes}`; `GET /api/clubs/{club}/tariffs → {rules}`. Неделя — все 24 часа: часы закрытия клуба мастер не передаёт. `GET /api/tariff-templates` не используется: шаблоны собираются на клиенте.
-- `POST …/resources` → стол (`id`); дубль номера — 409 `duplicate`.
-- Импорт `.xlsx`: тело с `Content-Type` таблицы, предпросмотр — `?dry_run=1`; ответ как у CSV и, при `dry_run`, `rows`.
-- Приглашение: `POST …/staff/invites`, при 404/405 — прежний `POST …/staff`.
-- Карточки для связи: `GET /api/directory/claims/mine → {items:[{status, listing:{id, name, city, timezone?, club_id?}}]}`; справочник городов — `id` и `timezone` в `/api/public/cities`, если есть.
-- Проверочный платёж в боевом магазине может вернуть `confirmation_url` — показываем «Оплатить 1 ₽ на странице ЮKassa».
+**Сверено с сервером** (`server/setup/README.md`, `server/clubs/README.md`):
+- Зал — `GET /api/clubs/{club}/resources → {plan: {width_cm, height_cm}, resources}` (выведенные — `active: false`), `PUT …/hall → {plan}`; идёт ли игра — из `GET …/hall`. Тип стола — `kind` (`pyramid | pool | snooker | mixed`, `billiard_mixed`). В `live` добавление и вывод — с причиной (400 `reason_required`); занятый стол — 409 `table_busy {reason, resource_id}`, причина словами (`retireBusyText`).
+- Тарифы — правило `{kind | null, days, from, to, price_per_hour_kopecks, min_minutes, step_minutes}`: одна цена — `kind: null` (подходит и смешанному столу), разные — по правилу на каждый тип в работе, включая `mixed`. Интервал идёт через полночь (`18:00–06:00`), `from = to` — сутки. `GET …/tariffs → {timezone, day_start_local, rules, resource_rules, coverage}`. 400 `tariff_gap | tariff_overlap {kind, weekday, from, to}` подсвечивает тип, день и часы. Шаблоны собираются на клиенте (`GET /api/tariff-templates` не нужен).
+- Карточки для связи — `GET /api/clubs/claimable-listings → {items: [{listing_id, name, address, city, city_id, timezone}]}`.
+- Касса ресепшена (пункт `kkt`) — `GET | PATCH /api/clubs/{club}/payment-settings {reception_enabled, reason?}` на шаге «ЮKassa».
+- `GET …/onboarding`: `steps`, `checklist`, `payment_checks`, `webhook_url`, `offer {version, …}` (ссылки на текст оферты сервер пока не отдаёт — показываем редакцию), `kkt_enabled`, `hall`. Проверочный платёж — `201 {payment_id, status, confirmation_url}`, 409 `not_configured` — «сначала сохраните магазин».
+- Импорт `.xlsx` — тело файла с его типом и `?dry_run=1`, в ответе предпросмотра `rows` (`server/catalog/service.mjs` `importFile`).
 
 **Заглушка:** `?mock=onboarding` — новый пользователь без клубов (одобрена карточка «Клуб „Свояк“»), весь путь T26 до боевого режима; `?mock=testmode` — ресепшн в клубе в тестовом режиме (плашка), `?mock=testmode-owner` — владелец, почти всё сделано, чек-лист без боевого магазина. Ключ тестового магазина — `test_…`, боевого — `live_…`, боевой с идентификатором на 0 — без чеков; QR — `BLD1:{uuid}:{код}`, контроллер на связи через 5 с.
 

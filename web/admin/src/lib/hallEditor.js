@@ -12,7 +12,7 @@ export const KINDS = Object.freeze([
   { id: 'pyramid', label: 'Русская пирамида, 12 футов', short: 'пирамида', type: 'billiard_pyramid' },
   { id: 'pool', label: 'Пул, 9 футов', short: 'пул', type: 'billiard_pool' },
   { id: 'snooker', label: 'Снукер, 12 футов', short: 'снукер', type: 'billiard_snooker' },
-  { id: 'mixed', label: 'Стол под пирамиду и пул', short: 'пирамида и пул', type: 'billiard_pyramid' },
+  { id: 'mixed', label: 'Стол под пирамиду и пул', short: 'пирамида и пул', type: 'billiard_mixed' },
 ]);
 const KIND = Object.fromEntries(KINDS.map((k) => [k.id, k]));
 
@@ -27,6 +27,7 @@ export function kindOf(resource) {
   const t = String(resource?.type ?? '');
   if (/pool/i.test(t)) return 'pool';
   if (/snooker/i.test(t)) return 'snooker';
+  if (/mixed/i.test(t)) return 'mixed';
   return 'pyramid';
 }
 
@@ -133,23 +134,59 @@ export function metres(cm) {
   return `${String(m).replace('.', ',')} м`;
 }
 
-/** Столы плана из ответа зала (GET /api/clubs/{club}/hall): только поля редактора. */
-export function planTables(hall) {
-  return (hall ?? [])
-    .map((h) => ({
-      id: h.resource.id,
-      number: h.resource.number,
-      kind: kindOf(h.resource),
-      type: h.resource.type,
-      code: h.resource.code ?? null,
-      plan_x: Number(h.resource.plan_x ?? h.resource.plan?.x ?? 0) || 0,
-      plan_y: Number(h.resource.plan_y ?? h.resource.plan?.y ?? 0) || 0,
-      plan_rotation: normRotation(h.resource.plan_rotation ?? h.resource.plan?.rotation ?? 0),
-      busy: ['busy', 'pending'].includes(h.status),
-      lit: h.status === 'busy',
-      device: h.device ?? null,
-    }))
+/**
+ * Столы плана: список столов (GET /api/clubs/{club}/resources → resources, только в работе) или ответ зала
+ * (GET …/hall, элементы { resource, status }). statuses — состояние столов из зала по id, чтобы показать игру.
+ */
+export function planTables(list, statuses = null) {
+  return (list ?? [])
+    .map((h) => (h.resource ? { ...h.resource, status: h.status } : h))
+    .filter((r) => r.active !== false)
+    .map((r) => {
+      const status = statuses?.get(r.id) ?? r.status ?? null;
+      return {
+        id: r.id,
+        number: r.number,
+        kind: kindOf(r),
+        type: r.type,
+        code: r.code ?? null,
+        plan_x: Number(r.plan_x ?? r.plan?.x ?? 0) || 0,
+        plan_y: Number(r.plan_y ?? r.plan?.y ?? 0) || 0,
+        plan_rotation: normRotation(r.plan_rotation ?? r.plan?.rotation ?? 0),
+        busy: ['busy', 'pending'].includes(status),
+        lit: status === 'busy',
+      };
+    })
     .sort((a, b) => a.number - b.number);
+}
+
+/** Размер зала из ответа: { plan: { width_cm, height_cm } } (GET …/resources, PUT …/hall) или { width, height }. */
+export function hallSize(res) {
+  const p = res?.plan ?? res;
+  const w = Number(p?.width_cm ?? p?.width);
+  const h = Number(p?.height_cm ?? p?.height);
+  return w > 0 && h > 0 ? { width: Math.round(w), height: Math.round(h) } : null;
+}
+
+/** 409 table_busy { reason } при выводе стола из работы — что мешает словами. */
+export function retireBusyText(reason, number) {
+  const t = `Стол ${number}`;
+  switch (reason) {
+    case 'session':
+      return `${t}: идёт игра. Вывести стол можно после неё.`;
+    case 'pending':
+      return `${t}: гость сейчас оплачивает игру. Попробуйте через несколько минут.`;
+    case 'reserved':
+      return `${t} удерживается за гостем. Вывести стол можно, когда удержание закончится.`;
+    case 'service':
+      return `${t} на обслуживании. Сначала выключите сервисный свет.`;
+    case 'booking':
+      return `У стола ${number} есть бронь впереди. Сначала отмените её на экране «Брони».`;
+    case 'tournament':
+      return `Стол ${number} занят турниром. Вывести его можно после турнира.`;
+    default:
+      return `${t} сейчас занят. Вывести его можно, когда он освободится.`;
+  }
 }
 
 /**
@@ -174,8 +211,15 @@ export function tableAria(t) {
   return `Стол ${t.number}, ${KIND[t.kind]?.short ?? 'пирамида'}. ${metres(t.plan_x)} от левой стены, ${metres(t.plan_y)} от верхней${turn ? `, повёрнут на ${turn}°` : ''}.`;
 }
 
-/** Тело POST /api/clubs/{club}/resources. */
-export const resourceBody = (t) => ({ number: t.number, kind: t.kind, plan_x: t.plan_x, plan_y: t.plan_y, plan_rotation: normRotation(t.plan_rotation) });
+/** Тело POST /api/clubs/{club}/resources; в live — с причиной (manual.resource_add). */
+export const resourceBody = (t, reason = null) => ({
+  number: t.number,
+  kind: t.kind,
+  plan_x: t.plan_x,
+  plan_y: t.plan_y,
+  plan_rotation: normRotation(t.plan_rotation),
+  ...(reason && reason.trim() ? { reason: reason.trim() } : {}),
+});
 
 /**
  * Тело PATCH …/resources/{id}: только изменённые поля; вывод из работы — active: false и причина

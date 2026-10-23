@@ -12,15 +12,15 @@
  * Контроллер после привязки по QR выходит на связь через 5 с. QR для проверки: BLD1:{uuid}:{код от 6 знаков}.
  */
 
-import { buildRules, defaultTariffForm, hallTypes, weekCoverage } from '../lib/tariffs.js';
+import { buildRules, defaultTariffForm, hallTypes, ruleKind, weekCoverage } from '../lib/tariffs.js';
 import { parseBld1 } from '../lib/onboarding.js';
 import { menuFromCsv } from '../lib/csv.js';
 
 const MIN = 60_000;
 const uuid = () => globalThis.crypto.randomUUID();
 const iso = (t) => new Date(t).toISOString();
-const KIND_TYPE = { pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker', mixed: 'billiard_pyramid' };
-const KIND_TITLE = { pyramid: 'Пирамида 12 футов', pool: 'Пул 9 футов', snooker: 'Снукер 12 футов', mixed: 'Пирамида и пул' };
+const KIND_TYPE = { pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker', mixed: 'billiard_mixed' };
+const BUSY_REASON = { busy: 'session', pending: 'pending', reserved: 'reserved', service: 'service' };
 const CODE_ABC = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const tableCode = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(10)), (b) => CODE_ABC[b % 32]).join('');
 const PDF = '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n';
@@ -36,7 +36,7 @@ const CITIES = [
 /** Тарифы клуба разработки: шаблон «Будни и выходные × день и вечер», как в сиде. */
 function devRules() {
   const form = { ...defaultTariffForm('weekend_day_evening'), weekend: [5, 6, 7], prices: { wd_day: '500', wd_eve: '800', we_day: '600', we_eve: '1000' } };
-  return buildRules(form, ['billiard_pool', 'billiard_pyramid']);
+  return buildRules(form, ['pyramid', 'pool']);
 }
 
 export function m5State(scenario, t) {
@@ -54,11 +54,15 @@ export function m5State(scenario, t) {
     },
     checks: { test: fresh ? null : { payment_id: uuid(), status: 'succeeded', refunded: true, webhook_at: iso(t - 3 * 24 * 60 * MIN), created_at: iso(t - 3 * 24 * 60 * MIN) }, live: null },
     stickersAt: fresh ? null : t - 2 * 24 * 60 * MIN,
-    claims: fresh
-      ? [{ id: uuid(), status: 'approved', listing: { id: 'c1000000-0000-4000-8000-0000000000bb', name: 'Клуб «Свояк»', city: 'Екатеринбург', timezone: 'Asia/Yekaterinburg', club_id: null } }]
+    // GET /api/clubs/claimable-listings: одобренная «Подтвердить клуб», ещё не связанная с клубом
+    claimable: fresh
+      ? [{ listing_id: 'c1000000-0000-4000-8000-0000000000bb', name: 'Клуб «Свояк»', address: 'ул. Малышева, 5', city: 'Екатеринбург', city_id: CITIES[0].id, timezone: 'Asia/Yekaterinburg' }]
       : [],
+    retired: [],
     binds: [],
+    // Касса ресепшена (PATCH …/payment-settings reception_enabled); у клуба разработки мост ККТ на связи
     kktEnabled: !fresh,
+    bridgeOk: !fresh,
   };
 }
 
@@ -98,13 +102,17 @@ export function m5Routes(ctx) {
   const staff = () => st().m3?.staff ?? [];
   const invites = () => st().m3?.invites ?? [];
 
-  function coversWeek(rules) {
-    if (!rules.length) return false;
-    return hallTypes(st().hall).every((type) => {
-      const cov = weekCoverage(rules, type);
-      return !cov.gaps.length && !cov.overlaps.length;
-    });
+  /** Типы столов для проверки недели: в работе и упомянутые в правилах (как server/setup/tariffs.mjs). */
+  const weekKinds = (rules) => [...new Set([...hallTypes(st().hall), ...rules.map(ruleKind).filter(Boolean)])];
+  function weekProblem(rules) {
+    for (const kind of weekKinds(rules)) {
+      const cov = weekCoverage(rules, kind);
+      if (cov.gaps[0]) return { code: 'tariff_gap', kind, ...cov.gaps[0] };
+      if (cov.overlaps[0]) return { code: 'tariff_overlap', kind, ...cov.overlaps[0] };
+    }
+    return null;
   }
+  const coversWeek = (rules) => rules.length > 0 && !weekProblem(rules);
   const shopReady = (m) => {
     const s = S().shops[m];
     return Boolean(s?.verified_at) && (m === 'test' ? s.test === true : s.test === false && s.fiscalization === true);
@@ -119,7 +127,7 @@ export function m5Routes(ctx) {
       { id: 'devices', ok: devicesOk(), detail: offline.length ? `Без связи: ${offline.map((n) => `стол ${n}`).join(', ')}.` : null },
       { id: 'tariffs', ok: coversWeek(S().tariffs), detail: null },
       { id: 'shop_live', ok: shopReady('live'), detail: S().shops.live ? null : 'Боевой магазин ещё не подключён.' },
-      ...(S().kktEnabled ? [{ id: 'kkt', ok: true, detail: null }] : []),
+      { id: 'kkt', ok: !S().kktEnabled || S().bridgeOk, detail: S().kktEnabled && !S().bridgeOk ? 'Мост ККТ не на связи.' : null },
       { id: 'stickers', ok: Boolean(S().stickersAt), detail: null },
       { id: 'offer', ok: mode() === 'live', detail: null },
     ];
@@ -149,6 +157,9 @@ export function m5Routes(ctx) {
       hall: S().hallSize,
       day_start_local: '06:00',
       kkt_enabled: S().kktEnabled,
+      webhook_url: `${globalThis.location?.origin ?? 'http://127.0.0.1:5174'}/api/webhooks/yookassa/${S().clubs[0]?.id ?? '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c'}`,
+      offer: { version: '2026-10-23', accepted_at: mode() === 'live' ? iso(now()) : null, accepted_version: mode() === 'live' ? '2026-10-23' : null },
+      shops: { test: S().shops.test, live: S().shops.live },
       payment_checks: { test: strip(S().checks.test), live: strip(S().checks.live) },
     };
   }
@@ -163,9 +174,8 @@ export function m5Routes(ctx) {
     if (S().clubs.filter((c) => c.mode === 'test').length >= 3) return err(409, 'clubs_limit');
     const club = { id: uuid(), name, city, timezone: b.timezone, mode: 'test', listing_id: null };
     if (b.listing_id) {
-      const claim = S().claims.find((c) => c.status === 'approved' && c.listing.id === b.listing_id && !c.listing.club_id);
-      if (!claim) return err(404, 'not_found');
-      claim.listing.club_id = club.id;
+      if (!S().claimable.some((c) => c.listing_id === b.listing_id)) return err(404, 'not_found');
+      S().claimable = S().claimable.filter((c) => c.listing_id !== b.listing_id);
       club.listing_id = b.listing_id;
     }
     S().clubs.push(club);
@@ -187,6 +197,8 @@ export function m5Routes(ctx) {
       S().checks = { test: null, live: null };
       S().stickersAt = null;
       S().kktEnabled = false;
+      S().bridgeOk = false;
+      S().retired = [];
     }
     audit('club.create', { data: { club_id: club.id } });
     return { status: 201, body: { club_id: club.id, mode: 'test' } };
@@ -219,29 +231,37 @@ export function m5Routes(ctx) {
     if (live() && !String(b?.reason ?? '').trim()) return err(400, 'reason_required');
     const rules = Array.isArray(b?.rules) ? b.rules : null;
     if (!rules?.length) return err(400, 'bad_request');
+    if (rules.length > 100) return err(400, 'bad_request');
     for (const r of rules) {
       if (!Number.isInteger(r.min_minutes) || !Number.isInteger(r.step_minutes) || !Number.isInteger(r.price_per_hour_kopecks)) return err(400, 'bad_request');
+      if (r.kind !== undefined && r.kind !== null && !KIND_TYPE[r.kind]) return err(400, 'bad_request');
     }
-    for (const type of hallTypes(st().hall)) {
-      const cov = weekCoverage(rules, type);
-      const gap = cov.gaps[0];
-      if (gap) return fail(400, 'tariff_gap', { weekday: gap.weekday, from: gap.from, to: gap.to, resource_type: type });
-      const over = cov.overlaps[0];
-      if (over) return fail(400, 'tariff_overlap', { weekday: over.weekday, from: over.from, to: over.to, resource_type: type });
-    }
-    S().tariffs = rules.map((r) => ({ id: uuid(), ...r }));
+    const problem = weekProblem(rules);
+    if (problem) return fail(400, problem.code, { kind: problem.kind, weekday: problem.weekday, from: problem.from, to: problem.to });
+    S().tariffs = rules.map((r) => ({ ...r }));
     audit(live() ? 'manual.tariff_change' : 'tariff.update', { reason: b?.reason ?? null, data: { rules: rules.length } });
-    return ok({ rules: S().tariffs });
+    return ok(tariffsView());
   }
 
+  /** GET …/tariffs → { timezone, day_start_local, rules, resource_rules, coverage }. */
+  function tariffsView() {
+    const problem = weekProblem(S().tariffs);
+    return { timezone: S().clubs[0]?.timezone ?? 'Asia/Yekaterinburg', day_start_local: '06:00', rules: S().tariffs, resource_rules: [], coverage: { ok: S().tariffs.length > 0 && !problem, problem } };
+  }
+
+  /** Стол в форме server/setup/hall.mjs. */
+  const resourceView = (r, active = true) => ({ id: r.id, number: r.number, kind: r.kind ?? (/pool/.test(r.type) ? 'pool' : 'pyramid'), type: r.type, title: r.title, code: r.code ?? null, plan_x: r.plan_x ?? 0, plan_y: r.plan_y ?? 0, plan_rotation: r.plan_rotation ?? 0, active, sticker_printed_at: S().stickersAt ? iso(S().stickersAt) : null });
+  const planView = () => ({ width_cm: (S().hallSize ?? { width: 1800 }).width, height_cm: (S().hallSize ?? { height: 1200 }).height });
+
   function createTable(b) {
+    if (live() && !String(b?.reason ?? '').trim()) return err(400, 'reason_required');
     const n = Number(b?.number);
     if (!Number.isInteger(n) || n < 1 || n > 999) return err(400, 'bad_request');
     if (!KIND_TYPE[b?.kind]) return err(400, 'bad_request');
     if (st().hall.some((x) => x.resource.number === n)) return err(409, 'duplicate');
     for (const k of ['plan_x', 'plan_y']) if (!Number.isInteger(b[k]) || b[k] < 0) return err(400, 'bad_request');
     const tbl = {
-      resource: { id: uuid(), number: n, type: KIND_TYPE[b.kind], kind: b.kind, title: KIND_TITLE[b.kind], code: tableCode(), plan_x: b.plan_x, plan_y: b.plan_y, plan_rotation: b.plan_rotation ?? 0 },
+      resource: { id: uuid(), number: n, type: KIND_TYPE[b.kind], kind: b.kind, title: `Стол ${n}`, code: tableCode(), plan_x: b.plan_x, plan_y: b.plan_y, plan_rotation: b.plan_rotation ?? 0 },
       status: 'offline',
       session: null,
       until: null,
@@ -251,7 +271,7 @@ export function m5Routes(ctx) {
     st().hall.sort((a, c) => a.resource.number - c.resource.number);
     audit('resource.create', { resource_number: n });
     emit('hall', tbl);
-    return { status: 201, body: tbl.resource };
+    return { status: 201, body: resourceView(tbl.resource) };
   }
 
   function patchTable(id, b) {
@@ -259,10 +279,11 @@ export function m5Routes(ctx) {
     if (!tbl) return err(404, 'not_found');
     if (b?.active === false) {
       if (live() && !String(b.reason ?? '').trim()) return err(400, 'reason_required');
-      if (['busy', 'pending'].includes(tbl.status)) return err(409, 'table_busy');
+      if (BUSY_REASON[tbl.status]) return fail(409, 'table_busy', { reason: BUSY_REASON[tbl.status], resource_id: tbl.resource.id });
       st().hall = st().hall.filter((x) => x !== tbl);
+      S().retired.push(tbl.resource);
       audit(live() ? 'manual.resource_retire' : 'resource.retire', { resource_number: tbl.resource.number, reason: b.reason ?? null });
-      return ok({ ...tbl.resource, active: false });
+      return ok(resourceView(tbl.resource, false));
     }
     if (b?.number !== undefined) {
       const n = Number(b.number);
@@ -273,7 +294,7 @@ export function m5Routes(ctx) {
     }
     if (b?.kind !== undefined) {
       if (!KIND_TYPE[b.kind]) return err(400, 'bad_request');
-      Object.assign(tbl.resource, { kind: b.kind, type: KIND_TYPE[b.kind], title: KIND_TITLE[b.kind] });
+      Object.assign(tbl.resource, { kind: b.kind, type: KIND_TYPE[b.kind] });
     }
     for (const k of ['plan_x', 'plan_y']) {
       if (b?.[k] === undefined) continue;
@@ -287,7 +308,7 @@ export function m5Routes(ctx) {
     st().hall.sort((a, c) => a.resource.number - c.resource.number);
     audit('resource.update', { resource_number: tbl.resource.number });
     emit('hall', tbl);
-    return ok(tbl.resource);
+    return ok(resourceView(tbl.resource));
   }
 
   /** Импорт файлом: .xlsx — образец из трёх строк (разбор Excel — на сервере), .csv — как текст. */
@@ -363,7 +384,7 @@ export function m5Routes(ctx) {
 
   const routes = [
     ['GET', /^\/api\/public\/cities$/, () => ok({ items: CITIES })],
-    ['GET', /^\/api\/directory\/claims\/mine$/, () => (me() ? ok({ items: S().claims }) : err(401, 'unauthorized'))],
+    ['GET', /^\/api\/clubs\/claimable-listings$/, () => (me() ? ok({ items: S().claimable }) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/clubs$/, (_m, b) => createClub(b)],
     ['GET', /^\/api\/clubs\/([^/]+)\/onboarding$/, owner(() => ok(onboardingView()))],
     ['POST', /^\/api\/clubs\/([^/]+)\/go-live$/, owner((_m, b) => {
@@ -376,25 +397,37 @@ export function m5Routes(ctx) {
       audit('club.go_live', {});
       return ok({ mode: 'live' });
     })],
+    // Настройки оплаты клуба: касса ресепшена — пункт чек-листа kkt
+    ['GET', /^\/api\/clubs\/([^/]+)\/payment-settings$/, owner(() => ok({ settings: paySettings(), shops: { test: S().shops.test, live: S().shops.live } }))],
+    ['PATCH', /^\/api\/clubs\/([^/]+)\/payment-settings$/, owner((_m, b) => {
+      if (live() && !String(b?.reason ?? '').trim()) return err(400, 'reason_required');
+      if (b?.reception_enabled !== undefined) {
+        if (typeof b.reception_enabled !== 'boolean') return err(400, 'bad_request');
+        S().kktEnabled = b.reception_enabled;
+      }
+      audit(live() ? 'manual.payment_settings' : 'club.payment_settings', { reason: b?.reason ?? null, data: { reception_enabled: S().kktEnabled } });
+      return ok({ settings: paySettings() });
+    })],
     ['GET', /^\/api\/clubs\/([^/]+)\/payment-settings\/(test|live)$/, owner((m) => ok(S().shops[m[2]] ?? { shop_id: null, secret_mask: null, verified_at: null, test: null, fiscalization: null }))],
     ['PUT', /^\/api\/clubs\/([^/]+)\/payment-settings\/(test|live)$/, owner((m, b) => saveShop(m[2], b))],
     ['POST', /^\/api\/clubs\/([^/]+)\/payment-settings\/(test|live)\/check$/, owner((m) => {
       const md = m[2];
-      if (!S().shops[md]?.verified_at) return err(400, 'shop_invalid');
+      if (!S().shops[md]?.verified_at) return err(409, 'not_configured');
       const t = now();
       S().checks[md] = { payment_id: uuid(), status: 'pending', refunded: false, webhook_at: null, created_at: iso(t), timeline: { paid: t + 3000, webhook: t + 5000, refund: t + 7000 } };
       audit('payment.check', { data: { mode: md } });
-      return ok({ payment_id: S().checks[md].payment_id });
+      return { status: 201, body: { payment_id: S().checks[md].payment_id, status: 'pending', confirmation_url: null } };
     })],
     ['PUT', /^\/api\/clubs\/([^/]+)\/hall$/, manager((_m, b) => {
       const ok2 = (v) => Number.isInteger(v) && v >= 300 && v <= 10000;
       if (!ok2(b?.width) || !ok2(b?.height)) return err(400, 'bad_request');
       S().hallSize = { width: b.width, height: b.height };
-      return ok(S().hallSize);
+      return ok({ plan: planView() });
     })],
+    ['GET', /^\/api\/clubs\/([^/]+)\/resources$/, manager(() => ok({ plan: planView(), resources: [...st().hall.map((x) => resourceView(x.resource)), ...S().retired.map((r) => resourceView(r, false))] }))],
     ['POST', /^\/api\/clubs\/([^/]+)\/resources$/, manager((_m, b) => createTable(b))],
     ['PATCH', /^\/api\/clubs\/([^/]+)\/resources\/([^/]+)$/, manager((m, b) => patchTable(m[2], b))],
-    ['GET', /^\/api\/clubs\/([^/]+)\/tariffs$/, manager(() => ok({ rules: S().tariffs }))],
+    ['GET', /^\/api\/clubs\/([^/]+)\/tariffs$/, manager(() => ok(tariffsView()))],
     ['PUT', /^\/api\/clubs\/([^/]+)\/tariffs$/, manager((_m, b) => saveTariffs(b))],
     ['POST', /^\/api\/clubs\/([^/]+)\/staff\/invites$/, owner((_m, b) => invite(b))],
     ['GET', /^\/api\/clubs\/([^/]+)\/qr-stickers\.pdf$/, manager((_m, _b, q) => {
@@ -409,6 +442,10 @@ export function m5Routes(ctx) {
       return { status: 201, body: { ok: true } };
     }],
   ];
+
+  function paySettings() {
+    return { reception_enabled: S().kktEnabled, sbp_enabled: true, card_enabled: true, vat_code: 1, tax_system_code: null };
+  }
 
   /** Привязка: { qr } или { device_id, claim_code } (№159); у стола — окно 30 минут, контроллер на связи через 5 с. */
   function bind(b) {

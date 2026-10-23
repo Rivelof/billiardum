@@ -51,6 +51,7 @@ export const ERROR_FIELDS = Object.freeze([
   'weekday',
   'from',
   'to',
+  'kind',
   'resource_type',
 ]);
 

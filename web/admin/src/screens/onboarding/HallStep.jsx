@@ -8,6 +8,8 @@ import { useMedia } from '../../components/hooks.js';
 import { api } from '../../lib/api.js';
 import {
   DEFAULT_HALL,
+  hallSize,
+  retireBusyText,
   KINDS,
   artKind,
   clampCenter,
@@ -41,7 +43,12 @@ export function HallStep({ ctx, ob, reload, live }) {
   const clubId = ctx.club.club_id;
   const wide = useMedia('(min-width: 760px)');
   const [view, setView] = useState('plan');
-  const [hall, setHall] = useState(ob.hall?.width ? ob.hall : DEFAULT_HALL);
+  const [hall, setHallState] = useState(() => hallSize(ob.hall) ?? DEFAULT_HALL);
+  const hallRef = useRef(hall);
+  const setHall = (h) => {
+    hallRef.current = h;
+    setHallState(h);
+  };
   const [tables, setTables] = useState(null);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState(null);
@@ -50,16 +57,26 @@ export function HallStep({ ctx, ob, reload, live }) {
   const [retiring, setRetiring] = useState(null);
   const server = useRef(new Map()); // id → стол, как он сохранён на сервере
 
+  /** GET …/resources → { plan, resources }; идёт ли игра — из зала (не обязательно). */
   const load = useCallback(async () => {
     try {
-      const list = planTables(await api.hall(clubId));
+      const res = await api.resources(clubId);
+      let statuses = null;
+      try {
+        statuses = new Map((await api.hall(clubId)).map((h) => [h.resource.id, h.status]));
+      } catch {
+        statuses = null;
+      }
+      const size = hallSize(res);
+      if (size) setHall(size);
+      const list = planTables(res?.resources, statuses);
       server.current = new Map(list.map((t) => [t.id, t]));
-      setTables(placeUnset(list, hall));
+      setTables(placeUnset(list, size ?? hallRef.current));
       setError(null);
     } catch (err) {
       setError(err);
     }
-  }, [clubId, hall.width, hall.height]);
+  }, [clubId]);
   useEffect(() => {
     load();
   }, [load]);
@@ -197,6 +214,7 @@ export function HallStep({ ctx, ob, reload, live }) {
 
       <AddDialog
         open={adding}
+        live={live}
         tables={tables ?? []}
         hall={hall}
         clubId={clubId}
@@ -245,8 +263,8 @@ function HallSize({ hall, clubId, onSaved }) {
         setBusy(true);
         setError(null);
         try {
-          await api.saveHall(clubId, parsed.hall);
-          await onSaved(parsed.hall);
+          const res = await api.saveHall(clubId, parsed.hall);
+          await onSaved(hallSize(res) ?? parsed.hall);
         } catch (err) {
           setError(err);
         } finally {
@@ -530,8 +548,9 @@ function TableRow({ t, tables, hall, onChange, onRetire }) {
   );
 }
 
-function AddDialog({ open, tables, hall, clubId, onClose, onDone }) {
+function AddDialog({ open, tables, hall, clubId, live, onClose, onDone }) {
   const [number, setNumber] = useState('');
+  const [reason, setReason] = useState('');
   const [kind, setKind] = useState('pyramid');
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -539,6 +558,7 @@ function AddDialog({ open, tables, hall, clubId, onClose, onDone }) {
   useEffect(() => {
     if (!open) return;
     setNumber(String(nextNumber(tables)));
+    setReason('');
     setKind(tables[tables.length - 1]?.kind ?? 'pyramid');
     setTried(false);
     setError(null);
@@ -547,13 +567,13 @@ function AddDialog({ open, tables, hall, clubId, onClose, onDone }) {
   const submit = async (e) => {
     e.preventDefault();
     setTried(true);
-    if (numErr) return;
+    if (numErr || (live && !reason.trim())) return;
     setBusy(true);
     setError(null);
     const spot = nextSpot(tables, hall, kind, 0);
     const n = Number(number);
     try {
-      const res = await api.createResource(clubId, resourceBody({ number: n, kind, plan_x: spot.x, plan_y: spot.y, plan_rotation: 0 }));
+      const res = await api.createResource(clubId, resourceBody({ number: n, kind, plan_x: spot.x, plan_y: spot.y, plan_rotation: 0 }, live ? reason : null));
       onDone(res, n);
     } catch (err) {
       setError(err?.code === 'duplicate' ? { code: 'duplicate_table' } : err);
@@ -586,6 +606,17 @@ function AddDialog({ open, tables, hall, clubId, onClose, onDone }) {
             ))}
           </div>
         </fieldset>
+        {live ? (
+          <div class="field">
+            <label class="field__label" for="add-reason">
+              Причина
+            </label>
+            <textarea id="add-reason" class="field__input field__input--area" rows={2} maxLength={300} value={reason} aria-invalid={tried && !reason.trim() ? 'true' : undefined} aria-describedby="add-reason-e" onInput={(e) => setReason(e.currentTarget.value)} />
+            <p class={tried && !reason.trim() ? 'field__error' : 'field__hint'} id="add-reason-e">
+              {tried && !reason.trim() ? 'Клуб в боевом режиме: без причины стол не добавить.' : 'Уйдёт в журнал и владельцу в уведомлении.'}
+            </p>
+          </div>
+        ) : null}
         {error?.code === 'duplicate_table' ? (
           <p class="note note--error" role="alert">
             <Icon name="alert" />
@@ -631,7 +662,7 @@ function RetireDialog({ table, clubId, live, onClose, onDone }) {
             await api.updateResource(clubId, table.id, resourcePatch(table, { active: false }, { reason }));
             onDone(table);
           } catch (err) {
-            setError(err);
+            setError(err?.code === 'table_busy' ? { code: 'table_busy', text: retireBusyText(err.data?.reason, table.number) } : err);
           } finally {
             setBusy(false);
           }
@@ -647,7 +678,14 @@ function RetireDialog({ table, clubId, live, onClose, onDone }) {
             {tried && need ? 'Клуб в боевом режиме: без причины стол не вывести.' : live ? 'Уйдёт в журнал и владельцу в уведомлении.' : 'Попадёт в журнал.'}
           </p>
         </div>
-        <ErrorNote error={error} />
+        {error?.text ? (
+          <p class="note note--error" role="alert">
+            <Icon name="alert" />
+            <span class="note__title">{error.text}</span>
+          </p>
+        ) : (
+          <ErrorNote error={error} />
+        )}
         <div class="dialog__actions dialog__actions--row">
           <button type="submit" class="btn btn--danger btn--lg" disabled={busy}>
             {busy ? 'Выводим…' : `Вывести стол ${table.number}`}

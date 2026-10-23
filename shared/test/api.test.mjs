@@ -184,9 +184,9 @@ test('M5.1: тело файлом (.xlsx меню) уходит как есть 
 });
 
 test('M5.1: поля ошибок тарифа и чек-листа — день и интервал, список невыполненных пунктов', async () => {
-  assert.deepEqual(await readError(json(400, { error: 'tariff_gap', weekday: 3, from: '02:00', to: '06:00' })), {
+  assert.deepEqual(await readError(json(400, { error: 'tariff_gap', kind: 'mixed', weekday: 3, from: '02:00', to: '06:00' })), {
     code: 'tariff_gap',
-    data: { weekday: 3, from: '02:00', to: '06:00' },
+    data: { weekday: 3, from: '02:00', to: '06:00', kind: 'mixed' },
   });
   assert.deepEqual(await readError(json(409, { error: 'checklist_incomplete', failed: ['devices', 'shop_live'] })), {
     code: 'checklist_incomplete',

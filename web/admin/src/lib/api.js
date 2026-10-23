@@ -262,19 +262,28 @@ export const api = {
   createClub: (body) => client.post('/clubs', body),
   /** Справочник городов каталога: { items: [{ slug, name, … }] }. */
   cities: () => client.get('/public/cities'),
-  /** Мои заявки «Подтвердить клуб» (M4) — допущение M5.1: { items: [{ id, status, listing: { id, name, city, timezone?, club_id? } }] }. */
-  myClaims: () => client.get('/directory/claims/mine'),
+  /** Карточки, которые можно связать с новым клубом (одобренная «Подтвердить клуб»): { items: [{ listing_id, name, address, city, city_id, timezone }] }. */
+  claimableListings: () => client.get('/clubs/claimable-listings'),
   /** Мастер: { mode, steps: [{ id, done }], checklist: { items, ready }, hall?, payment_checks?, … }. */
   onboarding: (club) => client.get(`/clubs/${e(club)}/onboarding`),
   /** Перейти в боевой режим (№160) → { mode: 'live' }; 409 checklist_incomplete { failed }. */
   goLive: (club) => client.post(`/clubs/${e(club)}/go-live`, { accept_offer: true }),
+  /** Настройки оплаты клуба: { settings: { reception_enabled, sbp_enabled, card_enabled, vat_code, tax_system_code }, shops }. */
+  clubPaymentSettings: (club) => client.get(`/clubs/${e(club)}/payment-settings`),
+  /** { reception_enabled?, …, reason? } → settings; в live причина обязательна (ручное действие). Пункт чек-листа kkt. */
+  updateClubPaymentSettings: (club, body) => client.request('PATCH', `/clubs/${e(club)}/payment-settings`, { body }),
   /** Магазин ЮKassa (№154): mode test | live → { shop_id, secret_mask, verified_at, test, fiscalization }. */
   paymentSettings: (club, mode) => client.get(`/clubs/${e(club)}/payment-settings/${e(mode)}`),
   /** { shop_id, secret_key?, reason? }; 400 shop_invalid, shop_mode_mismatch, fiscalization_off. */
   savePaymentSettings: (club, mode, body) => client.request('PUT', `/clubs/${e(club)}/payment-settings/${e(mode)}`, { body }),
   /** Проверочный платёж 1 ₽ с возвратом → { payment_id }; статус — в onboarding.payment_checks. */
   checkPayment: (club, mode, idempotencyKey) => client.post(`/clubs/${e(club)}/payment-settings/${e(mode)}/check`, {}, { idempotencyKey }),
-  /** Стол (№155): { number, kind, plan_x, plan_y, plan_rotation } → стол. */
+  /**
+   * Столы и план (№155): { plan: { width_cm, height_cm }, resources: [{ id, number, kind, type, title, code, plan_x, plan_y,
+   * plan_rotation, active, sticker_printed_at }] } — и выведенные из работы.
+   */
+  resources: (club) => client.get(`/clubs/${e(club)}/resources`),
+  /** Стол (№155): { number, kind, plan_x, plan_y, plan_rotation, reason? } → стол; в live — причина обязательна. */
   createResource: (club, body) => client.post(`/clubs/${e(club)}/resources`, body),
   /** { number?, kind?, plan_x?, plan_y?, plan_rotation?, active?, reason? }. */
   updateResource: (club, id, body) => client.request('PATCH', `/clubs/${e(club)}/resources/${e(id)}`, { body }),
