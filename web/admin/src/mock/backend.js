@@ -70,6 +70,13 @@ function freshState(scenario, t) {
     { id: uuid(), type: 'manual_action', level: 'important', resource_number: 5, created_at: new Date(t - 3 * MIN).toISOString() },
     // Д2: чек зачёта предоплаты отклонён ЮKassa — действие «Повторить»
     { id: uuid(), type: 'settlement_receipt_failed', level: 'important', created_at: new Date(t - 25 * MIN).toISOString(), data: { receipt_id: 'c1d2e3f4-0000-4000-8000-00000000d002', action_id: 'retry', action_title: 'Повторить', action_url: '/api/receipts/c1d2e3f4-0000-4000-8000-00000000d002/retry' } },
+    // M4 (№147): матч «Вечернего пула» на столе 6 упёрся в предел окна турнира; исправленный счёт — ручное действие
+    ...(empty
+      ? []
+      : [
+          { id: uuid(), type: 'tournament_match_overdue', level: 'important', resource_number: 6, created_at: new Date(t - 2 * MIN).toISOString(), data: { tournament_id: 'd4000000-0000-4000-8000-000000000003', match_id: 'd4000000-0000-4000-8000-000000000003:r0m3', light_until: new Date(t + 8 * MIN).toISOString() } },
+          { id: uuid(), type: 'manual_action', level: 'important', resource_number: 7, created_at: new Date(t - 40 * MIN).toISOString(), data: { action: 'manual.tournament_score', tournament_id: 'd4000000-0000-4000-8000-000000000003', match_id: 'd4000000-0000-4000-8000-000000000003:r0m1', staff_id: 'u-manager', reason: 'Игроки внесли счёт наоборот', before: 'спор', after: '1:3' } },
+        ]),
   ];
   // Роль — по сценарию; «kktoff-owner» — касса не на связи, вошёл владелец
   const asRole = scenario?.split('-')[1];

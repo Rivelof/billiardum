@@ -164,8 +164,14 @@ export function m4Routes(ctx) {
       if (!x?.bracket) return err(404, 'not_found');
       if (!String(b?.reason ?? '').trim()) return err(400, 'reason_required');
       if (!Number.isInteger(b.score_a) || !Number.isInteger(b.score_b) || b.score_a === b.score_b) return err(400, 'bad_request');
+      const was = x.bracket.rounds.flatMap((r) => r.matches).find((mm) => mm.id === mid);
+      if (!was) return err(404, 'not_found');
+      const before = was.status === 'done' ? `${was.score_a}:${was.score_b}` : was.status === 'disputed' ? 'спор' : 'без счёта';
       x.bracket = applyScore(x.bracket, mid, b.score_a, b.score_b);
-      ctx.audit('tournament.score_fix', { reason: b.reason, data: { match: mid, score: `${b.score_a}:${b.score_b}` } });
+      // Как server/tournaments: журнал manual.tournament_score (до/после) и тревога manual_action владельцу (инвариант 8)
+      ctx.audit('manual.tournament_score', { reason: b.reason, data: { tournament_id: x.id, match_id: `${x.id}:${mid}`, before, after: `${b.score_a}:${b.score_b}` } });
+      ctx.state().alarms.unshift({ id: uuid(), type: 'manual_action', level: 'important', resource_number: was.table_number ?? null, created_at: new Date(now()).toISOString(), data: { action: 'manual.tournament_score', tournament_id: x.id, match_id: `${x.id}:${mid}`, staff_id: ctx.me()?.id ?? null, reason: b.reason, before, after: `${b.score_a}:${b.score_b}` } });
+      ctx.emit('alarm', { type: 'manual_action' });
       bracketEvent(x);
       return ok(view(x));
     })],
@@ -180,7 +186,10 @@ export function m4Routes(ctx) {
       if (!['a', 'b', 'annul'].includes(b?.result)) return err(400, 'bad_request');
       if (!String(b.reason ?? '').trim()) return err(400, 'reason_required');
       Object.assign(d, { status: 'resolved', result: b.result, resolve_reason: b.reason });
-      ctx.audit('plus.match_resolve', { reason: b.reason, data: { result: b.result } });
+      ctx.audit('plus.match_resolve', { reason: b.reason, data: { match_id: d.id, result: b.result } });
+      // Как server/plus: решение спора — ручное действие, тревога manual_action владельцу (инвариант 8)
+      ctx.state().alarms.unshift({ id: uuid(), type: 'manual_action', level: 'important', resource_number: d.table_number ?? null, created_at: new Date(now()).toISOString(), data: { action: 'plus.match_resolve', match_id: d.id, result: b.result, staff_id: ctx.me()?.id ?? null, reason: b.reason } });
+      ctx.emit('alarm', { type: 'manual_action' });
       return ok(d);
     })],
 

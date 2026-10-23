@@ -95,15 +95,36 @@ export const ACTION_LABEL = {
   'staff.revoke': 'Доступ сотрудника отозван',
   'tariff.package_created': 'Пакет часов в продаже',
   'tariff.package_archived': 'Пакет часов снят с продажи',
+  // M4: турниры (server/tournaments/README.md) и споры по партиям Бильярдум+ (server/plus/README.md)
+  'tournament.create': 'Турнир создан',
+  'tournament.update': 'Турнир изменён',
+  'tournament.publish': 'Турнир опубликован',
+  'tournament.close': 'Запись на турнир закрыта',
+  'tournament.entry': 'Запись на турнир',
+  'tournament.entry_paid': 'Взнос за турнир оплачен',
+  'tournament.entry_cancel': 'Запись на турнир отменена',
+  'tournament.payment_refund': 'Взнос за турнир возвращён',
+  'tournament.start': 'Турнир начался',
+  'tournament.match_start': 'Матч турнира начался',
+  'tournament.match_light_off': 'Свет матча турнира выключен',
+  'tournament.score_report': 'Игрок внёс счёт матча',
+  'tournament.dispute': 'Спор по счёту матча',
+  'tournament.match_finished': 'Матч турнира сыгран',
+  'tournament.groups_done': 'Групповой этап завершён',
+  'tournament.finish': 'Турнир завершён',
+  'tournament.winner_corrected': 'Победитель матча изменён',
+  'manual.tournament_score': 'Счёт матча турнира исправлен',
+  'manual.tournament_cancel': 'Турнир отменён',
+  'plus.match_resolve': 'Спор по партии решён',
 };
 
 /** Ручные действия (инвариант 8) — подсвечиваются в журнале. */
-export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'manual.discount', 'manual.receipt_mark_printed', 'pos.discount_approval', 'pos.sale_canceled', 'payment.refunded', 'pos.refund', 'order.cancel', 'stock.writeoff', 'kkt.receipt_retry']);
+export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'manual.discount', 'manual.receipt_mark_printed', 'pos.discount_approval', 'pos.sale_canceled', 'payment.refunded', 'pos.refund', 'order.cancel', 'stock.writeoff', 'kkt.receipt_retry', 'manual.tournament_score', 'manual.tournament_cancel', 'plus.match_resolve']);
 
 /** Группы фильтра «Действие». В API уходит список через запятую, `*` — любое продолжение (запрошено у backend-core). */
 export const ACTION_GROUPS = [
   { value: '', label: 'Все действия' },
-  { value: 'service.*,manual.*,payment.refunded,pos.refund,pos.discount_approval,pos.sale_canceled,order.cancel,stock.writeoff,kkt.receipt_retry', label: 'Ручные действия' },
+  { value: 'service.*,manual.*,payment.refunded,pos.refund,pos.discount_approval,pos.sale_canceled,order.cancel,stock.writeoff,kkt.receipt_retry,plus.match_resolve', label: 'Ручные действия' },
   { value: 'payment.*,reception.*', label: 'Деньги' },
   { value: 'pos.*,shift.*,kkt.*,tab.*', label: 'Касса и смены' },
   { value: 'order.*,stock.*,catalog.*', label: 'Бар и склад' },

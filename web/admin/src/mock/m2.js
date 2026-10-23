@@ -150,6 +150,9 @@ function reportSeed(shift, x) {
     { at: new Date(opened + 95 * MIN).toISOString(), action: 'service.start', actor_id: null, actor_name: STAFF_NAMES.reception, reason: 'Протираем сукно после пролитого напитка', resource_id: null, amount_kopecks: null },
     { at: new Date(opened + 210 * MIN).toISOString(), action: 'manual.extend_free', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Свет мигнул из-за сбоя питания, компенсировали 15 минут', resource_id: null, amount_kopecks: null },
     { at: new Date(opened + 300 * MIN).toISOString(), action: 'manual.discount', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Постоянный гость, турнир клуба', resource_id: null, amount_kopecks: 18000 },
+    // M4 (№147): исправление счёта турнира и решение спора по партии — ручные строки
+    { at: new Date(opened + 330 * MIN).toISOString(), action: 'manual.tournament_score', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Игроки внесли счёт наоборот', resource_id: id('00000000', 7), resource_number: 7, amount_kopecks: null },
+    { at: new Date(opened + 345 * MIN).toISOString(), action: 'plus.match_resolve', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Посмотрели запись камеры: последний шар забит', resource_id: id('00000000', 3), resource_number: 3, amount_kopecks: null },
   ];
   return {
     shift: { ...shift, timezone: 'Asia/Yekaterinburg' },
@@ -190,7 +193,7 @@ function reportSeed(shift, x) {
     // №125: ручные и действия персонала — общим списком с kind; действия системы — automatic отдельно
     manual_actions: {
       count: items.length,
-      by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1 },
+      by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1, 'manual.tournament_score': 1, 'plus.match_resolve': 1 },
       items: items.map((it) => ({ kind: it.action.startsWith('manual.') ? 'manual' : 'staff', linked: [], ...it })),
       // Действия гостей (отмена брони гостем с возвратом) — отдельно, свёрнуто
       guests: {

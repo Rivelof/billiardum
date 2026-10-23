@@ -4,14 +4,16 @@ import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { Dialog } from '../components/Dialog.jsx';
 import { api, newIdempotencyKey } from '../lib/api.js';
-import { alarmAction, alarmTime, alarmView, sortAlarms } from '../lib/alarms.js';
+import { alarmAction, alarmHref, alarmLink, alarmTime, alarmView, sortAlarms } from '../lib/alarms.js';
 import { can } from '../lib/auth.js';
+import { linkHandler } from '../lib/router.js';
 
 /**
  * Открытые тревоги: уровень словом, что случилось и что делать, «Принято».
  * Действие тревоги (Д2: «Повторить» чек зачёта) — управляющему и владельцу, с причиной.
+ * Переход (M4: турнир, споры по партиям) — тем, кому открыт экран.
  */
-export function AlarmList({ alarms, timeZone, onAck, role, emptyText = 'Тревог нет. Всё под контролем.' }) {
+export function AlarmList({ alarms, timeZone, onAck, role, clubId, emptyText = 'Тревог нет. Всё под контролем.' }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [acting, setActing] = useState(null); // { alarm, action }
@@ -44,7 +46,8 @@ export function AlarmList({ alarms, timeZone, onAck, role, emptyText = 'Трев
       <ErrorNote error={error} />
       <ul class="alarms">
         {sortAlarms(alarms).map((a) => {
-          const v = alarmView(a);
+          const v = alarmView(a, { timeZone });
+          const link = alarmLink(a);
           return (
             <li key={a.id} class={`alarm alarm--${v.level}`}>
               <p class="alarm__head">
@@ -65,6 +68,12 @@ export function AlarmList({ alarms, timeZone, onAck, role, emptyText = 'Трев
                 </p>
               ) : null}
               <span class="alarm__tools">
+                {link && can[link.screen]?.(role) ? (
+                  <a class="btn btn--secondary btn--sm" href={alarmHref(link, clubId)} onClick={linkHandler}>
+                    <Icon name={link.screen === 'tournaments' ? 'trophy' : 'forward'} />
+                    {link.title}
+                  </a>
+                ) : null}
                 {alarmAction(a) && can.manage(role) && !done[a.id] ? (
                   <button type="button" class="btn btn--secondary btn--sm" onClick={() => setActing({ alarm: a, action: alarmAction(a) })}>
                     <Icon name="refresh" />

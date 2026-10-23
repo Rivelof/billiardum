@@ -1,6 +1,7 @@
 /** Тревоги владельцу (PRODUCT §8, контракт §6–§7) словами. Неизвестный тип — общий текст, код — мелко. */
 
-import { formatMoney } from '@billiardum/shared/format';
+import { formatMoney, formatTime } from '@billiardum/shared/format';
+import { BASE } from './env.js';
 
 export const LEVEL_WORD = { critical: 'Критично', important: 'Важно', info: 'Для сведения' };
 const LEVEL_ORDER = { critical: 0, important: 1, info: 2 };
@@ -46,10 +47,36 @@ const TEXT = {
   terminal_locked: ['Терминал заблокирован', 'На терминале много раз ввели неверный PIN. Вход по PIN на нём закрыт — разблокируйте его в разделе «Персонал → Терминалы», если это были свои.'],
   booking_table_unavailable: ['Стол был недоступен гостю по брони', 'Гость пришёл, а стол был занят или без связи. Бронь закрыта, предоплата возвращена полностью.'],
   booking_step_failed: ['Бронь не обрабатывается', 'Сервер несколько раз не смог обработать бронь по расписанию. Проверьте её в разделе «Брони»; если повторится — сообщите в поддержку.'],
+  // M4 (№147): свет матча турнира упёрся в предел окна турнира; data { tournament_id, match_id, light_until }
+  tournament_match_overdue: ['Матч турнира затянулся', 'Свет на столе дошёл до предела окна турнира и погаснет. Решите с игроками: внесите счёт или договоритесь, как доиграть.'],
   club_timezone_invalid: ['Неверный часовой пояс клуба', 'Тарифы и брони считаются по местному времени, а пояс клуба не распознан. Укажите пояс в настройках клуба или сообщите в поддержку.'],
 };
 
 const money = (k) => (Number.isSafeInteger(k) && k > 0 ? formatMoney(k) : null);
+/** Строка из data: только короткая строка, иначе null (данные сервера показываем текстом, без разметки). */
+const str = (v, max) => (typeof v === 'string' && v.trim() ? (v.trim().length > max ? `${v.trim().slice(0, max - 1)}…` : v.trim()) : null);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const why = (data) => {
+  const r = str(data?.reason, 200);
+  return r ? ` Причина: «${r}».` : '';
+};
+
+/** Ручные действия (manual_action) по data.action: инвариант 8 — что сделано, причина; сотрудник — в журнале. */
+const MANUAL_BY_ACTION = {
+  // server/tournaments: before — '2:1', 'спор' или 'без счёта'; after — '3:2'
+  'manual.tournament_score': (data) => {
+    const before = str(data?.before, 20);
+    const after = str(data?.after, 20);
+    const change = before && after ? ` Было: ${before}, стало: ${after}.` : after ? ` Новый счёт: ${after}.` : '';
+    return ['Счёт матча турнира исправлен', `Сотрудник исправил счёт матча.${change}${why(data)} Кто исправил — в журнале.`];
+  },
+  // server/plus: result — 'a' | 'b' (победитель по решению) или 'annul' (не засчитана)
+  'plus.match_resolve': (data) => {
+    const what = data?.result === 'annul' ? 'Результат партии отменён — в рейтинг она не засчитана.' : 'Победитель партии назначен решением сотрудника.';
+    return ['Спор по партии решён', `${what}${why(data)} Кто решил — в журнале.`];
+  },
+  tournament_cancel: (data) => ['Турнир отменён', `Сотрудник отменил турнир, взносы возвращаются участникам.${why(data)} Кто отменил и причина — в журнале.`],
+};
 
 /** Варианты текста по data тревоги. */
 const BY_DATA = {
@@ -73,6 +100,19 @@ const BY_DATA = {
   },
   payment_not_found_at_provider: (data) =>
     data?.action === 'kept' ? ['Платёж не найден в ЮKassa', 'У нас платёж проведён, а в ЮKassa его нет. Сверьте выписку ЮKassa и журнал — при расхождении напишите в поддержку.'] : null,
+  manual_action: (data) => MANUAL_BY_ACTION[data?.action]?.(data) ?? null,
+  tournament_match_overdue: (data, { timeZone, now }) => {
+    const until = Date.parse(data?.light_until);
+    if (!Number.isFinite(until) || !timeZone) return null;
+    let at;
+    try {
+      at = formatTime(until, timeZone);
+    } catch {
+      return null;
+    }
+    const lamp = until > now ? `Свет на столе погаснет в ${at}` : `Свет на столе погас в ${at}`;
+    return ['Матч турнира затянулся', `${lamp}: это предел окна турнира, дальше без оплаты не продлится. Решите с игроками: внесите счёт или договоритесь, как доиграть.`];
+  },
 };
 
 /** Момент тревоги: последний раз поднята (last_raised_at), иначе raised_at / created_at. */
@@ -82,11 +122,12 @@ export function alarmTime(alarm) {
 
 /**
  * @param {{ type: string, level?: string, resource_number?: number, data?: object, text?: string, count?: number }} alarm
+ * @param {{ timeZone?: string, now?: number }} [opts] пояс клуба — для времени в тексте («свет погаснет в 21:30»)
  * @returns {{ title: string, text: string, level: string, levelWord: string, table: string | null, repeats: number }}
  */
-export function alarmView(alarm) {
+export function alarmView(alarm, { timeZone, now = Date.now() } = {}) {
   // Неизвестный нам тип — текст сервера (alarms.text), иначе код мелко
-  const [title, text] = BY_DATA[alarm.type]?.(alarm.data) ?? TEXT[alarm.type] ?? [alarm.text || 'Тревога', alarm.text ? 'Подробности — в журнале.' : `Тип: ${alarm.type}. Подробности — в журнале.`];
+  const [title, text] = BY_DATA[alarm.type]?.(alarm.data, { timeZone, now }) ?? TEXT[alarm.type] ?? [alarm.text || 'Тревога', alarm.text ? 'Подробности — в журнале.' : `Тип: ${alarm.type}. Подробности — в журнале.`];
   const level = LEVEL_WORD[alarm.level] ? alarm.level : 'important';
   const number = alarm.resource_number ?? alarm.data?.resource_number;
   const repeats = Number.isInteger(alarm.count) && alarm.count > 1 ? alarm.count : 0;
@@ -116,4 +157,25 @@ export function alarmAction(alarm) {
   const m = RETRY_URL.exec(d.action_url);
   if (!m) return null;
   return { id: 'retry', title: typeof d.action_title === 'string' && d.action_title.length <= 40 ? d.action_title : 'Повторить', receiptId: m[1] };
+}
+
+/**
+ * Переход из тревоги в программу клуба: турнир (матч затянулся, исправлен счёт, отменён) или споры по партиям.
+ * Идентификатор турнира — только UUID; адрес собирает клиент, не сервер.
+ * @returns {{ screen: 'tournaments' | 'disputes', id: string | null, title: string } | null}
+ */
+export function alarmLink(alarm) {
+  const d = alarm?.data;
+  const tid = typeof d?.tournament_id === 'string' && UUID.test(d.tournament_id) ? d.tournament_id : null;
+  if (alarm?.type === 'tournament_match_overdue') return tid ? { screen: 'tournaments', id: tid, title: 'Открыть турнир' } : null;
+  if (alarm?.type !== 'manual_action') return null;
+  if (tid && (d.action === 'manual.tournament_score' || d.action === 'tournament_cancel')) return { screen: 'tournaments', id: tid, title: 'Открыть турнир' };
+  if (d?.action === 'plus.match_resolve') return { screen: 'disputes', id: null, title: 'Открыть споры по партиям' };
+  return null;
+}
+
+/** Адрес перехода: в клубе тревоги — /club/c/{club}/…; без клуба — короткие /club/tournaments/{id}, /club/plus/disputes. */
+export function alarmHref(link, clubId) {
+  if (clubId) return `${BASE}c/${encodeURIComponent(clubId)}/${link.screen}${link.id ? `/${encodeURIComponent(link.id)}` : ''}`;
+  return link.screen === 'disputes' ? `${BASE}plus/disputes` : `${BASE}tournaments/${encodeURIComponent(link.id)}`;
 }

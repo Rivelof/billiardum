@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { advance, applyScore, cancelRefund, champion, liveMatches, seedBracket, seedOrder, tournamentActions, tournamentBody, tournamentErrors } from '../src/lib/tournaments.js';
 import { ratingSummary, openCount, needsReason } from '../src/lib/platform.js';
 import { createBackend } from '../src/mock/backend.js';
+import { alarmHref, alarmLink, alarmView } from '../src/lib/alarms.js';
+import { ACTION_LABEL, MANUAL_ACTIONS } from '../src/lib/audit.js';
 
 const T = Date.parse('2026-10-23T12:00:00Z');
 const memory = () => {
@@ -109,4 +111,81 @@ test('города оператора: новый город, 409 city_required 
   assert.equal(ok.body.status, 'approved');
   assert.equal((await req(b, 'POST', '/api/platform/cities', { name: 'Пермь', name_in: 'в Перми', timezone: 'Asia/Yekaterinburg' })).body.error, 'duplicate');
   assert.ok((await req(b, 'GET', '/api/platform/cities')).body.items.some((c) => c.name === 'Пермь'));
+});
+
+test('тревоги M4 (№147): матч затянулся, исправление счёта и решение спора — текст, время клуба, переход', () => {
+  const TZ = 'Asia/Yekaterinburg';
+  const tid = 'd4000000-0000-4000-8000-000000000003';
+  const until = '2026-10-23T16:30:00Z'; // 21:30 в Екатеринбурге
+  const over = { type: 'tournament_match_overdue', level: 'important', resource_number: 6, data: { tournament_id: tid, match_id: 'm1', light_until: until } };
+  const v = alarmView(over, { timeZone: TZ, now: Date.parse(until) - 60_000 });
+  assert.equal(v.title, 'Матч турнира затянулся');
+  assert.match(v.text, /погаснет в 21:30/);
+  assert.match(v.text, /предел окна турнира/);
+  assert.equal(v.level, 'important');
+  assert.equal(v.table, 'Стол 6');
+  assert.match(alarmView(over, { timeZone: TZ, now: Date.parse(until) + 60_000 }).text, /погас в 21:30/);
+  assert.match(alarmView(over).text, /погаснет\. Решите с игроками/, 'без пояса — общий текст без времени');
+  assert.deepEqual(alarmLink(over), { screen: 'tournaments', id: tid, title: 'Открыть турнир' });
+  assert.equal(alarmHref(alarmLink(over), 'club-1'), `/club/c/club-1/tournaments/${tid}`);
+  assert.equal(alarmHref(alarmLink(over)), `/club/tournaments/${tid}`);
+  assert.equal(alarmLink({ ...over, data: { tournament_id: '../platform' } }), null, 'чужой вид идентификатора — без перехода');
+
+  const score = { type: 'manual_action', level: 'important', data: { action: 'manual.tournament_score', tournament_id: tid, match_id: 'm1', staff_id: 'u1', reason: 'Внесли наоборот', before: 'спор', after: '1:3' } };
+  const s = alarmView(score);
+  assert.equal(s.title, 'Счёт матча турнира исправлен');
+  assert.match(s.text, /Было: спор, стало: 1:3\. Причина: «Внесли наоборот»/);
+  assert.equal(alarmLink(score).screen, 'tournaments');
+
+  const resolve = { type: 'manual_action', level: 'important', data: { action: 'plus.match_resolve', match_id: 'm2', result: 'annul', reason: 'Не играли', staff_id: 'u1' } };
+  assert.equal(alarmView(resolve).title, 'Спор по партии решён');
+  assert.match(alarmView(resolve).text, /не засчитана\. Причина: «Не играли»/);
+  assert.match(alarmView({ ...resolve, data: { ...resolve.data, result: 'a' } }).text, /Победитель партии назначен/);
+  assert.deepEqual(alarmLink(resolve), { screen: 'disputes', id: null, title: 'Открыть споры по партиям' });
+  assert.equal(alarmHref(alarmLink(resolve), 'club-1'), '/club/c/club-1/disputes');
+  assert.equal(alarmHref(alarmLink(resolve)), '/club/plus/disputes');
+
+  // Ручное действие без data.action — прежний общий текст, без перехода
+  assert.equal(alarmView({ type: 'manual_action' }).title, 'Ручное действие персонала');
+  assert.equal(alarmLink({ type: 'manual_action', data: {} }), null);
+  // В журнале и отчёте смены — подписаны и считаются ручными
+  for (const a of ['manual.tournament_score', 'plus.match_resolve']) {
+    assert.ok(ACTION_LABEL[a], a);
+    assert.ok(MANUAL_ACTIONS.has(a), a);
+  }
+});
+
+test('заглушка M4: исправление счёта и решение спора поднимают manual_action; матч затянулся — в тревогах', async () => {
+  const b = createBackend(memory(), () => T);
+  b.scenario('owner');
+  const alarms = () => req(b, 'GET', '/api/clubs/c/alarms').then((r) => r.body);
+  const overdue = (await alarms()).find((a) => a.type === 'tournament_match_overdue');
+  assert.ok(overdue && alarmLink(overdue), 'тревога «матч затянулся» с переходом к турниру');
+
+  const t = (await req(b, 'GET', '/api/clubs/c/tournaments')).body.items.find((x) => x.status === 'running');
+  const m = t.bracket.rounds[1].matches[0];
+  await req(b, 'PATCH', `/api/tournaments/matches/${encodeURIComponent(m.id)}/score`, { score_a: 3, score_b: 2, reason: 'Проверили по видео' });
+  const fixed = (await alarms()).find((a) => a.data?.action === 'manual.tournament_score' && a.data.reason === 'Проверили по видео');
+  assert.equal(fixed.type, 'manual_action');
+  assert.equal(fixed.data.tournament_id, t.id);
+  assert.equal(fixed.data.after, '3:2');
+  assert.match(alarmView(fixed).text, /стало: 3:2/);
+
+  const d = (await req(b, 'GET', '/api/clubs/c/plus/disputes')).body.items[0];
+  await req(b, 'POST', `/api/plus/matches/${d.id}/resolve`, { result: 'b', reason: 'Посмотрели запись' });
+  const res = (await alarms()).find((a) => a.data?.action === 'plus.match_resolve');
+  assert.equal(res.data.match_id, d.id);
+  assert.equal(res.resource_number, d.table_number);
+  assert.equal(alarmLink(res).screen, 'disputes');
+
+  // Отчёт смены: обе строки — ручные (не система и не гость), подписаны словами
+  const shifts = (await req(b, 'GET', '/api/clubs/c/shifts')).body.items;
+  const reports = await Promise.all(shifts.map((x) => req(b, 'GET', `/api/shifts/${x.id}/report`).then((r) => r.body)));
+  const rows = reports.flatMap((r) => r.manual_actions?.items ?? []);
+  for (const a of ['manual.tournament_score', 'plus.match_resolve']) {
+    const row = rows.find((x) => x.action === a);
+    assert.ok(row, a);
+    assert.ok(!['automatic', 'guest'].includes(row.kind), a);
+    assert.ok(row.reason, a);
+  }
 });

@@ -82,7 +82,7 @@ export function Now({ ctx }) {
             Тревоги
             {alarms?.length ? <span class="count count--alert">{alarms.length}</span> : null}
           </h2>
-          {alarms ? <AlarmList alarms={alarms} timeZone={timeZone} role={role} onAck={(id) => setAlarms((l) => l.filter((x) => x.id !== id))} /> : <p class="muted loading">Загружаем…</p>}
+          {alarms ? <AlarmList alarms={alarms} timeZone={timeZone} role={role} clubId={clubId} onAck={(id) => setAlarms((l) => l.filter((x) => x.id !== id))} /> : <p class="muted loading">Загружаем…</p>}
         </section>
 
         <section class="now__hall" aria-labelledby="now-hall-title">
