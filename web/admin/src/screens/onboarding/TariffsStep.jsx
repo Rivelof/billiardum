@@ -448,7 +448,7 @@ function WeekGrid({ rules, type, dayStart, highlight }) {
           </ul>
         </div>
       ) : null}
-      <h4 class="wk__sumtitle">Неделя словами</h4>
+      <h3 class="wk__sumtitle">Неделя словами</h3>
       <dl class="wk__sum">
         {summary.map((l) => (
           <div key={l.days}>

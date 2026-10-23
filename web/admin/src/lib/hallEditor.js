@@ -211,6 +211,50 @@ export function tableAria(t) {
   return `Стол ${t.number}, ${KIND[t.kind]?.short ?? 'пирамида'}. ${metres(t.plan_x)} от левой стены, ${metres(t.plan_y)} от верхней${turn ? `, повёрнут на ${turn}°` : ''}.`;
 }
 
+/**
+ * Сохранение столов плана (Д2 M5.1): стрелки и R копятся и уходят одним PATCH через delay мс после последней
+ * клавиши, конец перетаскивания — сразу. Стол берётся через get(id) в момент сохранения — из актуального
+ * состояния редактора, а не из отрисовки, в которой нажали клавишу (иначе тело PATCH пустое).
+ * Несколько столов подряд — сохраняется каждый.
+ * @param {{ get: (id: string) => object | null, save: (t: object) => unknown, delay?: number, timers?: { setTimeout: Function, clearTimeout: Function } }} o
+ */
+export function planSaver({ get, save, delay = 600, timers = globalThis }) {
+  const pending = new Set();
+  let timer = null;
+  const flush = () => {
+    timers.clearTimeout(timer);
+    timer = null;
+    const ids = [...pending];
+    pending.clear();
+    for (const id of ids) {
+      const t = get(id);
+      if (t) save(t);
+    }
+  };
+  return {
+    /** Клавиша: сохранить стол позже, после паузы. */
+    later(id) {
+      pending.add(id);
+      timers.clearTimeout(timer);
+      timer = timers.setTimeout(flush, delay);
+    },
+    /** Конец перетаскивания: сохранить стол сразу (и всё, что ждало). */
+    now(id) {
+      pending.add(id);
+      flush();
+    },
+    flush,
+    /** Уход с экрана: отложенное не теряем. */
+    dispose: flush,
+  };
+}
+
+/**
+ * №164: смена типа стола в боевом режиме — ручное действие (при тарифах по типам она меняет цену стола):
+ * нужна причина, владельцу — уведомление. Позиция, поворот и номер — только журнал.
+ */
+export const kindNeedsReason = (before, after, live) => Boolean(live) && Boolean(after?.kind) && after.kind !== before?.kind;
+
 /** Тело POST /api/clubs/{club}/resources; в live — с причиной (manual.resource_add). */
 export const resourceBody = (t, reason = null) => ({
   number: t.number,

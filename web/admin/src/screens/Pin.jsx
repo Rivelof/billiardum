@@ -73,7 +73,7 @@ export function Pin() {
 
   if (changePin) {
     return (
-      <div class="signin" data-theme="dark">
+      <main class="signin" data-theme="dark">
         <div class="signin__card">
           <p class="signin__brand display">Бильярдум</p>
           <h1 class="signin__title">Смените PIN на 6 цифр</h1>
@@ -89,13 +89,13 @@ export function Pin() {
             Понятно, продолжить
           </button>
         </div>
-      </div>
+      </main>
     );
   }
 
   if (!terminal) {
     return (
-      <div class="signin" data-theme="dark">
+      <main class="signin" data-theme="dark">
         <div class="signin__card">
           <h1 class="signin__title">Это устройство не терминал</h1>
           <p class="hint">Смена по PIN работает только на планшете ресепшена, который владелец или управляющий зарегистрировал в разделе «Ещё».</p>
@@ -103,12 +103,12 @@ export function Pin() {
             Войти через мессенджер
           </a>
         </div>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div class="signin" data-theme="dark">
+    <main class="signin" data-theme="dark">
       <div class="signin__card signin__card--wide">
         <p class="signin__brand display">Бильярдум</p>
         <h1 class="signin__title">{who ? `PIN: ${staffLabel(who)}` : `Кто работает? Терминал «${terminal.name}»`}</h1>
@@ -196,6 +196,6 @@ export function Pin() {
           </form>
         )}
       </div>
-    </div>
+    </main>
   );
 }

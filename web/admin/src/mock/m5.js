@@ -234,6 +234,7 @@ export function m5Routes(ctx) {
     if (rules.length > 100) return err(400, 'bad_request');
     for (const r of rules) {
       if (!Number.isInteger(r.min_minutes) || !Number.isInteger(r.step_minutes) || !Number.isInteger(r.price_per_hour_kopecks)) return err(400, 'bad_request');
+      if (r.price_per_hour_kopecks <= 0) return err(400, 'bad_request'); // №163: тариф 0 ₽ не бывает
       if (r.kind !== undefined && r.kind !== null && !KIND_TYPE[r.kind]) return err(400, 'bad_request');
     }
     const problem = weekProblem(rules);
@@ -285,6 +286,9 @@ export function m5Routes(ctx) {
       audit(live() ? 'manual.resource_retire' : 'resource.retire', { resource_number: tbl.resource.number, reason: b.reason ?? null });
       return ok(resourceView(tbl.resource, false));
     }
+    // №164: смена типа стола в боевом режиме — ручное действие с причиной
+    const kindChange = b?.kind !== undefined && b.kind !== (tbl.resource.kind ?? (/pool/.test(tbl.resource.type) ? 'pool' : 'pyramid'));
+    if (kindChange && live() && !String(b.reason ?? '').trim()) return err(400, 'reason_required');
     if (b?.number !== undefined) {
       const n = Number(b.number);
       if (!Number.isInteger(n) || n < 1 || n > 999) return err(400, 'bad_request');
@@ -306,7 +310,7 @@ export function m5Routes(ctx) {
       tbl.resource.plan_rotation = b.plan_rotation;
     }
     st().hall.sort((a, c) => a.resource.number - c.resource.number);
-    audit('resource.update', { resource_number: tbl.resource.number });
+    audit(kindChange && live() ? 'manual.resource_kind' : 'resource.update', { resource_number: tbl.resource.number, reason: kindChange && live() ? String(b.reason).trim() : null });
     emit('hall', tbl);
     return ok(resourceView(tbl.resource));
   }
@@ -386,7 +390,8 @@ export function m5Routes(ctx) {
     ['GET', /^\/api\/public\/cities$/, () => ok({ items: CITIES })],
     ['GET', /^\/api\/clubs\/claimable-listings$/, () => (me() ? ok({ items: S().claimable }) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/clubs$/, (_m, b) => createClub(b)],
-    ['GET', /^\/api\/clubs\/([^/]+)\/onboarding$/, owner(() => ok(onboardingView()))],
+    // Управляющему — без магазинов (shops: null), как у сервера
+    ['GET', /^\/api\/clubs\/([^/]+)\/onboarding$/, manager(() => ok(role() === 'owner' ? onboardingView() : { ...onboardingView(), shops: null }))],
     ['POST', /^\/api\/clubs\/([^/]+)\/go-live$/, owner((_m, b) => {
       if (b?.accept_offer !== true) return fail(409, 'checklist_incomplete', { failed: ['offer'] });
       advance();

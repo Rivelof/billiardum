@@ -16,6 +16,7 @@ import {
   footprint,
   hallFromMetres,
   kindLabel,
+  kindNeedsReason,
   metres,
   moveTable,
   nextNumber,
@@ -23,6 +24,7 @@ import {
   numberError,
   placeUnset,
   planTables,
+  planSaver,
   pxToCm,
   resourceBody,
   resourcePatch,
@@ -49,12 +51,19 @@ export function HallStep({ ctx, ob, reload, live }) {
     hallRef.current = h;
     setHallState(h);
   };
-  const [tables, setTables] = useState(null);
+  const [tables, setTablesState] = useState(null);
+  // Актуальные столы редактора: обработчики клавиш и таймер сохранения читают их отсюда, а не из старой отрисовки (Д2)
+  const tablesRef = useRef(null);
+  const setTables = (next) => {
+    tablesRef.current = typeof next === 'function' ? next(tablesRef.current) : next;
+    setTablesState(tablesRef.current);
+  };
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState(null);
   const [saved, setSaved] = useState(null);
   const [adding, setAdding] = useState(false);
   const [retiring, setRetiring] = useState(null);
+  const [kindAsk, setKindAsk] = useState(null); // { table, kind } — смена типа в боевом режиме ждёт причину (№164)
   const server = useRef(new Map()); // id → стол, как он сохранён на сервере
 
   /** GET …/resources → { plan, resources }; идёт ли игра — из зала (не обязательно). */
@@ -81,12 +90,12 @@ export function HallStep({ ctx, ob, reload, live }) {
     load();
   }, [load]);
 
-  /** Сохранить изменения стола: только изменённые поля. */
+  /** Сохранить изменения стола: только изменённые поля; reason — для смены типа в боевом режиме (№164). */
   const commit = useCallback(
-    async (t) => {
+    async (t, reason = null) => {
       const before = server.current.get(t.id) ?? {};
-      const body = resourcePatch(before, t);
-      if (!Object.keys(body).length) return true;
+      const body = resourcePatch(before, t, { reason });
+      if (!Object.keys(body).filter((k) => k !== 'reason').length) return true;
       try {
         await api.updateResource(clubId, t.id, body);
         server.current.set(t.id, { ...before, ...t, unset: false });
@@ -94,7 +103,12 @@ export function HallStep({ ctx, ob, reload, live }) {
         setError(null);
         return true;
       } catch (err) {
-        setError(err);
+        if (reason) throw err; // ошибку покажет окно причины
+        if (err?.code === 'reason_required' && body.kind) {
+          // Сервер считает клуб боевым (режим сменился, пока экран был открыт): спросим причину
+          setKindAsk({ table: { ...before, ...t, kind: before.kind ?? t.kind }, kind: body.kind, fromServer: true });
+          setError(null);
+        } else setError(err);
         load();
         return false;
       }
@@ -103,6 +117,20 @@ export function HallStep({ ctx, ob, reload, live }) {
   );
 
   const update = (t) => setTables((list) => list.map((x) => (x.id === t.id ? t : x)));
+  // Стрелки и R — одним PATCH через 600 мс после последней клавиши, конец перетаскивания — сразу (Д2)
+  const saver = useMemo(() => planSaver({ get: (id) => tablesRef.current?.find((x) => x.id === id) ?? null, save: (t) => commit(t) }), [commit]);
+  useEffect(() => () => saver.dispose(), [saver]);
+
+  /** Изменение стола из панели или списка: смена типа в боевом режиме — сначала причина (№164). */
+  const change = async (t) => {
+    const cur = tablesRef.current?.find((x) => x.id === t.id);
+    if (cur && kindNeedsReason(cur, t, live)) {
+      setKindAsk({ table: cur, kind: t.kind });
+      return;
+    }
+    update(t);
+    if (await commit(t)) reload();
+  };
   const sel = tables?.find((t) => t.id === selected) ?? null;
   const showPlan = wide && view === 'plan';
 
@@ -112,7 +140,7 @@ export function HallStep({ ctx, ob, reload, live }) {
       {live ? (
         <p class="note note--lamp">
           <Icon name="info" />
-          <span class="note__title">Клуб в боевом режиме: новый стол и вывод стола из работы попадут в журнал, владельцу придёт уведомление.</span>
+          <span class="note__title">Клуб в боевом режиме: новый стол, смена типа стола и вывод из работы — с причиной; они попадут в журнал, владельцу придёт уведомление.</span>
         </p>
       ) : null}
 
@@ -123,7 +151,7 @@ export function HallStep({ ctx, ob, reload, live }) {
           setHall(h);
           setSaved('Размер зала сохранён.');
           // Столы, которые оказались за стеной, возвращаем в зал
-          for (const t of tables ?? []) {
+          for (const t of tablesRef.current ?? []) {
             const p = clampCenter(t.plan_x, t.plan_y, t.kind, t.plan_rotation, h);
             if (p.x !== t.plan_x || p.y !== t.plan_y) await commit({ ...t, plan_x: p.x, plan_y: p.y });
           }
@@ -174,11 +202,9 @@ export function HallStep({ ctx, ob, reload, live }) {
             selected={selected}
             onSelect={setSelected}
             onMove={update}
-            onCommit={(id) => {
-              const t = tables.find((x) => x.id === id);
-              if (t) commit(t);
-            }}
-            getTable={(id) => tables.find((x) => x.id === id)}
+            onCommitLater={saver.later}
+            onCommitNow={saver.now}
+            getTable={(id) => tablesRef.current?.find((x) => x.id === id) ?? null}
           />
           <p class="small muted">Перетащите стол мышью или пальцем. С клавиатуры: Tab — к столу, стрелки — сдвиг на 10 см (с Shift — на 50 см), R — поворот.</p>
           {sel ? (
@@ -187,11 +213,7 @@ export function HallStep({ ctx, ob, reload, live }) {
               table={sel}
               tables={tables}
               hall={hall}
-              onChange={async (t) => {
-                update(t);
-                if (!(await commit(t))) return;
-                reload();
-              }}
+              onChange={change}
               onRetire={() => setRetiring(sel)}
             />
           ) : (
@@ -204,10 +226,7 @@ export function HallStep({ ctx, ob, reload, live }) {
         <TableList
           tables={tables}
           hall={hall}
-          onChange={async (t) => {
-            update(t);
-            if (await commit(t)) reload();
-          }}
+          onChange={change}
           onRetire={setRetiring}
         />
       ) : null}
@@ -224,6 +243,18 @@ export function HallStep({ ctx, ob, reload, live }) {
           setSaved(`Стол ${number} добавлен.`);
           await load();
           if (res?.id) setSelected(res.id);
+          reload();
+        }}
+      />
+      <KindDialog
+        ask={kindAsk}
+        onClose={() => setKindAsk(null)}
+        onSubmit={async (reason) => {
+          const t = { ...kindAsk.table, kind: kindAsk.kind };
+          await commit(t, reason);
+          update(t);
+          setKindAsk(null);
+          setSaved(`Стол ${t.number}: тип изменён.`);
           reload();
         }}
       />
@@ -299,10 +330,9 @@ function HallSize({ hall, clubId, onSaved }) {
 }
 
 /** План-редактор: стол — кнопка; перетаскивание указателем (мышь, палец, перо), клавиатура — стрелки и R. */
-function PlanEditor({ tables, hall, selected, onSelect, onMove, onCommit, getTable }) {
+function PlanEditor({ tables, hall, selected, onSelect, onMove, onCommitLater, onCommitNow, getTable }) {
   const ref = useRef(null);
   const drag = useRef(null);
-  const keyTimer = useRef(null);
   const svgs = useMemo(() => new Map(['pyramid', 'pool'].map((k) => [k, tableSvg(k)])), []);
 
   const down = (e, t) => {
@@ -322,20 +352,20 @@ function PlanEditor({ tables, hall, selected, onSelect, onMove, onCommit, getTab
   const up = () => {
     const d = drag.current;
     drag.current = null;
-    if (d?.moved) onCommit(d.id);
+    if (d?.moved) onCommitNow(d.id);
   };
   const key = (e, t) => {
     const step = e.shiftKey ? 50 : 10;
     const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
     let next = null;
-    if (moves[e.key]) next = moveTable(getTable(t.id), ...moves[e.key], hall);
-    else if (e.key === 'r' || e.key === 'R' || e.key === 'к' || e.key === 'К') next = rotateTable(getTable(t.id), 90, hall);
+    const cur = getTable(t.id) ?? t;
+    if (moves[e.key]) next = moveTable(cur, ...moves[e.key], hall);
+    else if (e.key === 'r' || e.key === 'R' || e.key === 'к' || e.key === 'К') next = rotateTable(cur, 90, hall);
     if (!next) return;
     e.preventDefault();
     onSelect(t.id);
     onMove(next);
-    clearTimeout(keyTimer.current);
-    keyTimer.current = setTimeout(() => onCommit(t.id), 600);
+    onCommitLater(t.id);
   };
 
   return (
@@ -628,6 +658,92 @@ function AddDialog({ open, tables, hall, clubId, live, onClose, onDone }) {
         <div class="dialog__actions">
           <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
             {busy ? 'Добавляем…' : `Добавить стол ${numErr ? '' : number}`.trim()}
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+/** №164: смена типа стола в боевом режиме — с причиной; владельцу придёт уведомление. */
+function KindDialog({ ask, onClose, onSubmit }) {
+  const [reason, setReason] = useState('');
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const key = ask ? `${ask.table.id}:${ask.kind}` : null;
+  useEffect(() => {
+    setReason('');
+    setTried(false);
+    setError(null);
+  }, [key]);
+  if (!ask) return <Dialog open={false} onClose={onClose} title="" />;
+  const { table, kind } = ask;
+  const need = !reason.trim();
+  const errText = error?.code === 'reason_required' ? 'Клуб в боевом режиме: без причины тип стола не сменить. Напишите причину и сохраните снова.' : null;
+  return (
+    <Dialog open onClose={onClose} title={`Сменить тип стола ${table.number}?`} labelledBy="kind-title">
+      <form
+        class="form"
+        noValidate
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setTried(true);
+          if (need) {
+            document.getElementById('kind-reason')?.focus();
+            return;
+          }
+          setBusy(true);
+          setError(null);
+          try {
+            await onSubmit(reason.trim());
+          } catch (err) {
+            setError(err);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <dl class="facts">
+          <div>
+            <dt>Было</dt>
+            <dd>{kindLabel(table.kind)}</dd>
+          </div>
+          <div>
+            <dt>Станет</dt>
+            <dd>{kindLabel(kind)}</dd>
+          </div>
+        </dl>
+        {ask.fromServer ? (
+          <p class="note note--lamp" role="alert">
+            <Icon name="info" />
+            <span class="note__title">Клуб уже в боевом режиме: тип стола меняется только с причиной.</span>
+          </p>
+        ) : null}
+        <p class="hint">Клуб в боевом режиме. Если цены в тарифах разные по типам столов, у стола {table.number} изменится цена часа — для следующих игр.</p>
+        <div class="field">
+          <label class="field__label" for="kind-reason">
+            Причина
+          </label>
+          <textarea id="kind-reason" class="field__input field__input--area" rows={2} maxLength={300} value={reason} aria-invalid={tried && need ? 'true' : undefined} aria-describedby="kind-reason-e" onInput={(e) => setReason(e.currentTarget.value)} />
+          <p class={tried && need ? 'field__error' : 'field__hint'} id="kind-reason-e">
+            {tried && need ? 'Клуб в боевом режиме: без причины тип стола не сменить.' : 'Уйдёт в журнал и владельцу в уведомлении.'}
+          </p>
+        </div>
+        {errText ? (
+          <p class="note note--error" role="alert">
+            <Icon name="alert" />
+            <span class="note__title">{errText}</span>
+          </p>
+        ) : (
+          <ErrorNote error={error} />
+        )}
+        <div class="dialog__actions dialog__actions--row">
+          <button type="submit" class="btn btn--primary btn--lg" disabled={busy}>
+            {busy ? 'Сохраняем…' : `Сменить тип стола ${table.number}`}
+          </button>
+          <button type="button" class="btn btn--quiet btn--lg" onClick={onClose}>
+            Оставить как было
           </button>
         </div>
       </form>

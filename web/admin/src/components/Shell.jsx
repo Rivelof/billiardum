@@ -36,8 +36,9 @@ export function navItems(role, club) {
   if (can.listing(role)) add('listing', 'star', 'Карточка', true);
   if (can.staff(role)) add('staff', 'users', 'Персонал', true);
   if (can.devices(role)) add('devices', 'chip', 'Контроллеры', manage);
-  // M5.1: мастер подключения — владельцу, в боковой панели планшета (на телефоне — в плашке и в «Ещё»)
-  if (can.onboarding(role)) add('onboarding', 'flask', 'Подключение', true);
+  // M5.1: мастер подключения — в боковой панели планшета (на телефоне — в плашке и в «Ещё»);
+  // управляющему — его шаги: зал, тарифы, меню, наклейки (№155–156)
+  if (can.setup(role)) add('onboarding', 'flask', can.onboarding(role) ? 'Подключение' : 'Зал и тарифы', true);
   add('more', 'more', 'Ещё');
   return items;
 }

@@ -76,6 +76,8 @@ const SECTION_HINT = {
   onboarding: 'Мастер подключения: зал, тарифы, ЮKassa, контроллеры, запуск.',
 };
 
+const SETUP_HINT = 'План зала, тарифы, меню из Excel, QR-наклейки.';
+
 /** Разделы, которых нет в нижней панели телефона (у владельца и управляющего). */
 function Sections({ role, clubId }) {
   const items = navItems(role, clubId).filter((it) => it.wideOnly);
@@ -92,7 +94,7 @@ function Sections({ role, clubId }) {
               <Icon name={it.icon} />
               <span>
                 <span class="sections__name">{it.key === 'kkt' ? 'Касса ККТ' : it.label}</span>
-                <span class="sections__hint">{SECTION_HINT[it.key]}</span>
+                <span class="sections__hint">{it.key === 'onboarding' && !can.onboarding(role) ? SETUP_HINT : SECTION_HINT[it.key]}</span>
               </span>
               <Icon name="forward" class="sections__go" />
             </a>

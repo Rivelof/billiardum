@@ -7,7 +7,7 @@ import { api } from '../../lib/api.js';
 import { clubMode, setClubMode } from '../../lib/auth.js';
 import { navigate, linkHandler } from '../../lib/router.js';
 import { BASE } from '../../lib/env.js';
-import { STEPS, nextStepOf, prevStepOf, stepById, stepIndex, stepsView } from '../../lib/onboarding.js';
+import { nextStepOf, prevStepOf, stepById, stepIndex, stepsFor, stepsView } from '../../lib/onboarding.js';
 import { ClubStep } from './ClubStep.jsx';
 import { HallStep } from './HallStep.jsx';
 import { TariffsStep } from './TariffsStep.jsx';
@@ -36,6 +36,7 @@ const CONTENT = {
 /**
  * Мастер подключения клуба (M5.1, PRODUCT §16): 10 шагов с прогрессом, к любому шагу можно вернуться.
  * Шаг — в адресе: /club/c/{club}/onboarding/{step}. Отметки «готово» ставит сервер (GET …/onboarding).
+ * Управляющему — только его шаги (№155–156): зал, тарифы, меню, наклейки; чужой шаг в адресе — к первому своему.
  */
 export function Onboarding({ ctx }) {
   const { club, role, user, timeZone } = ctx;
@@ -43,7 +44,9 @@ export function Onboarding({ ctx }) {
   const [ob, setOb] = useState(null);
   const [error, setError] = useState(null);
   const [listOpen, setListOpen] = useState(false);
-  const step = stepById(ctx.id)?.id ?? null;
+  const list = stepsFor(role);
+  const owner = role === 'owner';
+  const step = stepById(ctx.id, list)?.id ?? null;
   const base = `${BASE}c/${encodeURIComponent(clubId)}/onboarding`;
 
   const reload = useCallback(async () => {
@@ -63,7 +66,7 @@ export function Onboarding({ ctx }) {
     reload();
   }, [reload]);
 
-  const view = stepsView(ob);
+  const view = stepsView(ob, list);
   // Без шага в адресе — первый несделанный
   useEffect(() => {
     if (!step && ob) navigate(`${base}/${view.firstOpen}`, { replace: true });
@@ -74,20 +77,20 @@ export function Onboarding({ ctx }) {
   }, [step]);
 
   const current = view.steps.find((s) => s.id === step) ?? null;
-  const prev = step ? prevStepOf(step) : null;
-  const next = step ? nextStepOf(step) : null;
+  const prev = step ? prevStepOf(step, list) : null;
+  const next = step ? nextStepOf(step, list) : null;
   const live = (ob?.mode ?? clubMode(club)) === 'live';
   const Content = step ? CONTENT[step] : null;
 
   return (
-    <Shell club={club} role={role} user={user} timeZone={timeZone} active="onboarding" title="Подключение">
+    <Shell club={club} role={role} user={user} timeZone={timeZone} active="onboarding" title={owner ? 'Подключение' : 'Зал и тарифы'}>
       <div class="page ob">
         <div class="ob__progress">
           <p class="ob__count">
             Готово <b>{view.done}</b> из {view.total} {plural(view.total, ['шага', 'шагов', 'шагов'])}
             {live ? ' · клуб в боевом режиме' : ' · тестовый режим'}
           </p>
-          <div class="meter meter--wide" role="progressbar" aria-label="Подключение клуба" aria-valuemin={0} aria-valuemax={view.total} aria-valuenow={view.done} aria-valuetext={`Готово ${view.done} из ${view.total}`}>
+          <div class="meter meter--wide" role="progressbar" aria-label={owner ? 'Подключение клуба' : 'Настройка зала и тарифов'} aria-valuemin={0} aria-valuemax={view.total} aria-valuenow={view.done} aria-valuetext={`Готово ${view.done} из ${view.total}`}>
             <span class="meter__fill" style={{ width: `${Math.round((view.done / view.total) * 100)}%` }} />
           </div>
         </div>
@@ -101,7 +104,7 @@ export function Onboarding({ ctx }) {
           <nav class="ob__nav" aria-label="Шаги подключения">
             <button type="button" class="ob__toggle btn btn--secondary btn--block" aria-expanded={listOpen ? 'true' : 'false'} aria-controls="ob-steps" onClick={() => setListOpen((v) => !v)}>
               <span>
-                Шаг {stepIndex(step) + 1} из {STEPS.length}: {current?.title ?? '…'}
+                Шаг {stepIndex(step, list) + 1} из {list.length}: {current?.title ?? '…'}
               </span>
               <span class="ob__toggle-hint">{listOpen ? 'Скрыть шаги' : 'Все шаги'}</span>
             </button>
@@ -126,7 +129,7 @@ export function Onboarding({ ctx }) {
             {current ? (
               <>
                 <p class="ob__kicker">
-                  Шаг {stepIndex(step) + 1} из {STEPS.length}
+                  Шаг {stepIndex(step, list) + 1} из {list.length}
                   {current.done ? (
                     <span class="badge badge--free ob__done">
                       <Icon name="check" />

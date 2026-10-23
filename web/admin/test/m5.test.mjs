@@ -1,9 +1,10 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { errorMessage } from '@billiardum/shared/errors';
 import { formatMoney } from '@billiardum/shared/format';
 import { ApiError } from '@billiardum/shared/api';
 import {
+  FREE_PRICE_TEXT,
   buildRules,
   kindOfType,
   ruleKind,
@@ -32,6 +33,8 @@ import {
   placeUnset,
   planTables,
   hallSize,
+  kindNeedsReason,
+  planSaver,
   retireBusyText,
   resourceBody,
   pxToCm,
@@ -54,11 +57,13 @@ import {
   shopBody,
   shopErrors,
   shopView,
+  stepsFor,
   stepsView,
+  stepIndex,
   webhookUrl,
 } from '../src/lib/onboarding.js';
 import { claimableListings, cityList, clubStartBody, clubStartErrors, tzForCity } from '../src/lib/clubStart.js';
-import { clubMode } from '../src/lib/auth.js';
+import { can, clubMode } from '../src/lib/auth.js';
 import { createBackend } from '../src/mock/backend.js';
 
 const memory = () => {
@@ -433,4 +438,113 @@ test('заглушка: ресепшн не видит мастер, магаз�
   for (const [m, p] of [['GET', '/onboarding'], ['GET', '/payment-settings/live'], ['POST', '/go-live']]) {
     assert.equal((await req(b, m, `/api/clubs/c${p}`, {})).body.error, 'forbidden', p);
   }
+});
+
+// ---------------- исправления по приёмке M5.1 (Д2, №155–156, №163, №164) ----------------
+
+test('Д2: перетащили стол, нажали R — PATCH уходит с поворотом, стол берётся из актуального состояния', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const hall = { width: 1800, height: 1200 };
+    // Как в HallStep: server — сохранённое, ref — актуальные столы редактора, PATCH — resourcePatch(server, стол)
+    const server = new Map([['a', { id: 'a', number: 1, kind: 'pyramid', plan_x: 400, plan_y: 400, plan_rotation: 0 }]]);
+    const ref = { current: [{ ...server.get('a') }] };
+    const sent = [];
+    const save = (t) => {
+      const body = resourcePatch(server.get(t.id), t);
+      if (Object.keys(body).length) sent.push(body);
+      server.set(t.id, { ...server.get(t.id), ...t });
+    };
+    const saver = planSaver({ get: (id) => ref.current.find((x) => x.id === id) ?? null, save });
+    const set = (t) => (ref.current = ref.current.map((x) => (x.id === t.id ? t : x)));
+    // Перетаскивание: стол сдвинут, отпустили — сохраняется сразу
+    set(moveTable(ref.current[0], 200, 100, hall));
+    saver.now('a');
+    assert.deepEqual(sent, [{ plan_x: 600, plan_y: 500 }]);
+    // «Старая отрисовка»: стол, который видел обработчик клавиши, — до поворота
+    const stale = ref.current[0];
+    set(rotateTable(stale, 90, hall));
+    saver.later('a');
+    assert.equal(sent.length, 1, 'до паузы ничего не уходит');
+    mock.timers.tick(599);
+    assert.equal(sent.length, 1);
+    mock.timers.tick(1);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].plan_rotation, 90, 'в теле PATCH — поворот');
+    // Серия клавиш — один PATCH с итогом
+    set(rotateTable(ref.current[0], 90, hall));
+    saver.later('a');
+    set(moveTable(ref.current[0], 10, 0, hall));
+    saver.later('a');
+    mock.timers.tick(600);
+    assert.equal(sent.length, 3);
+    assert.equal(sent[2].plan_rotation, 180);
+    assert.equal(sent[2].plan_x, 610);
+    // Два стола подряд — сохраняются оба; уход с экрана не теряет отложенное
+    server.set('b', { id: 'b', number: 2, kind: 'pool', plan_x: 1200, plan_y: 400, plan_rotation: 0 });
+    ref.current.push({ ...server.get('b') });
+    set(rotateTable(ref.current[0], 90, hall));
+    saver.later('a');
+    set(rotateTable(ref.current[1], 90, hall));
+    saver.later('b');
+    saver.dispose();
+    assert.equal(sent.length, 5);
+    assert.deepEqual(sent.slice(3).map((b) => b.plan_rotation), [270, 90]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('№164: смена типа стола в боевом режиме — с причиной; позиция и номер — без', () => {
+  const t = { id: 'a', number: 1, kind: 'pyramid', plan_x: 400, plan_y: 400, plan_rotation: 0 };
+  assert.equal(kindNeedsReason(t, { ...t, kind: 'pool' }, true), true);
+  assert.equal(kindNeedsReason(t, { ...t, kind: 'pool' }, false), false, 'в тесте — только журнал');
+  assert.equal(kindNeedsReason(t, { ...t, plan_x: 500, number: 2 }, true), false);
+  assert.deepEqual(resourcePatch(t, { ...t, kind: 'pool' }, { reason: ' стол переделали под пул ' }), { kind: 'pool', reason: 'стол переделали под пул' });
+});
+
+test('№155–156: управляющему в мастере — зал, тарифы, меню, наклейки; магазины, чек-лист и запуск — владельцу', () => {
+  assert.equal(stepsFor('owner').length, 10);
+  const mgr = stepsFor('manager');
+  assert.deepEqual(mgr.map((s) => s.id), ['hall', 'tariffs', 'menu', 'stickers']);
+  assert.deepEqual(stepsFor('reception'), []);
+  const v = stepsView({ mode: 'test', steps: [{ id: 'hall', done: true }, { id: 'payments', done: true }] }, mgr);
+  assert.deepEqual([v.done, v.total, v.firstOpen], [1, 4, 'tariffs']);
+  assert.equal(stepsView({ steps: mgr.map((s) => ({ id: s.id, done: true })) }, mgr).firstOpen, 'stickers');
+  assert.equal(stepIndex('payments', mgr), -1);
+  assert.equal(nextStepOf('menu', mgr).id, 'stickers');
+  assert.equal(nextStepOf('stickers', mgr), null);
+  assert.equal(prevStepOf('hall', mgr), null);
+  assert.deepEqual(['owner', 'manager', 'reception', 'bar'].map(can.setup), [true, true, false, false]);
+  assert.deepEqual(['owner', 'manager'].map(can.onboarding), [true, false], 'магазины и запуск — только владелец');
+});
+
+test('№163: цена тарифа больше нуля — 0 ₽ с подсказкой про ручное действие', () => {
+  const f = { ...defaultTariffForm('flat'), prices: { all: '0' } };
+  const key = Object.keys(tariffFormErrors(f, ['pyramid'])).find((k) => k.startsWith('price:'));
+  assert.equal(tariffFormErrors(f, ['pyramid'])[key], FREE_PRICE_TEXT);
+  assert.match(FREE_PRICE_TEXT, /Бесплатную игру включают ручным действием на кассе/);
+  for (const v of ['0,00', '0.0']) assert.equal(tariffFormErrors({ ...f, prices: { all: v } }, ['pyramid'])[key], FREE_PRICE_TEXT, v);
+  assert.match(tariffFormErrors({ ...f, prices: { all: '0,5' } }, ['pyramid'])[key], /от 1 ₽/);
+  assert.equal(tariffFormErrors({ ...f, prices: { all: '1' } }, ['pyramid'])[key], undefined);
+});
+
+test('заглушка: управляющий — мастер без магазинов, зал и тарифы; тип стола в live — с причиной; тариф 0 ₽ — 400', async () => {
+  const b = createBackend(memory());
+  b.scenario('manager');
+  const ob = await req(b, 'GET', '/api/clubs/c/onboarding');
+  assert.equal(ob.status, 200);
+  assert.equal(ob.body.shops, null);
+  assert.equal(ob.body.mode, 'live');
+  for (const [m, p] of [['GET', '/payment-settings/live'], ['POST', '/go-live']]) assert.equal((await req(b, m, `/api/clubs/c${p}`, {})).body.error, 'forbidden', p);
+  const t = (await req(b, 'GET', '/api/clubs/c/resources')).body.resources.find((r) => r.active);
+  const other = t.kind === 'pool' ? 'pyramid' : 'pool';
+  const no = await req(b, 'PATCH', `/api/clubs/c/resources/${t.id}`, { kind: other });
+  assert.deepEqual([no.status, no.body.error], [400, 'reason_required']);
+  assert.equal((await req(b, 'PATCH', `/api/clubs/c/resources/${t.id}`, { plan_rotation: 90 })).status, 200, 'поворот — без причины');
+  const yes = await req(b, 'PATCH', `/api/clubs/c/resources/${t.id}`, { kind: other, reason: 'Переделали под пул' });
+  assert.equal(yes.status, 200);
+  assert.equal(yes.body.kind, other);
+  const rules = (await req(b, 'GET', '/api/clubs/c/tariffs')).body.rules.map((r) => ({ ...r, price_per_hour_kopecks: 0 }));
+  assert.equal((await req(b, 'PUT', '/api/clubs/c/tariffs', { rules, reason: 'x' })).status, 400);
 });

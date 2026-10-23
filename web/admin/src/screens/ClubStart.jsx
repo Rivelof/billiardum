@@ -62,7 +62,7 @@ export function ClubStart() {
   };
 
   return (
-    <div class="signin cstart" data-theme="dark">
+    <main class="signin cstart" data-theme="dark">
       <div class="signin__card signin__card--wide">
         <p class="signin__brand display">Бильярдум</p>
         <h1 class="signin__title">Подключить клуб</h1>
@@ -206,6 +206,6 @@ export function ClubStart() {
           </div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

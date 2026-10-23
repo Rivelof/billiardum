@@ -155,6 +155,9 @@ export function tariffBands(form, dayStart = '06:00') {
   }));
 }
 
+/** Цена 0 ₽ (№163): тариф бесплатным не бывает. */
+export const FREE_PRICE_TEXT = 'Цена за час — от 1 ₽. Бесплатную игру включают ручным действием на кассе.';
+
 /** Ключ поля цены: полоса и, если цены по типам столов, тип. */
 export const priceKey = (band, type) => (type ? `${band}:${type}` : band);
 
@@ -180,7 +183,9 @@ export function tariffFormErrors(form, types, dayStart = '06:00') {
     for (const type of typeList) {
       const key = priceKey(b.key, type);
       const kop = parseRubles(String(form.prices?.[key] ?? ''));
-      if (kop === null || kop < 100) errors[`price:${key}`] = 'Цена за час — от 1 ₽.';
+      // №163: цена тарифа строго больше нуля; бесплатная игра — ручное действие с причиной, а не тариф 0 ₽
+      if (kop === 0) errors[`price:${key}`] = FREE_PRICE_TEXT;
+      else if (kop === null || kop < 100) errors[`price:${key}`] = 'Цена за час — от 1 ₽.';
       else if (kop > 10_000_000) errors[`price:${key}`] = 'Слишком большая цена: не больше 100 000 ₽ за час.';
     }
   }

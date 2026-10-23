@@ -126,6 +126,8 @@ export const can = {
   bigDiscount: (role) => ['manager', 'owner'].includes(role),
   // M5.1: мастер подключения, магазины ЮKassa и чек-лист — только владелец (T28: ресепшн их не видит)
   onboarding: (role) => role === 'owner',
+  // №155–156: план зала, тарифы (и меню, наклейки) в мастере — ещё и управляющий; его шаги — stepsFor в onboarding.js
+  setup: (role) => ['owner', 'manager'].includes(role),
 };
 
 /**

@@ -63,7 +63,7 @@ export function SignIn() {
   };
 
   return (
-    <div class="signin" data-theme="dark">
+    <main class="signin" data-theme="dark">
       <div class="signin__card">
         <p class="signin__brand display">Бильярдум</p>
         <h1 class="signin__title">Вход для персонала клуба</h1>
@@ -130,7 +130,7 @@ export function SignIn() {
         {error?.code === 'not_configured' ? null : <ErrorNote error={error} />}
         {methods !== undefined && choice.dev ? <DevLogin /> : null}
       </div>
-    </div>
+    </main>
   );
 }
 

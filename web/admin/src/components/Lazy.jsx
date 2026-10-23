@@ -29,7 +29,7 @@ export function Lazy({ chunk, label, render }) {
   }, [chunk]);
   if (failed) {
     return (
-      <div class="signin" data-theme="dark">
+      <main class="signin" data-theme="dark">
         <div class="signin__card">
           <p class="signin__brand display">Бильярдум</p>
           <p class="lead">Не получилось загрузить экран. Проверьте интернет и обновите страницу.</p>
@@ -37,16 +37,16 @@ export function Lazy({ chunk, label, render }) {
             Обновить страницу
           </button>
         </div>
-      </div>
+      </main>
     );
   }
   if (!mod) {
     return (
-      <div class="signin" data-theme="dark" aria-busy="true">
+      <main class="signin" data-theme="dark" aria-busy="true">
         <p class="signin__brand display" role="status">
           {label}
         </p>
-      </div>
+      </main>
     );
   }
   return render(mod);

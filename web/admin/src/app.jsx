@@ -71,9 +71,10 @@ const SCREENS = {
   tournaments: { allow: can.tournaments, render: (ctx) => <Tournaments ctx={ctx} />, title: 'Турниры' },
   disputes: { allow: can.disputes, render: (ctx) => <Disputes ctx={ctx} />, title: 'Споры по партиям' },
   listing: { allow: can.listing, render: (ctx) => <Listing ctx={ctx} />, title: 'Карточка в Бильярдуме' },
-  // M5.1: мастер подключения — только владелец, отдельный чанк; шаг — в пути (/onboarding/{step})
+  // M5.1: мастер подключения — владелец (все шаги) и управляющий (зал, тарифы, меню, наклейки — №155–156),
+  // отдельный чанк; шаг — в пути (/onboarding/{step})
   onboarding: {
-    allow: can.onboarding,
+    allow: can.setup,
     render: (ctx) => <Lazy key="onboarding" chunk="onboarding" label="Открываем мастер подключения…" render={(m) => <m.Onboarding ctx={ctx} />} />,
     title: 'Подключение клуба',
   },
@@ -109,9 +110,9 @@ export function App() {
   if (name === 'tv') return <TournamentTv key={params.id} id={params.id} />;
   if (status === 'loading') {
     return (
-      <div class="signin" data-theme="dark" aria-busy="true">
+      <main class="signin" data-theme="dark" aria-busy="true">
         <p class="signin__brand display">Бильярдум</p>
-      </div>
+      </main>
     );
   }
   if (status === 'anon') return name === 'signin' ? <SignIn /> : <Redirect to={`${BASE}signin`} />;
@@ -163,7 +164,7 @@ export function App() {
 
 function ClubPick({ clubs }) {
   return (
-    <div class="signin" data-theme="dark">
+    <main class="signin" data-theme="dark">
       <div class="signin__card">
         <p class="signin__brand display">Бильярдум</p>
         <h1 class="signin__title">Выберите клуб</h1>
@@ -191,6 +192,6 @@ function ClubPick({ clubs }) {
           Выйти
         </button>
       </div>
-    </div>
+    </main>
   );
 }

@@ -23,18 +23,31 @@ export const STEPS = Object.freeze([
   { id: 'go_live', title: 'Запуск', about: 'Чек-лист и боевой режим' },
 ]);
 
-export const stepIndex = (id) => STEPS.findIndex((s) => s.id === id);
-export const stepById = (id) => STEPS.find((s) => s.id === id) ?? null;
-export const nextStepOf = (id) => STEPS[stepIndex(id) + 1] ?? null;
-export const prevStepOf = (id) => (stepIndex(id) > 0 ? STEPS[stepIndex(id) - 1] : null);
+/**
+ * Шаги управляющего (№155–156): план зала и тарифы, а ещё меню и QR-наклейки — их API открыт управляющему.
+ * Клуб, персонал, магазины ЮKassa, контроллеры, проверка, чек-лист и переход в live — только владельцу.
+ */
+export const MANAGER_STEPS = Object.freeze(['hall', 'tariffs', 'menu', 'stickers']);
+
+/** Шаги мастера по роли: владельцу — все, управляющему — MANAGER_STEPS, остальным — ни одного. */
+export function stepsFor(role) {
+  if (role === 'owner') return STEPS;
+  if (role === 'manager') return STEPS.filter((s) => MANAGER_STEPS.includes(s.id));
+  return [];
+}
+
+export const stepIndex = (id, steps = STEPS) => steps.findIndex((s) => s.id === id);
+export const stepById = (id, steps = STEPS) => steps.find((s) => s.id === id) ?? null;
+export const nextStepOf = (id, steps = STEPS) => steps[stepIndex(id, steps) + 1] ?? null;
+export const prevStepOf = (id, steps = STEPS) => (stepIndex(id, steps) > 0 ? steps[stepIndex(id, steps) - 1] : null);
 
 /** Шаги с отметками сервера и прогресс. Шаг, которого сервер не прислал, — не сделан; «Клуб» сделан всегда. */
-export function stepsView(onboarding) {
+export function stepsView(onboarding, list = STEPS) {
   const done = new Map((onboarding?.steps ?? []).map((s) => [s.id, s.done === true]));
-  const steps = STEPS.map((s) => ({ ...s, done: s.id === 'club' ? true : (done.get(s.id) ?? false) }));
+  const steps = list.map((s) => ({ ...s, done: s.id === 'club' ? true : (done.get(s.id) ?? false) }));
   if (onboarding?.mode === 'live') for (const s of steps) if (s.id === 'go_live') s.done = true;
   const count = steps.filter((s) => s.done).length;
-  return { steps, done: count, total: steps.length, firstOpen: steps.find((s) => !s.done)?.id ?? 'go_live' };
+  return { steps, done: count, total: steps.length, firstOpen: steps.find((s) => !s.done)?.id ?? steps[steps.length - 1]?.id ?? null };
 }
 
 /** Пункты чек-листа (№160): текст и куда идти чинить. */
