@@ -249,15 +249,19 @@ test('T25 с контактом: ответ клуба по ссылке с то
   const view = await ok(api('GET', `/api/clubs/requests/${r.id}/answer?t=${token}`));
   assert.equal(view.guest_phone, g.phone, 'клуб по ссылке видит телефон гостя');
   assert.equal(view.people, 4);
+  assert.equal(view.timezone, 'Asia/Yekaterinburg', 'пояс клуба в ответе по ссылке');
   const badDecision = await api('POST', `/api/clubs/requests/${r.id}/answer`, { body: { t: token, decision: 'maybe' } });
   assert.equal(badDecision.status, 400);
   const ans = await api('POST', `/api/clubs/requests/${r.id}/answer`, { body: { t: token, decision: 'accept', text: 'Ждём, стол 3' } });
   assert.equal(ans.status, 200, brief2(ans));
   assert.equal(ans.json.status, 'accepted');
+  // №151/контракт: после ответа живая ссылка — 409 request_closed {status}; 404 — только неверный или истёкший токен.
   const reuse = await api('POST', `/api/clubs/requests/${r.id}/answer`, { body: { t: token, decision: 'decline' } });
-  assert.equal(reuse.status, 404, `повтор ссылки — 404: ${brief2(reuse)}`);
+  assert.equal(reuse.status, 409, `повтор ссылки: ${brief2(reuse)}`);
+  assert.deepEqual(reuse.json, { error: 'request_closed', status: 'accepted' });
   const reuseGet = await api('GET', `/api/clubs/requests/${r.id}/answer?t=${token}`);
-  assert.equal(reuseGet.status, 404);
+  assert.equal(reuseGet.status, 409);
+  assert.equal(reuseGet.json.status, 'accepted');
   const st = await ok(api('GET', `/api/clubs/requests/${r.id}`, { token: g.token }));
   assert.equal(st.status, 'accepted');
   assert.equal(st.answer_text, 'Ждём, стол 3');
@@ -266,7 +270,7 @@ test('T25 с контактом: ответ клуба по ссылке с то
   assert.equal(au.length, 1);
   assert.equal(au[0].data.via, 'link');
   ctx.answerLink = url;
-  t.diagnostic(`контакту «${note.text}», кнопка ${url.replace(/t=.*/, 't=…')} (токен ${token.length} симв.); чужой токен — 404; по ссылке видна заявка с телефоном гостя; accept → гостю «${gNote.text}»; повтор ссылки — 404; журнал directory.request_answer via=link`);
+  t.diagnostic(`контакту «${note.text}», кнопка ${url.replace(/t=.*/, 't=…')} (токен ${token.length} симв.); чужой токен — 404; по ссылке видна заявка с телефоном гостя; accept → гостю «${gNote.text}»; повтор ссылки — 409 ${JSON.stringify(reuse.json)}, GET — 409; журнал directory.request_answer via=link`);
 });
 
 test('T25 с контактом: без ответа 15 минут — оператору (настоящее время)', { timeout: ESCALATE_WAIT_MS + 5 * MIN }, async (t) => {

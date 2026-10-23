@@ -231,5 +231,8 @@ test('A: после старта — 409 tournament_started; продление 
   out.push(`отмена после старта без кода → ${JSON.stringify(cn.json)}; записи ${statuses.join(', ')}; новых возвратов ${newRefunds.length}; журнал ${auC.map((x) => `${x.action} refund=${x.data.refund}`).join(', ')}; тревог отмены ${alC.length} (${alC.map((x) => `${x.data.refund}, ${x.data.staff_name}: ${x.data.reason}`).join('; ')}); свет столов ${TABLES_A.join(', ')} погас; ${(await sim(TABLES_A[0])).state.mode}`);
   t.diagnostic(out.join('; '));
   assert.equal(newRefunds.length, 0, 'после старта без кода — без возврата');
+  assert.equal(fa.quote, 200, `Д2: стол после отмены — ${fa.text}`);
+  const { rows: ms } = await db.query('select status, count(*)::int as n from bl.tournament_matches where tournament_id = $1 group by 1', [c.id]);
+  t.diagnostic(`матчи после отмены: ${ms.map((x) => `${x.status}×${x.n}`).join(', ')}`);
   assert.equal(alC.length, 1);
 });

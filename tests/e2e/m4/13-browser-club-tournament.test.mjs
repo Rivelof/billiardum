@@ -232,4 +232,5 @@ test('360 px: продлить, вернуть взнос игроку, отме
   assert.deepEqual(others, [], 'без возврата остальным');
   assert.deepEqual(res.filter((x) => x.hscroll || x.serious.length), [], 'прокрутка или axe на 360 px');
   assert.deepEqual(errors, []);
+  assert.deepEqual(known, [], 'Д8: label-content-name-mismatch на кнопках сетки');
 });

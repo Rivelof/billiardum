@@ -281,16 +281,55 @@ test('отзыв, турниры, «Добавить клуб», «Подтве�
   t.diagnostic(`отзыв из интерфейса: ${mine.rating}★ «${mine.text}»`);
 });
 
-test('ссылка клуба «Ответить на заявку» (/app/club-request/{id}?t=…) открывает экран ответа', { skip }, async (t) => {
-  const { rows } = await db.query("select id from bl.club_requests order by created_at desc limit 1");
-  const ctx = await context(null);
-  const page = await ctx.newPage();
-  await page.goto(`${BASE}/app/club-request/${rows[0].id}?t=${'x'.repeat(43)}`, { waitUntil: 'load' });
-  const txt = await text(page);
-  await check(t, page, 'club-request-link');
-  await ctx.close();
-  t.diagnostic(`экран по ссылке клуба: «${txt.slice(0, 200)}»`);
-  assert.ok(!/не найден|страницы нет|404/i.test(txt), 'ссылка из уведомления клубу ведёт на «страница не найдена»');
+test('ссылка клуба «Ответить на заявку» (/app/club-request/{id}?t=…): клуб без входа принимает заявку', { skip }, async (t) => {
+  const { platform, PLATFORM_IDS, waitNotification } = await import('./helpers.mjs');
+  const op = await platform('operator');
+  const adder = await newGuest();
+  const tag = String(Date.now()).slice(-6);
+  const add = await ok(api('POST', '/api/directory/add', { token: adder.token, body: { city: 'Екатеринбург', name: `E2E Ответ ${tag}`, address: 'ул. Синтетическая, 9', disciplines: ['pyramid'] } }), 201);
+  const appr = await ok(api('PATCH', `/api/platform/listings/${add.id}`, { token: op.token, body: { action: 'approve', reason: 'e2e: экран ответа клуба' } }));
+  const cardId = appr.listing.id;
+  try {
+    const g = await newGuest();
+    const t1 = Date.now();
+    const req = await ok(api('POST', '/api/clubs/requests', { token: g.token, body: { listing_id: cardId, starts_at: new Date(Date.now() + 28 * 3600_000).toISOString(), minutes: 60, people: 3, comment: 'e2e экран' } }), 201);
+    const note = await waitNotification(db, adder.user.id, 'club.request', { since: t1 });
+    const url = note.actions[0].url;
+    const shots = [];
+    for (const scheme of ['light', 'dark']) {
+      const ctx = await context(null, { scheme });
+      const page = await ctx.newPage();
+      watch(page, `clubanswer-${scheme}`);
+      await page.goto(`${BASE}${url}`, { waitUntil: 'load' });
+      await page.getByRole('button', { name: 'Принять заявку' }).waitFor({ timeout: 10_000 });
+      shots.push(await check(t, page, `club-answer-${scheme}`));
+      if (scheme === 'dark') {
+        const before = await text(page);
+        await page.locator('#ca-text').fill('Ждём, стол 2 (e2e)');
+        await page.getByRole('button', { name: 'Принять заявку' }).click();
+        const st = await waitFor(
+          async () => {
+            const x = await ok(api('GET', `/api/clubs/requests/${req.id}`, { token: g.token }));
+            return x.status === 'accepted' ? x : null;
+          },
+          { timeoutMs: 10_000, intervalMs: 300, what: 'заявка принята из интерфейса' },
+        );
+        await page.waitForTimeout(800);
+        const afterTxt = await text(page);
+        await page.reload({ waitUntil: 'load' });
+        await page.waitForTimeout(1200);
+        await page.waitForTimeout(1500);
+        const reloadTxt = await text(page);
+        await check(t, page, 'club-answer-closed-dark');
+        t.diagnostic(`экран клуба по ссылке без входа: «${before.slice(0, 220)}»; после «Принять»: гостю ${st.status} «${st.answer_text}», на экране «${afterTxt.slice(0, 160)}»; повторное открытие ссылки: «${reloadTxt.slice(0, 200)}»`);
+        assert.ok(!/страницы нет/i.test(reloadTxt), 'после ответа — не «страницы нет»');
+      }
+      await ctx.close();
+    }
+  } finally {
+    await api('PATCH', `/api/platform/cards/${cardId}`, { token: op.token, body: { visible: false, reason: 'e2e: уборка' } });
+    void PLATFORM_IDS;
+  }
 });
 
 test('сайт 360 px, обе темы: главная, город, клуб, турниры, рейтинг, Бильярдум+, «Для клубов»', { skip }, async (t) => {

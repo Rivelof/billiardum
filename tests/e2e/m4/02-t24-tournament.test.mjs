@@ -54,7 +54,7 @@ import {
 
 const TABLES = (process.env.E2E_TOUR_TABLES || '4,5').split(',').map(Number);
 const RATED_TABLE = Number(process.env.E2E_TOUR_RATED_TABLE || 2);
-const LEAD_MS = Number(process.env.E2E_TOUR_LEAD_MS || 200_000);
+const LEAD_MS = Number(process.env.E2E_TOUR_LEAD_MS || 100_000);
 const T0 = Date.now();
 let db;
 let man;
@@ -151,7 +151,7 @@ test('создание турнира: права, проверки, публи�
   // До окна: котировка на другом столе турнира принимается (котировка не знает о турнире), а оплата за 5 минут до окна — возврат.
   const tblS = await table(TABLES[1], P.s.token);
   const qS = await quote(P.s.token, { resourceId: tblS.resource.id, minutes: 60 });
-  ctx.preWindowQuote = { status: qS.status, error: qS.json?.error, extend_limit_until: qS.json?.extend_limit_until };
+  ctx.preWindowQuote = { status: qS.status, error: qS.json?.error, reason: qS.json?.reason, busy_until: qS.json?.busy_until, extend_limit_until: qS.json?.extend_limit_until };
   if (qS.status === 200) {
     const pS = await ok(pay(P.s.token, qS.json.quote_id, 'sbp'));
     emuSucceed(providerId(pS));
@@ -165,7 +165,11 @@ test('создание турнира: права, проверки, публи�
     const { rows } = await db.query("select data from bl.audit_log where action = 'session.start_rejected' and data->>'payment_id' = $1", [pS.payment_id]).catch(() => ({ rows: [] }));
     ctx.preWindowPay = { payment_id: pS.payment_id, session_id: pay2?.session_id ?? null, status: pay2?.status, reject: rows[0]?.data?.reason ?? null, refunds: await refundsOf(db, pS.payment_id) };
   }
+  const quoteBefore = ctx.preWindowQuote;
   t.diagnostic(`ресепшн — 403; начало в прошлом — 400; стол пула — 400; турнир ${ctx.id.slice(0, 8)} опубликован (${r.json.status}), окно ${startsAt.toISOString()}–${endsAt.toISOString()}, столы ${TABLES.join(', ')}; club.path ${pub.club.path}; котировка на столе ${TABLES[1]} за ${Math.round(LEAD_MS / 1000)} с до окна: ${JSON.stringify(ctx.preWindowQuote)}; оплата: ${JSON.stringify({ ...ctx.preWindowPay, refunds: ctx.preWindowPay?.refunds?.map((x) => `${x.amount_kopecks}:${x.status}`) })}`);
+  // Д3: котировка старта за 100 с до окна турнира (не помещается до окна − 5 мин) — 409 table_busy до оплаты.
+  assert.equal(quoteBefore.status, 409, JSON.stringify(quoteBefore));
+  assert.equal(quoteBefore.error, 'table_busy');
 });
 
 test('T24: запись со взносом через ЮKassa и чеком; рейтинг выше лимита — отказ с объяснением', async (t) => {
@@ -176,6 +180,8 @@ test('T24: запись со взносом через ЮKassa и чеком; р
   const noProfile = await newGuest();
   const np = await api('POST', `/api/tournaments/${ctx.id}/entries`, { token: noProfile.token, body: {}, idem: true });
   ctx.noProfileEntry = brief2(np);
+  assert.equal(np.status, 409, `№150: запись без ника — ${ctx.noProfileEntry}`);
+  assert.equal(np.json.error, 'no_profile');
   for (const k of ['p1', 'p2', 'p3', 'p4']) {
     const res = await enterAndPay(P[k], ctx.id);
     assert.equal(res.r.status, 201, `${k}: ${brief2(res.r)}`);
@@ -262,6 +268,9 @@ test('окно турнира (№146): QR, котировка, бронь — �
   const alarmQ = (await db.query("select type, level, data from bl.alarms where data->>'payment_id' = $1", [ctx.payQ.payment_id])).rows[0];
   const s4 = await sim(TABLES[0]);
   assert.equal(s4.state.relay, false, 'свет не включился');
+  // Д11: отклонённая оплата сразу снимает удержание pending (котировка Q ещё действует).
+  const st4 = await table(TABLES[0], P.q.token);
+  ctx.afterReject = `стол ${TABLES[0]} после отклонённой оплаты: ${st4.status}/${st4.hold_source ?? '-'}, котировка Q действует до ${new Date(new Date(ctx.payQ.created_at ?? Date.now()).getTime()).toISOString()}`;
 
   const g = await newGuest();
   const st = await table(TABLES[1], g.token);
@@ -272,9 +281,10 @@ test('окно турнира (№146): QR, котировка, бронь — �
   ctx.bookingInWindow = { status: bk.status, json: bk.json };
   const late = await api('POST', `/api/tournaments/${ctx.id}/entries`, { token: g.token, body: {}, idem: true });
   const pub = await ok(api('GET', `/api/public/tournaments/${ctx.id}`));
-  t.diagnostic(`оплата Q в окне: session.start_rejected reason=${rq.data.reason}, возврат ${refQ.map((x) => `${x.amount_kopecks} ${x.status}`).join(', ')}, сессии нет, свет стола ${TABLES[0]} relay=false; гостю ${nQ ? `${nQ.kind} «${nQ.text}»` : 'уведомлений нет'}; тревога ${alarmQ ? `${alarmQ.type}/${alarmQ.level}` : 'нет'}; QR стола ${TABLES[1]}: ${st.status}/${st.hold_source ?? '-'} до ${st.busy_until}; котировка — ${q.status} ${JSON.stringify(q.json)}; бронь в окне — ${bk.status} ${JSON.stringify(bk.json)}; запись после закрытия — ${late.status} ${late.json?.error}; статус турнира ${pub.status}`);
+  t.diagnostic(`${ctx.afterReject}; оплата Q в окне: session.start_rejected reason=${rq.data.reason}, возврат ${refQ.map((x) => `${x.amount_kopecks} ${x.status}`).join(', ')}, сессии нет, свет стола ${TABLES[0]} relay=false; гостю ${nQ ? `${nQ.kind} «${nQ.text}»` : 'уведомлений нет'}; тревога ${alarmQ ? `${alarmQ.type}/${alarmQ.level}` : 'нет'}; QR стола ${TABLES[1]}: ${st.status}/${st.hold_source ?? '-'} до ${st.busy_until}; котировка — ${q.status} ${JSON.stringify(q.json)}; бронь в окне — ${bk.status} ${JSON.stringify(bk.json)}; запись после закрытия — ${late.status} ${late.json?.error}; статус турнира ${pub.status}`);
   assert.equal(late.status, 409);
   assert.equal(late.json.error, 'registration_closed');
+  assert.notEqual(st4.status, 'pending', 'Д11: удержание pending после отклонённой оплаты');
   assert.equal(q.status, 409, brief2(q));
   assert.equal(q.json.error, 'table_busy');
   assert.equal(bk.status, 409, brief2(bk));
