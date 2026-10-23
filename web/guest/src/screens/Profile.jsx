@@ -7,6 +7,7 @@ import { Icon } from '../components/Icon.jsx';
 import { Dialog } from '../components/Dialog.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { BotCode } from '../components/BotCode.jsx';
+import { useLoginMethods } from '../components/hooks.js';
 import { SignedInAs } from '../components/SignedInAs.jsx';
 import { SignIn } from './SignIn.jsx';
 import { api } from '../lib/api.js';
@@ -268,6 +269,11 @@ export function NotifyScreen() {
   const [saved, setSaved] = useState(false);
   // Подключение бота: код с экрана (ревью входа п. 2) — показываем его и кнопку в бота, а не уводим сразу
   const [botPending, setBotPending] = useState(null);
+  // U1: подключить бота можно, только если он настроен на сервере (GET /api/auth/methods);
+  // ответа нет (null) — кнопки как раньше
+  const methods = useLoginMethods();
+  const canConnect = (c) => c === 'webpush' || methods === null || (Array.isArray(methods) && methods.includes(c));
+  const noBot = (c) => c !== 'webpush' && Array.isArray(methods) && !methods.includes(c);
   const iosHint = pushAvailability() === 'ios-install' || (isIos() && !isStandalone());
 
   useEffect(() => {
@@ -367,12 +373,12 @@ export function NotifyScreen() {
                           </span>
                           <span class={`chan__state${on ? ' chan__state--on' : ''}`}>
                             <Icon name={on ? 'check' : 'info'} />
-                            {on ? 'Подключён' : 'Не подключён'}
+                            {on ? 'Подключён' : noBot(c) ? 'Подключение временно недоступно' : 'Не подключён'}
                             {c === 'telegram' ? ' · в России работает с перебоями' : ''}
                           </span>
                         </span>
                       </label>
-                      {!on ? (
+                      {!on && canConnect(c) ? (
                         <button type="button" class="btn btn--secondary btn--sm chan__connect" disabled={busy === c} onClick={() => connect(c)}>
                           {busy === c ? 'Подключаем…' : c === 'webpush' ? 'Включить на этом устройстве' : `Подключить ${meta.name}`}
                         </button>

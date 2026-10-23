@@ -33,3 +33,31 @@ test('booking_start_required — текст гостю про старт по б
   assert.match(m.title, /брони/);
   assert.equal(errorMessage({ code: 'booking_start_required' }, { audience: 'staff' }).title, 'Стол ждёт гостя по брони.');
 });
+
+test('U1: способы входа — только настроенные; без ботов — пусто', async () => {
+  const { loginChoice, loginMethods } = await import('@billiardum/shared/api');
+  const b = createBackend({ ...memory(), now: () => Date.parse('2026-10-22T15:00:00Z') });
+  b.scenario('nologin');
+  const none = loginMethods((await b.handle('GET', '/api/auth/methods')).body);
+  assert.deepEqual(none, []);
+  assert.equal(loginChoice(none).empty, true);
+  b.scenario('tgonly');
+  assert.deepEqual(loginChoice(loginMethods((await b.handle('GET', '/api/auth/methods')).body)).channels, ['telegram']);
+});
+
+test('U2: согласие при присоединении — без слов про оплату', async () => {
+  const { consentCopy, signInTitle } = await import('../src/lib/consent.js');
+  const join = consentCopy('join');
+  assert.equal(join.cta, 'Присоединиться к игре');
+  for (const t of [join.why, join.cta, join.required, signInTitle('join')]) assert.ok(!/оплат/i.test(t), t);
+  assert.equal(consentCopy('start').cta, 'Продолжить к оплате');
+  assert.equal(signInTitle(undefined), 'Войдите, чтобы оплатить');
+});
+
+test('U1: вошедший гость без ботов — способов подключения нет', async () => {
+  const { loginMethods } = await import('@billiardum/shared/api');
+  const b = createBackend({ ...memory(), now: () => Date.parse('2026-10-22T15:00:00Z') });
+  b.scenario('nobots');
+  assert.equal((await b.handle('GET', '/api/me')).status, 200);
+  assert.deepEqual(loginMethods((await b.handle('GET', '/api/auth/methods')).body), []);
+});

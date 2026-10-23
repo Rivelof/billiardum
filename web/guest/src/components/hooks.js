@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
+import { loginMethods } from '@billiardum/shared/api';
+import { api } from '../lib/api.js';
 
 /** Текущее время, обновляется на границе каждой секунды (таймер не «прыгает»). */
 export function useNow(skew = 0, enabled = true) {
@@ -44,4 +46,28 @@ export function usePoll(fn, ms, deps = []) {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, deps);
+}
+
+// Способы входа читаем один раз за загрузку страницы: настройка ботов на сервере меняется редко
+let methodsOnce = null;
+
+/**
+ * Способы входа (U1): undefined — ещё загружаем; null — ответ не разобрали или сервер старый
+ * (экран входа показывает оба мессенджера); иначе — только настроенные.
+ * @returns {string[] | null | undefined}
+ */
+export function useLoginMethods() {
+  const [methods, setMethods] = useState(undefined);
+  useEffect(() => {
+    let alive = true;
+    methodsOnce ??= api.authMethods().then(loginMethods, () => {
+      methodsOnce = null; // сбой сети — в следующий раз спросим снова
+      return null;
+    });
+    methodsOnce.then((m) => alive && setMethods(m));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return methods;
 }

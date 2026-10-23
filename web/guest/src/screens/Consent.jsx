@@ -2,12 +2,15 @@ import { useState } from 'preact/hooks';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { giveConsent } from '../lib/auth.js';
 import { BASE } from '../lib/env.js';
+import { consentCopy } from '../lib/consent.js';
 
 /**
  * Согласие на обработку персональных данных — отдельным флажком при первом входе (PRODUCT §11, 152‑ФЗ).
- * Без согласия денежные операции невозможны (consent_required).
+ * Без согласия денежные операции невозможны (consent_required). Тексты — по сценарию (intent): оплата,
+ * присоединение к игре, очередь, бронь.
  */
-export function Consent({ onDone }) {
+export function Consent({ onDone, intent = 'start' }) {
+  const copy = consentCopy(intent);
   const [checked, setChecked] = useState(false);
   const [showError, setShowError] = useState(false);
   const [error, setError] = useState(null);
@@ -36,9 +39,7 @@ export function Consent({ onDone }) {
       <h2 class="step__title" id="consent-title">
         Согласие на обработку данных
       </h2>
-      <p class="hint">
-        Мы храним номер телефона и историю игр на серверах в России. Они нужны для оплаты, чеков и напоминаний о конце игры.
-      </p>
+      <p class="hint">{copy.why}</p>
       <label class="check">
         <input
           type="checkbox"
@@ -59,13 +60,13 @@ export function Consent({ onDone }) {
       </label>
       {showError && !checked ? (
         <p class="field__error" id="consent-err" role="alert">
-          Отметьте флажок: без согласия оплата недоступна.
+          {copy.required}
         </p>
       ) : null}
       <ErrorNote error={error} />
       <div class="actionbar">
         <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
-          {busy ? 'Сохраняем…' : 'Продолжить к оплате'}
+          {busy ? 'Сохраняем…' : copy.cta}
         </button>
       </div>
     </form>

@@ -385,7 +385,7 @@ export function BookScreen({ clubId }) {
               </fieldset>
             ) : null}
             {askAuth && !signedIn ? <SignIn title="Войдите, чтобы забронировать" onDone={() => setAskAuth(false)} /> : null}
-            {askAuth && consentNeeded ? <Consent onDone={() => setAskAuth(false)} /> : null}
+            {askAuth && consentNeeded ? <Consent intent="book" onDone={() => setAskAuth(false)} /> : null}
             {error?.code === 'limit_exceeded' ? (
               <p class="note note--error" role="alert">
                 <Icon name="alert" />

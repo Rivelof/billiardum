@@ -73,7 +73,8 @@ function freshState(scenario, t) {
   const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : 'reception';
   return {
     scenario,
-    user: scenario === 'anon' ? null : { ...STAFF[role] },
+    // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа
+    user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : { ...STAFF[role] },
     hall,
     requests,
     alarms,
@@ -169,6 +170,8 @@ export function createBackend(storage, now = () => Date.now()) {
       state.user = { ...STAFF[role] };
       return ok({ token: 'mock-staff', user: state.user });
     }],
+    // U1: только настроенные способы входа
+    ['GET', /^\/api\/auth\/methods$/, () => ok({ methods: state.scenario === 'nologin' ? [] : state.scenario === 'tgonly' ? ['telegram'] : ['max', 'telegram', 'dev'] })],
     ['POST', /^\/api\/auth\/bot-link$/, (_m, b) => ok({ nonce: 'n1', deep_link: b.channel === 'telegram' ? 'https://t.me/billiardum_bot?start=n1' : 'https://max.ru/billiardum_bot?start=n1', code: '482913', expires_at: new Date(now() + 10 * MIN).toISOString() })],
     ['GET', /^\/api\/auth\/bot-link\/(.+)$/, () => {
       state.user = { ...STAFF.reception };

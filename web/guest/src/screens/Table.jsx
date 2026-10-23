@@ -8,6 +8,7 @@ import { ErrorNote } from '../components/ErrorNote.jsx';
 import { useNow } from '../components/hooks.js';
 import { SignIn } from './SignIn.jsx';
 import { Consent } from './Consent.jsx';
+import { signInTitle } from '../lib/consent.js';
 import { Pay } from './Pay.jsx';
 import { SignedInAs } from '../components/SignedInAs.jsx';
 import { api } from '../lib/api.js';
@@ -263,9 +264,9 @@ export function TableScreen({ code, search }) {
             }}
           />
         ) : null}
-        {step === 'signin' ? (authStatus === 'user' ? <AutoProceed run={() => proceed()} /> : <SignIn />) : null}
+        {step === 'signin' ? (authStatus === 'user' ? <AutoProceed run={() => proceed()} /> : <SignIn title={signInTitle(getFlow().intent)} />) : null}
         {step === 'consent' || step === 'pay' ? <SignedInAs /> : null}
-        {step === 'consent' ? <Consent onDone={() => proceed()} /> : null}
+        {step === 'consent' ? <Consent intent={getFlow().intent ?? 'start'} onDone={() => proceed()} /> : null}
         {step === 'pay' && quote ? (
           <Pay
             quote={quote}

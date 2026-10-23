@@ -203,7 +203,8 @@ export function createBackend(storage) {
   function scenario(name) {
     state = freshState();
     state.scenario = name;
-    if (name === 'anon') return save();
+    // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа; nobots — вошёл, ботов нет
+    if (['anon', 'nologin', 'tgonly'].includes(name)) return save();
     state.user = { ...USER, consent_version: name === 'fresh' ? null : 'draft-2026-10' };
     const t = now();
     const mk = (over) => {
@@ -280,6 +281,8 @@ export function createBackend(storage) {
       state.user = { ...USER, phone_masked: `+7 *** ***-${body.phone.slice(-4, -2)}-${body.phone.slice(-2)}`, consent_version: null };
       return ok({ token: 'mock-token', user: state.user });
     }],
+    // U1: только настроенные способы входа
+    ['GET', /^\/api\/auth\/methods$/, () => ok({ methods: ['nologin', 'nobots'].includes(state.scenario) ? [] : state.scenario === 'tgonly' ? ['telegram'] : ['max', 'telegram', 'dev'] })],
     ['POST', /^\/api\/auth\/bot-link$/, (_m, body) => {
       const nonce = uuid().replace(/-/g, '').slice(0, 16);
       state.links[nonce] = { created: now(), channel: body.channel };

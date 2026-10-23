@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiError, createClient, readError, readErrorCode, newIdempotencyKey, openStream } from '../api.mjs';
+import { ApiError, createClient, loginChoice, loginMethods, readError, readErrorCode, newIdempotencyKey, openStream } from '../api.mjs';
 
 const json = (status, body) => new Response(body === undefined ? '' : JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -141,4 +141,22 @@ test('openStream: события по именам, JSON, onOpen, перепод
   s.close();
   assert.equal(made[1].readyState, 2);
   assert.deepEqual(states, ['open', 'reconnecting']);
+});
+
+test('loginMethods: только известные способы входа, MAX первым; чужая форма — null', () => {
+  assert.deepEqual(loginMethods({ methods: ['telegram', 'max'] }), ['max', 'telegram']);
+  assert.deepEqual(loginMethods({ methods: [] }), []);
+  assert.deepEqual(loginMethods({ methods: [{ id: 'telegram' }, { method: 'dev' }, 'vk'] }), ['telegram', 'dev']);
+  assert.deepEqual(loginMethods(['max']), ['max']);
+  assert.equal(loginMethods({ ok: true }), null);
+  assert.equal(loginMethods(null), null);
+});
+
+test('loginChoice: только настроенные мессенджеры; пусто — «вход временно недоступен»', () => {
+  assert.deepEqual(loginChoice(['telegram']), { channels: ['telegram'], dev: false, empty: false });
+  assert.deepEqual(loginChoice([]), { channels: [], dev: false, empty: true });
+  assert.equal(loginChoice(['dev']).empty, true, 'dev без сборки для разработки не показываем');
+  assert.deepEqual(loginChoice(['dev'], { devBuild: true }), { channels: [], dev: true, empty: false });
+  assert.deepEqual(loginChoice(null).channels, ['max', 'telegram'], 'нет ответа — как раньше');
+  assert.equal(loginChoice(['telegram'], { unavailable: ['telegram'] }).empty, true);
 });

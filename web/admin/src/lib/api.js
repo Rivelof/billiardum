@@ -55,6 +55,8 @@ export const api = {
   /** Персонал задаёт себе имя: PATCH /api/me {name} (§14). */
   updateMe: (body) => client.request('PATCH', '/me', { body }),
   devLogin: (phone) => client.post('/auth/dev', { phone }),
+  /** Способы входа, настроенные на сервере (U1): { methods: ['telegram', 'max', 'dev'] }. */
+  authMethods: () => client.get('/auth/methods'),
   botLink: (channel) => client.post('/auth/bot-link', { channel }),
   botLinkStatus: (nonce) => client.get(`/auth/bot-link/${e(nonce)}`),
   logout: () => client.post('/auth/logout'),

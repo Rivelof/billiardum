@@ -2,6 +2,9 @@ import { useEffect, useState } from 'preact/hooks';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { BotCode } from '../components/BotCode.jsx';
+import { Ill } from '../components/Ill.jsx';
+import { useLoginMethods } from '../components/hooks.js';
+import { loginChoice } from '@billiardum/shared/api';
 import { DEV_LOGIN } from '../lib/env.js';
 import { startBotLink, pendingBotLink, checkBotLink, cancelBotLink, devLogin, normalizePhone } from '../lib/auth.js';
 
@@ -21,6 +24,9 @@ export function SignIn({ onDone, title = 'Войдите, чтобы оплат�
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [expired, setExpired] = useState(false);
+  // U1: только настроенные на сервере способы входа; not_configured на кнопку — убираем её
+  const methods = useLoginMethods();
+  const [unavailable, setUnavailable] = useState([]);
 
   // Опрос статуса, пока гость в мессенджере. Сразу проверяем и при возвращении во вкладку.
   useEffect(() => {
@@ -69,6 +75,7 @@ export function SignIn({ onDone, title = 'Войдите, чтобы оплат�
       const res = await startBotLink(channel);
       setLink({ ...res, channel });
     } catch (err) {
+      if (err?.code === 'not_configured') setUnavailable((u) => [...u, channel]);
       setError(err);
     } finally {
       setBusy(null);
@@ -112,14 +119,39 @@ export function SignIn({ onDone, title = 'Войдите, чтобы оплат�
     );
   }
 
+  const choice = loginChoice(methods ?? null, { devBuild: DEV_LOGIN, unavailable });
+  if (methods === undefined) {
+    return (
+      <section class="step" aria-labelledby="signin-title" aria-busy="true">
+        <h2 class="step__title" id="signin-title">
+          {title}
+        </h2>
+        <p class="muted loading">Проверяем способы входа…</p>
+      </section>
+    );
+  }
+  if (choice.empty) {
+    return (
+      <section class="step empty" aria-labelledby="signin-title">
+        <Ill name="lamp" />
+        <h2 class="step__title" id="signin-title">
+          Вход временно недоступен
+        </h2>
+        <p class="hint">Обратитесь на ресепшн клуба.</p>
+      </section>
+    );
+  }
+
   return (
     <section class="step" aria-labelledby="signin-title">
       <h2 class="step__title" id="signin-title">
         {title}
       </h2>
-      <p class="hint">
-        Номер телефона нужен для чека и напоминаний о конце игры. Подтвердите его в мессенджере: бот попросит код с этого экрана.
-      </p>
+      {choice.channels.length ? (
+        <p class="hint">
+          Номер телефона нужен для чека и напоминаний о конце игры. Подтвердите его в мессенджере: бот попросит код с этого экрана.
+        </p>
+      ) : null}
       {expired ? (
         <div class="note" role="status">
           <Icon name="clock" />
@@ -127,16 +159,18 @@ export function SignIn({ onDone, title = 'Войдите, чтобы оплат�
           <p class="note__body">Ссылка устарела или код трижды ввели неверно. Нажмите кнопку ещё раз — покажем новый код.</p>
         </div>
       ) : null}
-      <div class="stack">
-        <button type="button" class="btn btn--primary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => start('max')}>
-          {busy === 'max' ? 'Открываем MAX…' : 'Войти через MAX'}
-        </button>
-        <button type="button" class="btn btn--secondary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => start('telegram')}>
-          {busy === 'telegram' ? 'Открываем Telegram…' : 'Войти через Telegram'}
-        </button>
-      </div>
-      <ErrorNote error={error} />
-      {DEV_LOGIN ? <DevLogin onDone={onDone} /> : null}
+      {choice.channels.length ? (
+        <div class="stack">
+          {choice.channels.map((c, i) => (
+            <button key={c} type="button" class={`btn ${i === 0 ? 'btn--primary' : 'btn--secondary'} btn--block btn--lg`} disabled={Boolean(busy)} onClick={() => start(c)}>
+              {busy === c ? `Открываем ${CHANNELS[c].name}…` : `Войти через ${CHANNELS[c].name}`}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {/* not_configured уже убрал кнопку — техническое сообщение не показываем */}
+      {error?.code === 'not_configured' ? null : <ErrorNote error={error} />}
+      {choice.dev ? <DevLogin onDone={onDone} /> : null}
     </section>
   );
 }

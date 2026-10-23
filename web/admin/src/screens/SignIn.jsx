@@ -2,6 +2,8 @@ import { useEffect, useState } from 'preact/hooks';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { BotCode } from '../components/BotCode.jsx';
+import { useLoginMethods } from '../components/hooks.js';
+import { loginChoice } from '@billiardum/shared/api';
 import { DEV_LOGIN, BASE } from '../lib/env.js';
 import { getTerminal } from '../lib/api.js';
 import { startBotLink, pendingBotLink, checkBotLink, cancelBotLink, devLogin, normalizePhone } from '../lib/auth.js';
@@ -15,6 +17,10 @@ export function SignIn() {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [expired, setExpired] = useState(false);
+  // U1: только настроенные на сервере способы входа; not_configured на кнопку — убираем её
+  const methods = useLoginMethods();
+  const [unavailable, setUnavailable] = useState([]);
+  const choice = loginChoice(methods ?? null, { devBuild: DEV_LOGIN, unavailable });
   const terminal = getTerminal();
 
   useEffect(() => {
@@ -49,6 +55,7 @@ export function SignIn() {
     try {
       setLink(await startBotLink(channel));
     } catch (err) {
+      if (err?.code === 'not_configured') setUnavailable((u) => [...u, channel]);
       setError(err);
     } finally {
       setBusy(null);
@@ -86,7 +93,17 @@ export function SignIn() {
           </div>
         ) : (
           <div class="form">
-            <p class="hint">Войдите по номеру телефона, который владелец клуба добавил в персонал. Подтверждение — в мессенджере: бот попросит код с этого экрана.</p>
+            {methods === undefined ? (
+              <p class="muted loading">Проверяем способы входа…</p>
+            ) : choice.channels.length ? (
+              <p class="hint">Войдите по номеру телефона, который владелец клуба добавил в персонал. Подтверждение — в мессенджере: бот попросит код с этого экрана.</p>
+            ) : choice.empty ? (
+              <div class="note" role="status">
+                <Icon name="info" />
+                <p class="note__title">Вход временно недоступен</p>
+                <p class="note__body">{terminal ? 'Через мессенджер войти сейчас нельзя. На этом терминале можно войти по PIN.' : 'Через мессенджер войти сейчас нельзя. Обратитесь к владельцу клуба.'}</p>
+              </div>
+            ) : null}
             {expired ? (
               <div class="note" role="status">
                 <Icon name="clock" />
@@ -94,12 +111,13 @@ export function SignIn() {
                 <p class="note__body">Ссылка устарела или код трижды ввели неверно. Начните заново — покажем новый код.</p>
               </div>
             ) : null}
-            <button type="button" class="btn btn--primary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => start('max')}>
-              {busy === 'max' ? 'Открываем MAX…' : 'Войти через MAX'}
-            </button>
-            <button type="button" class="btn btn--secondary btn--block btn--lg" disabled={Boolean(busy)} onClick={() => start('telegram')}>
-              {busy === 'telegram' ? 'Открываем Telegram…' : 'Войти через Telegram'}
-            </button>
+            {methods === undefined
+              ? null
+              : choice.channels.map((c, i) => (
+                  <button key={c} type="button" class={`btn ${i === 0 ? 'btn--primary' : 'btn--secondary'} btn--block btn--lg`} disabled={Boolean(busy)} onClick={() => start(c)}>
+                    {busy === c ? `Открываем ${NAME[c]}…` : `Войти через ${NAME[c]}`}
+                  </button>
+                ))}
             {terminal ? (
               <a class="btn btn--quiet btn--block btn--lg" href={`${BASE}pin`} onClick={linkHandler}>
                 <Icon name="key" />
@@ -108,8 +126,9 @@ export function SignIn() {
             ) : null}
           </div>
         )}
-        <ErrorNote error={error} />
-        {DEV_LOGIN ? <DevLogin /> : null}
+        {/* not_configured уже убрал кнопку — техническое сообщение не показываем */}
+        {error?.code === 'not_configured' ? null : <ErrorNote error={error} />}
+        {methods !== undefined && choice.dev ? <DevLogin /> : null}
       </div>
     </div>
   );

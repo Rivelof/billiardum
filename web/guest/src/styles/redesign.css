@@ -20,3 +20,6 @@
 
 /* Пустые состояния: иллюстрация из бильярдной, текст по центру */
 .empty { justify-items: center; text-align: center; gap: 12px; padding: 20px 8px; color: var(--ink-2); }
+
+/* Вход недоступен (U1): заголовок пустого состояния — основным цветом */
+.empty .step__title { color: var(--ink); }

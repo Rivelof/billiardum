@@ -98,6 +98,8 @@ export const api = {
   me: () => client.get('/me'),
 
   devLogin: (phone) => client.post('/auth/dev', { phone }),
+  /** Способы входа, настроенные на сервере (U1): { methods: ['telegram', 'max', 'dev'] }. */
+  authMethods: () => client.get('/auth/methods'),
   botLink: (channel) => client.post('/auth/bot-link', { channel }),
   botLinkStatus: (nonce) => client.get(`/auth/bot-link/${encodeURIComponent(nonce)}`),
   telegramLogin: (initData) => client.post('/auth/telegram', { init_data: initData }),

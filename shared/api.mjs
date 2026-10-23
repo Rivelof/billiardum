@@ -235,3 +235,35 @@ export function openStream(url, handlers) {
     },
   };
 }
+
+/** Способы входа, которые клиент умеет показывать. */
+export const LOGIN_METHODS = Object.freeze(['max', 'telegram', 'dev']);
+
+/**
+ * Ответ GET /api/auth/methods → список способов входа (U1): только настроенные на сервере.
+ * Принимает { methods: ['telegram', …] } и, на случай другой формы, [{ id | method | channel }].
+ * Порядок — как у клиента (MAX первым), неизвестные способы отбрасываются. Не разобрали — null:
+ * экран входа показывает кнопки как раньше, а не пустое состояние.
+ * @returns {string[] | null}
+ */
+export function loginMethods(body) {
+  const list = Array.isArray(body) ? body : Array.isArray(body?.methods) ? body.methods : null;
+  if (!list) return null;
+  const ids = new Set(list.map((m) => (typeof m === 'string' ? m : (m?.id ?? m?.method ?? m?.channel))).filter((m) => typeof m === 'string'));
+  return LOGIN_METHODS.filter((m) => ids.has(m));
+}
+
+/**
+ * Что показать на экране входа (U1): кнопки мессенджеров, форму входа по номеру для разработки
+ * или пустое состояние «вход временно недоступен».
+ * @param {string[] | null} methods из loginMethods(); null — ответ не получили, показываем оба мессенджера
+ * @param {{ devBuild?: boolean, unavailable?: string[] }} [options] devBuild — сборка с входом по номеру;
+ *   unavailable — мессенджеры, на которые сервер уже ответил not_configured
+ * @returns {{ channels: ('max' | 'telegram')[], dev: boolean, empty: boolean }}
+ */
+export function loginChoice(methods, { devBuild = false, unavailable = [] } = {}) {
+  const known = methods ?? ['max', 'telegram', 'dev'];
+  const channels = ['max', 'telegram'].filter((m) => known.includes(m) && !unavailable.includes(m));
+  const dev = Boolean(devBuild) && known.includes('dev');
+  return { channels, dev, empty: channels.length === 0 && !dev };
+}
