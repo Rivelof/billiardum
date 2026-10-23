@@ -1,5 +1,6 @@
-// JSON-представления для API и SSE (контракт M1 §6). Без персональных данных:
-// участники — только «Игрок N», телефоны и id пользователей наружу не уходят.
+// JSON-представления для API и SSE (контракт M1 §6, M4 m4-api.md). Без персональных данных:
+// участники — { user_id, nick, label }: id нужен для выбора соперника в партии (Бильярдум+), nick —
+// ник Бильярдум+ или null, label — «Игрок N». Видят только участники сессии и персонал клуба.
 
 import { OPEN_STATUSES } from './queries.mjs';
 
@@ -11,9 +12,9 @@ export function nick(ordinal) {
 
 /**
  * @param {object} s строка сессии (queries.loadSession)
- * @param {{ now: Date, userId?: string|null, participants?: object[] }} opts
+ * @param {{ now: Date, userId?: string|null, participants?: object[], nicks?: Record<string, string|null> }} opts
  */
-export function sessionView(s, { now, userId = null, participants = [], bookingLimit = null }) {
+export function sessionView(s, { now, userId = null, participants = [], bookingLimit = null, nicks = {} }) {
   const open = OPEN_STATUSES.includes(s.status);
   const paidUntil = new Date(s.paid_until);
   let remaining = 0;
@@ -30,7 +31,7 @@ export function sessionView(s, { now, userId = null, participants = [], bookingL
     remaining_ms: remaining,
     unlimited: Boolean(s.unlimited),
     is_payer: userId !== null && s.payer_user_id === userId,
-    participants: participants.map((p) => ({ nick: nick(p.ordinal) })),
+    participants: participants.map((p) => ({ user_id: p.user_id, nick: nicks?.[p.user_id] ?? null, label: nick(p.ordinal) })),
     // До какого момента можно продлить: «Без лимита» — покрыто заморозкой, блоком СБП или
     // депозитом (№69); бронь следующего гостя — её начало минус 5 минут (№106). Меньший из двух.
     extend_limit_until: open ? iso(extendLimit(s, bookingLimit)) : null,

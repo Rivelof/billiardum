@@ -2,13 +2,14 @@
 //
 // Рабочие сутки клуба (№43) по местной дате: [date day_start, date+1 day_start). По каждому
 // активному столу — занятые интервалы { from, to, kind } (session — идёт игра до paid_until +
-// льгота; service — сервисный свет; pending — гость платит; booking — живая бронь; closed —
+// льгота; service — сервисный свет; pending — гость платит; booking — живая бронь; tournament —
+// стол турнира на время матчей; closed —
 // нет тарифа, клуб закрыт) и свободные { from, to } от «сейчас», плюс цены по тарифу (rates)
 // для расчёта цены брони на клиенте (shared/booking.mjs: bookingPrice). Окончательную цену
 // считает сервер при брони.
 
 import { BookingError } from './errors.mjs';
-import { LIVE, loadClub, SESSION_OPEN, workdayAt, workdayWindow } from './queries.mjs';
+import { LIVE, loadClub, safely, SESSION_OPEN, workdayAt, workdayWindow } from './queries.mjs';
 import { bookingSettings } from './settings.mjs';
 
 const MIN = 60_000;
@@ -110,12 +111,16 @@ export async function availability(db, { deps, clock, log }, { clubId, date }) {
     for (const b of bookings.filter((x) => x.resource_id === r.id)) {
       busy.push({ from: new Date(b.starts_at).getTime(), to: new Date(b.ends_at).getTime(), kind: 'booking' });
     }
-    let rates = [];
-    try {
-      rates = await ratesFor(db, deps, r.id, fromMs, toMs);
-    } catch (err) {
-      log?.warn?.('availability_rates_failed', { resource_id: r.id, error: err.message });
+    // Столы турнира на время матчей (M4 №138, server/tournaments — если модуль есть).
+    if (typeof deps.tournaments?.tournamentHolds === 'function') {
+      const holds = await safely(db, () => deps.tournaments.tournamentHolds(db, { resourceId: r.id, from: new Date(fromMs), to: new Date(toMs) }), {
+        fallback: [],
+        log,
+        what: 'tournaments.tournamentHolds',
+      });
+      for (const x of holds ?? []) busy.push({ from: new Date(x.from).getTime(), to: new Date(x.to).getTime(), kind: 'tournament' });
     }
+    const rates = (await safely(db, () => ratesFor(db, deps, r.id, fromMs, toMs), { fallback: [], log, what: 'rates' })) ?? [];
     // Минуты без тарифа — клуб закрыт.
     const closed = freeIntervals(fromMs, toMs, rates.map((x) => ({ from: x.from, to: x.to })));
     for (const c of closed) busy.push({ ...c, kind: 'closed' });

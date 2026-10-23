@@ -261,6 +261,9 @@ export function createOutbox({ pollMs = POLL_MS, batch = BATCH, lanes: laneSlots
       );
       const row = rows[0];
       deps.log.warn('outbox_handler_failed', { id: Number(ev.id), topic: ev.topic, subscriber: sub.name, attempts: row?.attempts, error: code });
+      if (err?.code === 'tx_aborted_swallowed') {
+        deps.log.error('tx_aborted_swallowed', { topic: ev.topic, subscriber: sub.name, pg_code: err.pgCode, swallowed_at: err.swallowedAt });
+      }
       if (row && row.attempts >= FAILURES_BEFORE_ALARM && !row.alarmed_at) {
         await withContext(deps.pool, { clubId: null, actorType: 'system' }, (db) =>
           db.query('update bl.outbox set alarmed_at = $2 where id = $1', [ev.id, clock.now()]),

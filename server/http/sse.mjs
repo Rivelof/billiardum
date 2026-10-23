@@ -1,5 +1,7 @@
 // Server-Sent Events (decisions №50, контракт M1 §7, §13): publish(channel, event, data).
-// Каналы: club:{id} (зал, заявки ресепшена, тревоги), session:{id}, user:{id}.
+// Каналы: club:{id} (зал, заявки ресепшена, тревоги), session:{id}, user:{id};
+// tournament:{id} (M4) — публичный, без входа: только события TOURNAMENT_EVENTS без ПДн
+// (сетка по никам, счёт, номера столов) — publish других событий в него отклоняется.
 // Один процесс сервера: подписчики в памяти. Публиковать — после коммита
 // (afterCommit из server/lib/store.mjs), чтобы событие не опережало данные.
 
@@ -9,7 +11,9 @@ export const MAX_CLIENTS_PER_USER = 10;
 /** Медленный клиент с таким хвостом неотправленного отключается. */
 export const MAX_BUFFERED_BYTES = 1024 * 1024;
 
-const CHANNEL = /^(club|session|user):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const CHANNEL = /^(club|session|user|tournament):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** События публичного канала tournament:{id} (m4-api: bracket — полная сетка). */
+export const TOURNAMENT_EVENTS = Object.freeze(['bracket', 'tournament', 'match']);
 const EVENT = /^[a-z][a-z0-9_]{0,40}$/;
 
 export function isChannel(value) {
@@ -47,12 +51,14 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
      * только события бара, decisions №97); каналы без записи — все события.
      * @returns {{ ok: true, client: object } | { ok: false, reason: string }}
      */
-    attach(res, { channels, userId = null, revalidate = null, revalidateMs = 60_000, only = null }) {
+    attach(res, { channels, userId = null, key = null, revalidate = null, revalidateMs = 60_000, only = null }) {
       if (!channels.every(isChannel)) throw new Error('bad channel');
       if (clients.size >= maxClients) return { ok: false, reason: 'too_many_clients' };
-      if (userId) {
+      // Лимит потоков на пользователя, у анонимного — на ключ (ip:… публичного канала).
+      const limitKey = userId ?? key;
+      if (limitKey) {
         let mine = 0;
-        for (const c of clients) if (c.userId === userId) mine += 1;
+        for (const c of clients) if ((c.userId ?? c.key) === limitKey) mine += 1;
         if (mine >= maxPerUser) return { ok: false, reason: 'too_many_clients' };
       }
       res.writeHead(200, {
@@ -69,6 +75,7 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
       const client = {
         res,
         userId,
+        key,
         channels: new Set(channels),
         only: only ? new Map(Object.entries(only).map(([ch, evs]) => [ch, new Set(evs)])) : null,
         close() {
@@ -100,6 +107,7 @@ export function createSseHub({ log: initialLog = null, keepAliveMs = KEEP_ALIVE_
     /** Событие всем подписчикам канала. Возвращает число получателей. */
     publish(channel, event, data) {
       if (!isChannel(channel) || !EVENT.test(event)) throw new Error('bad channel or event');
+      if (channel.startsWith('tournament:') && !TOURNAMENT_EVENTS.includes(event)) throw new Error('tournament channel: event not public');
       const text = formatEvent(event, data);
       let n = 0;
       for (const c of clients) {

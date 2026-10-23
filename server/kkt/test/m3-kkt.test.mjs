@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { PAYMENT_TYPE, ReceiptDataError, receiptTask } from '../atol-task.mjs';
-import { revenueOf } from '../../reports/queries.mjs';
+import { categoryOf, revenueOf } from '../../reports/queries.mjs';
 
 const item = (over = {}) => ({
   description: 'Игра, стол 4, 1 ч',
@@ -77,6 +77,46 @@ describe('выручка смены M3', () => {
     assert.equal(r.total_kopecks, 1116200);
     assert.equal(r.refunds.tables_kopecks, 150000);
     assert.equal(r.net_kopecks, 1116200 - 150000);
+  });
+
+  it('взносы за турниры (M4, kind tournament) — своя строка tournaments; возврат взноса — обычный возврат', async () => {
+    const r = revenueOf(
+      [pay({ kind: 'tournament', category: 'tournaments', method: 'sbp', counted_kopecks: 150000 }), pay({ kind: 'bar', category: 'bar', counted_kopecks: 20000 })],
+      [{ kind: 'tournament', category: 'tournaments', method: 'sbp', amount_kopecks: 50000 }],
+    );
+    assert.deepEqual(
+      ['tournament', 'package', 'bar', 'start', 'extend', 'booking', 'booking_start', 'something_new'].map(categoryOf),
+      ['tournaments', 'packages', 'bar', 'tables', 'tables', 'tables', 'tables', 'other'],
+    );
+    assert.equal(r.tournaments.total_kopecks, 150000);
+    assert.equal(r.tournaments.by_method.sbp, 150000);
+    assert.equal(r.other.total_kopecks, 0);
+    assert.equal(r.total_kopecks, 170000);
+    assert.equal(r.refunds.total_kopecks, 50000);
+    assert.equal(r.net_kopecks, 120000);
+    const { reportText } = await import('../../reports/shift-report.mjs');
+    const text = reportText({
+      shift: { number: 3, timezone: 'Europe/Moscow' },
+      period: { from: '2026-10-23T09:00:00Z', to: '2026-10-23T18:00:00Z' },
+      revenue: r,
+      play: { hours: 0, utilization_percent: 0 },
+      manual_actions: { count: 0 },
+      service_light: { total_minutes: 0 },
+      cash: { discrepancy_kopecks: null },
+      reconciliation: { kkt: { ok: true }, online: { status: 'skipped' } },
+    });
+    assert.match(text, /турниры 1\s?500\s₽/);
+  });
+
+  it('бронь: предоплата и доплата при старте — столы; зачёт предоплаты (чек) второй раз не считается', () => {
+    // Смена 1: гость внёс предоплату брони 1 000 ₽. Смена 2: старт по брони с доплатой 300 ₽ и чеком
+    // зачёта на 1 000 ₽ — чек зачёта не платёж, в выручку смены 2 не входит.
+    const shift1 = revenueOf([pay({ kind: 'booking', category: categoryOf('booking'), method: 'card', counted_kopecks: 100000 })], []);
+    const shift2 = revenueOf([pay({ kind: 'booking_start', category: categoryOf('booking_start'), method: 'sbp', counted_kopecks: 30000 })], []);
+    assert.equal(shift1.tables.total_kopecks, 100000);
+    assert.equal(shift1.other.total_kopecks, 0);
+    assert.equal(shift2.tables.total_kopecks, 30000);
+    assert.equal(shift1.total_kopecks + shift2.total_kopecks, 130000, 'гость заплатил 1 300 ₽ — ровно столько в выручке');
   });
 
   it('игра балансом (method balance) в выручку не входит', () => {

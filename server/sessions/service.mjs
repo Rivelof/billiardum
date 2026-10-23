@@ -50,6 +50,8 @@ export const BOOKING_GAP_MS = 5 * 60_000;
 export const INTERRUPTED_DECIDE_MS = 24 * 3600_000;
 /** Коды причины сервисного света (контракт §14). */
 export const SERVICE_REASONS = Object.freeze(['cleaning', 'repair', 'training', 'other']);
+/** Чьё удержание reserved (№122, турнир — M4 №138). */
+export const HOLD_SOURCES = Object.freeze(['booking', 'waitlist', 'staff', 'tournament']);
 export const ROLES = Object.freeze({
   staff: ['owner', 'manager', 'reception', 'installer'],
   reception: ['owner', 'manager', 'reception'],
@@ -66,6 +68,13 @@ function cleanText(v, max = 2000) {
   const s = v.trim();
   return s.length > 0 && s.length <= max ? s : null;
 }
+
+/** Стол занят матчем турнира: table_busy с подписью «турнир до HH:MM» (until — для интерфейса). */
+function tournamentBusy(h) {
+  return new LightError('table_busy', 'tournament', { reason: 'tournament', busy_until: iso(h.until) });
+}
+
+const isTournament = (h) => h?.kind === 'reserved' && h.source === 'tournament';
 
 /**
  * @param {{ deps: object, log: object, clock: { now(): Date }, getBridge?: () => any }} opts
@@ -107,13 +116,30 @@ export function createLightService(opts) {
   /** Предел продления из-за брони следующего гостя: её начало минус 5 минут (№106). */
   async function bookingLimit(db, s) {
     if (!isOpen(s)) return null;
-    const next = await deps.bookings.nextBookingStart(db, { resourceId: s.resource_id, after: now() });
-    if (!next) return null;
-    return new Date(new Date(next).getTime() - BOOKING_GAP_MS);
+    // Игра турнира сама идёт по удержанию турнира — её предел не ограничивается турниром.
+    if (s.source === 'tournament') return null;
+    return bookingCap(db, s.resource_id, now());
+  }
+
+  /** Ники Бильярдум+ участников ({ user_id: nick|null }); модуля нет или ошибка — без ников. */
+  async function nicksFor(db, list) {
+    const ids = [...new Set(list.map((p) => p.user_id).filter(isUuid))];
+    if (ids.length === 0) return {};
+    await db.query('savepoint light_nicks');
+    try {
+      const out = await deps.plus.nicksOf(db, { userIds: ids });
+      await db.query('release savepoint light_nicks');
+      return out instanceof Map ? Object.fromEntries(out) : (out ?? {});
+    } catch (err) {
+      await db.query('rollback to savepoint light_nicks');
+      log.warn('plus_nicks_failed', { error: err.message });
+      return {};
+    }
   }
 
   async function view(db, s, userId) {
-    return sessionView(s, { now: now(), userId, participants: await participants(db, s.id), bookingLimit: await bookingLimit(db, s) });
+    const list = await participants(db, s.id);
+    return sessionView(s, { now: now(), userId, participants: list, nicks: await nicksFor(db, list), bookingLimit: await bookingLimit(db, s) });
   }
 
   /**
@@ -123,6 +149,7 @@ export function createLightService(opts) {
   async function closedEvent(db, s, { endedAt, reason, extra = {} }) {
     const out = sessionEvent(s, { started_at: iso(s.started_at), ended_at: iso(endedAt), unlimited: s.unlimited, reason, ...extra });
     if (s.booking_id) out.booking_id = s.booking_id;
+    if (s.match_id) out.match_id = s.match_id;
     if (s.deposit_kopecks) {
       const to = new Date(Math.min(new Date(endedAt).getTime(), s.paid_until.getTime()));
       let used = 0;
@@ -164,7 +191,10 @@ export function createLightService(opts) {
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'service') return { status: 'service', busy_until: iso(h.until), session_id: null, online };
     if (h?.kind === 'pending') return { status: 'pending', busy_until: iso(h.until), session_id: null, pending_mine: userId !== null && h.user_id === userId, online };
-    if (h?.kind === 'reserved') return { status: 'reserved', busy_until: iso(h.until), session_id: null, online };
+    if (h?.kind === 'reserved') return { status: 'reserved', busy_until: iso(h.until), session_id: null, hold_source: h.source ?? null, online };
+    // Турнир идёт (№146): стол турнира и между матчами не принимает игру по QR.
+    const tn = await tournamentNow(db, resourceId, t);
+    if (tn) return { status: 'reserved', busy_until: iso(tn.until), session_id: null, hold_source: 'tournament', online };
     if (!online) return { status: 'offline', busy_until: null, session_id: null, online };
     return { status: 'free', busy_until: null, session_id: null, online };
   }
@@ -181,7 +211,7 @@ export function createLightService(opts) {
     if (!isUuid(resourceId)) fail('bad_request', 'resourceId');
     if (userId !== null && !isUuid(userId)) fail('bad_request', 'userId');
     if (refId !== null && !isUuid(refId)) fail('bad_request', 'refId');
-    if (source !== null && !['booking', 'waitlist', 'staff'].includes(source)) fail('bad_request', 'source');
+    if (source !== null && !HOLD_SOURCES.includes(source)) fail('bad_request', 'source');
     const F = new Date(from).getTime();
     const T0 = new Date(to).getTime();
     if (!Number.isFinite(F) || !Number.isFinite(T0) || T0 < F || T0 - F > 7 * 24 * 3600_000) fail('bad_request', 'window');
@@ -267,7 +297,10 @@ export function createLightService(opts) {
     if (await openSessionOn(db, resourceId)) fail('table_busy');
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'service') fail('table_service');
+    if (isTournament(h)) throw tournamentBusy(h);
     if (h && h.user_id !== userId) fail(h.kind === 'pending' ? 'table_pending' : 'table_busy');
+    const tn = await tournamentNow(db, resourceId, t);
+    if (tn) throw tournamentBusy(tn);
     // Владелец брони начинает игру по брони (предоплата уже внесена), а не обычной оплатой по QR (№128).
     if (h?.kind === 'reserved' && h.source === 'booking') throw new LightError('booking_start_required', 'booking', { booking_id: h.ref_id ?? null });
     const device = await deviceOfResource(db, resourceId);
@@ -432,10 +465,60 @@ export function createLightService(opts) {
     return { result: 'refunded', reason };
   }
 
-  /** Предел игры из-за ближайшей брони (№129): её начало минус 5 минут, или null. */
+  /**
+   * Предел игры: ближайшая бронь (№129) или начало интервала турнира на этом столе (№146) минус
+   * 5 минут; null — предела нет. У даты свойство kind: 'booking' | 'tournament' (для текста гостю).
+   */
   async function bookingCap(db, resourceId, t) {
     const next = await deps.bookings.nextBookingStart(db, { resourceId, after: t });
-    return next ? new Date(new Date(next).getTime() - BOOKING_GAP_MS) : null;
+    let at = next ? new Date(next).getTime() : null;
+    let kind = 'booking';
+    const tn = await tournamentNext(db, resourceId, t);
+    if (tn !== null && (at === null || tn < at)) {
+      at = tn;
+      kind = 'tournament';
+    }
+    if (at === null) return null;
+    const cap = new Date(at - BOOKING_GAP_MS);
+    cap.kind = kind;
+    return cap;
+  }
+
+  /** Интервалы турнира на столе (server/tournaments tournamentHolds); ошибка модуля — без интервалов, с логом. */
+  async function tournamentIntervals(db, resourceId, from, to) {
+    await db.query('savepoint light_tournament_holds');
+    try {
+      const list = await deps.tournaments.tournamentHolds(db, { resourceId, from, to });
+      await db.query('release savepoint light_tournament_holds');
+      return Array.isArray(list) ? list : [];
+    } catch (err) {
+      await db.query('rollback to savepoint light_tournament_holds');
+      log.error('tournament_holds_failed', { resource_id: resourceId, error: err.message });
+      return [];
+    }
+  }
+
+  /** Турнир идёт на столе в момент t (№146): { until } — конец самого позднего покрывающего интервала. */
+  async function tournamentNow(db, resourceId, t) {
+    const T = t.getTime();
+    let until = null;
+    for (const x of await tournamentIntervals(db, resourceId, t, new Date(T + 1))) {
+      const a = new Date(x.from).getTime();
+      const b = new Date(x.to).getTime();
+      if (a <= T && b > T && (until === null || b > until)) until = b;
+    }
+    return until === null ? null : { until: new Date(until) };
+  }
+
+  /** Начало ближайшего интервала турнира после t в пределах суток (мс) или null. */
+  async function tournamentNext(db, resourceId, t) {
+    const T = t.getTime();
+    let next = null;
+    for (const x of await tournamentIntervals(db, resourceId, t, new Date(T + 24 * 3600_000))) {
+      const a = new Date(x.from).getTime();
+      if (a > T && (next === null || a < next)) next = a;
+    }
+    return next;
   }
 
   async function notifyBookingCut(db, p, { resourceId, sessionId, cap, refund, cutMs }) {
@@ -444,10 +527,11 @@ export function createLightService(opts) {
     const r = await loadResource(db, resourceId);
     const at = formatTime(new Date(cap.getTime() + BOOKING_GAP_MS), safeZone(club.timezone));
     const cutMin = Math.max(1, Math.round(cutMs / MINUTE));
+    const why = cap.kind === 'tournament' ? `с ${at} турнир` : `забронирован на ${at}`;
     try {
       await deps.notify.send(db, p.user_id, {
         kind: 'session.booking_cut',
-        text: `Стол ${r?.number ?? ''}: забронирован на ${at}, вернули ${formatMoney(refund)} за ${minutesText(cutMin)}`,
+        text: `Стол ${r?.number ?? ''}: ${why}, вернули ${formatMoney(refund)} за ${minutesText(cutMin)}`,
         data: { session_id: sessionId, refund_kopecks: refund, booking_start: new Date(cap.getTime() + BOOKING_GAP_MS).toISOString() },
       });
     } catch (err) {
@@ -488,7 +572,9 @@ export function createLightService(opts) {
     let busy = null;
     if (open) busy = 'busy';
     else if (h?.kind === 'service') busy = 'service';
+    else if (isTournament(h)) busy = 'tournament';
     else if (h && h.user_id !== p.user_id) busy = h.kind;
+    else if (await tournamentNow(db, res.id, t)) busy = 'tournament';
     if (busy) return rejectPayment(db, p, { reason: busy, resourceId: res.id, minutes, confirmedAt });
     // Игра не заходит в интервал брони (№129): бронь могли создать между котировкой и оплатой.
     const cap = await bookingCap(db, res.id, t);
@@ -543,6 +629,14 @@ export function createLightService(opts) {
     const s = await loadSession(db, p.session_id, { lock: true });
     if (!s || s.club_id !== p.club_id) return rejectPayment(db, p, { reason: 'no_session', resourceId: p.resource_id, minutes, confirmedAt });
     const add = minutes * MINUTE;
+    if (isOpen(s) && s.source === 'tournament') {
+      // Игра матча идёт по удержанию турнира, без оплаты: продлевать нечего — возврат.
+      return rejectPayment(db, p, { reason: 'tournament', resourceId: s.resource_id, minutes, confirmedAt });
+    }
+    if (isOpen(s) && (await tournamentNow(db, s.resource_id, t))) {
+      // Турнир на этом столе уже идёт (№146): игра по QR не продлевается — возврат.
+      return rejectPayment(db, p, { reason: 'tournament', resourceId: s.resource_id, minutes, confirmedAt });
+    }
     if (isOpen(s)) {
       // paid_until += minutes; из льготы тоже (контракт §6). Не дальше брони (№129).
       let paidUntil = new Date(s.paid_until.getTime() + add);
@@ -603,6 +697,7 @@ export function createLightService(opts) {
       if (!res || open || (h && (h.kind === 'service' || h.user_id !== p.user_id))) {
         return rejectPayment(db, p, { reason: 'busy', resourceId: s.resource_id, minutes, confirmedAt });
       }
+      if (await tournamentNow(db, s.resource_id, t)) return rejectPayment(db, p, { reason: 'tournament', resourceId: s.resource_id, minutes, confirmedAt });
       const cap = await bookingCap(db, s.resource_id, t);
       if (cap && cap.getTime() - t.getTime() < MINUTE) {
         return rejectPayment(db, p, { reason: 'booking', resourceId: s.resource_id, minutes, confirmedAt, cap });
@@ -729,6 +824,9 @@ export function createLightService(opts) {
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'service') fail('table_service');
     if (h?.kind === 'pending' && h.user_id !== userId) fail('table_pending');
+    if (isTournament(h)) throw tournamentBusy(h);
+    const tn = await tournamentNow(db, resourceId, t);
+    if (tn) throw tournamentBusy(tn);
     // Бронь по телефону (user_id null) тоже держит стол: booking снимает её сам (clearReserved) при приходе.
     if (h?.kind === 'reserved' && (!h.user_id || h.user_id !== userId)) fail('table_busy');
     return h;
@@ -747,18 +845,18 @@ export function createLightService(opts) {
     }
   }
 
-  async function insertSession(db, { clubId, resourceId, payer, unlimited, source, paidUntil, t, bookingId = null, depositKopecks = null }) {
+  async function insertSession(db, { clubId, resourceId, payer, unlimited, source, paidUntil, t, bookingId = null, depositKopecks = null, matchId = null }) {
     const club = await loadClub(db, clubId);
     const warn = warnMs(club.settings);
     const ins = await db.query(
       `insert into bl.sessions (club_id, resource_id, status, source, payer_user_id, unlimited, started_at, paid_until,
-                                warn_ms, grace_ms, notified, booking_id, deposit_kopecks, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $7, $7) returning id`,
+                                warn_ms, grace_ms, notified, booking_id, deposit_kopecks, match_id, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $7, $7) returning id`,
       [clubId, resourceId, phaseOf(paidUntil, t, warn), source, payer, unlimited, t, paidUntil, warn, graceMs(club.settings),
-        JSON.stringify(premarkNotified({}, paidUntil, t)), bookingId, depositKopecks],
+        JSON.stringify(premarkNotified({}, paidUntil, t)), bookingId, depositKopecks, matchId],
     );
     const s = await loadSession(db, ins.rows[0].id);
-    await addParticipant(db, { session: s, userId: payer, role: 'payer', now: t });
+    if (payer) await addParticipant(db, { session: s, userId: payer, role: 'payer', now: t });
     return s;
   }
 
@@ -820,7 +918,7 @@ export function createLightService(opts) {
    * @returns {{ ok: true, applied: boolean, until?: string, reason?: string }}
    */
   async function setReserved(db, { resourceId, until, userId = null, source = 'booking', refId = null }) {
-    if (!['booking', 'waitlist', 'staff'].includes(source)) fail('bad_request', 'source');
+    if (!HOLD_SOURCES.includes(source)) fail('bad_request', 'source');
     if (refId !== null && !isUuid(refId)) fail('bad_request', 'refId');
     const t = now();
     const u = new Date(until);
@@ -834,6 +932,8 @@ export function createLightService(opts) {
     if (h?.kind === 'pending') return { ok: true, applied: false, reason: 'pending' };
     // Во время сервиса главное удержание — сервис; reserved ищем отдельно (регресс R2).
     const r = await activeReserved(db, resourceId, t);
+    // Стол турнира не отдаётся брони или очереди (№138): удержание турнира не заменяется.
+    if (r?.source === 'tournament' && source !== 'tournament') return { ok: true, applied: false, reason: 'tournament' };
     if (r && r.user_id === userId && r.source === source && (r.ref_id ?? null) === refId) {
       await db.query('update bl.resource_holds set until = $2 where id = $1', [r.id, u]);
     } else {
@@ -858,7 +958,7 @@ export function createLightService(opts) {
    * source/refId — снять только своё удержание (бронь не снимает очередь и наоборот).
    */
   async function clearReserved(db, { resourceId, source = null, refId = null }) {
-    if (source !== null && !['booking', 'waitlist', 'staff'].includes(source)) fail('bad_request', 'source');
+    if (source !== null && !HOLD_SOURCES.includes(source)) fail('bad_request', 'source');
     if (refId !== null && !isUuid(refId)) fail('bad_request', 'refId');
     const t = now();
     await ensureResourceClub(db, resourceId);
@@ -945,6 +1045,163 @@ export function createLightService(opts) {
     await changed(db, s);
     log.info('session_started', { session_id: s.id, resource_id: resourceId, minutes, deposit: true });
     return { session_id: s.id, paid_until: paidUntil.toISOString(), minutes };
+  }
+
+  // Турнир (M4, контракт m4.md, decisions №138) -----------------------------------------------
+
+  /**
+   * Свет на матч турнира: без платежа и без плательщика, по удержанию турнира этого матча
+   * (source tournament, ref_id = matchId); игра до конца удержания. Действие турнира, не ручное
+   * действие персонала (без тревоги владельцу); журнал session.start с source tournament и
+   * match_id, команда сервера (инвариант 1). Идемпотентно по matchId.
+   * @param {{ resourceId: string, matchId: string, staffId?: string|null, system?: boolean }} args
+   * @returns {Promise<{ session_id: string, paid_until: string }>}
+   */
+  async function startFromTournament(db, { resourceId, matchId, staffId = null, system = false }) {
+    if (!isUuid(resourceId) || !isUuid(matchId)) fail('bad_request', 'match');
+    if (!system && !isUuid(staffId)) fail('bad_request', 'staffId');
+    const clubId = await enterResource(db, resourceId);
+    if (!system) await requireRole(db, clubId, staffId, ROLES.reception);
+    const t = now();
+    const res = await lockResource(db, resourceId);
+    if (!res || !res.active) fail('not_found', 'resource');
+    const existing = await db.query('select id, paid_until from bl.sessions where match_id = $1', [matchId]);
+    if (existing.rowCount > 0) return { session_id: existing.rows[0].id, paid_until: iso(existing.rows[0].paid_until) };
+    if (await openSessionOn(db, resourceId)) fail('table_busy');
+    const h = await activeHold(db, resourceId, t);
+    if (h?.kind === 'service') fail('table_service');
+    if (!isTournament(h) || h.ref_id !== matchId) fail('not_found', 'tournament_hold');
+    if (!deviceOnline(await deviceOfResource(db, resourceId))) fail('table_offline');
+    const paidUntil = new Date(h.until);
+    const s = await insertSession(db, { clubId, resourceId, payer: null, unlimited: false, source: 'tournament', paidUntil, t, matchId });
+    await releaseHold(db, h.id, t, 'session');
+    await audit(db, {
+      action: 'session.start',
+      objectType: 'session',
+      objectId: s.id,
+      actorType: system ? 'system' : 'user',
+      actorId: system ? null : staffId,
+      data: { session_id: s.id, paid_until: iso(paidUntil), match_id: matchId, resource_id: resourceId, source: 'tournament' },
+    });
+    await emit(db, 'session.started', sessionEvent(s, { match_id: matchId }));
+    await command(db, s, { type: 'session.start', body: { session_id: s.id }, cause: system ? 'system' : 'staff' });
+    await changed(db, s);
+    log.info('session_started', { session_id: s.id, resource_id: resourceId, match_id: matchId, tournament: true });
+    return { session_id: s.id, paid_until: paidUntil.toISOString() };
+  }
+
+  /**
+   * Матч идёт дольше отведённого (№146): продлить удержание турнира и игру матча до until.
+   * Игра идёт — paid_until = until, команда session.extend (журнал device.cmd), запись
+   * session.extend с match_id; матч ещё не начат — продлевается удержание. Идемпотентно:
+   * until не позже текущего конца — без изменений. Ничего нет по матчу — not_found.
+   * @returns {Promise<{ ok: true, session_id: string|null, until: string, extended: boolean }>}
+   */
+  async function extendFromTournament(db, { resourceId, matchId, until, staffId = null, system = staffId === null }) {
+    if (!isUuid(resourceId) || !isUuid(matchId)) fail('bad_request', 'match');
+    if (!system && !isUuid(staffId)) fail('bad_request', 'staffId');
+    const t = now();
+    const u = new Date(until);
+    if (Number.isNaN(u.getTime()) || u <= t || u.getTime() - t.getTime() > 24 * 3600_000) fail('bad_request', 'until');
+    const clubId = await enterResource(db, resourceId);
+    if (!system) await requireRole(db, clubId, staffId, ROLES.reception);
+    const res = await lockResource(db, resourceId);
+    if (!res) fail('not_found', 'resource');
+    const { rows } = await db.query('select id from bl.sessions where match_id = $1 and resource_id = $2', [matchId, resourceId]);
+    const s = rows[0] ? await loadSession(db, rows[0].id, { lock: true }) : null;
+    if (s && isOpen(s)) {
+      if (u <= s.paid_until) return { ok: true, session_id: s.id, until: iso(s.paid_until), extended: false };
+      await db.query(
+        `update bl.sessions set paid_until = $2, status = $3, notified = $4::jsonb, updated_at = $5 where id = $1`,
+        [s.id, u, phaseOf(u, t, s.warn_ms), JSON.stringify(premarkNotified(s.notified, u, t)), t],
+      );
+      await audit(db, {
+        action: 'session.extend',
+        objectType: 'session',
+        objectId: s.id,
+        actorType: system ? 'system' : 'user',
+        actorId: system ? null : staffId,
+        data: { session_id: s.id, paid_until: iso(u), match_id: matchId, source: 'tournament', minutes: Math.ceil((u - s.paid_until) / MINUTE) },
+      });
+      await emit(db, 'session.extended', sessionEvent({ ...s, paid_until: u }, { match_id: matchId }));
+      await command(db, s, { type: 'session.extend', body: { session_id: s.id }, cause: system ? 'system' : 'staff' });
+      await changed(db, s);
+      log.info('session_extended', { session_id: s.id, match_id: matchId, tournament: true });
+      return { ok: true, session_id: s.id, until: iso(u), extended: true };
+    }
+    const h = await activeReserved(db, resourceId, t);
+    if (!h || h.source !== 'tournament' || h.ref_id !== matchId) fail('not_found', 'tournament_match');
+    if (u <= h.until) return { ok: true, session_id: null, until: iso(h.until), extended: false };
+    await db.query('update bl.resource_holds set until = $2 where id = $1', [h.id, u]);
+    await notifyLight(db, { k: 'hall', c: res.club_id, r: resourceId });
+    return { ok: true, session_id: null, until: iso(u), extended: true };
+  }
+
+  /**
+   * Матч кончился раньше удержания: погасить свет матча (стол — где шёл матч). Сессии матча нет
+   * или она уже закрыта — { stopped: false }.
+   */
+  async function stopFromTournament(db, { resourceId, matchId, staffId = null, system = false }) {
+    if (!isUuid(resourceId) || !isUuid(matchId)) fail('bad_request', 'match');
+    if (!system && !isUuid(staffId)) fail('bad_request', 'staffId');
+    const clubId = await enterResource(db, resourceId);
+    if (!system) await requireRole(db, clubId, staffId, ROLES.reception);
+    const { rows } = await db.query('select id from bl.sessions where match_id = $1 and resource_id = $2', [matchId, resourceId]);
+    const sessionId = rows[0]?.id ?? null;
+    if (!sessionId) return { ok: true, stopped: false };
+    const s = await loadSession(db, sessionId, { lock: true });
+    if (!s || !isOpen(s)) return { ok: true, stopped: false };
+    const t = now();
+    await db.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'stopped', updated_at = $2 where id = $1", [s.id, t]);
+    await audit(db, {
+      action: 'session.stop',
+      objectType: 'session',
+      objectId: s.id,
+      actorType: system ? 'system' : 'user',
+      actorId: system ? null : staffId,
+      data: { session_id: s.id, paid_until: iso(s.paid_until), ended_at: iso(t), match_id: matchId, source: 'tournament' },
+    });
+    await emit(db, 'session.closed', await closedEvent(db, s, { endedAt: t, reason: 'stopped' }));
+    await command(db, s, { type: 'session.stop', body: { session_id: s.id, reason_code: 'tournament_end' }, cause: system ? 'system' : 'staff' });
+    await showReservedIfAny(db, s, t);
+    await changed(db, s);
+    return { ok: true, stopped: true, session_id: s.id };
+  }
+
+  // Партии для Бильярдум+ (M4) ------------------------------------------------------------------
+
+  /** Кто играл: [{ user_id, role: payer | participant, joined_at }]; сессии нет — not_found. */
+  async function sessionParticipants(db, { sessionId }) {
+    await enterSession(db, sessionId);
+    const s = await loadSession(db, sessionId);
+    if (!s) fail('not_found', 'session');
+    return (await participants(db, s.id)).map((p) => ({ user_id: p.user_id, role: p.role === 'payer' ? 'payer' : 'participant', joined_at: iso(p.joined_at) }));
+  }
+
+  /** Сессия для засчитывания партий: стол, время, источник, без денег и ПДн; нет — null. */
+  async function sessionOf(db, { sessionId }) {
+    if (!isUuid(sessionId)) return null;
+    const clubId = await sessionClub(db, sessionId);
+    if (!clubId) return null;
+    const cur = await currentClub(db);
+    if (cur !== null && cur !== clubId) return null;
+    await enterClub(db, clubId);
+    const s = await loadSession(db, sessionId);
+    if (!s) return null;
+    return {
+      id: s.id,
+      club_id: s.club_id,
+      resource_id: s.resource_id,
+      resource_number: s.resource_number,
+      status: s.status,
+      source: s.source,
+      started_at: iso(s.started_at),
+      ended_at: iso(s.ended_at),
+      paid_until: iso(s.paid_until),
+      payer_user_id: s.payer_user_id ?? null,
+      booking_id: s.booking_id ?? null,
+      match_id: s.match_id ?? null,
+    };
   }
 
   // Гость ---------------------------------------------------------------------------------
@@ -1101,6 +1358,8 @@ export function createLightService(opts) {
       const h = await activeHold(db, s.resource_id, t);
       if (h?.kind === 'service') fail('table_service');
       if (h && h.user_id !== userId) fail(h.kind === 'pending' ? 'table_pending' : 'table_busy');
+      const tn = await tournamentNow(db, s.resource_id, t);
+      if (tn) throw tournamentBusy(tn);
       if (!deviceOnline(await deviceOfResource(db, s.resource_id))) fail('table_offline');
       // Не дальше ближайшей брони (№129): остаток сверх неё возвращается долями платежей.
       const cap = await bookingCap(db, s.resource_id, t);
@@ -1146,7 +1405,7 @@ export function createLightService(opts) {
       const roles = await rolesIn(db, s.club_id, userId);
       if (!roles.some((r) => ROLES.reception.includes(r))) fail('not_found', 'session');
     }
-    return sessionView(s, { now: now(), userId, participants: list, bookingLimit: await bookingLimit(db, s) });
+    return sessionView(s, { now: now(), userId, participants: list, nicks: await nicksFor(db, list), bookingLimit: await bookingLimit(db, s) });
   }
 
   /** Сессии гостя во всех клубах (идущие и ждущие выбора после interrupted). */
@@ -1163,7 +1422,7 @@ export function createLightService(opts) {
       if (start !== null && start !== r.club_id) continue;
       await db.query("select set_config('app.club_id', $1, true)", [r.club_id]);
       const s = await loadSession(db, r.id);
-      if (s) out.push(sessionView(s, { now: now(), userId, participants: await participants(db, s.id), bookingLimit: await bookingLimit(db, s) }));
+      if (s) out.push(await view(db, s, userId));
     }
     await db.query("select set_config('app.club_id', $1, true)", [start ?? '']);
     return out;
@@ -1271,7 +1530,8 @@ export function createLightService(opts) {
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'service') fail('table_service');
     if (h?.kind === 'pending') fail('table_pending');
-    if (h) fail('table_busy');
+    // Стол турнира: сервис ресепшена с причиной допустим (№138), удержание турнира остаётся под ним.
+    if (h && !isTournament(h)) fail('table_busy');
     const device = await deviceOfResource(db, resourceId);
     if (!deviceOnline(device)) fail('table_offline');
     const until = new Date(t.getTime() + minutes * MINUTE);
@@ -1352,6 +1612,7 @@ export function createLightService(opts) {
     const out = { kind: h.kind, until: iso(h.until), reason_code: h.reason_code ?? null, source: h.source ?? null };
     if (h.source === 'waitlist') out.offer_id = h.ref_id ?? null;
     if (h.source === 'booking') out.booking_id = h.ref_id ?? null;
+    if (h.source === 'tournament') out.match_id = h.ref_id ?? null;
     return out;
   }
 
@@ -1486,10 +1747,16 @@ export function createLightService(opts) {
   return {
     kit,
     bookingLimit,
+    nicksFor,
     startFromBooking,
     setReserved,
     clearReserved,
     startFromDeposit,
+    startFromTournament,
+    extendFromTournament,
+    stopFromTournament,
+    sessionParticipants,
+    sessionOf,
     resourceStatus,
     availabilityDuring,
     holdPending,

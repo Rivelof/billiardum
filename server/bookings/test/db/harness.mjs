@@ -85,7 +85,7 @@ export async function setup({ settings = {} } = {}) {
 
   let lightService = null;
   const lightCalls = [];
-  const lightHooks = { availabilityDuring: null };
+  const lightHooks = { availabilityDuring: null, tournamentHolds: null };
   const setupModule = {
     async init(ctx) {
       lightService = createLightService({
@@ -136,7 +136,9 @@ export async function setup({ settings = {} } = {}) {
         getSessionForExtend: (d, a) => lightService.getSessionForExtend(d, a),
       };
       ctx.money = { config: moneyConfig };
-      ctx.bookingDeps = { light, payments: money };
+      // Турниры (M4 №138) — тест подменяет интервалы блокировки столов.
+      const tournaments = { tournamentHolds: async (d, a) => (lightHooks.tournamentHolds ? lightHooks.tournamentHolds(d, a) : []) };
+      ctx.bookingDeps = { light, payments: money, tournaments };
       ctx.bookingsOptions = { tickMs: 0 };
       ctx.waitlistOptions = { tickMs: 0 };
     },

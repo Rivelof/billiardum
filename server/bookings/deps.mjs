@@ -17,6 +17,7 @@ const MODULES = {
   payments: '../payments/api.mjs',
   tariffs: '../tariffs/index.mjs',
   engine: '../tariffs/engine.mjs',
+  tournaments: '../tournaments/api.mjs',
   audit: '../lib/audit.mjs',
   alarms: '../alarms/index.mjs',
   notify: '../notify/index.mjs',
@@ -26,6 +27,7 @@ const MODULES = {
 const OPTIONAL = {
   light: ['getResourceStatus', 'availabilityDuring'],
   payments: ['pendingPlayUntil'],
+  tournaments: ['tournamentHolds'],
 };
 
 const NEED = {
@@ -66,7 +68,7 @@ export async function resolveDeps(ctx, log) {
   const override = ctx.bookingDeps ?? {};
   const out = {};
   const missing = [];
-  for (const [group, names] of Object.entries(NEED)) {
+  for (const [group, names] of Object.entries({ ...NEED, tournaments: [] })) {
     const mod = await tryImport(MODULES[group]);
     const o = override[group] ?? {};
     out[group] = {};

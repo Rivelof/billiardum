@@ -24,6 +24,7 @@ import {
   overlapping,
   ownBookingClub,
   resourceClub,
+  safely,
   useClub,
   workdayAt,
   workdayWindow,
@@ -86,7 +87,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
   /**
    * Бронь для ответа. staff — с гостем (имя брони по телефону и маска телефона), иначе без ПДн чужих.
    */
-  async function view(db, b, { staff = false, roles = [], t = now() } = {}) {
+  async function view(db, b, { staff = false, roles = [], t = now(), viewer = null } = {}) {
     const club = await loadClub(db, b.club_id);
     const settings = bookingSettings(club?.settings);
     const percent = club ? await forfeitPercentOf(db, club) : 100;
@@ -110,7 +111,12 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       expire_reason: b.expire_reason ?? null,
       created_at: iso(b.created_at),
       cancel: cancelInfo(b, settings, percent, t),
+      // Бронь на двоих («Сыграем?»): сколько участников кроме владельца и кто смотрит.
+      participants_count: (b.participants ?? []).length,
+      ...(viewer ? { my_role: viewer === b.user_id ? 'owner' : 'participant' } : {}),
     };
+    // Участник не отменяет и не платит — это делает владелец.
+    if (viewer && viewer !== b.user_id) out.cancel = { allowed: false, refund_kopecks: 0, free_until: null };
     if (staff) {
       let phoneMasked = maskPhone(b.guest_phone);
       if (!phoneMasked && b.user_id) {
@@ -159,21 +165,27 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     return deps.audit.appendAudit(db, entry);
   }
 
-  async function notifyGuest(db, b, { kind, text, level = 'info', actions }) {
+  /** Уведомление владельцу брони и участникам («Сыграем?», бронь на двоих). */
+  async function notifyGuest(db, b, { kind, text, level = 'info', actions, ownerOnly = false }) {
     if (!b.user_id) return null;
-    try {
-      return await deps.notify.send(db, b.user_id, {
-        kind,
-        text,
-        level,
-        data: { booking_id: b.id, resource_id: b.resource_id, starts_at: iso(b.starts_at) },
-        ...(actions ? { actions } : {}),
-      });
-    } catch (err) {
-      // Уведомление не держит бронь: ошибка — в лог, без отката.
-      log.warn('booking_notify_failed', { booking_id: b.id, kind, error: err.message });
-      return null;
+    const to = ownerOnly ? [b.user_id] : [b.user_id, ...(b.participants ?? [])];
+    let first = null;
+    for (const userId of to) {
+      // Уведомление не держит бронь: ошибка — в лог, транзакция цела (точка сохранения).
+      const r = await safely(
+        db,
+        () => deps.notify.send(db, userId, {
+          kind,
+          text,
+          level,
+          data: { booking_id: b.id, resource_id: b.resource_id, starts_at: iso(b.starts_at) },
+          ...(actions ? { actions } : {}),
+        }),
+        { log, what: `notify:${kind}` },
+      );
+      first ??= r;
     }
+    return first;
   }
 
   const when = (b) => `${formatDate(b.starts_at, b.club_timezone)} в ${formatTime(b.starts_at, b.club_timezone)}`;
@@ -202,9 +214,22 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     }
     const other = await overlapping(db, resourceId, from, to, exceptBooking);
     if (other.length > 0) fail('booking_conflict', 'пересечение с бронью');
+    // M4 №138: столы турнира на время матчей — брони не принимаются.
+    if (await tournamentBusy(db, resourceId, from, to)) fail('booking_conflict', 'турнир');
     // №129: на столе ждёт оплаты котировка (старт или продление), конец которой заходит в бронь.
     const pending = await pendingPlayUntil(db, resourceId, t);
     if (pending && ms(pending) + EXTEND_GAP_MS > ms(from)) fail('booking_conflict', 'ждёт оплаты котировка');
+  }
+
+  /** Интервалы блокировки стола турниром (server/tournaments, необязательная зависимость). */
+  async function tournamentHolds(db, resourceId, from, to) {
+    if (typeof deps.tournaments?.tournamentHolds !== 'function') return [];
+    const list = await deps.tournaments.tournamentHolds(db, { resourceId, from: new Date(from), to: new Date(to) });
+    return Array.isArray(list) ? list : [];
+  }
+
+  async function tournamentBusy(db, resourceId, from, to) {
+    return (await tournamentHolds(db, resourceId, from, to)).some((x) => ms(x.from) < ms(to) && ms(x.to) > ms(from));
   }
 
   /**
@@ -269,11 +294,11 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       const { rows } = await db.query(
         `insert into bl.bookings (club_id, resource_id, user_id, guest_name, guest_phone, source, created_by, starts_at, ends_at,
                                   status, prepayment_mode, amount_kopecks, prepayment_kopecks, pay_until, hold_minutes,
-                                  created_at, updated_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16) returning id`,
+                                  participants, created_at, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $17::uuid[], $16, $16) returning id`,
         [
           row.clubId, row.resourceId, row.userId, row.guestName, row.guestPhone, row.source, row.createdBy, row.startsAt, row.endsAt,
-          row.status, row.mode, row.amount, row.prepayment, row.payUntil, row.hold, row.t,
+          row.status, row.mode, row.amount, row.prepayment, row.payUntil, row.hold, row.t, row.participants ?? [],
         ],
       );
       await db.query('release savepoint bl_booking_insert');
@@ -292,7 +317,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
    * POST /api/bookings — гость. { resource_id, starts_at, minutes } → бронь: pending_payment при
    * предоплате (оплата — POST /api/bookings/{id}/pay), иначе confirmed.
    */
-  async function create(db, { userId, body, source = 'app' }) {
+  async function create(db, { userId, body, source = 'app', participants = [] }) {
     if (!isUuid(userId)) fail('unauthorized');
     const resourceId = body?.resource_id;
     if (!isUuid(resourceId)) fail('bad_request', 'resource_id');
@@ -300,6 +325,10 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const minutes = body.minutes;
     if (body.source !== undefined && !['app', 'site'].includes(body.source)) fail('bad_request', 'source');
     const src = body.source ?? source;
+    // Участники брони на двоих — только из модуля Бильярдум+ (createBooking), не из тела запроса.
+    if (!Array.isArray(participants) || participants.length > 3 || !participants.every(isUuid) || new Set(participants).size !== participants.length || participants.includes(userId)) {
+      fail('bad_request', 'participants');
+    }
     const clubId = await resourceClub(db, resourceId);
     if (!clubId) fail('not_found', 'resource');
     await useClub(db, clubId);
@@ -324,7 +353,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const payUntil = prepayment > 0 ? new Date(Math.min(ms(t) + settings.payMinutes * MIN, ms(startsAt))) : null;
     const id = await insertBooking(db, {
       clubId, resourceId, userId, guestName: null, guestPhone: null, source: src, createdBy: userId, startsAt, endsAt,
-      status, mode: settings.prepayment, amount, prepayment, payUntil, hold: Math.min(holdFor(settings, prepayment), minutes), t,
+      status, mode: settings.prepayment, amount, prepayment, payUntil, hold: Math.min(holdFor(settings, prepayment), minutes), t, participants,
     });
     const b = await loadBooking(db, id);
     await audit(db, {
@@ -386,8 +415,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
   // Доступ к брони --------------------------------------------------------------------------
 
   /** Своя бронь гостя: переводит транзакцию в клуб брони. */
-  async function own(db, bookingId, userId, { lock = false } = {}) {
-    const clubId = await ownBookingClub(db, bookingId, userId);
+  async function own(db, bookingId, userId, { lock = false, participant = false } = {}) {
+    const clubId = await ownBookingClub(db, bookingId, userId, { participant });
     if (!clubId) fail('not_found', 'booking');
     await useClub(db, clubId);
     return loadBooking(db, bookingId, { lock });
@@ -397,8 +426,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
    * Бронь для гостя-владельца или персонала клуба запроса (ctx.club, роли — от роутера).
    * @returns {{ b: object, staff: boolean }}
    */
-  async function access(db, { bookingId, userId, club, roles, staffRoles, lock = false }) {
-    const ownClub = await ownBookingClub(db, bookingId, userId);
+  async function access(db, { bookingId, userId, club, roles, staffRoles, lock = false, participant = false }) {
+    const ownClub = await ownBookingClub(db, bookingId, userId, { participant });
     if (ownClub) {
       await useClub(db, ownClub);
       return { b: await loadBooking(db, bookingId, { lock }), staff: false };
@@ -411,21 +440,21 @@ export function createBookingService({ deps, log, clock, config = {} }) {
   }
 
   async function get(db, { bookingId, userId, club, roles }) {
-    const { b, staff } = await access(db, { bookingId, userId, club, roles, staffRoles: STAFF_ROLES });
-    return view(db, b, { staff, roles: staff ? roles : [] });
+    const { b, staff } = await access(db, { bookingId, userId, club, roles, staffRoles: STAFF_ROLES, participant: true });
+    return view(db, b, { staff, roles: staff ? roles : [], viewer: userId });
   }
 
   /** GET /api/me/bookings — свои брони во всех клубах (последние 50). */
   async function listMine(db, { userId }) {
     const { rows } = await db.query(
-      `select id, club_id from bl.bookings where user_id = $1 order by starts_at desc limit 50`,
+      `select id, club_id from bl.bookings where user_id = $1 or $1 = any (participants) order by starts_at desc limit 50`,
       [userId],
     );
     const out = [];
     for (const r of rows) {
       await useClub(db, r.club_id);
       const b = await loadBooking(db, r.id);
-      if (b) out.push(await view(db, b));
+      if (b) out.push(await view(db, b, { viewer: userId }));
     }
     return out;
   }
@@ -618,7 +647,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
    * предоплаты, ранний приход) — {status: 'payment_required', quote | confirmation}.
    */
   async function start(db, { bookingId, userId, body }) {
-    const b = await own(db, bookingId, userId, { lock: true });
+    // Начать игру по брони может владелец или участник брони на двоих — платит начавший.
+    const b = await own(db, bookingId, userId, { lock: true, participant: true });
     const t = now();
     const res = await lockResource(db, b.resource_id);
     const code = normalizeCode(body?.code);
@@ -642,6 +672,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     let extra = 0;
     if (early) {
       if ((await overlapping(db, b.resource_id, t, b.starts_at, b.id)).length > 0) fail('booking_conflict', 'ранний приход');
+      if (await tournamentBusy(db, b.resource_id, t, b.starts_at)) fail('booking_conflict', 'турнир');
       extra = await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((startMs - ms(t)) / MIN)), false);
     }
     // Опоздал (пришёл после начала) — цена только с прихода до конца брони (№113); иначе цена брони.
@@ -860,9 +891,12 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       if (b.status === 'confirmed' && b.hold_minutes > 0) {
         const until = new Date(startMs + b.hold_minutes * MIN);
         let r;
+        await db.query('savepoint bl_booking_reserve');
         try {
           r = await deps.light.setReserved(db, { resourceId: b.resource_id, until, userId: b.user_id ?? null, source: 'booking', refId: b.id });
+          await db.query('release savepoint bl_booking_reserve');
         } catch (err) {
+          await db.query('rollback to savepoint bl_booking_reserve');
           if (!isConflict(err)) throw err;
           r = { applied: false, reason: err.code };
         }
@@ -904,13 +938,9 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const light = await lightAvailability(db, b, t, t);
     if (light?.unavailable) return String(light.reasons?.[0] ?? 'unavailable').slice(0, 32);
     if (!light && typeof deps.light.getResourceStatus === 'function') {
-      try {
-        const st = await deps.light.getResourceStatus(db, b.resource_id, { userId: b.user_id ?? null });
-        if (st?.status === 'offline') return 'offline';
-        if (st?.status === 'service') return 'service';
-      } catch (err) {
-        log.warn('booking_status_failed', { booking_id: b.id, code: err.code });
-      }
+      const st = await safely(db, () => deps.light.getResourceStatus(db, b.resource_id, { userId: b.user_id ?? null }), { log, what: 'light.getResourceStatus' });
+      if (st?.status === 'offline') return 'offline';
+      if (st?.status === 'service') return 'service';
     }
     return null;
   }
@@ -922,14 +952,13 @@ export function createBookingService({ deps, log, clock, config = {} }) {
    */
   async function lightAvailability(db, b, from, to) {
     if (typeof deps.light.availabilityDuring !== 'function') return null;
-    try {
-      return await deps.light.availabilityDuring(db, {
+    return safely(
+      db,
+      () => deps.light.availabilityDuring(db, {
         resourceId: b.resource_id, from: new Date(from), to: new Date(to), userId: b.user_id ?? null, source: 'booking', refId: b.id,
-      });
-    } catch (err) {
-      log.warn('booking_availability_failed', { booking_id: b.id, code: err.code });
-      return null;
-    }
+      }),
+      { log, what: 'light.availabilityDuring' },
+    );
   }
 
   /** Был ли стол недоступен гостю в окне удержания [from, to): чужая игра, сервис, чужие удержания. */
@@ -1120,6 +1149,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     markStarted,
     nextBooking,
     nextBookingStart,
+    tournamentHolds,
     bookingForArrival,
     onPaymentConfirmed,
     onSessionClosed,

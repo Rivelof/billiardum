@@ -144,6 +144,7 @@ describe('утренняя сводка (№110): 10:00 по времени кл
     const s = (await t.admin.query("select data from bl.club_summaries where club_id = $1 and kind = 'morning' and day = $2", [CLUB_A, day])).rows[0].data;
     assert.deepEqual(s.revenue.by_method, { cash: 80000, card_terminal: 0, sbp: 160000, card: 0 }, 'платёж следующих рабочих суток не вошёл');
     assert.equal(s.revenue.net_kopecks, 240000);
+    assert.deepEqual(s.revenue.tournaments, { total_kopecks: 0 }, 'M4: взносы турниров отдельной строкой');
     assert.equal(s.play.minutes, 120);
     assert.equal(s.alarms.critical, 1);
     assert.ok(s.manual_actions.count >= 1);

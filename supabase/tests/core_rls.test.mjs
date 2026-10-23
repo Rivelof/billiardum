@@ -23,6 +23,7 @@ const CORE_TABLES = [
   'alarms',
   'staff_invites',
   'club_summaries',
+  'platform_members',
 ];
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const P256 = `B${'A'.repeat(86)}`;
@@ -400,3 +401,57 @@ describe('outbox, идемпотентность, push, уведомления, 
     assert.ok(rows.every((r) => !r.tr));
   });
 });
+
+describe('роли платформы (0710, №134)', () => {
+  const ADMIN = 'af000000-0000-4000-8000-000000000009';
+  const OPERATOR = 'af000000-0000-4000-8000-000000000010';
+  const setRole = (c, role) => c.query("select set_config('app.platform_role', $1, true)", [role]);
+
+  it('свою строку видит сам в личном контексте; все — платформа; клуб — никого; писать app_api не может', async () => {
+    await asRole(db.pool, 'app_api', { userId: OPERATOR, actorType: 'user' }, async (c) => {
+      assert.deepEqual((await c.query('select user_id, role from bl.platform_members')).rows, [{ user_id: OPERATOR, role: 'platform_operator' }]);
+      assert.equal((await tryQuery(c, "insert into bl.platform_members (user_id, role) values ($1, 'platform_admin')", [GUEST]))?.code, '42501');
+      assert.equal((await tryQuery(c, "update bl.platform_members set role = 'platform_admin' where user_id = $1", [OPERATOR]))?.code, '42501');
+    });
+    await asRole(db.pool, 'app_api', { actorType: 'system' }, async (c) => {
+      assert.equal(await count(c, 'platform_members'), 2);
+    });
+    await asRole(db.pool, 'app_api', { clubId: CLUB_A, userId: OPERATOR, actorType: 'user' }, async (c) => {
+      assert.equal(await count(c, 'platform_members'), 0);
+    });
+  });
+
+  it('bl.ctx_platform_role(): только подтверждённая базой роль пользователя из контекста, без клуба', async () => {
+    const role = (c) => c.query('select bl.ctx_platform_role() as r').then((x) => x.rows[0].r);
+    await asRole(db.pool, 'app_api', { userId: ADMIN, actorType: 'user' }, async (c) => {
+      assert.equal(await role(c), null, 'без app.platform_role');
+      await setRole(c, 'platform_admin');
+      assert.equal(await role(c), 'platform_admin');
+    });
+    await asRole(db.pool, 'app_api', { userId: OPERATOR, actorType: 'user' }, async (c) => {
+      await setRole(c, 'platform_admin');
+      assert.equal(await role(c), null, 'чужая роль из контекста не принимается');
+    });
+    await asRole(db.pool, 'app_api', { userId: GUEST, actorType: 'user' }, async (c) => {
+      await setRole(c, 'platform_operator');
+      assert.equal(await role(c), null);
+    });
+    await asRole(db.pool, 'app_api', { clubId: CLUB_A, userId: ADMIN, actorType: 'user' }, async (c) => {
+      await setRole(c, 'platform_admin');
+      assert.equal(await role(c), null, 'в контексте клуба роли платформы нет');
+    });
+  });
+
+  it('получатели: операторы; нет активных операторов — администратор', async () => {
+    const rec = (role) => asRole(db.pool, 'app_api', { clubId: CLUB_A, actorType: 'system' }, (c) => c.query('select r from bl.platform_recipients($1) r', [role]).then((x) => x.rows.map((r) => r.r)));
+    assert.deepEqual(await rec('platform_operator'), [OPERATOR]);
+    assert.deepEqual(await rec('platform_admin'), [ADMIN]);
+    await db.pool.query('update bl.platform_members set active = false where user_id = $1', [OPERATOR]);
+    try {
+      assert.deepEqual(await rec('platform_operator'), [ADMIN]);
+    } finally {
+      await db.pool.query('update bl.platform_members set active = true where user_id = $1', [OPERATOR]);
+    }
+  });
+});
+

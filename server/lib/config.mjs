@@ -57,6 +57,13 @@ export function loadServerConfig(env = process.env) {
   } catch (err) {
     throw new ConfigError(`TRUSTED_PROXY_CIDRS: ${err.message}`);
   }
+  // Сервис сайта (M4): с этих адресов публичный API /api/public/* без лимита по IP.
+  let publicTrustedCidrs;
+  try {
+    publicTrustedCidrs = env.PUBLIC_API_TRUSTED_CIDRS ? parseCidrs(env.PUBLIC_API_TRUSTED_CIDRS.split(',').map((x) => x.trim()).filter(Boolean)) : [];
+  } catch (err) {
+    throw new ConfigError(`PUBLIC_API_TRUSTED_CIDRS: ${err.message}`);
+  }
   const telegramUsername = env.TELEGRAM_BOT_USERNAME || null;
   if (telegramUsername && !/^[A-Za-z0-9_]{5,32}$/.test(telegramUsername)) throw new ConfigError('TELEGRAM_BOT_USERNAME — имя бота без @');
   const webhookSecret = env.TELEGRAM_WEBHOOK_SECRET || null;
@@ -87,6 +94,7 @@ export function loadServerConfig(env = process.env) {
     devAllowAnyMinutes: !production && env.DEV_ALLOW_ANY_MINUTES === '1',
     consentVersion,
     trustedProxies,
+    publicTrustedCidrs,
     pinPepper: createHmac('sha256', encKey).update('bl.pin-pepper.v1').digest(),
     vapid: {
       publicKey: env.VAPID_PUBLIC_KEY || null,

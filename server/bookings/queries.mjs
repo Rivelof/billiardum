@@ -80,9 +80,12 @@ export function mapBooking(row) {
 }
 
 /** Своя бронь гостя в любом клубе (политика bookings_self): club_id или null. */
-export async function ownBookingClub(db, bookingId, userId) {
+export async function ownBookingClub(db, bookingId, userId, { participant = false } = {}) {
   if (!isUuid(bookingId) || !isUuid(userId)) return null;
-  const { rows } = await db.query('select club_id from bl.bookings where id = $1 and user_id = $2', [bookingId, userId]);
+  const { rows } = await db.query(
+    `select club_id from bl.bookings where id = $1 and (user_id = $2 or ($3 and $2 = any (participants)))`,
+    [bookingId, userId, participant],
+  );
   return rows[0]?.club_id ?? null;
 }
 
@@ -161,4 +164,26 @@ export function normalizeCode(code) {
   if (typeof code !== 'string' || code.length > 40) return null;
   const c = code.toUpperCase().replace(/[\s-]/g, '').replace(/[IL]/g, '1').replace(/O/g, '0');
   return /^[0-9A-HJKMNP-TV-Z]{10}$/.test(c) ? c : null;
+}
+
+let spSeq = 0;
+
+/**
+ * Необязательный шаг в транзакции (уведомление, данные соседа): ошибка не роняет запрос и не
+ * оставляет транзакцию в состоянии ошибки (иначе COMMIT молча станет ROLLBACK). Шаг — в точке
+ * сохранения; при ошибке — откат к ней, лог и fallback.
+ */
+export async function safely(db, fn, { fallback = null, log = null, what = 'step' } = {}) {
+  spSeq = (spSeq + 1) % 1_000_000;
+  const sp = `bl_sp_${spSeq}`;
+  await db.query(`savepoint ${sp}`);
+  try {
+    const v = await fn();
+    await db.query(`release savepoint ${sp}`);
+    return v;
+  } catch (err) {
+    await db.query(`rollback to savepoint ${sp}`);
+    log?.warn?.('optional_step_failed', { what, code: err.code ?? null, error: err.message });
+    return fallback;
+  }
 }

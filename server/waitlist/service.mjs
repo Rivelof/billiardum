@@ -13,7 +13,7 @@
 
 import { afterCommit } from '../lib/store.mjs';
 import { fail } from '../bookings/errors.mjs';
-import { isUuid, loadClub, lockResource, resourceClub, tableFree, useClub } from '../bookings/queries.mjs';
+import { isUuid, loadClub, lockResource, resourceClub, safely, tableFree, useClub } from '../bookings/queries.mjs';
 import { ACCEPT_HOLD_MS, OFFER_MIN_FREE_MS, OFFER_MS, WAITLIST_MAX_PER_GUEST, WAITLIST_STALE_MS } from '../bookings/settings.mjs';
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
@@ -229,17 +229,13 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     const w = await load(db, first[0].id);
     // Стол за предложенным гостем до конца предложения (№122).
     await deps.light.setReserved(db, { resourceId, until, userId: w.user_id, source: 'waitlist', refId: w.id });
-    try {
-      await deps.notify.send(db, w.user_id, {
-        kind: 'waitlist.offer',
-        level: 'important',
-        text: `Стол ${w.resource_number} свободен — он ваш на 5 минут. Нажмите «Занять стол».`,
-        data: { waitlist_id: w.id, resource_id: w.resource_id, offer_until: until.toISOString() },
-        actions: [{ id: 'accept', title: 'Занять стол', url: `/app/waitlist/${w.id}` }],
-      });
-    } catch (err) {
-      log.warn('waitlist_notify_failed', { waitlist_id: w.id, error: err.message });
-    }
+    await safely(db, () => deps.notify.send(db, w.user_id, {
+      kind: 'waitlist.offer',
+      level: 'important',
+      text: `Стол ${w.resource_number} свободен — он ваш на 5 минут. Нажмите «Занять стол».`,
+      data: { waitlist_id: w.id, resource_id: w.resource_id, offer_until: until.toISOString() },
+      actions: [{ id: 'accept', title: 'Занять стол', url: `/app/waitlist/${w.id}` }],
+    }), { log, what: 'notify:waitlist' });
     await deps.outbox.enqueue(db, 'waitlist.offered', {
       waitlist_id: w.id, club_id: w.club_id, resource_id: w.resource_id, user_id: w.user_id, offer_until: until.toISOString(),
     });
@@ -277,16 +273,12 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
       data: { action: 'waitlist_release', waitlist_id: w.id },
       text: `Снято удержание стола ${w.resource_number} для гостя из очереди: ${why}`,
     });
-    try {
-      await deps.notify.send(db, w.user_id, {
-        kind: 'waitlist.released',
-        level: 'important',
-        text: `Предложение стола ${w.resource_number} снято клубом. Вы можете встать в очередь снова.`,
-        data: { waitlist_id: w.id, resource_id: w.resource_id, close_reason: 'released' },
-      });
-    } catch (err) {
-      log.warn('waitlist_notify_failed', { waitlist_id: w.id, error: err.message });
-    }
+    await safely(db, () => deps.notify.send(db, w.user_id, {
+      kind: 'waitlist.released',
+      level: 'important',
+      text: `Предложение стола ${w.resource_number} снято клубом. Вы можете встать в очередь снова.`,
+      data: { waitlist_id: w.id, resource_id: w.resource_id, close_reason: 'released' },
+    }), { log, what: 'notify:waitlist' });
     const nw = await load(db, w.id);
     await publish(db, nw);
     log.info('waitlist_released', { waitlist_id: w.id, resource_id: w.resource_id });

@@ -138,11 +138,29 @@ export async function sendToClubStaff(db, clubId, roles, msg) {
   return { ids };
 }
 
+/** Роли получателей уведомлений платформы (№134). */
+export const PLATFORM_RECIPIENTS = ['platform_operator', 'platform_admin'];
+
+/**
+ * Уведомление платформе (M4): всем операторам (role 'platform_operator'; операторов нет —
+ * администраторам) или Андрею (role 'platform_admin'). В транзакции вызывающего, в любом
+ * контексте (получатели — bl.platform_recipients). Остальное — как send.
+ * @returns {Promise<{ ids: string[] }>}
+ */
+export async function sendPlatform(db, { role, ...msg }) {
+  if (!PLATFORM_RECIPIENTS.includes(role)) throw new Error('notify.sendPlatform: role');
+  const { rows } = await db.query('select r as user_id from bl.platform_recipients($1) r order by r', [role]);
+  const ids = [];
+  for (const r of rows) ids.push((await send(db, r.user_id, msg)).id);
+  return { ids };
+}
+
 /** Заголовок push-уведомления по виду. */
 export function pushTitle(kind) {
   if (kind === 'alarm') return 'Тревога в клубе';
   if (kind.startsWith('session.')) return 'Игра';
   if (kind.startsWith('reception')) return 'Ресепшн';
+  if (kind.startsWith('platform.')) return 'Бильярдум: платформа';
   return 'Бильярдум';
 }
 
@@ -434,6 +452,7 @@ export function createNotifier({
   return {
     send,
     sendToClubStaff,
+    sendPlatform,
     deliver,
     vapidPublicKey: vapid?.publicKey ?? null,
     /** Какие каналы настроены на сервере (№126): MAX — заглушка, Telegram — токен и прокси, Web Push — VAPID. */

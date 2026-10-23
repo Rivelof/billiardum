@@ -180,6 +180,21 @@ describe('роутер', () => {
     assert.equal(safeErrorData('booking_id'), null);
   });
 
+  it('M4: platform — только с ролями платформы; cache — только GET без входа; /api/public/* — только GET без входа', () => {
+    const h = async () => ({ status: 200, json: {} });
+    assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/api/p', auth: 'platform', handler: h }] }), /roles платформы/);
+    assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/api/p', auth: 'platform', roles: ['owner'], handler: h }] }), /roles платформы/);
+    assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'POST', path: '/api/c', auth: 'none', cache: 60, handler: h }] }), /cache/);
+    assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/api/c', auth: 'guest', cache: 60, handler: h }] }), /cache/);
+    assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'POST', path: '/api/public/x', auth: 'none', handler: h }] }), /api\/public/);
+    assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/api/public/x', auth: 'guest', handler: h }] }), /api\/public/);
+    const r = createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/api/public/x', auth: 'none', handler: h }, { method: 'GET', path: '/api/public/s', auth: 'none', stream: true, handler: h }] });
+    const x = r.routes.find((c) => c.path === '/api/public/x');
+    assert.deepEqual([x.cache, x.rateLimit.max], [60, 120]);
+    assert.equal(r.routes.find((c) => c.path === '/api/public/s').cache, undefined, 'поток без кэша');
+    assert.deepEqual(safeErrorData({ limit: 1500, rating: 1620, nick: 'Иван' }), { limit: 1500, rating: 1620 });
+  });
+
   it('маршрут объявлен дважды — ошибка при сборке', () => {
     assert.throws(() => createRouter(fakeApp(), { routes: [routes[0], { ...routes[0] }] }), /дважды/);
     assert.throws(() => createRouter(fakeApp(), { routes: [{ method: 'GET', path: '/api/x', auth: 'staff', handler() {} }] }), /roles/);

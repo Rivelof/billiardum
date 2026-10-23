@@ -7,6 +7,77 @@ const ACTOR_TYPES = ['user', 'system', 'device', 'support'];
 /** Действия после коммита транзакции withContext: клиент → список функций. */
 const afterCommitHooks = new WeakMap();
 
+/**
+ * Состояние транзакции клиента: ошибка запроса переводит транзакцию Postgres в aborted
+ * (дальше любой запрос — 25P02, COMMIT молча становится ROLLBACK). Если вызывающий поймал
+ * такую ошибку без savepoint и вернул успех, withContext не коммитит «пустоту», а откатывает
+ * и бросает TxAbortedError (у роутера — 500 internal, лог tx_aborted_swallowed со стеком места).
+ * ROLLBACK TO SAVEPOINT восстанавливает транзакцию — флаг снимается.
+ */
+const txState = new WeakMap();
+const ROLLBACK_TO = /^\s*rollback\s+to\s+/i;
+
+export class TxAbortedError extends Error {
+  constructor(cause) {
+    super(`tx_aborted_swallowed: ${cause?.code ?? ''} ${cause?.message ?? ''}`.trim());
+    this.name = 'TxAbortedError';
+    this.code = 'tx_aborted_swallowed';
+    /** Стек вызова запроса, ошибку которого проглотили. */
+    this.swallowedAt = cause?.site ?? null;
+    this.pgCode = cause?.code ?? null;
+  }
+}
+
+function trackClient(client) {
+  if (txState.has(client)) return txState.get(client);
+  const state = { aborted: null };
+  txState.set(client, state);
+  const query = client.query;
+  client.query = function trackedQuery(...args) {
+    const out = query.apply(this, args);
+    if (!out || typeof out.then !== 'function') return out;
+    const text = typeof args[0] === 'string' ? args[0] : args[0]?.text;
+    const site = new Error('query').stack;
+    return out.then(
+      (res) => {
+        if (state.aborted && typeof text === 'string' && ROLLBACK_TO.test(text)) state.aborted = null;
+        return res;
+      },
+      (err) => {
+        // Запрос в уже испорченной транзакции: причина — проглоченная раньше ошибка.
+        if (err?.code === '25P02' && state.aborted) throw new TxAbortedError(state.aborted);
+        state.aborted ??= { code: err?.code ?? null, message: err?.message ?? String(err), site };
+        throw err;
+      },
+    );
+  };
+  return state;
+}
+
+/**
+ * fn в точке сохранения: ошибка внутри откатывает только сделанное fn и пробрасывается,
+ * транзакция остаётся рабочей (можно поймать и продолжить). Для вызовов соседей, ошибку
+ * которых обработчик ловит и обрабатывает сам.
+ * @template T
+ * @param {import('pg').ClientBase} db
+ * @param {(db: import('pg').ClientBase) => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+let savepointSeq = 0;
+export async function safely(db, fn) {
+  savepointSeq = (savepointSeq + 1) % 1_000_000;
+  const name = `bl_safely_${savepointSeq}`;
+  await db.query(`savepoint ${name}`);
+  try {
+    const out = await fn(db);
+    await db.query(`release savepoint ${name}`);
+    return out;
+  } catch (err) {
+    await db.query(`rollback to savepoint ${name}`);
+    throw err;
+  }
+}
+
 function checkUuid(value, name) {
   if (value !== null && !UUID.test(value)) throw new Error(`${name} не UUID`);
 }
@@ -31,6 +102,8 @@ export async function withContext(pool, { clubId, userId = null, actorType }, fn
   let broken = null;
   const hooks = [];
   let result;
+  const state = trackClient(client);
+  state.aborted = null;
   try {
     await client.query('begin');
     afterCommitHooks.set(client, hooks);
@@ -39,6 +112,8 @@ export async function withContext(pool, { clubId, userId = null, actorType }, fn
       [clubId ?? '', userId ?? '', actorType],
     );
     result = await fn(client);
+    // Ошибку запроса проглотили без savepoint — COMMIT стал бы ROLLBACK, а вызывающий — «успехом».
+    if (state.aborted) throw new TxAbortedError(state.aborted);
     await client.query('commit');
   } catch (err) {
     try {
@@ -49,6 +124,7 @@ export async function withContext(pool, { clubId, userId = null, actorType }, fn
     throw err;
   } finally {
     afterCommitHooks.delete(client);
+    state.aborted = null;
     client.release(broken ?? undefined);
   }
   for (const hook of hooks) {

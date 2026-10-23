@@ -34,6 +34,10 @@ export const MODULES = [
   { name: 'bookings', spec: '../bookings/index.mjs' },
   { name: 'waitlist', spec: '../waitlist/index.mjs' },
   { name: 'summaries', spec: '../summaries/index.mjs' },
+  // M4: каталог клубов и заявки (directory), Бильярдум+ (plus), турниры (tournaments).
+  { name: 'directory', spec: '../directory/index.mjs' },
+  { name: 'plus', spec: '../plus/index.mjs' },
+  { name: 'tournaments', spec: '../tournaments/index.mjs' },
 ];
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
 

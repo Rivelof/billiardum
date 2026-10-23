@@ -42,6 +42,23 @@ export const ERROR_CODES = new Set([
   'fd_conflict',
   // M3 light: стол ждёт брони этого гостя — оплата через старт брони (с booking_id).
   'booking_start_required',
+  // M4 (m4-api.md): рейтинг выше лимита турнира (с limit и rating), ник занят, отзыв недоступен.
+  'rating_above_limit',
+  'nick_taken',
+  'review_not_allowed',
+  // M4 directory: клуб бронирует онлайн (заявка не нужна), карточка уже подтверждена,
+  // заявка уже решена или закрыта (409; duplicate — выше).
+  'online_booking',
+  'already_claimed',
+  'already_decided',
+  'request_closed',
+  // M4 plus (409): нет профиля игрока, партия в турнирной сессии, партия не ждёт подтверждения
+  // или не в споре, приглашение не ждёт ответа.
+  'no_profile',
+  'tournament_session',
+  'match_not_pending',
+  'match_not_disputed',
+  'invite_not_pending',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',
@@ -68,6 +85,9 @@ export const SAFE_ERROR_FIELDS = new Set([
   'available_from',
   'retry_after_sec',
   'minutes_left',
+  // M4: 409 rating_above_limit — лимит турнира и рейтинг игрока (целые).
+  'limit',
+  'rating',
 ]);
 const SAFE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SAFE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$/;

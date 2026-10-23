@@ -101,9 +101,11 @@ select set_config('app.club_id', $club, true), set_config('app.user_id', $user, 
 | `bl.auth_attach_phone(phone text) → uuid` (0103) | `bl_definer` | id учётки, которой теперь принадлежит номер | «Поделиться контактом» — только пользователю из `app.user_id`; номер у другой учётки — вливание (`merged_into`, Telegram/MAX и согласия переходят); конфликт — ошибка `BL409` |
 | `bl.notify_route(user_id uuid)` (0103) | `bl_definer` | `notify_channel`, `telegram_user_id`, `max_user_id` — без телефона | доставка уведомлений |
 | `bl.booking_due(now, lead, stale, limit)` (0600, booking) | `bl_definer` | `(kind, id, club_id)`: брони (`booking`) — неоплаченные после `pay_until`, подтверждённые и удержанные ближе `lead` к началу, идущие после конца; лист ожидания (`waitlist`) — просроченные предложения и записи старше `stale` | планировщик брони: напоминания, `state.reserved`, сгорание, следующий в очереди |
+| `bl.ctx_platform_role()` (0710) | `bl_definer` | роль платформы из `app.platform_role`, если пользователь из контекста — активный участник платформы с этой ролью и клуба в контексте нет; иначе NULL | политики модулей M4 для операторов и Андрея (№134) |
+| `bl.platform_recipients(role)` (0710) | `bl_definer` | получатели уведомлений платформы: операторы (нет активных — администраторы) или администраторы | `sendPlatform` |
 | `bl.public_clubs()` (0703) | `bl_definer` | `(id, name, city, address, timezone, plan)` активных клубов, без персональных данных | `GET /api/clubs` без входа (№120) |
 
-Миграции core после ревью M3: 0704 — код подтверждения входа через бота (`bot_link_nonces.code_hash`, `code_attempts`, `confirmed_at`, статус `failed`; `done` только с `confirmed_at`); 0705 — очередь уведомлений (`notifications.status` `sending`, `claimed_at`, индекс очереди); 0706 — `staff_revoke` гасит PIN-токены клуба и личные только без других членств, `summary_clubs()` только активных клубов, счётчик неверных PIN терминала (`staff_terminals.pin_failed_count`, `pin_window_started_at`, `locked_at`). 0707 — `bl.is_valid_timezone`: UTC или IANA Область/Место (MSK, posix/…, right/… отклоняются; существующие строки не перепроверяются).
+Миграции core после ревью M3: 0704 — код подтверждения входа через бота (`bot_link_nonces.code_hash`, `code_attempts`, `confirmed_at`, статус `failed`; `done` только с `confirmed_at`); 0705 — очередь уведомлений (`notifications.status` `sending`, `claimed_at`, индекс очереди); 0706 — `staff_revoke` гасит PIN-токены клуба и личные только без других членств, `summary_clubs()` только активных клубов, счётчик неверных PIN терминала (`staff_terminals.pin_failed_count`, `pin_window_started_at`, `locked_at`). 0710 — `platform_members` (роли платформы, №134; своя строка — в личном контексте, все — платформе; писать `app_api` не может), журнал платформы от сотрудника — `actor_type support` по политике M0 (журнал не менялся). 0707 — `bl.is_valid_timezone`: UTC или IANA Область/Место (MSK, posix/…, right/… отклоняются; существующие строки не перепроверяются).
 | `bl.summary_clubs()` (0701) | `bl_definer` | `(club_id, timezone, day_start_local, summary_time_local)` всех клубов | планировщик сводок в контексте платформы |
 | `bl.staff_accept_invites()` (0702) | `bl_definer` | `(invite_id, club_id, role)` привязанных | при входе: действующие приглашения на номер пользователя из `app.user_id` |
 | `bl.staff_revoke(user_id uuid) → integer` (0702) | `bl_definer` | число отозванных токенов; не участник клуба — `NULL` | отзыв доступа в клубе из `app.club_id`: членство, PIN, все токены; владельца — ошибка |
@@ -222,6 +224,21 @@ alter event trigger bl_audit_guard_drop enable always;
 | `0750` (light) | `sessions.booking_id`, `sessions.deposit_kopecks` | сессия по брони (одна бронь — не больше одной сессии) и по депозиту наличными; `device_commands.queue_no` — порядок очереди команд |
 
 Подробности — `server/payments/README.md` (деньги) и README модулей брони и сессий.
+
+## Каталог клубов, заявки, отзывы (M4 directory, 0800)
+
+Миграция 0800 (backend-directory, решения №132–135, №139). Доступ: публичное — политиками select (видимые карточки, опубликованные отзывы); клуб — по `bl.ctx_club_id()`; оператор и Андрей — `bl.ctx_platform_staff()` (= `bl.ctx_platform_role()` из 0710 или фон платформы `bl.ctx_is_platform()`).
+
+| Таблица | Что хранит |
+|---|---|
+| `platform_members` (0710, core) | роли платформы: `platform_operator`, `platform_admin` (Андрей); своя строка — в личном контексте |
+| `cities` | справочник городов платформы: слаг (транслит, уникален), название, регион, пояс, `active` |
+| `club_public` | карточка клуба в агрегаторе: `listed` / `claimed` / `platform` (у `platform` есть `club_id`), город и слаг (уникален в городе), адрес, координаты, часы, телефон и ссылки клуба, дисциплины, число столов, цена от, описание, `visible`; `contact_user_id` (кому уходят заявки) наружу не отдаётся; правки — триггер `club_public_guard` |
+| `club_requests` | заявка гостя в клуб без программы (T25): карточка, гость, телефон гостя для перезвона, время, минуты, люди, комментарий; `sent → accepted / declined / operator → closed`; ответ по одноразовой ссылке (sha256 токена), `escalate_at` — через 15 минут оператору |
+| `directory_claims` | «Подтвердить клуб» (`claim`, карточка обязательна) и «Добавить клуб» (`add`, данные в `payload`) → оператору: `new → approved / rejected`, причина; одна открытая заявка на карточку и пользователя |
+| `leads` | заявки клубов на программу (`/dlya-klubov/`): имя, клуб, город, телефон, столы, версия согласия, IP только хешем; воронка `new → contacted → demo → won / lost / spam` |
+| `reviews` | отзывы: карточка, клуб, автор, оценка 1–5, текст до 1 000, `published / hidden`, ответ клуба; один на гостя и клуб; оценку и текст меняет только автор, ответ — только клуб, скрывает — платформа (триггер `reviews_guard`) |
+| `review_reports` | жалобы на отзывы → оператору: `new → hidden / kept`, решение с причиной; одна открытая на отзыв и автора жалобы |
 
 ## Деньги
 

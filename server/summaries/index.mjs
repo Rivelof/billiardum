@@ -66,7 +66,14 @@ export async function buildMorningSummary(db, { clubId, day, timezone, dayStartL
     timezone,
     from: from.toISOString(),
     to: toExclusive.toISOString(),
-    revenue: { by_method: revenue.by_method, total_kopecks: revenue.total_kopecks, refunds_kopecks: revenue.refunds.total_kopecks, net_kopecks: revenue.net_kopecks },
+    revenue: {
+      by_method: revenue.by_method,
+      total_kopecks: revenue.total_kopecks,
+      refunds_kopecks: revenue.refunds.total_kopecks,
+      net_kopecks: revenue.net_kopecks,
+      // M4: взносы за турниры (строка tournaments из revenueOf).
+      tournaments: { total_kopecks: revenue.tournaments?.total_kopecks ?? 0 },
+    },
     play: { sessions: play.sessions, minutes: play.minutes, hours: play.hours, utilization_percent: play.utilization_percent, resources: play.resources },
     alarms,
     // №125: «ручные» — manual.*; действия системы (сгорание предоплаты, автоматические возвраты
@@ -85,6 +92,7 @@ export function summaryText(s) {
   const parts = [
     `выручка ${formatMoney(s.revenue.net_kopecks)}${methods.length ? ` (${methods.join(', ')})` : ''}${s.revenue.refunds_kopecks ? `, возвраты ${formatMoney(s.revenue.refunds_kopecks)}` : ''}`,
     `игра ${String(s.play.hours).replace('.', ',')} ч, загрузка ${String(s.play.utilization_percent).replace('.', ',')} %`,
+    ...(s.revenue.tournaments?.total_kopecks > 0 ? [`турниры ${formatMoney(s.revenue.tournaments.total_kopecks)}`] : []),
     `${s.alarms.total} ${plural(s.alarms.total, ['тревога', 'тревоги', 'тревог'])}${s.alarms.critical ? `, из них критичных ${s.alarms.critical}` : ''}`,
     `ручных действий: ${s.manual_actions.count}`,
   ];

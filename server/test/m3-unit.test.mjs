@@ -62,6 +62,21 @@ describe('цепочка и сводка', () => {
     assert.ok(text.endsWith('ручных действий: 1; автоматических действий системы: 2.'), text);
     assert.doesNotMatch(summaryText({ ...base, manual_actions: { count: 1, automatic: { count: 0, by_action: {} } } }), /автоматических/);
   });
+
+  it('текст сводки: турниры N ₽ — только при N > 0 (M4)', () => {
+    const base = {
+      day: '2026-10-21',
+      revenue: { by_method: { sbp: 150000, card: 0, cash: 0, card_terminal: 0 }, net_kopecks: 150000, refunds_kopecks: 0, tournaments: { total_kopecks: 100000 } },
+      play: { hours: 0, utilization_percent: 0 },
+      alarms: { total: 0, critical: 0 },
+      manual_actions: { count: 0 },
+      journal: { head_seq: 0, head_hash: null },
+    };
+    const text = summaryText(base).replace(/[\u00a0\u202f]/g, ' ');
+    assert.match(text, /; турниры 1 000 ₽; 0 тревог;/);
+    assert.doesNotMatch(summaryText({ ...base, revenue: { ...base.revenue, tournaments: { total_kopecks: 0 } } }), /турниры/);
+    assert.doesNotMatch(summaryText({ ...base, revenue: { ...base.revenue, tournaments: undefined } }), /турниры/);
+  });
 });
 
 describe('пояс клуба: только известные Intl (server/lib/timezone.mjs)', () => {

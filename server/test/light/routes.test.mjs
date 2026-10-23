@@ -67,7 +67,9 @@ describe('маршруты light через роутер core', { skip: SKIP }, 
     const one = await call('GET', `/api/sessions/${sid}`, { token: 'g2' });
     assert.equal(one.status, 200);
     assert.equal(one.json.is_payer, false);
-    assert.deepEqual(one.json.participants, [{ nick: 'Игрок 1' }, { nick: 'Игрок 2' }]);
+    assert.deepEqual(one.json.participants.map((p) => [p.nick, p.label]), [[null, 'Игрок 1'], [null, 'Игрок 2']]);
+    assert.equal(one.json.participants.length, 2);
+    assert.ok(one.json.participants.every((p) => /^[0-9a-f-]{36}$/.test(p.user_id)), 'user_id для выбора соперника');
     assert.deepEqual(await call('POST', `/api/sessions/${sid}/stop`, { token: 'g2', body: {} }), { status: 403, json: { error: 'not_payer' } });
     assert.deepEqual(await call('POST', `/api/sessions/${sid}/resolve`, { token: 'g1', body: { choice: 'continue' } }), {
       status: 409,

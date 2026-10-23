@@ -12,6 +12,10 @@
 //       Бронь гостя на этом столе, которую можно начать в at (с учётом раннего прихода и
 //       удержания): { id, club_id, resource_id, status, starts_at, ends_at, hold_until,
 //       prepaid_kopecks, amount_kopecks, prepayment_id, early }.
+//   createBooking(db, { userId, resourceId, startsAt, minutes, participants, source? }) → бронь
+//       Бронь гостя (как POST /api/bookings) с участниками — «Сыграем?» Бильярдум+ (M4 §1 п. 9):
+//       участники видят бронь и могут начать игру; платит и отменяет владелец. Брони не
+//       принимаются на интервалы tournamentHolds (booking_conflict).
 //   markStarted(db, { bookingId, sessionId }) → { ok, already }
 //       Бронь началась (status started, outbox booking.started). Повтор безопасен.
 //
@@ -58,6 +62,15 @@ export function nextBooking(db, { resourceId, after }) {
 
 export function bookingForArrival(db, { resourceId, userId, at }) {
   return service().bookingForArrival(db, { resourceId, userId, at });
+}
+
+export function createBooking(db, { userId, resourceId, startsAt, minutes, participants = [], source = 'app' }) {
+  return service().create(db, {
+    userId,
+    body: { resource_id: resourceId, starts_at: new Date(startsAt).toISOString(), minutes },
+    source,
+    participants,
+  });
 }
 
 export function markStarted(db, { bookingId, sessionId }) {

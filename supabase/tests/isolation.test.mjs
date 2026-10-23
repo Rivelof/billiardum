@@ -199,6 +199,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['auth_user_for', 'bl_definer'],
         // M3 booking (0600): дела планировщика броней и листа ожидания
         ['booking_due', 'bl_definer'],
+        // M4 core (0710): роль платформы из контекста, получатели уведомлений платформы
+        ['ctx_platform_role', 'bl_definer'],
         // M1 light (0300–0320)
         ['device_bind_window', 'bl_definer'],
         // M0
@@ -215,6 +217,18 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['money_object_club', 'bl_definer'],
         // M1 core
         ['notify_route', 'bl_definer'],
+        // M4 core (0710)
+        ['platform_recipients', 'bl_definer'],
+        // M4 plus (0850): итог партии и Эло, публичные поля игроков, таблицы, друзья в клубе, соперники
+        ['plus_briefs', 'bl_definer'],
+        ['plus_card', 'bl_definer'],
+        ['plus_correct_match', 'bl_definer'],
+        ['plus_due', 'bl_definer'],
+        ['plus_friends_in_club', 'bl_definer'],
+        ['plus_lfg_candidates', 'bl_definer'],
+        ['plus_rating_table', 'bl_definer'],
+        ['plus_settle_match', 'bl_definer'],
+        ['plus_user_by_nick', 'bl_definer'],
         // M2 pos (0420): продажи к завершению, клуб заказа и продажи
         ['pos_due', 'bl_definer'],
         // M3 pos (0481): поиск существующего гостя для пакета на кассе (без создания учётки)

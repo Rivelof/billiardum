@@ -14,6 +14,8 @@ const OPTIONAL = {
   tariffs: '../tariffs/index.mjs',
   payments: '../payments/api.mjs',
   bookings: '../bookings/api.mjs',
+  plus: '../plus/api.mjs',
+  tournaments: '../tournaments/api.mjs',
 };
 
 async function tryImport(spec) {
@@ -67,6 +69,10 @@ function stubs(log) {
     },
     // Без модуля брони (M3) броней нет: предел продления не ограничен.
     bookings: { async nextBookingStart() { return null; }, async nextBooking() { return null; } },
+    // Без Бильярдум+ (M4) ников нет: участники — { user_id, nick: null, label: 'Игрок N' }.
+    plus: { async nicksOf() { return {}; } },
+    // Без модуля турниров (M4) интервалов турнира нет.
+    tournaments: { async tournamentHolds() { return []; } },
   };
 }
 
@@ -93,8 +99,10 @@ export async function resolveDeps(ctx, log) {
     tariffs: ['amountForActual'],
     payments: ['refund'],
     bookings: ['nextBookingStart', 'nextBooking'],
+    plus: ['nicksOf'],
+    tournaments: ['tournamentHolds'],
   };
-  const ctxKey = { audit: 'audit', alarms: 'alarms', notify: 'notify', sse: 'sse', tariffs: 'tariffs', payments: 'paymentsApi', bookings: 'bookingsApi' };
+  const ctxKey = { audit: 'audit', alarms: 'alarms', notify: 'notify', sse: 'sse', tariffs: 'tariffs', payments: 'paymentsApi', bookings: 'bookingsApi', plus: 'plusApi', tournaments: 'tournamentsApi' };
   for (const [name, spec] of Object.entries(OPTIONAL)) {
     const fromCtx = ctx[ctxKey[name]];
     const fromModule = fromCtx ? null : await tryImport(spec);

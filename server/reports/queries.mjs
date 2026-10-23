@@ -12,17 +12,23 @@
 // * Игра балансом минут (provider/method balance) — не деньги: в выручку, столы и сверки не входит.
 // * Депозит наличными «Без лимита» — приём наличных в смене (столы, наличные); возврат остатка —
 //   возврат наличными (bl.refunds manual); зачёт сыгранного — чек зачёта, не платёж.
-// * Бронь — предоплата ЮKassa (kind booking, строка other); зачёт при старте — чек, не платёж.
+// * Бронь — предоплата ЮKassa (kind booking) и доплата при старте по брони (kind booking_start) —
+//   строка tables, в смене оплаты; зачёт предоплаты при старте — чек, не платёж (дважды не считается).
+// * Турниры (M4) — взносы за участие (kind tournament, ЮKassa) — строка tournaments; возврат
+//   взноса — обычный возврат (refunds.kind = 'refund'), отдельной строкой не выводится.
 
 export const METHODS = ['cash', 'card_terminal', 'sbp', 'card'];
 
 const zero = () => Object.fromEntries(METHODS.map((m) => [m, 0]));
 const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
 
-function categoryOf(kind) {
-  if (kind === 'start' || kind === 'extend') return 'tables';
+export function categoryOf(kind) {
+  // Игра за столом: старт и продление, предоплата брони (зачёт идёт по сыгранному) и доплата при
+  // старте по брони. Зачёт предоплаты — чек, не платёж: второй раз в выручку не входит.
+  if (kind === 'start' || kind === 'extend' || kind === 'booking' || kind === 'booking_start') return 'tables';
   if (kind === 'bar') return 'bar';
   if (kind === 'package') return 'packages';
+  if (kind === 'tournament') return 'tournaments';
   return 'other';
 }
 
@@ -88,6 +94,7 @@ export function revenueOf(payments, refunds, lateRefunds = []) {
     tables: { by_method: zero() },
     bar: { by_method: zero() },
     packages: { by_method: zero() },
+    tournaments: { by_method: zero() },
     other: { by_method: zero() },
     by_method: zero(),
     refunds: { by_method: zero(), tables_kopecks: 0, bar_kopecks: 0, count: refunds.length },
@@ -108,7 +115,7 @@ export function revenueOf(payments, refunds, lateRefunds = []) {
     if (f.category === 'tables') out.refunds.tables_kopecks += f.amount_kopecks;
     if (f.category === 'bar') out.refunds.bar_kopecks += f.amount_kopecks;
   }
-  for (const k of ['tables', 'bar', 'packages', 'other']) out[k].total_kopecks = sum(out[k].by_method);
+  for (const k of ['tables', 'bar', 'packages', 'tournaments', 'other']) out[k].total_kopecks = sum(out[k].by_method);
   out.total_kopecks = sum(out.by_method);
   out.refunds.total_kopecks = sum(out.refunds.by_method);
   out.net_kopecks = out.total_kopecks - out.refunds.total_kopecks;

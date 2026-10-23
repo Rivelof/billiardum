@@ -8,7 +8,7 @@
 // канала (club: или session: по правам персонала); иначе закрывается.
 
 import { HttpError } from '../../server/http/errors.mjs';
-import { hub } from '../../server/http/sse.mjs';
+import { hub, TOURNAMENT_EVENTS } from '../../server/http/sse.mjs';
 import { streamTarget, streamTokens as defaultTokens } from '../../server/http/stream-tokens.mjs';
 import { isUuid, withContext } from '../../server/lib/store.mjs';
 
@@ -91,7 +91,31 @@ async function issueToken(ctx, req) {
   return { status: 200, json: { token: issued.token, expires_at: issued.expiresAt.toISOString() } };
 }
 
+/**
+ * GET /api/public/stream?tournament={id} — публичный поток турнира без входа (M4, ТВ-экран
+ * и страница турнира): только канал tournament:{id}, только TOURNAMENT_EVENTS без ПДн;
+ * не больше 10 потоков с одного IP.
+ */
+async function publicStream(ctx, req) {
+  const id = typeof req.query.tournament === 'string' ? req.query.tournament.toLowerCase() : '';
+  if (!isUuid(id) || Object.keys(req.query).some((k) => k !== 'tournament')) throw new HttpError(400, 'bad_request');
+  const sse = ctx.sse ?? hub;
+  const channel = `tournament:${id}`;
+  return {
+    status: 200,
+    stream: async (res) => {
+      const attached = sse.attach(res, { channels: [channel], key: `ip:${req.ip}`, only: { [channel]: [...TOURNAMENT_EVENTS] } });
+      if (!attached.ok) {
+        const text = JSON.stringify({ error: 'rate_limited' });
+        res.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(text) });
+        res.end(text);
+      }
+    },
+  };
+}
+
 export const routes = [
+  { method: 'GET', path: '/api/public/stream', auth: 'none', db: false, stream: true, rateLimit: { max: 60, windowMs: 60_000 }, handler: publicStream },
   {
     method: 'GET',
     path: '/api/stream',

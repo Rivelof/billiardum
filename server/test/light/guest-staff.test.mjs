@@ -63,7 +63,7 @@ describe('гость и персонал', { skip: SKIP }, () => {
     const view = await h.asUser(GUEST(1), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(1) }));
     assert.equal(view.status, 'closed');
     assert.equal(view.is_payer, true);
-    assert.deepEqual(view.participants, [{ nick: 'Игрок 1' }, { nick: 'Игрок 2' }]);
+    assert.deepEqual(view.participants, [{ user_id: GUEST(1), nick: null, label: 'Игрок 1' }, { user_id: GUEST(2), nick: null, label: 'Игрок 2' }]);
     await h.until(() => h.ctl.get(2).received.some((c) => c.type === 'session.stop'), 'session.stop');
     assert.ok(!h.ctl.get(2).lit);
     const ob = await t.q("select payload from bl.outbox where topic = 'session.closed'");

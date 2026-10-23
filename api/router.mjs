@@ -3,8 +3,16 @@
 // Маршрут: { method, path, auth, roles?, handler, ...опции }
 //   path      — '/api/clubs/{club}/audit'; параметры club, id и *_id проверяются как UUID (иначе 404);
 //   auth      — 'none' | 'guest' (любой вошедший пользователь) | 'staff' (роль в клубе из roles)
-//               | 'terminal' (токен терминала ресепшена) | 'any' (пользователь или терминал);
+//               | 'terminal' (токен терминала ресепшена) | 'any' (пользователь или терминал)
+//               | 'platform' (роль платформы, №134: только личный вход; ctx.platformRole,
+//                 в транзакции app.platform_role — политики через bl.ctx_platform_role());
 //   roles     — роли в клубе для 'staff': owner, manager, reception, installer, bar;
+//               для 'platform': platform_operator, platform_admin (администратор проходит и как оператор);
+//   cache     — секунды (1–3600) для GET без входа: ответ 200 общий для всех, Cache-Control
+//               public, max-age и кэш процесса на это время; токен не читается.
+//               /api/public/* — только GET без входа, по умолчанию cache 60 и 120 запросов
+//               в минуту с IP (сервис сайта из PUBLIC_API_TRUSTED_CIDRS — без лимита);
+//               stream: true — маршрут потока (SSE), без кэша;
 //   requires  — ['phone', 'consent']: без телефона — 403 phone_required, без согласия — 403 consent_required;
 //   idempotent: true — заголовок Idempotency-Key (UUID) обязателен; повтор с тем же ключом
 //               (пользователь, ключ, маршрут) 24 часа возвращает тот же ответ, с другим телом — 409;
@@ -36,7 +44,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveToken, SESSION_COOKIE } from '../server/auth/index.mjs';
 import { HttpError, toHttpError } from '../server/http/errors.mjs';
-import { clientIp, originAllowed, parseCookies, readJsonBody } from '../server/http/request.mjs';
+import { clientIp, ipInCidrs, originAllowed, parseCookies, readJsonBody } from '../server/http/request.mjs';
 import { createRateLimiter, DEFAULT_LIMIT } from '../server/http/rate-limit.mjs';
 import { afterCommit, isUuid, setContext, withContext } from '../server/lib/store.mjs';
 
@@ -48,13 +56,23 @@ export const ROLES = Object.freeze({
   INSTALLER: Object.freeze(['owner', 'installer']),
   // Бармен (№97): экран бара, статусы заказов, стоп-лист; без кассы, денег и зала.
   BAR: Object.freeze(['owner', 'manager', 'bar']),
+  // Платформа (№134): оператор (администратор — тоже) и только администратор (Андрей).
+  PLATFORM_OPERATOR: Object.freeze(['platform_operator', 'platform_admin']),
+  PLATFORM_ADMIN: Object.freeze(['platform_admin']),
 });
 export const ALL_ROLES = ['owner', 'manager', 'reception', 'installer', 'bar'];
+export const PLATFORM_ROLES = ['platform_operator', 'platform_admin'];
+/** Публичный API для сайта (M4): только GET без входа, кэш и лимит по умолчанию. */
+export const PUBLIC_PREFIX = '/api/public/';
+export const PUBLIC_CACHE_SEC = 60;
+export const PUBLIC_RATE_LIMIT = Object.freeze({ max: 120, windowMs: 60_000 });
+/** Записей в кэше ответов публичных маршрутов процесса. */
+export const RESPONSE_CACHE_MAX = 2_000;
 export const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
 
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const AUTH = new Set(['none', 'guest', 'staff', 'terminal', 'any']);
+const AUTH = new Set(['none', 'guest', 'staff', 'terminal', 'any', 'platform']);
 const UUID_PARAM = (name) => name === 'club' || name === 'id' || name.endsWith('_id') || name.endsWith('Id');
 
 /** Заголовки безопасности всех ответов API (Caddy добавляет HSTS и свои). */
@@ -91,7 +109,16 @@ function validateRoute(r, file) {
   if (!r || typeof r !== 'object') throw new Error(`${file}: маршрут не объект`);
   if (!METHODS.has(r.method)) throw new Error(`${where}: метод`);
   if (typeof r.handler !== 'function') throw new Error(`${where}: handler`);
-  if (!AUTH.has(r.auth)) throw new Error(`${where}: auth — none | guest | staff | terminal | any`);
+  if (!AUTH.has(r.auth)) throw new Error(`${where}: auth — none | guest | staff | terminal | any | platform`);
+  if (r.auth === 'platform' && (!Array.isArray(r.roles) || r.roles.length === 0 || !r.roles.every((x) => PLATFORM_ROLES.includes(x)))) {
+    throw new Error(`${where}: roles платформы`);
+  }
+  if (r.cache !== undefined && (!Number.isInteger(r.cache) || r.cache < 1 || r.cache > 3600 || r.auth !== 'none' || r.method !== 'GET')) {
+    throw new Error(`${where}: cache — секунды 1–3600, только GET без входа`);
+  }
+  if (typeof r.path === 'string' && r.path.startsWith(PUBLIC_PREFIX) && (r.method !== 'GET' || r.auth !== 'none' || r.idempotent)) {
+    throw new Error(`${where}: ${PUBLIC_PREFIX}* — только GET и auth 'none'`);
+  }
   if (r.auth === 'staff' && (!Array.isArray(r.roles) || r.roles.length === 0 || !r.roles.every((x) => ALL_ROLES.includes(x)))) {
     throw new Error(`${where}: roles`);
   }
@@ -125,6 +152,12 @@ function compileRoutes(routes, config) {
     validateRoute(r, r.file ?? 'routes');
     if (typeof r.enabled === 'function' && !r.enabled(config)) continue;
     const c = { ...r, ...compilePath(r.path) };
+    // /api/public/*: без входа, кэш 60 с и лимит по умолчанию (поток SSE — без кэша).
+    if (r.path.startsWith(PUBLIC_PREFIX)) {
+      c.public = true;
+      c.rateLimit = r.rateLimit ?? PUBLIC_RATE_LIMIT;
+      if (c.cache === undefined && r.stream !== true) c.cache = PUBLIC_CACHE_SEC;
+    }
     const key = `${r.method} ${c.shape}`;
     if (seen.has(key)) throw new Error(`маршрут ${key} объявлен дважды: ${seen.get(key)} и ${r.file}`);
     seen.set(key, r.file ?? 'routes');
@@ -159,6 +192,10 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
   const consentVersion = config.consentVersion;
   // ctx.withContext — подпись M0: withContext(pool, { clubId, userId, actorType }, fn, options).
   const runInContext = (opts, fn, o) => (app.withContext ?? withContext)(app.pool, opts, fn, o);
+  // Кэш ответов маршрутов с cache (анонимные GET): одинаковый ответ всем, не дольше cache секунд.
+  /** @type {Map<string, { expires: number, status: number, json: unknown, headers: Record<string, string> }>} */
+  const responseCache = new Map();
+  const nowMs = () => (app.clock ? app.clock.now().getTime() : Date.now());
 
   function match(method, pathname) {
     let methodMismatch = false;
@@ -226,9 +263,24 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
       const { params } = found;
       const ip = clientIp(req, config.trustedProxies ? { trustedProxies: config.trustedProxies } : {});
 
-      const limit = route.rateLimit ?? DEFAULT_LIMIT;
-      const hit = rateLimiter.hit(`${ip}|${route.method} ${route.path}`, limit);
-      if (!hit.ok) throw new HttpError(429, 'rate_limited', { headers: { 'retry-after': String(hit.retryAfterSec) } });
+      // Сервис сайта (PUBLIC_API_TRUSTED_CIDRS) ходит в публичный API без лимита по IP.
+      const trustedPublic = route.public && Array.isArray(config.publicTrustedCidrs) && config.publicTrustedCidrs.length > 0 && ipInCidrs(ip, config.publicTrustedCidrs);
+      if (!trustedPublic) {
+        const limit = route.rateLimit ?? DEFAULT_LIMIT;
+        const hit = rateLimiter.hit(`${ip}|${route.method} ${route.path}`, limit);
+        if (!hit.ok) throw new HttpError(429, 'rate_limited', { headers: { 'retry-after': String(hit.retryAfterSec) } });
+      }
+      // Свежий ответ из кэша — без базы.
+      const cacheKey = route.cache ? `${route.method} ${url.pathname}${url.search}` : null;
+      if (cacheKey) {
+        const hitCache = responseCache.get(cacheKey);
+        if (hitCache && hitCache.expires > nowMs()) {
+          status = hitCache.status;
+          send(res, hitCache.status, hitCache.json, hitCache.headers, []);
+          return true;
+        }
+        if (hitCache) responseCache.delete(cacheKey);
+      }
 
       // Кто делает запрос.
       const bearerToken = bearer(req.headers);
@@ -247,7 +299,8 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
       const query = {};
       for (const [k, v] of url.searchParams) if (!(k in query)) query[k] = v;
 
-      if (token) principal = await resolve(token);
+      // Публичные маршруты анонимны: токен не читается (ответ общий для всех и кэшируется).
+      if (token && !route.public && !route.cache) principal = await resolve(token);
       // Токен в адресе — только у маршрутов с queryAuth (одноразовый токен SSE, §14).
       if (!principal && !token && typeof route.queryAuth === 'function' && typeof query.token === 'string') {
         principal = (await route.queryAuth(app, query.token, query)) ?? null;
@@ -258,6 +311,10 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
         if (!isUser) throw new HttpError(401, 'unauthorized');
       } else if (route.auth === 'terminal') {
         if (!isTerminal) throw new HttpError(401, 'unauthorized');
+      } else if (route.auth === 'platform') {
+        // Платформа — только личный вход (не PIN на терминале клуба).
+        if (!isUser) throw new HttpError(401, 'unauthorized');
+        if (principal.kind !== 'session') throw new HttpError(403, 'forbidden', { detail: 'personal login required' });
       } else if (route.auth === 'any') {
         if (!principal) throw new HttpError(401, 'unauthorized');
       } else if (!isUser && !isTerminal) {
@@ -268,8 +325,9 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
 
       // Клуб запроса. Анонимным маршрутам — только из пути (или ctx.useClub в обработчике).
       let club = params.club ?? null;
-      const bound = route.auth !== 'none' && principal?.clubId ? principal.clubId : null;
-      if (route.auth !== 'none') {
+      const bound = route.auth !== 'none' && route.auth !== 'platform' && principal?.clubId ? principal.clubId : null;
+      if (route.auth === 'platform') club = null;
+      if (route.auth !== 'none' && route.auth !== 'platform') {
         if (!club && route.clubFromBody && body.club_id !== undefined) {
           if (!isUuid(body.club_id)) throw new HttpError(400, 'bad_request', { detail: 'club_id' });
           club = body.club_id;
@@ -301,7 +359,8 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
       }
 
       const userId = isUser ? principal.userId : null;
-      const actorType = route.actor === 'system' ? 'system' : 'user';
+      // Платформа (№134): actor_type support — журнал без клуба пишется в цепочку платформы от имени сотрудника.
+      const actorType = route.actor === 'system' ? 'system' : route.auth === 'platform' ? 'support' : 'user';
       const log = app.log;
       const reqInfo = {
         method,
@@ -359,7 +418,17 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
               return roles;
             },
           };
-          if (club) {
+          if (route.auth === 'platform') {
+            // Роли платформы (№134): своя строка platform_members в личном контексте.
+            const { rows } = await db.query('select role from bl.platform_members where user_id = $1 and active', [userId]);
+            const mine = rows.map((r) => r.role);
+            const effective = mine.includes('platform_admin') ? ['platform_admin', 'platform_operator'] : mine;
+            if (!effective.some((r) => route.roles.includes(r))) throw new HttpError(403, 'forbidden');
+            const role = mine.includes('platform_admin') ? 'platform_admin' : 'platform_operator';
+            await db.query("select set_config('app.platform_role', $1, true)", [role]);
+            ctx.platformRole = role;
+            ctx.roles = effective;
+          } else if (club) {
             ctx.roles = principal?.clubId && principal.clubId !== club ? [] : await rolesIn(db, club, userId);
           } else if (route.auth === 'staff') {
             // Клуб не указан: единственный клуб пользователя с подходящей ролью.
@@ -431,6 +500,12 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
         await result.stream(res, reqInfo);
         return true;
       }
+      if (route.cache && result.status === 200 && result.json !== undefined && result.body === undefined) {
+        const headers = { 'cache-control': `public, max-age=${route.cache}`, ...result.headers };
+        result.headers = headers;
+        if (responseCache.size >= RESPONSE_CACHE_MAX) responseCache.delete(responseCache.keys().next().value);
+        responseCache.set(cacheKey, { expires: nowMs() + route.cache * 1000, status: 200, json: result.json, headers });
+      }
       if (result.body !== undefined) {
         const h = { ...SECURITY_HEADERS, ...result.headers };
         if (cookies.length) h['set-cookie'] = cookies;
@@ -448,7 +523,10 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
     } catch (err) {
       const e = toHttpError(err);
       status = e.status;
-      if (e.status >= 500) {
+      if (err?.code === 'tx_aborted_swallowed') {
+        // Обработчик поймал ошибку запроса без savepoint (safely) и вернул успех: данные не записаны.
+        app.log.error('tx_aborted_swallowed', { route: route?.path ?? null, pg_code: err.pgCode, swallowed_at: err.swallowedAt });
+      } else if (e.status >= 500) {
         app.log.error('http_error', { route: route?.path ?? null, error: err?.message, code: err?.code });
       } else if (err?.message && err.message !== e.code) {
         app.log.debug('http_reject', { route: route?.path ?? null, code: e.code, detail: err.message });
@@ -468,5 +546,5 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
     }
   }
 
-  return { handle, routes: compiled, match, rateLimiter };
+  return { handle, routes: compiled, match, rateLimiter, responseCache };
 }

@@ -1,0 +1,71 @@
+# Турниры (backend-tournaments, M4)
+
+Контракт — `docs/contracts/m4.md` §1 п. 11, §3, §4 и формы ответов `docs/contracts/m4-api.md` («Турниры»); решения №138, №143; PRODUCT §14. Папки: `server/tournaments/`, маршруты `api/routes/tournaments.mjs`, миграция `supabase/migrations/0900_tournaments.sql`.
+
+| Файл | Что внутри |
+|---|---|
+| `index.mjs` | `init(ctx)`/`stop()`/`tournaments()`/`tick()`: подписки outbox `payment.confirmed` (`kind: 'tournament'`) и `tournament.refund`, планировщик раз в 15 с на `ctx.clock`, хаб ТВ |
+| `service.mjs` | создание и правка, публикация, запись и взнос (T24), отмена записи и турнира, посев и сетка, столы и свет, счёт, спор, исправление организатора, публичная афиша, шаг планировщика, `tournamentHolds` |
+| `bracket.mjs` | чистые функции сетки: посев, олимпийская (с bye), группы «змейкой», круговая, выход из групп, таблица группы, счёт «до N» |
+| `view.mjs` | формы ответов T, участники, сетка (без ПДн — ники) |
+| `tv.mjs` | ТВ-экран: SSE-канал `tournament:{id}`, событие `bracket` (хаб core, если принимает канал, иначе свой) |
+| `api.mjs` | интерфейс для соседей (ниже) |
+| `deps.mjs` | соседи по одной функции: `ctx.tournamentDeps` → модуль соседа → заглушка |
+
+## База (`0900_tournaments.sql`)
+
+- `bl.tournaments` — клуб, название, дисциплина (`pyramid`, `pool`, `snooker`), формат (`single_elim`, `groups_playoff` с `group_count` и `advance_per_group`), `race_to` (матч до N побед), `rating_min`/`rating_max` (лимит T24), `fee_kopecks`, `prize_text` и `prize_kopecks[]`, `places`, `match_minutes` (удержание стола на матч, по умолчанию (2N − 1) × 15 + 15), `starts_at`/`ends_at`, `registration_closes_at` (до него запись и отмена с возвратом), статус `draft → registration → closed → running → finished`, `canceled`; `entries_count`, `winner_entry_id`. Кто создал и причина отмены — только в журнале: строка турнира публична.
+- `bl.tournament_resources` — столы турнира (тип стола = дисциплина).
+- `bl.tournament_entries` — игрок, снимок ника Бильярдум+ и рейтинга, посев, группа, статус `pending_payment → confirmed`, `canceled` (`player`, `tournament_canceled`, `payment_timeout`, `not_confirmed`, `full`), взнос, `payment_id`, `paid_kopecks`, `refund_status` (`none`, `pending`, `done`). Одна живая запись игрока на турнир.
+- `bl.tournament_payments` — `payment.confirmed` обрабатывается один раз по `payment_id` (первичный ключ); `outcome` `applied` или `refunded`.
+- `bl.tournament_matches` — этап (`group`, `playoff`), раунд, позиция, группа, записи и игроки (`user_a`, `user_b` — для личного контекста), источник слота плей-офф (`g{группа}p{место}`), `bye`, следующий матч и слот, стол, `hold_until`, `session_id` (свет light), счета игроков `report_a`/`report_b`, итог, победитель, `result_source` (`players`, `organizer`, `bye`), `revision` (исправления организатора). Статусы: `waiting → ready → playing → pending_confirm → done`, `disputed`; наружу `waiting`/`ready` — `scheduled`.
+- RLS: ENABLE + FORCE на всех пяти таблицах, политики `app_api` по `bl.ctx_club_id()`. **Публичная афиша:** опубликованный турнир (не `draft`) читается без клуба в контексте (сайт, личный контекст гостя, планировщик платформы) — политика `tournaments_public`; в контексте клуба чужих турниров не видно. Игрок в личном контексте видит свои записи и свои матчи. Записи, матчи, платежи и столы других — только в контексте клуба турнира. `app_api`: `SELECT`, `INSERT`, `UPDATE` только столбцов состояния; `DELETE` — только `tournament_resources` (замена столов до старта). Функций `SECURITY DEFINER` нет (список в `supabase/tests/isolation.test.mjs` не меняется); клуб и город для афиши — `bl.public_clubs()` core.
+
+## Сценарии
+
+- **Создание (управляющий, владелец):** черновик или сразу `publish: true`. Публикация — `PATCH {status: 'registration'}`; закрыть запись — `{status: 'closed'}` (или сам по `registration_closes_at`, планировщик), открыть снова — `{status: 'registration'}`. Пока никто не записался, меняются и условия (дисциплина, формат, лимит, взнос); после — только описание, призы, места (не меньше записавшихся), время, столы.
+- **Запись (T24):** рейтинг дисциплины `plus.ratingOf` выше `rating_max` → `409 {error: 'rating_above_limit', limit, rating}` (ниже `rating_min` — `rating_below_limit`), мест нет (подтверждённые и неоплаченные моложе 15 минут) — `409 full`, запись закрыта — `409 registration_closed`, уже записан — `409 already_registered`. Взнос > 0 — `money.createTournamentFee` (чек «полный расчёт», телефон пользователя для чека), место держится 15 минут; `payment.confirmed {kind: 'tournament', entry_id}` → `confirmed`. Бесплатный турнир — сразу `confirmed`.
+- **Возвраты** — событие outbox `tournament.refund {entry_id, payment_id, reason}`, обработчик зовёт `money.refundTournamentFee({entryId, paymentId, reason, reasonCode})` (повтор безопасен: ключ money `trn-<payment_id>`). Когда: игрок отменил до закрытия записи (`DELETE …/entries/me`); клуб отменил турнир (всем оплатившим, `manual.tournament_cancel` с причиной и тревога владельцу `manual_action`); оплата пришла за отменённую запись, после старта, без мест или не той суммой. Лишняя повторная оплата уже подтверждённой записи возвращается только этим платежом — общим `money.refund` с тем же ключом `trn-<payment_id>`. После закрытия записи игрок запись не отменяет (`registration_closed`), после старта возврата нет.
+- **Старт:** неоплаченные записи снимаются; посев по свежему рейтингу (`ratingOf`, при сбое — рейтинг при записи), равный — кто раньше подтвердил, затем id. Олимпийская — стандартная расстановка (1–8, 4–5, 2–7, 3–6), неполная сетка — bye верхним посевам (проход без игры, без рейтинга и света). Группы — «змейкой», внутри — круговая; после всех матчей групп — места по таблице (победы, личная встреча при равенстве двоих, разница партий, партии, посев) и плей-офф: победитель группы играет со вторым местом соседней группы, одногруппники — в разных половинах.
+- **Столы и свет (№138, №143):** готовому матчу — свободный стол турнира (игрок одновременно в одном матче): `light.setReserved({resourceId, until: сейчас + match_minutes, source: 'tournament', refId: match_id})`; стол занят игрой, сервисом, оплатой гостя или чужим турниром — следующий стол. Затем `light.startFromTournament({resourceId, matchId, system: true})` — свет без оплаты стола; не вышло (контроллер не на связи) — повтор на тике. Матч сыгран — `stopFromTournament` и `clearReserved({source: 'tournament', refId})`, стол уходит следующему матчу. Удержание у конца (меньше 10 минут) при идущем матче продлевается на половину `match_minutes` (не меньше 15 минут) вызовом `light.extendFromTournament({resourceId, matchId, until})` — функция берётся сама, как только light её экспортирует; до этого — лог `tournament_extend_unavailable`.
+- **Счёт:** вносят оба (`POST …/score`) или второй подтверждает счёт первого (`POST …/confirm`); счёт — «до N» (`409 bad_score`). Совпало — матч сыгран; разошлось — `disputed`, уведомление управляющим и владельцу (`tournament.dispute`), журнал `tournament.dispute`. Организатор (`PATCH …/score {score_a, score_b, reason}`, управляющий и владелец) — журнал `manual.tournament_score` (до/после), уведомление владельцу; победителя сыгранного матча можно поменять, пока следующий матч не начат (иначе `409 bracket_locked`), результат группы — пока плей-офф не разведён.
+- **Матч сыгран:** outbox `tournament.match_finished {match_id, tournament_id, club_id, discipline, player_a, player_b, winner_id, loser_id, player_ids, score: {winner, loser}, score_a, score_b, stage, revision, corrected, finished_at}` (только матчи с игрой); финал — турнир `finished`, outbox `tournament.finished {tournament_id, club_id, discipline, winner_id, participants}`.
+- **ТВ и программа клуба:** после коммита (с задержкой 50 мс, одно событие на пачку изменений) — `tournament:{id}` событие `bracket` (полная сетка, ники) и `club:{id}` событие `tournament {type: 'tournament.updated', tournament_id, status}`; игроку `user:{id}` событие `tournament` (`tournament.match`, `tournament.entry`).
+
+## API
+
+| Метод и путь | Кто | Ответ |
+|---|---|---|
+| `GET /api/public/tournaments?city=&club=&discipline=&status=` | без входа, кэш 60 с | `{items: [T]}` — записи открыты, закрыты, идут и завершённые за 30 дней |
+| `GET /api/public/tournaments/{id}` | без входа, кэш 60 с | T + `entries: [{nick, seed, rating}]` + `bracket: {rounds: [{title, stage, group?, matches, standings?}], winner}`; черновик — 404 |
+| `GET /api/public/tournaments/{id}/stream` | без входа, 30 в минуту с IP, до 8 потоков с IP | SSE: `ready`, сразу `bracket`, затем `bracket` при каждом изменении (то же — `GET /api/public/stream?tournament=` core без первой сетки) |
+| `GET /api/tournaments/{id}/me` | игрок | `{tournament, entry: {id, status, seed, paid, refund_status} \| null, match: {id, side, opponent_nick, score_a, score_b, status, table_number, i_confirmed, my_report, opponent_report} \| null}` |
+| `POST /api/tournaments/{id}/entries {return_url?, method?}` | игрок (телефон, согласие, `Idempotency-Key`) | `201 {entry_id, status, confirmation: {url} \| null}` |
+| `DELETE /api/tournaments/{id}/entries/me` | игрок | `{entry_id, status: 'canceled', refund}` |
+| `POST /api/tournaments/matches/{id}/score {score_a, score_b}`, `POST …/confirm` | игрок матча | матч `{id, side, a, b, table_number, score_a, score_b, status, winner, report_a, report_b, i_confirmed, result_source, revision}`; чужой матч — 404 |
+| `PATCH /api/tournaments/matches/{id}/score {score_a, score_b, reason}` | управляющий, владелец | то же |
+| `GET /api/clubs/{club}/tournaments`, `GET …/{id}` | ресепшн и выше | `{items: [T]}`; T + `tables`, `match_minutes`, `entries: [{entry_id, nick, rating, seed, group, status, paid, paid_kopecks, refund_status, cancel_reason}]`, bracket со счетами игроков |
+| `POST /api/clubs/{club}/tournaments`, `PATCH …/{id}` | управляющий, владелец | тело — `{title, description?, discipline, format, race_to, rating_limit?, rating_min?, fee_kopecks, prize_text?, prize_kopecks?, places, group_count?, advance_per_group?, match_minutes?, starts_at, ends_at, registration_closes_at?, resource_ids, publish?}`; PATCH — те же поля и `status` |
+| `POST …/{id}/start`, `POST …/{id}/cancel {reason}` | управляющий, владелец | детали турнира; `{refunded}` |
+
+T: `{id, title, description, club: {id, name, city}, discipline, format, race_to, rating_limit, rating_min, fee_kopecks, prize_text, prize_kopecks, places, entries_count, group_count, advance_per_group, starts_at, ends_at, registration_closes_at, refund_rules, status}`.
+
+Коды: `bad_request` 400, `reason_required` 400, `forbidden` 403, `not_found` 404, `rating_above_limit`, `rating_below_limit`, `full`, `registration_closed`, `already_registered`, `bad_status`, `too_few_entries`, `bad_score`, `nothing_to_confirm`, `bracket_locked` — 409; `not_configured` 501 (нет функции соседа).
+
+Журнал: `tournament.create`, `tournament.update`, `tournament.publish`, `tournament.close`, `tournament.entry`, `tournament.entry_paid`, `tournament.entry_cancel`, `tournament.payment_refund`, `tournament.start`, `tournament.match_start`, `tournament.score_report`, `tournament.dispute`, `tournament.match_finished`, `tournament.groups_done`, `tournament.finish`, `tournament.winner_corrected`, `manual.tournament_score`, `manual.tournament_cancel`.
+
+## Для соседей (`api.mjs`)
+
+- `tournamentHolds(db, {resourceId, from, to})` → `[{from, to, tournament_id, match_id?}]` — решение №146: всё окно опубликованного турнира `starts_at–ends_at` (`registration`, `closed`, `running`; черновик столы не держит), на его столах, и удержания идущих матчей (могут выйти за `ends_at`). Брони (bookings) и игры по QR (light) на эти интервалы не принимаются — и между матчами.
+- `publicTournaments(db, {clubId})` → `[T]` — афиша клуба для страницы клуба (directory).
+- `matchForRating(db, {matchId})` → `{match_id, tournament_id, club_id, discipline, player_a, player_b, score_a, score_b, winner_id, resource_id, revision, finished_at} | null` — для plus.
+
+## Тесты
+
+```sh
+node --test server/tournaments/test/*.test.mjs        # сетка, ТВ-хаб (npm test -w @billiardum/server)
+DATABASE_ADMIN_URL=postgres://supabase_admin:…@127.0.0.1:PORT/postgres \
+  node --test --test-concurrency=1 "server/tournaments/test/db/*.test.mjs"
+```
+
+`test/db/harness.mjs`: временная база (миграции и сид; `TOURNAMENT_TEST_MIGRATIONS_DIR`/`TOURNAMENT_TEST_SEED_DIR` — другой каталог), настоящий `createApp` (роутер, outbox, журнал, уведомления, SSE), подделки light, money, plus с журналом вызовов, поддельные часы. `tournaments.test.mjs` — создание, T24, взнос и возвраты, сетки 8, 6 с bye, группы 2×4 → плей-офф 4, занятый стол, свет офлайн, `tournamentHolds`, спор и исправление организатора, `me`, афиша без ПДн, ТВ по SSE. `rls.test.mjs` — изоляция клубов, публичная политика, личный контекст, права `app_api`. `integration.test.mjs` — сквозной сценарий с настоящими plus (рейтинг T24), money (эмулятор ЮKassa, чек, возврат) и light (удержание и свет без оплаты), plus засчитывает турнирную партию ×1,5; пропускается, если у соседей нет нужных функций. CI подхватывает `server/tournaments/test/db/` сам (`scripts/ci-test-db.mjs`).

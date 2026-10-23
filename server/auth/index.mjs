@@ -107,7 +107,9 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
   const { rows } = await db.query(
     `select u.id, u.phone, u.name, u.notify_channel, u.channels_order, u.telegram_user_id is not null as telegram, u.max_user_id is not null as max,
             exists (select 1 from bl.consents c where c.user_id = u.id and c.version = $2) as consent,
-            exists (select 1 from bl.push_subscriptions ps where ps.user_id = u.id and ps.revoked_at is null) as webpush
+            exists (select 1 from bl.push_subscriptions ps where ps.user_id = u.id and ps.revoked_at is null) as webpush,
+            (select case when bool_or(pm.role = 'platform_admin') then 'platform_admin' else min(pm.role) end
+               from bl.platform_members pm where pm.user_id = u.id and pm.active) as platform_role
        from bl.users u where u.id = $1`,
     [userId, consentVersion],
   );
@@ -131,6 +133,8 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
     channels: { max: u.max && conf.max, telegram: u.telegram && conf.telegram, webpush: u.webpush },
     // Какие каналы можно предлагать в выборе основного канала и порядка (настроены на сервере).
     channels_available: CHANNEL_NAMES.filter((c) => conf[c]),
+    // Роль платформы (№134, m4-api): platform_operator | platform_admin | null.
+    platform_role: u.platform_role ?? null,
   };
 }
 

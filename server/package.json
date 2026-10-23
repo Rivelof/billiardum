@@ -10,9 +10,9 @@
   },
   "scripts": {
     "start": "node index.mjs",
-    "test": "node --test \"test/*.test.mjs\" \"tariffs/test/*.test.mjs\" \"payments/test/*.test.mjs\" \"kkt/test/*.test.mjs\" \"shifts/test/*.test.mjs\" \"reports/test/*.test.mjs\" \"catalog/test/*.test.mjs\" \"orders/test/*.test.mjs\" \"stock/test/*.test.mjs\"",
+    "test": "node --test \"test/*.test.mjs\" \"tariffs/test/*.test.mjs\" \"payments/test/*.test.mjs\" \"kkt/test/*.test.mjs\" \"shifts/test/*.test.mjs\" \"reports/test/*.test.mjs\" \"catalog/test/*.test.mjs\" \"orders/test/*.test.mjs\" \"stock/test/*.test.mjs\" \"plus/test/*.test.mjs\" \"tournaments/test/*.test.mjs\"",
     "provision:dev": "node bin/provision-dev.mjs",
-    "test:db": "node --test --test-concurrency=1 \"test/db/*.test.mjs\" \"kkt/test/db/*.test.mjs\" \"catalog/test/db/*.test.mjs\" \"orders/test/db/*.test.mjs\" \"stock/test/db/*.test.mjs\""
+    "test:db": "node --test --test-concurrency=1 \"test/db/*.test.mjs\" \"kkt/test/db/*.test.mjs\" \"catalog/test/db/*.test.mjs\" \"orders/test/db/*.test.mjs\" \"stock/test/db/*.test.mjs\" \"plus/test/db/*.test.mjs\""
   },
   "dependencies": {
     "@billiardum/shared": "0.1.0",

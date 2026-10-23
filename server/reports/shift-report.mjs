@@ -92,7 +92,7 @@ export function reportText(r) {
   const v = r.revenue;
   const lines = [
     `Смена №${r.shift.number} закрыта: ${formatDate(from, tz)}, ${formatTime(from, tz)}–${formatTime(to, tz)}.`,
-    `Выручка ${formatMoney(v.total_kopecks)}: столы ${formatMoney(v.tables.total_kopecks)}, бар ${formatMoney(v.bar.total_kopecks)}${v.packages?.total_kopecks > 0 ? `, пакеты часов ${formatMoney(v.packages.total_kopecks)}` : ''}.`,
+    `Выручка ${formatMoney(v.total_kopecks)}: столы ${formatMoney(v.tables.total_kopecks)}, бар ${formatMoney(v.bar.total_kopecks)}${v.packages?.total_kopecks > 0 ? `, пакеты часов ${formatMoney(v.packages.total_kopecks)}` : ''}${v.tournaments?.total_kopecks > 0 ? `, турниры ${formatMoney(v.tournaments.total_kopecks)}` : ''}.`,
     `Наличные ${formatMoney(v.by_method.cash)}, терминал ${formatMoney(v.by_method.card_terminal)}, СБП ${formatMoney(v.by_method.sbp)}, карта онлайн ${formatMoney(v.by_method.card)}.`,
   ];
   if (v.refunds.total_kopecks > 0) lines.push(`Возвраты ${formatMoney(v.refunds.total_kopecks)}.`);
