@@ -1,6 +1,6 @@
 // Проверка WebSocket моста ККТ через Caddy (`npm run ci -- --config`, контракт M2, decisions №77).
 //
-// Во временной сети Docker: заглушка сервера (alias server, порт 3000, те же таймауты
+// Во временной сети Docker: заглушка сервера (alias server-web, как в Caddyfile, порт 3000, те же таймауты
 // HTTP, что у server/index.mjs) и caddy с deploy/dev/Caddyfile. Клиент — Node 22 со
 // встроенным WebSocket в сетевом пространстве caddy, как мост на ПК ресепшена:
 // wss://localhost/api/kkt/ws, доверие — корень внутреннего CA Caddy (NODE_EXTRA_CA_CERTS).
@@ -201,7 +201,7 @@ export async function checkCaddyWebSocket({ caddyImage, nodeImage, idleS = 2 }) 
   try {
     docker(['network', 'create', ...label, net], 'сеть Docker');
     docker(
-      ['run', '-d', '--name', up, ...label, '--network', net, '--network-alias', 'server', '-v', `${scripts}:/t:ro`, nodeImage,
+      ['run', '-d', '--name', up, ...label, '--network', net, '--network-alias', 'server-web', '-v', `${scripts}:/t:ro`, nodeImage,
         'node', '/t/ci-caddy-ws.mjs', 'upstream', String(idleS)],
       'заглушка сервера',
     );

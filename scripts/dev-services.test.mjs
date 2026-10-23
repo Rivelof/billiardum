@@ -156,7 +156,7 @@ test('образ Node один в compose.yml, CI и проверке WebSocket 
 test('Caddy: WebSocket моста ККТ — свой маршрут без лимита тела, без буфера, с stream_close_delay', () => {
   const caddyfile = readFileSync(join(ROOT, 'deploy', 'dev', 'Caddyfile'), 'utf8');
   const block = caddyfile.match(/\thandle \/api\/kkt\/ws \{\n([\s\S]*?)\n\t\}\n/)?.[1] ?? '';
-  assert.match(block, /reverse_proxy server:3000 \{/);
+  assert.match(block, /reverse_proxy server-web:3000 \{/);
   assert.match(block, /flush_interval -1/);
   assert.match(block, /stream_close_delay 5m/);
   assert.doesNotMatch(block, /request_body|encode|import api/);

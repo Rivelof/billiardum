@@ -132,6 +132,19 @@ test('DEV_LAN_HOST и PUBLIC_HOST проверяются', () => {
   quiet(() => ensureEnvFile({ envFile: lan, volumes: noVolumes }));
 });
 
+test('BL_SITE_RATE_PER_MIN: целое число или пусто', () => {
+  const f = join(dir, 'rate.env');
+  const base = readFileSync(envFile, 'utf8');
+  for (const bad of ['сто', '-1', '1.5', '1000000']) {
+    writeFileSync(f, base.replace(/^BL_SITE_RATE_PER_MIN=.*$/m, `BL_SITE_RATE_PER_MIN=${bad}`));
+    assert.throws(() => quiet(() => ensureEnvFile({ envFile: f, volumes: noVolumes })), /BL_SITE_RATE_PER_MIN/, bad);
+  }
+  for (const ok of ['', '0', '120', '600']) {
+    writeFileSync(f, base.replace(/^BL_SITE_RATE_PER_MIN=.*$/m, `BL_SITE_RATE_PER_MIN=${ok}`));
+    quiet(() => ensureEnvFile({ envFile: f, volumes: noVolumes }));
+  }
+});
+
 test('сборка фронтенда: без секретов .env и NODE_ENV, вход для разработки по ALLOW_DEV_LOGIN', () => {
   const files = read();
   const env = webBuildEnv(files, { PATH: '/bin', NODE_ENV: 'development' });

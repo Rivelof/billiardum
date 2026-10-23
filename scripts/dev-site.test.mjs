@@ -24,43 +24,44 @@ test('compose: site — сервис Node той же версии, API по с�
   assert.match(site, /command: \["node", "web\/site\/server\.mjs"\]/);
   assert.match(site, /BL_API_URL: http:\/\/server-api:3000\n/);
   assert.match(site, /YANDEX_METRIKA_ID: \$\{YANDEX_METRIKA_ID:-\}\n/, 'Метрика по умолчанию выключена');
+  assert.match(site, /BL_SITE_RATE_PER_MIN: \$\{BL_SITE_RATE_PER_MIN:-120\}\n/, 'лимит гостя на стенде — 120 в минуту');
   assert.match(site, /PUBLIC_HOST: /);
   assert.match(site, /OG_CACHE_DIR: \/var\/cache\/site-og\n/);
   assert.match(site, /- site-og:\/var\/cache\/site-og\n/);
   assert.match(site, /- \.\.\/\.\.:\/repo:ro\n/);
   assert.match(site, /server:\n {8}condition: service_healthy/);
   assert.match(site, /127\.0\.0\.1:3100\/health/);
-  assert.match(site, /networks:\n {6}site-web:\n {6}site-api:\n/, 'сайт не в default: имена caddy, site, server-api однозначны');
+  assert.match(site, /networks:\n {6}site-web:\n {8}ipv4_address: .*\n {6}site-api:\n {8}ipv4_address: .*\n/, 'сайт не в default: имена caddy, site, server-api однозначны');
   assert.match(compose, /\nvolumes:\n[\s\S]*\n {2}site-og:\n/);
 });
 
-test('compose: в сети site-api только server (имя server-api) и site; сервер доверяет её подсети', () => {
+test('compose: в сети site-api только server (имя server-api) и site; сервер доверяет адресу сайта', () => {
   const inNet = [...compose.matchAll(/\n {2}([a-z][a-z-]*):\n[\s\S]*?(?=\n {2}[a-z][a-z-]*:\n|\n[a-z]+:\n)/g)]
     .filter((m) => /\n {6}site-api:/.test(m[0]))
     .map((m) => m[1]);
   assert.deepEqual(inNet.sort(), ['server', 'site']);
   const server = serviceBlock('server');
   assert.match(server, /site-api:\n(?: {8}#.*\n)* {8}aliases: \[server-api\]\n/);
-  assert.match(server, /PUBLIC_API_TRUSTED_CIDRS: \$\{PUBLIC_API_TRUSTED_CIDRS:-\$\{SITE_API_SUBNET:-10\.231\.47\.0\/29\}\}\n/);
-  assert.match(compose, /\nnetworks:\n {2}site-api:\n {4}ipam:\n {6}config:\n {8}- subnet: \$\{SITE_API_SUBNET:-10\.231\.47\.0\/29\}\n/);
+  assert.match(server, /PUBLIC_API_TRUSTED_CIDRS: \$\{PUBLIC_API_TRUSTED_CIDRS:-\$\{SITE_API_SITE_IP:-10\.231\.47\.6\}\/32\}\n/);
+  assert.match(compose, /\nnetworks:\n[\s\S]*?\n {2}site-api:\n {4}ipam:\n {6}config:\n {8}- subnet: \$\{SITE_API_SUBNET:-10\.231\.47\.0\/29\}\n/);
   // Caddy в site-api нет: иначе запросы браузеров шли бы с доверенного адреса без лимита.
   assert.doesNotMatch(serviceBlock('caddy'), /\n {6}site-api:/);
   const caddyDeps = serviceBlock('caddy');
   assert.match(caddyDeps, /site:\n {8}condition: service_healthy\n(?: {8}#.*\n)* {8}required: false\n/);
 });
 
-test('compose: в сети site-web только caddy и site; сайт верит X-Forwarded-For только из неё', () => {
+test('compose: в сети site-web только caddy и site; сайт верит X-Forwarded-For только адресу Caddy', () => {
   const inNet = [...compose.matchAll(/\n {2}([a-z][a-z-]*):\n[\s\S]*?(?=\n {2}[a-z][a-z-]*:\n|\n[a-z]+:\n)/g)]
     .filter((m) => /\n {6}site-web:/.test(m[0]))
     .map((m) => m[1]);
   assert.deepEqual(inNet.sort(), ['caddy', 'site']);
-  assert.match(serviceBlock('site'), /SITE_TRUSTED_PROXIES: \$\{SITE_TRUSTED_PROXIES:-\$\{SITE_WEB_SUBNET:-10\.231\.47\.8\/29\}\}\n/);
-  assert.match(serviceBlock('caddy'), /networks:\n(?: {6}#.*\n)* {6}default:\n {6}site-web:\n/);
+  assert.match(serviceBlock('site'), /SITE_TRUSTED_PROXIES: \$\{SITE_TRUSTED_PROXIES:-\$\{SITE_WEB_CADDY_IP:-10\.231\.47\.13\}\/32\}\n/);
+  assert.match(serviceBlock('caddy'), /networks:\n(?: {6}#.*\n)* {6}default:\n {6}server-web:\n {8}ipv4_address: .*\n {6}site-web:\n {8}ipv4_address: .*\n/);
   assert.match(compose, /\n {2}site-web:\n {4}ipam:\n {6}config:\n {8}- subnet: \$\{SITE_WEB_SUBNET:-10\.231\.47\.8\/29\}\n/);
 });
 
 test('.env.example: переменные сайта без значений', () => {
-  for (const k of ['SITE_ORIGIN', 'YANDEX_METRIKA_ID', 'YANDEX_VERIFICATION', 'BL_SITE_NOINDEX', 'SITE_API_SUBNET', 'PUBLIC_API_TRUSTED_CIDRS', 'SITE_WEB_SUBNET', 'SITE_TRUSTED_PROXIES']) {
+  for (const k of ['SITE_ORIGIN', 'YANDEX_METRIKA_ID', 'YANDEX_VERIFICATION', 'BL_SITE_NOINDEX', 'SITE_API_SUBNET', 'PUBLIC_API_TRUSTED_CIDRS', 'SITE_WEB_SUBNET', 'SITE_TRUSTED_PROXIES', 'SERVER_WEB_SUBNET', 'BL_SITE_RATE_PER_MIN']) {
     assert.match(envExample, new RegExp(`^${k}=$`, 'm'), k);
   }
 });
@@ -86,7 +87,7 @@ test('Caddy: / и прочее — сайт; /api/, /t/, /health — серве�
 test('Caddy: SSE (/api/stream и публичный поток турнира /api/public/stream) — без буферизации', () => {
   assert.match(caddyfile, /@sse path \/api\/stream\* \/api\/public\/stream\*\n/);
   const block = caddyfile.match(/\thandle @sse \{\n([\s\S]*?)\n\t\}\n/)?.[1] ?? '';
-  assert.match(block, /reverse_proxy server:3000 \{\n\t+flush_interval -1/);
+  assert.match(block, /reverse_proxy server-web:3000 \{\n\t+flush_interval -1/);
   assert.ok(caddyfile.indexOf('handle @sse {') < caddyfile.indexOf('handle @server {'));
 });
 

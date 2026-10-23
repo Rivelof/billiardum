@@ -68,7 +68,7 @@ npm run dev -- --watch-web
 
 Сайт-агрегатор `web/site/` (контракт M4 §1 п.1) — сервис `site`: серверный рендер на Node, в базу не ходит, данные берёт из публичного API сервера (`/api/public/*`) по внутренней сети и кэширует на 60 с. В браузере — `https://localhost:8443/`: Caddy отдаёт сайту всё, кроме `/api/`, `/app/`, `/club/`, `/t/` и `/pay/`. Напрямую, без Caddy — `http://localhost:3101`.
 
-Сайт ходит в API по отдельной сети Docker `site-api`, где только `server` (имя `server-api`) и `site`. С её подсети (`SITE_API_SUBNET`, по умолчанию `10.231.47.0/29`) сервер не ограничивает публичный API 120 запросами в минуту (`PUBLIC_API_TRUSTED_CIDRS`); браузеры приходят через Caddy, которого в этой сети нет, и лимит для них остаётся. От Caddy сайт получает запросы по второй сети, `site-web` (только `caddy` и `site`), и верит заголовку `X-Forwarded-For` — IP гостя для лимита заявок — только с её подсети (`SITE_TRUSTED_PROXIES`, по умолчанию `SITE_WEB_SUBNET` = `10.231.47.8/29`). Если подсети пересекаются с вашей сетью или VPN, задайте другие в `SITE_API_SUBNET` и `SITE_WEB_SUBNET` и пересоздайте сети: `npm run down`, затем `npm run dev`.
+Сайт ходит в API по отдельной сети Docker `site-api` (имя сервера `server-api`), а от Caddy получает запросы по сети `site-web`. Публичный API сайту не ограничен 120 запросами в минуту, браузерам через Caddy — ограничен. Кто кому верит, описано ниже, в разделе «Сети стенда и X-Forwarded-For».
 
 OG-картинки клубов и турниров (`/og/…png`) сайт рисует сам и кэширует в томе `site-og`. PNG рисует нативный пакет `@resvg/resvg-js` из `node_modules` хоста, поэтому образ сайта — Debian (`node:22.23.4-bookworm-slim`): на хосте Linux картинки PNG, на macOS и Windows пакет не подходит контейнеру, и сайт отдаёт их как SVG (пишет об этом в логе при старте).
 
@@ -80,10 +80,32 @@ OG-картинки клубов и турниров (`/og/…png`) сайт р�
 | `YANDEX_METRIKA_ID` | номер счётчика Яндекс Метрики; пусто — счётчика нет (по умолчанию выключено, только сайт, без Вебвизора на формах) |
 | `YANDEX_VERIFICATION` | код подтверждения Яндекс Вебмастера |
 | `BL_SITE_NOINDEX` | `1` — запрет индексации для стендов |
-| `SITE_API_SUBNET`, `PUBLIC_API_TRUSTED_CIDRS` | подсеть сети `site-api` и адреса, с которых публичный API без лимита; обычно пусто |
-| `SITE_WEB_SUBNET`, `SITE_TRUSTED_PROXIES` | подсеть сети `site-web` (Caddy ↔ сайт) и прокси, от которых сайт верит `X-Forwarded-For`; обычно пусто |
+| `BL_SITE_RATE_PER_MIN` | лимит запросов сайта в API на IP гостя в минуту (IPv6 — на /64); `0` — без лимита; пусто — `120` |
+| `PUBLIC_API_TRUSTED_CIDRS` | адреса, с которых публичный API без лимита: только сайт; на стенде пусто |
+| `SITE_TRUSTED_PROXIES` | прокси, от которых сайт верит `X-Forwarded-For`: только Caddy; на стенде пусто |
+| `SITE_API_SUBNET`, `SITE_WEB_SUBNET` | подсети сетей сайта; обычно пусто (ниже) |
 
 Только сайт, без Docker и сервера, на демо-данных заглушки `web/site/mock`: `npm run dev -w web/site` → `http://localhost:3100`.
+
+### Сети стенда и X-Forwarded-For
+
+Лимиты запросов считаются по IP гостя. За Caddy настоящий IP приходит в заголовке `X-Forwarded-For`, и подделать его может любой, кому сервер этот заголовок доверяет. Поэтому сервер и сайт доверяют только конкретным адресам, а не частным сетям целиком (замечания pentester M1-L1 и M4-I4, decisions №70).
+
+У каждой пары «прокси → сервис» своя маленькая сеть Docker, в ней только эти два сервиса с фиксированными адресами (+5 и +6 от начала подсети, `scripts/dev-net.mjs`):
+
+| Сеть | Подсеть (по умолчанию) | Кто в ней | Кому доверяют |
+|---|---|---|---|
+| `server-web` | `SERVER_WEB_SUBNET` (`10.231.47.16/29`) | `server` `.21` (имя `server-web`), `caddy` `.22` | сервер верит `X-Forwarded-For` от Caddy (`TRUSTED_PROXY_CIDRS`) |
+| `site-api` | `SITE_API_SUBNET` (`10.231.47.0/29`) | `server` `.5` (имя `server-api`), `site` `.6` | сервер верит `X-Forwarded-For` от сайта (`TRUSTED_PROXY_CIDRS`) и не ограничивает ему публичный API (`PUBLIC_API_TRUSTED_CIDRS`) |
+| `site-web` | `SITE_WEB_SUBNET` (`10.231.47.8/29`) | `caddy` `.13`, `site` `.14` | сайт верит `X-Forwarded-For` от Caddy (`SITE_TRUSTED_PROXIES`) |
+
+По умолчанию на стенде: `TRUSTED_PROXY_CIDRS=10.231.47.22/32,10.231.47.6/32`, `PUBLIC_API_TRUSTED_CIDRS=10.231.47.6/32`, `SITE_TRUSTED_PROXIES=10.231.47.13/32`. Остальные контейнеры (сеть `default`) и хост (запросы на `localhost:3000` и `localhost:3101` приходят с адреса шлюза сети) считаются по своему адресу, с лимитами, даже если подставят `X-Forwarded-For`.
+
+Если подсети пересекаются с вашей сетью или VPN, задайте другие в `SERVER_WEB_SUBNET`, `SITE_API_SUBNET`, `SITE_WEB_SUBNET` (IPv4 от `/24` до `/29`, с начала сети): адреса сервисов `npm run dev` выведет сам. Затем пересоздайте сети: `npm run down`, затем `npm run dev`. Запускайте стенд через `npm run dev`: голый `docker compose up` берёт адреса по умолчанию.
+
+`npm run dev` проверяет формат: адреса через запятую без пробелов, IPv4 с маской не шире `/24`, IPv6 не шире `/120`. Частные сети целиком (`10.0.0.0/8` и т. п.) и адрес Caddy в `PUBLIC_API_TRUSTED_CIDRS` — ошибка; прокси без адреса Caddy или сайта — предупреждение.
+
+**В проде** все три переменные задаются явно, конкретными адресами (`/32`): `TRUSTED_PROXY_CIDRS` — адреса Caddy и сервиса сайта, `PUBLIC_API_TRUSTED_CIDRS` — только адрес сайта, `SITE_TRUSTED_PROXIES` — только адрес Caddy. Если переменная сервера не задана вовсе, сервер доверяет loopback и всем частным сетям (`server/http/request.mjs`) — в проде так оставлять нельзя.
 
 ### Адреса
 
@@ -223,13 +245,13 @@ NODE_EXTRA_CA_CERTS=./caddy-root.crt node tools/kkt-bridge/index.mjs --config de
 |---|---|---|---|
 | `db` | `supabase/postgres:15.8.1.085` | `localhost:54322` (только с этой машины) | Postgres с RLS |
 | `mosquitto` | `eclipse-mosquitto:2.1.2-alpine` | `mqtts://localhost:8883` | MQTT только по TLS, Dynamic Security, анонимный вход запрещён; 1883 закрыт |
-| `server` | `node:22.23.4-alpine` | `http://localhost:3000` (только с этой машины) | `server/index.mjs`, проверка: `/health` |
+| `server` | `node:22.23.4-alpine` | `http://localhost:3000` (только с этой машины) | `server/index.mjs`, от Caddy — по сети `server-web`, от сайта — по `site-api`, проверка: `/health` |
 | `site` | `node:22.23.4-bookworm-slim` | `http://localhost:3101` (только с этой машины) | публичный сайт `web/site/server.mjs`, API — `http://server-api:3000` по сети `site-api`, от Caddy — по сети `site-web`, кэш OG в томе `site-og`, проверка: `/health` |
 | `device-sim` | `node:22.23.4-alpine` | `http://127.0.0.1:18080` (управление, только с этой машины) | симулятор 8 контроллеров, NVS в томе `device-sim-nvs` |
 | `yookassa-emu` | `node:22.23.4-alpine` | — (только через Caddy: `/pay/`) | эмулятор ЮKassa, порт 8090 внутри сети Compose |
 | `kkt-emu` | `node:22.23.4-alpine` | — | эмулятор веб-сервера драйвера АТОЛ, порт 16732 внутри сети Compose |
 | `kkt-bridge` | `node:22.23.4-alpine` | — | мост ККТ тестового клуба: `ws://server:3000/api/kkt/ws` ↔ `http://kkt-emu:16732` |
-| `caddy` | `caddy:2.11.7-alpine` | `https://localhost:8443` | TLS (внутренний CA Caddy): `/api/`, `/t/` → сервер (и WebSocket `/api/kkt/ws`), `/app/` и `/club/` → сборки фронтенда, `/pay/` → эмулятор ЮKassa, остальное → сайт |
+| `caddy` | `caddy:2.11.7-alpine` | `https://localhost:8443` | TLS (внутренний CA Caddy): `/api/`, `/t/` → сервер `server-web:3000` (и WebSocket `/api/kkt/ws`), `/app/` и `/club/` → сборки фронтенда, `/pay/` → эмулятор ЮKassa, остальное → сайт |
 
 Контейнеры с Node ничего не скачивают: репозиторий вместе с `node_modules` хоста монтируется в `/repo` только для чтения. Caddy читает `web/` только для чтения.
 

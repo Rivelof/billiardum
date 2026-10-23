@@ -1,7 +1,7 @@
 # Caddy для разработки «Бильярдума» (deploy/dev; контракты M0 §2 и M1 §11).
 # https://localhost:8443 на хосте → контейнер caddy:443:
 #
-#   /api/*, /t/*, /health → server:3000 (SSE /api/stream и /api/public/stream — без буферизации)
+#   /api/*, /t/*, /health → server-web:3000 (SSE /api/stream и /api/public/stream — без буферизации)
 #   /app/*                → web/guest/dist, приложение гостя (SPA)
 #   /club/*               → web/admin/dist, программа клуба (SPA)
 #   /pay/*                → yookassa-emu:8090, страница оплаты эмулятора ЮKassa
@@ -10,6 +10,10 @@
 #                           sitemap.xml, robots.txt
 #
 # /t/{код} (QR на столе) по-прежнему у сервера: он ведёт на /app/t/{код}.
+#
+# server-web — имя сервера только в сети server-web (deploy/dev/compose.yml), где из прокси
+# один Caddy с фиксированным адресом: X-Forwarded-For сервер принимает только с него (M4-I4).
+# Имя server есть и в default, через него запрос пришёл бы с адреса без доверия.
 #
 # dist собирает `npm run dev` на хосте (scripts/dev.mjs): у Vite нативный esbuild под
 # платформу хоста, в Linux-контейнере на macOS и Windows он не запустится. Caddy только
@@ -117,7 +121,7 @@ https://localhost, https://{$DEV_LAN_HOST:127.0.0.1} {
 	@sse path /api/stream* /api/public/stream*
 	handle @sse {
 		import api
-		reverse_proxy server:3000 {
+		reverse_proxy server-web:3000 {
 			flush_interval -1
 		}
 	}
@@ -134,7 +138,7 @@ https://localhost, https://{$DEV_LAN_HOST:127.0.0.1} {
 			?Cache-Control "no-store"
 			?Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
 		}
-		reverse_proxy server:3000 {
+		reverse_proxy server-web:3000 {
 			flush_interval -1
 			stream_close_delay 5m
 		}
@@ -145,7 +149,7 @@ https://localhost, https://{$DEV_LAN_HOST:127.0.0.1} {
 	@server path /api/* /t/* /health
 	handle @server {
 		import api
-		reverse_proxy server:3000
+		reverse_proxy server-web:3000
 	}
 
 	# Эмулятор ЮKassa: страница подтверждения оплаты /pay/{id} на том же хосте, что и

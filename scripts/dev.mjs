@@ -37,6 +37,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
 import { ensureDevCerts } from './dev-certs.mjs';
+import { checkNetworkEnv, networkEnv } from './dev-net.mjs';
 import { fingerprints, inspectContainers, nextState, planServices, readState, writeState } from './dev-code.mjs';
 import {
   capture,
@@ -159,9 +160,14 @@ function checkEnvValues(env) {
     fail('SITE_ORIGIN в .env — адрес сайта со схемой, без пути и косой черты в конце, например https://billiardum.ru. Пусто — https://{PUBLIC_HOST}.');
   }
   if (env.YANDEX_METRIKA_ID && !/^\d{4,12}$/.test(env.YANDEX_METRIKA_ID)) fail('YANDEX_METRIKA_ID в .env — номер счётчика Метрики, только цифры.');
-  for (const k of ['SITE_API_SUBNET', 'SITE_WEB_SUBNET']) {
-    if (env[k] && !/^\d{1,3}(\.\d{1,3}){3}\/(2[4-9]|30)$/.test(env[k])) fail(`${k} в .env — подсеть IPv4 от /24 до /30, например 10.231.47.0/29.`);
+  // Сайт молча берёт 120 вместо неверного значения — лучше сказать сразу.
+  if (env.BL_SITE_RATE_PER_MIN && !/^\d{1,6}$/.test(env.BL_SITE_RATE_PER_MIN)) {
+    fail('BL_SITE_RATE_PER_MIN в .env — целое число запросов в минуту с IP гостя (0 — без лимита). Пусто — 120.');
   }
+  // Подсети стенда и доверенные прокси (scripts/dev-net.mjs, M4-I4).
+  const net = checkNetworkEnv(env);
+  if (net.errors.length > 0) fail(net.errors.join('\n  '));
+  for (const w of net.warnings) log(w);
   if (lan && env.PUBLIC_HOST.split(':')[0] !== lan) {
     log(`DEV_LAN_HOST задан, а PUBLIC_HOST — нет: ссылки QR и оплаты ведут на ${env.PUBLIC_HOST}. Для телефона: PUBLIC_HOST=${lan}:8443`);
   }
@@ -474,6 +480,9 @@ async function main() {
 
   checkDocker();
   ensureEnvFile();
+  // Фиксированные адреса сервисов в сетях прокси — из подсетей .env (scripts/dev-net.mjs):
+  // Compose берёт их из окружения (ipv4_address и доверенные адреса по умолчанию).
+  Object.assign(process.env, networkEnv(envWithFile(ENV_FILE)));
   await ensureDependencies();
   checkPackages();
 

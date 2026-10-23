@@ -138,9 +138,11 @@ services:
       PUBLIC_HOST: ${PUBLIC_HOST:-localhost:8443}
       # Второй разрешённый Origin (телефон в локальной сети, README); только не в production.
       DEV_LAN_HOST: ${DEV_LAN_HOST:-}
-      # X-Forwarded-For принимается только с этих адресов: частные сети Docker, где Caddy.
-      # Запросы на 127.0.0.1:3000 с хоста тоже приходят из сети Docker — это разработка.
-      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      # X-Forwarded-For принимается только с этих адресов (M4-I4): Caddy в сети server-web
+      # и сайт в сети site-api (он передаёт IP гостя для лимита заявок). Остальные контейнеры
+      # и хост (127.0.0.1:3000 приходит с адреса шлюза сети) — по адресу сокета, с лимитами.
+      # Адреса — фиксированные, внизу файла; в проде — конкретные адреса Caddy и сайта.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-${SERVER_WEB_CADDY_IP:-10.231.47.22}/32,${SITE_API_SITE_IP:-10.231.47.6}/32}
       # Адрес брокера для контроллеров (ответ POST /api/devices/claim); пусто —
       # сервер берёт mqtts://{хост PUBLIC_HOST}:8883.
       MQTT_PUBLIC_URL: ${MQTT_PUBLIC_URL:-}
@@ -156,15 +158,20 @@ services:
       TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
       MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
       # M4: с этих адресов публичный API (/api/public/*) — без лимита 120 запросов в минуту
-      # с IP. Это сеть site-api, где из всех сервисов только site (ниже); Caddy в неё не
-      # входит, поэтому запросы браузеров через Caddy лимит не обходят.
-      PUBLIC_API_TRUSTED_CIDRS: ${PUBLIC_API_TRUSTED_CIDRS:-${SITE_API_SUBNET:-10.231.47.0/29}}
+      # с IP. Только адрес сайта в сети site-api; адрес Caddy сюда нельзя: лимит снялся бы
+      # для всех браузеров.
+      PUBLIC_API_TRUSTED_CIDRS: ${PUBLIC_API_TRUSTED_CIDRS:-${SITE_API_SITE_IP:-10.231.47.6}/32}
+    # Имена server-web и server-api есть только в своих сетях: Caddy и сайт ходят по ним и
+    # всегда приходят с фиксированного адреса этой сети (имя server в нескольких сетях
+    # неоднозначно). default — для базы, брокера, эмуляторов и моста ККТ.
     networks:
       default:
+      server-web:
+        aliases: [server-web]
+        ipv4_address: ${SERVER_WEB_SERVER_IP:-10.231.47.21}
       site-api:
-        # Имя server-api есть только в сети site-api: сайт ходит в API по нему и всегда
-        # приходит с адреса из этой сети (имя server в двух сетях было бы неоднозначным).
         aliases: [server-api]
+        ipv4_address: ${SITE_API_SERVER_IP:-10.231.47.5}
     depends_on:
       db:
         condition: service_healthy
@@ -331,23 +338,28 @@ services:
       YANDEX_VERIFICATION: ${YANDEX_VERIFICATION:-}
       # 1 — стенд не индексируется (robots.txt Disallow: /, meta noindex).
       BL_SITE_NOINDEX: ${BL_SITE_NOINDEX:-}
+      # Лимит походов в API на IP гостя в минуту (M4-6, web/site/README.md): сайту API не
+      # ограничен, гостей ограничивает он сам. 0 — без лимита.
+      BL_SITE_RATE_PER_MIN: ${BL_SITE_RATE_PER_MIN:-120}
       # Разработка: manifest островов перечитывается на каждый запрос (npm run dev --
       # --watch-web пересобирает острова без перезапуска сайта), строка лога на запрос.
       BL_SITE_DEV: "1"
       # Кэш OG-картинок на диске (том site-og): переживает перезапуск контейнера.
       OG_CACHE_DIR: /var/cache/site-og
       # X-Forwarded-For (IP гостя для лимита заявок) сайт берёт только от этих адресов:
-      # сеть site-web, где из сервисов только caddy и site (ниже).
-      SITE_TRUSTED_PROXIES: ${SITE_TRUSTED_PROXIES:-${SITE_WEB_SUBNET:-10.231.47.8/29}}
+      # Caddy в сети site-web (адрес шлюза сети, то есть хост, сюда не входит).
+      SITE_TRUSTED_PROXIES: ${SITE_TRUSTED_PROXIES:-${SITE_WEB_CADDY_IP:-10.231.47.13}/32}
     volumes:
       - ../..:/repo:ro
       - site-og:/var/cache/site-og
-    # Не в default: от Caddy — только site-web (адрес Caddy в доверенной подсети), к API —
-    # только site-api (адрес сайта в PUBLIC_API_TRUSTED_CIDRS). Имена caddy, site и
-    # server-api так однозначны.
+    # Не в default: от Caddy — только site-web, к API — только site-api, с фиксированными
+    # адресами (адрес сайта в site-api — в TRUSTED_PROXY_CIDRS и PUBLIC_API_TRUSTED_CIDRS
+    # сервера). Имена caddy, site и server-api так однозначны.
     networks:
       site-web:
+        ipv4_address: ${SITE_WEB_SITE_IP:-10.231.47.14}
       site-api:
+        ipv4_address: ${SITE_API_SITE_IP:-10.231.47.6}
     depends_on:
       server:
         condition: service_healthy
@@ -377,10 +389,15 @@ services:
       - ../../web:/srv/web:ro
       - caddy-data:/data
       - caddy-config:/config
-    # site-web — к сайту (SITE_TRUSTED_PROXIES — её подсеть); в site-api Caddy не входит.
+    # server-web — к серверу (имя server-web), site-web — к сайту; адреса фиксированные:
+    # их и только их сервер и сайт считают прокси (TRUSTED_PROXY_CIDRS, SITE_TRUSTED_PROXIES).
+    # default — к эмулятору ЮKassa. В site-api Caddy не входит.
     networks:
       default:
+      server-web:
+        ipv4_address: ${SERVER_WEB_CADDY_IP:-10.231.47.22}
       site-web:
+        ipv4_address: ${SITE_WEB_CADDY_IP:-10.231.47.13}
     depends_on:
       server:
         condition: service_healthy
@@ -396,13 +413,21 @@ services:
       start_period: 30s
       start_interval: 2s
 
-# Сети сайта (M4), подсети закреплены: по ним сервисы узнают друг друга.
-#   site-api — только server и site: сервер не ограничивает публичный API сайту
-#              (PUBLIC_API_TRUSTED_CIDRS);
-#   site-web — только caddy и site: сайт верит X-Forwarded-For от Caddy (SITE_TRUSTED_PROXIES).
-# Пересекается с вашей сетью или VPN — задайте другие в SITE_API_SUBNET и SITE_WEB_SUBNET
-# (.env) и пересоздайте сети: npm run down, затем npm run dev.
+# Сети прокси (M4-I4, scripts/dev-net.mjs): в каждой два сервиса с фиксированными адресами
+# +5 и +6 от начала подсети; по этим адресам сервер и сайт решают, кому верить
+# (в скобках — адреса по умолчанию).
+#   server-web — caddy (.22) → server (.21): сервер верит X-Forwarded-For от Caddy;
+#   site-api   — site (.6) → server (.5): сервер верит X-Forwarded-For от сайта и не
+#                ограничивает ему публичный API (PUBLIC_API_TRUSTED_CIDRS);
+#   site-web   — caddy (.13) → site (.14): сайт верит X-Forwarded-For от Caddy.
+# Шлюз (+1) — хост; в доверенные не входит. Пересекается с вашей сетью или VPN — задайте
+# другие подсети в SERVER_WEB_SUBNET, SITE_API_SUBNET, SITE_WEB_SUBNET (.env, от /24 до /29),
+# адреса npm run dev выведет сам (*_IP); затем npm run down и npm run dev.
 networks:
+  server-web:
+    ipam:
+      config:
+        - subnet: ${SERVER_WEB_SUBNET:-10.231.47.16/29}
   site-api:
     ipam:
       config:
