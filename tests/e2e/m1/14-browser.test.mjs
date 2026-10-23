@@ -22,6 +22,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { after, before, test } from 'node:test';
 import { api, BASE, guestPhone, newGuest, ok, pay, quote, table, tableCode, waitSim, waitTableFree } from './helpers.mjs';
+import { closeMyShift, openMyShift, staff } from '../m2/helpers.mjs';
 
 const T1_TABLE = Number(process.env.E2E_UI_T1_TABLE || 2);
 const T2_TABLE = Number(process.env.E2E_UI_T2_TABLE || 6);
@@ -47,6 +48,12 @@ function watch(page, tag) {
   page.on('response', (r) => {
     if (r.status() >= 500 && r.url().includes('/api/')) errors.push(`${tag}: ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname}`);
   });
+}
+
+/** Выбрать вариант: радио скрыто (opacity 0) поверх карточки — нажать карточку-подпись. */
+async function pick(page, radio) {
+  await page.locator('label').filter({ has: radio }).first().click();
+  assert.equal(await radio.isChecked(), true, 'вариант выбран');
 }
 
 async function noHScroll(page) {
@@ -87,7 +94,8 @@ test(`браузер T1: гость на 360 px, стол ${T1_TABLE}, 2 час�
   assert.match(new URL(page.url()).pathname, new RegExp(`/app/t/${tableCode(T1_TABLE)}$`), 'короткая ссылка QR ведёт на экран стола');
   await page.getByRole('radio', { name: /2 часа/ }).waitFor({ timeout: 10_000 });
   await shot('ui-t1-01-table-360');
-  await page.getByRole('radio', { name: /2 часа/ }).check();
+  // Редизайн №127: радио — прозрачный слой поверх карточки варианта (opacity 0); гость нажимает карточку.
+  await pick(page, page.getByRole('radio', { name: /2 часа/ }));
   await page.getByRole('button', { name: 'Продолжить к оплате' }).click();
   await page.getByLabel('Телефон').waitFor();
   await shot('ui-t1-02-signin-360');
@@ -143,7 +151,9 @@ test(`браузер T1: гость на 360 px, стол ${T1_TABLE}, 2 час�
   const rtext = (await page.locator('main').textContent().catch(() => '')).replace(/\s+/g, ' ');
   await shot('ui-t1-10-receipt-360');
   t.diagnostic(`чек: ${new URL(page.url()).pathname} — «${rtext.slice(0, 260)}»`);
-  assert.match(rtext, /1\s?000\s?₽|1 000 ₽/, 'в чеке сумма');
+  // Сумма — та же, что на экране оплаты (тариф по времени суток, не константа).
+  const want = (amount.match(/\d[\d\s ]*₽/)?.[0] ?? '').replace(/\s/g, '');
+  assert.ok(want && rtext.replace(/\s/g, '').includes(want), `в чеке сумма ${want}`);
   await ctx.close();
 });
 
@@ -164,10 +174,18 @@ test(`браузер T2: ресепшн 1280×800, стол ${T2_TABLE} — за
   const rec = await rctx.newPage();
   watch(rec, 'club');
   const shot = (name) => rec.screenshot({ path: path.join(SHOTS, `${name}.png`) });
+  // С M2 наличные принимаются только в открытую смену (№93): своя смена на время T2.
+  const recApi = await staff('reception');
+  const manApi = await staff('manager');
+  const shift = await openMyShift({ rec: recApi, man: manApi, floatKopecks: 0, log: (m) => t.diagnostic(m) });
+  t.after(() => closeMyShift({ rec: recApi, man: manApi, shiftId: shift.id, comment: 'e2e M1 браузер T2' }).catch(() => {}));
   await rec.goto(`${BASE}/club/signin`, { waitUntil: 'networkidle' });
   await rec.getByLabel('Телефон сотрудника').fill('+70000000004');
   await rec.getByRole('button', { name: 'Войти по номеру' }).click();
-  await rec.waitForURL(/\/reception$/, { timeout: 15_000 });
+  // После входа ресепшн попадает на свой главный экран (с №127 — касса), ресепшн — пункт меню.
+  await rec.waitForURL(/\/club\/c\/[^/]+\/(pos|reception)$/, { timeout: 15_000 });
+  // Экран ресепшена держит поток SSE — networkidle не наступает.
+  if (!/\/reception$/.test(rec.url())) await rec.goto(rec.url().replace(/\/pos$/, '/reception'), { waitUntil: 'load' });
   await rec.waitForTimeout(1000);
   await rec.getByRole('button', { name: /Включить звук заявок/ }).click().catch(() => {});
   await shot('ui-t2-01-reception-1280x800');
@@ -188,10 +206,17 @@ test(`браузер T2: ресепшн 1280×800, стол ${T2_TABLE} — за
   for (const k of ['2', '0', '0', '0']) await rec.getByRole('group', { name: 'Клавиатура суммы' }).getByRole('button', { name: k, exact: true }).click();
   const change = (await rec.locator('#change-out').textContent()).replace(/\s+/g, ' ');
   await shot('ui-t2-03-accept-cash-1280x800');
-  assert.match(change, /1\s?500\s?₽/, 'сдача 1 500 ₽');
+  // Сдача = 2 000 ₽ − сумма заявки (тариф зависит от времени суток).
+  const due = 200_000 - q.amount_kopecks;
+  const dueText = new Intl.NumberFormat('ru-RU').format(due / 100).replace(/\s/g, '');
+  assert.ok(change.replace(/\s/g, '').includes(`${dueText}₽`), `сдача ${dueText} ₽, на экране «${change}»`);
   const tAccept = Date.now();
   await rec.getByRole('button', { name: /Принять .* и включить свет/ }).click();
-  const lit = await waitSim(T2_TABLE, (x) => x.state.relay === true, { timeoutMs: 10_000, intervalMs: 50 });
+  const lit = await waitSim(T2_TABLE, (x) => x.state.relay === true, { timeoutMs: 10_000, intervalMs: 50 }).catch(async (e) => {
+    t.diagnostic(`после «Принять»: «${((await rec.locator('main').textContent().catch(() => '')) ?? '').replace(/\s+/g, ' ').slice(0, 300)}»`);
+    await shot('ui-t2-03b-after-accept-1280x800');
+    throw e;
+  });
   const tLit = Date.now();
   await rec.getByText(new RegExp(`Свет на столе ${T2_TABLE} включён`)).waitFor({ timeout: 20_000 });
   const done = (await rec.locator('.accept-done').textContent()).replace(/\s+/g, ' ');
