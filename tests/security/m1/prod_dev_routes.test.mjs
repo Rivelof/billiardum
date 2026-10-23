@@ -5,6 +5,8 @@
 // Поднимает ОТДЕЛЬНЫЙ сервер в своём процессе (NODE_ENV=production, ALLOW_DEV_LOGIN=1,
 // DEV_ALLOW_ANY_MINUTES=1) на своём порту 3099 и своей временной базе bl_pentest_prod;
 // MQTT указывает на мёртвый порт (к брокеру стека не подключается). В конце всё удаляется.
+// В production обязательна TRUSTED_PROXY_CIDRS (M4-I4): серверу и loadServerConfig — 127.0.0.1/32.
+// Проверки loadServerConfig работают без базы; тесты с сервером — только при DATABASE_ADMIN_URL.
 //
 // Запуск: node --test tests/security/m1/prod_dev_routes.test.mjs
 
@@ -61,6 +63,18 @@ function get(method, p, { token, body } = {}) {
 
 const available = Boolean(admin && env.DB_APP_PASSWORD && env.SECRETS_ENC_KEY);
 
+// Проверки loadServerConfig (без базы и без сети): обязательные переменные — заглушки, ключ шифрования —
+// одноразовый случайный, секреты из .env не нужны.
+const PROD_BASE = Object.freeze({
+  NODE_ENV: 'production',
+  DATABASE_URL: 'x',
+  MQTT_URL: 'x',
+  MQTT_CA_FILE: 'deploy/dev/certs/ca.crt',
+  MQTT_SERVER_USER: 'x',
+  MQTT_SERVER_PASSWORD: 'x',
+  SECRETS_ENC_KEY: randomBytes(32).toString('base64'),
+});
+
 before(async () => {
   if (!available) return;
   await sql(`drop database if exists ${TMPDB}`);
@@ -85,6 +99,8 @@ before(async () => {
       DEV_ALLOW_ANY_MINUTES: '1',
       PORT: String(PORT),
       PUBLIC_HOST: 'localhost:8443',
+      // M4-I4: в production список доверенных прокси обязателен; тест ходит напрямую с loopback.
+      TRUSTED_PROXY_CIDRS: '127.0.0.1/32',
       DATABASE_URL: `postgres://app_api:${env.DB_APP_PASSWORD}@127.0.0.1:54322/${TMPDB}`,
       MQTT_URL: 'mqtts://127.0.0.1:18883', // мёртвый порт: к брокеру стека не подключаемся
       MQTT_CA_FILE: 'deploy/dev/certs/ca.crt',
@@ -117,12 +133,52 @@ test('production: /api/auth/dev не зарегистрирован (404), API �
 test('production: конфигурация гасит оба флага даже при ALLOW_DEV_LOGIN=1 и DEV_ALLOW_ANY_MINUTES=1', async () => {
   const { loadServerConfig } = await import(path.join(ROOT, 'server/lib/config.mjs'));
   const cfg = loadServerConfig({
-    NODE_ENV: 'production', ALLOW_DEV_LOGIN: '1', DEV_ALLOW_ANY_MINUTES: '1',
-    DATABASE_URL: 'x', MQTT_URL: 'x', MQTT_CA_FILE: 'deploy/dev/certs/ca.crt',
-    MQTT_SERVER_USER: 'x', MQTT_SERVER_PASSWORD: 'x', SECRETS_ENC_KEY: env.SECRETS_ENC_KEY,
+    ...PROD_BASE, ALLOW_DEV_LOGIN: '1', DEV_ALLOW_ANY_MINUTES: '1', TRUSTED_PROXY_CIDRS: '127.0.0.1/32',
   });
   assert.equal(cfg.allowDevLogin, false, 'allowDevLogin forced false');
   assert.equal(cfg.devAllowAnyMinutes, false, 'devAllowAnyMinutes forced false');
+});
+
+test('M4-I4 выдержало: production без TRUSTED_PROXY_CIDRS или с широкими сетями доверия — сервер не стартует', async () => {
+  const { loadServerConfig } = await import(path.join(ROOT, 'server/lib/config.mjs'));
+  const load = (extra) => () => loadServerConfig({ ...PROD_BASE, ...extra });
+  const configError = (re) => (err) => err.name === 'ConfigError' && re.test(err.message);
+
+  // Без переменной (или пустая, или из одних разделителей) — отказ, а не «все частные сети» по умолчанию.
+  for (const v of [undefined, '', ' ', ' , ,']) {
+    assert.throws(load(v === undefined ? {} : { TRUSTED_PROXY_CIDRS: v }), configError(/TRUSTED_PROXY_CIDRS обязательна/), `TRUSTED_PROXY_CIDRS=${JSON.stringify(v)}`);
+  }
+
+  // Шире /24 (IPv4) и /120 (IPv6) — отказ, в том числе в необычной записи маски и рядом с узкой сетью.
+  const wide = [
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '10.231.0.0/23', '0.0.0.0/0', '10.0.0.0/', '10.0.0.0/ 8', '10.0.0.0/8.0',
+    'fc00::/7', '::/0', '2001:db8::/64', '2001:db8::/119', '::ffff:10.0.0.0/104', '::ffff:0:0/96',
+  ];
+  for (const w of wide) {
+    assert.throws(load({ TRUSTED_PROXY_CIDRS: w }), configError(/^TRUSTED_PROXY_CIDRS: /), `TRUSTED_PROXY_CIDRS=${w}`);
+    assert.throws(load({ TRUSTED_PROXY_CIDRS: `127.0.0.1/32,${w}` }), configError(/^TRUSTED_PROXY_CIDRS: /), `TRUSTED_PROXY_CIDRS=127.0.0.1/32,${w}`);
+    assert.throws(
+      load({ TRUSTED_PROXY_CIDRS: '127.0.0.1/32', PUBLIC_API_TRUSTED_CIDRS: w }),
+      configError(/^PUBLIC_API_TRUSTED_CIDRS: /),
+      `PUBLIC_API_TRUSTED_CIDRS=${w}`,
+    );
+    assert.throws(
+      load({ TRUSTED_PROXY_CIDRS: '127.0.0.1/32', PUBLIC_API_TRUSTED_CIDRS: `10.231.47.6/32,${w}` }),
+      configError(/^PUBLIC_API_TRUSTED_CIDRS: /),
+      `PUBLIC_API_TRUSTED_CIDRS=10.231.47.6/32,${w}`,
+    );
+  }
+
+  // Граница: ровно /24 и /120, отдельные адреса без маски — допустимы.
+  const cfg = loadServerConfig({
+    ...PROD_BASE,
+    TRUSTED_PROXY_CIDRS: '127.0.0.1/32, 10.231.47.22, 10.231.48.0/24, 2001:db8::1/128, 2001:db8::100/120',
+    PUBLIC_API_TRUSTED_CIDRS: '10.231.47.6/32,2001:db8::200/120',
+  });
+  assert.equal(cfg.trustedProxies.length, 5);
+  assert.equal(cfg.publicTrustedCidrs.length, 2);
+  // Без PUBLIC_API_TRUSTED_CIDRS сайт ничем не доверен (лимит для всех).
+  assert.equal(loadServerConfig({ ...PROD_BASE, TRUSTED_PROXY_CIDRS: '127.0.0.1/32' }).publicTrustedCidrs.length, 0);
 });
 
 test('production: ускоренное время выключено — произвольные минуты в котировке отклоняются', { skip: available ? false : 'нет DATABASE_ADMIN_URL' }, async () => {

@@ -78,3 +78,29 @@ BL_LIVE=1 NODE_EXTRA_CA_CERTS=<корневой сертификат Caddy> BL_L
 ## Файлы
 
 `tournament_light`, `tournament_attacks`, `directory_attacks`, `plus_attacks`, `isolation_audit`, `site_ssr`, `sse_public`, `live_stand` (`.test.mjs`); `probes/README.md`, `probes/xff_via_caddy.mjs`, `probes/xff_inner_network.mjs`.
+
+## Перепроверка после исправлений (код `ef78f68`)
+
+Дата: 23.10.2026. Код: main `184cf76` (исправления — `ef78f68`, стенд — `a4e0430`, сайт — `81f2e46`). База и стенд не использовались: без базы перепроверено то, что работает в памяти; то, что требует базы, — по тестам backend `test:db` из `ef78f68` (их прогон — у backend и оркестратора). Старые PoC на временной базе (M4-2 ×2, M4-3, M4-4, M4-5, M4-7) падают ровно на утверждениях «уязвимость есть» — ожидаемо после исправления.
+
+| Находка | Итог | Доказательство |
+|---|---|---|
+| M4-2 | исправлено | `server/tournaments/test/db/tournaments.test.mjs` (№147): один внёс счёт — продлений нет, через 5 мин свет гаснет; спор — так же; без счёта — не дальше конца турнира + матч, тревога `tournament_match_overdue` одна на матч; `server/test/light/m4.test.mjs`: `extendFromTournament` за окном — `limit_exceeded`, после счёта — отказ, без команд контроллеру. Старый PoC `tournament_light.test.mjs` падает на «75 продлений» |
+| M4-3 | исправлено | `tournaments.test.mjs` (турнир), `server/plus/test/db/matches.test.mjs` (Бильярдум+), `server/test/db/m4-core.test.mjs`: «Подтвердить» с увиденным счётом, иначе 409 `score_changed`. Старый PoC падает на «подтверждён не тот счёт» |
+| M4-4 | исправлено | `server/directory/test/db/directory.test.mjs`: одобрение только пока карточка `listed`, остальные открытые заявки отклоняются. Старый PoC падает на 200 |
+| M4-5 | исправлено частично | PoC M4-5 закрыт: `phone_mask_recheck.test.mjs`, тест «выдержало» (`. / ( ) - — _` и NBSP маскируются, даты и цены — нет). Обход другими символами — новая находка M4-8 ниже |
+| M4-6 | проверит tester на стенде | лимит сайта по IP гостя и пробы через сайт — только на стенде |
+| M4-7 | исправлено | `sse_public.test.mjs` (без базы, 6 тестов): с одной /64 при пяти записях адреса — 10 потоков из 200, ТВ через ядро и запасной ТВ-хаб — тоже по /64; `::ffff:a.b.c.d`, `::ffff:cb00:7107` и IPv4 — один источник; анонимных 500 из 2000, без ключа и ТВ — в той же доле; при занятой доле ресепшн и гость подключаются, вошедшим доступен весь остаток до 2000. Только опубликованный турнир — `tournaments.test.mjs` (публичный поток и ТВ, иначе 404) |
+| M4-I1 | исправлено | `server/payments/test/payments.test.mjs`: `table_busy` с `reason` и `busy_until` доходит до QR (прогнан без базы) |
+| M4-I4 | исправлено (конфигурация) | `tests/security/m1/prod_dev_routes.test.mjs`, тест «M4-I4 выдержало»: в production без `TRUSTED_PROXY_CIDRS` (пусто, `' , ,'`) — `ConfigError`; шире /24 и /120 (в том числе `10.0.0.0/`, `10.0.0.0/8.0`, `::ffff:10.0.0.0/104`, `::/0`, рядом с узкой сетью) — `ConfigError` для обеих переменных; ровно /24, /120 и адрес без маски — допустимы. Стенд: `deploy/dev/compose.yml` — только адреса Caddy и сайта. Живые пробы XFF из сети Docker — проверит tester на стенде |
+| M4-I5 | исправлено | `server/plus/test/db/matches.test.mjs` (`plus.match_resolve`) и `tournaments.test.mjs` (`manual.tournament_score`): тревога `manual_action` владельцу с причиной, сотрудником и сутью |
+
+Прогон без базы: `node --test tests/security/m4/sse_public.test.mjs` — 6 из 6; `tests/security/m4/phone_mask_recheck.test.mjs` — 2 из 2; `tests/security/m1/prod_dev_routes.test.mjs` с пустыми `DATABASE_ADMIN_URL`, `DB_APP_PASSWORD`, `SECRETS_ENC_KEY` — 2 прошли, 2 пропущены (нужен стенд на 54322); backend `server/test/{webpush,auth-unit,http-core}.test.mjs`, `server/payments/test/payments.test.mjs` — 75 из 75.
+
+Подозрение: после старта турнира изменение `ends_at` или `match_minutes` сдвигает предел продления света из №147 — подтверждено, исправляется backend (`extend` с причиной), перепроверка после выкатки.
+
+### Новое
+
+**M4-8 (низкая, данные гостей).** Маска телефонов обходится невидимыми символами и разделителями не из перечня. `server/notify/index.mjs` `NUMBER_RUN` (~30) допускает между цифрами только `[\s./\\()\-‐-―+*_|]`; `server/directory/reviews.mjs` `upsert` (~53–56) перед маской только обрезает пробелы (`server/directory/common.mjs` `text`). `+7​912​345​67​89` (пробел нулевой ширины), U+00AD, U+2060 выглядят как сплошной номер и публикуются как есть; так же `· , : ~` и `...`. PoC `phone_mask_recheck.test.mjs`, второй тест: 8 из 8 без маски. Исправление: перед маской убрать невидимые символы (`\p{Cf}`) и привести текст к NFKC; между цифрами считать разделителем любые 1–3 символа, кроме букв и цифр. Владелец — `server/notify/`, `server/directory/`.
+
+**M4-I6 (замечание, доступность).** Доля анонимных потоков одна на все турниры и клубы: одна сеть /56 (50 сетей /64 по 10 потоков) занимает все 500 мест, ТВ-экраны и страницы турниров в других клубах остаются без живых обновлений; персонал и гости не страдают. PoC `sse_public.test.mjs`, тест «замечание M4-I6». Вариант: предел на /56 (или /48) и для ТВ-экрана клуба — поток по токену клуба вне анонимной доли. Владелец — `server/http/`, `server/tournaments/`.
