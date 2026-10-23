@@ -10,7 +10,9 @@
 //   с идущей игрой, удержанием, бронью впереди или турниром — 409 table_busy {reason, resource_id}.
 // * Режим клуба test — журнал resource.*; live — добавление и вывод (и возврат в работу) стола —
 //   ручное действие manual.resource_add / manual.resource_remove: причина, журнал, тревога владельцу.
-//   Позиция, номер, тип и название — только журнал resource.update; размер зала — hall.update.
+//   Смена типа стола в live (№164) — тоже ручное действие manual.resource_kind: при тарифах по типам
+//   столов она меняет цену стола. Позиция, номер и название — только журнал resource.update;
+//   размер зала — hall.update.
 
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
@@ -24,6 +26,8 @@ export const HALL_MIN_CM = 100;
 export const MAX_TABLES = 200;
 
 const bad = (detail) => new HttpError(400, 'bad_request', { detail });
+/** Тип стола в тексте уведомления владельцу. */
+const KIND_LABEL = Object.freeze({ pyramid: 'пирамида', pool: 'пул', snooker: 'снукер', mixed: 'смешанный' });
 const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? null));
 const intIn = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
 
@@ -205,8 +209,11 @@ export async function updateResource(db, { clubId, userId, resourceId, body, now
   ).rows[0];
   if (!cur || cur.club_id !== clubId) throw new HttpError(404, 'not_found');
   const mode = await clubMode(db, clubId, ctx);
+  const live = isLive(mode);
   const activeChange = f.active !== undefined && f.active !== cur.active;
-  const reason = activeChange && isLive(mode) ? cleanReason(body?.reason) : null;
+  // №164: смена типа стола в live меняет его тариф (правила по типам) — ручное действие.
+  const kindChange = f.type !== undefined && f.type !== cur.type;
+  const reason = (activeChange || kindChange) && live ? cleanReason(body?.reason) : null;
   if (activeChange && f.active === false) {
     const why = await busyReason(db, cur.id, now);
     if (why) throw new HttpError(409, 'table_busy', { detail: `deactivate: ${why}`, data: { reason: why, resource_id: cur.id } });
@@ -229,20 +236,21 @@ export async function updateResource(db, { clubId, userId, resourceId, body, now
   if (changed.type) changed.kind = { from: KIND_OF_TYPE[changed.type.from], to: KIND_OF_TYPE[changed.type.to] };
   delete changed.type;
   const data = { resource_id: row.id, number: row.number, changed, mode };
-  if (activeChange && isLive(mode)) {
-    await manualAction(db, {
-      clubId,
-      userId,
+  const manual = [];
+  if (live && kindChange) {
+    const { from, to } = changed.kind;
+    manual.push({ action: 'manual.resource_kind', text: `Стол ${row.number}: тип изменён — ${KIND_LABEL[from] ?? from} → ${KIND_LABEL[to] ?? to}` });
+  }
+  if (live && activeChange) {
+    manual.push({
       action: f.active ? 'manual.resource_add' : 'manual.resource_remove',
-      reason,
-      objectType: 'resource',
-      objectId: row.id,
-      resourceId: row.id,
-      data,
       text: f.active ? `Стол ${row.number} возвращён в работу` : `Стол ${row.number} выведен из работы`,
-      log,
-      ctx,
     });
+  }
+  if (manual.length > 0) {
+    for (const m of manual) {
+      await manualAction(db, { clubId, userId, action: m.action, reason, objectType: 'resource', objectId: row.id, resourceId: row.id, data, text: m.text, log, ctx });
+    }
   } else {
     const action = activeChange ? (f.active ? 'resource.activate' : 'resource.deactivate') : 'resource.update';
     await appendAudit(db, { action, objectType: 'resource', objectId: row.id, actorType: 'user', actorId: userId, data });

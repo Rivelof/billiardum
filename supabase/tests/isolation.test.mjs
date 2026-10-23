@@ -213,6 +213,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['device_club', 'bl_definer'],
         // M5.1 backend-B (1051): заводской реестр контроллеров
         ['device_factory_check', 'bl_definer'],
+        // M5.1 backend-B (1053, №162): есть ли устройство в реестре (без хеша и счётчиков)
+        ['device_factory_known', 'bl_definer'],
         ['device_total', 'bl_definer'],
         // M2 kkt (0500): чеки ККТ, не пробитые дольше 10 минут
         ['kkt_due', 'bl_definer'],

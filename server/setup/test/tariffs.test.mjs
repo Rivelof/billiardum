@@ -78,6 +78,16 @@ describe('проверка недели', () => {
 });
 
 describe('разбор правил', () => {
+  it('№163: цена 0 ₽/ч — 400 bad_request с полем цены; 1 копейка — можно', () => {
+    for (const price of [0, -0]) {
+      assert.throws(
+        () => normalizeRules([rule([1, 2, 3, 4, 5, 6, 7], '06:00', '06:00'), rule([1], '06:00', '07:00', price, 'pool')]),
+        (e) => e.status === 400 && e.code === 'bad_request' && e.message.includes('rules[1].price_per_hour_kopecks'),
+      );
+    }
+    assert.equal(normalizeRules([rule([1], '06:00', '07:00', 1)])[0].price_per_hour_kopecks, 1);
+  });
+
   it('ошибки формы — 400 bad_request; 24:00 и from = to — сутки', () => {
     const bad = (rules) => assert.throws(() => normalizeRules(rules), (e) => e.status === 400 && e.code === 'bad_request');
     bad([]);
@@ -88,6 +98,7 @@ describe('разбор правил', () => {
     bad([rule([1], '6:00', '07:00')]);
     bad([rule([1], '06:00', '24:30')]);
     bad([{ ...rule([1], '06:00', '07:00'), price_per_hour_kopecks: 1.5 }]);
+    bad([{ ...rule([1], '06:00', '07:00'), price_per_hour_kopecks: -1 }]);
     bad([{ ...rule([1], '06:00', '07:00'), min_minutes: undefined }]);
     bad([{ ...rule([1], '06:00', '07:00'), step_minutes: 0 }]);
     bad([rule([1], '06:00', '07:00', 1, 'billiard_carom')]);

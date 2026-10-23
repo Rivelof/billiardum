@@ -7,7 +7,7 @@ import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import { createRouter } from '../../../api/router.mjs';
 import { CLAIM_DEVICE_LIMIT, CLAIM_IP_LIMIT, routes as deviceRoutes } from '../../../api/routes/devices.mjs';
-import { createBinding } from '../../devices/bind.mjs';
+import { createBinding, FACTORY_LOCK_SEC } from '../../devices/bind.mjs';
 import { appendAudit } from '../../lib/audit.mjs';
 import { withContext } from '../../lib/store.mjs';
 import { claimCodeHash } from '../../sessions/service.mjs';
@@ -98,6 +98,10 @@ describe('привязка по QR BLD1 и заводской реестр', { s
     assert.ok(locked.rows[0].bind_locked_until > new Date(h.time.now()));
     // Закрыто: и верный код — 429, пока не прошло 30 минут.
     assert.deepEqual(await bind('owner', { qr: `BLD1:${dev}:${code}`, resource_id: RES(5) }), { status: 429, json: { error: 'rate_limited' } });
+    // Д5 M5.1: у 429 закрытой привязки — Retry-After (верхняя граница закрытия, 30 минут).
+    const lockedRes = await call('POST', `/api/clubs/${CLUB}/devices/bind`, { token: 'owner', body: { qr: `BLD1:${dev}:${code}`, resource_id: RES(5) } });
+    assert.equal(lockedRes.status, 429);
+    assert.equal(lockedRes.headers.get('retry-after'), String(FACTORY_LOCK_SEC));
     await h.time.jump(31 * 60_000);
     const ok = await bind('owner', { qr: `BLD1:${dev}:${code}`, resource_id: RES(5) });
     assert.equal(ok.status, 200);

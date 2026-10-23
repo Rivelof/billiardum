@@ -34,7 +34,12 @@
   `resource.deactivate`, `resource.activate`, `hall.update`.
 - В `live` добавление, вывод и возврат стола — ручное действие `manual.resource_add` / `manual.resource_remove`:
   `reason` обязателен (`400 reason_required`), журнал и тревога `manual_action` владельцу (через `ctx.manual`
-  backend-A, без него — свой путь в `mode.mjs`). Позиция, номер, тип, название и размер зала — только журнал.
+  backend-A, без него — свой путь в `mode.mjs`).
+- В `live` смена типа стола (`kind`) — ручное действие `manual.resource_kind` (№164, tester Д3): при тарифах
+  по типам столов она меняет цену стола. `reason` обязателен (`400 reason_required`, без причины ничего не
+  меняется), журнал с `changed.kind {from, to}`, тревога `manual_action` и уведомление владельцу
+  («Стол N: тип изменён — пул → снукер. Причина: …»). Вместе с выводом или возвратом стола — два ручных
+  действия с одной причиной. Позиция, номер, название и размер зала — только журнал; в `test` тип — тоже.
 
 ## Тарифы (№156) — `tariffs.mjs`
 
@@ -43,6 +48,8 @@
   Границы — от 06:00 (начало рабочих суток, №43). `applyTemplate(id, prices, {kind, min_minutes, step_minutes})` собирает правила.
 - `GET /api/clubs/{club}/tariffs` → `{ timezone, day_start_local, rules, resource_rules, coverage }`; одинаковые правила всех четырёх типов — одно правило `kind: null`.
 - `PUT /api/clubs/{club}/tariffs {rules, reason?}` → как `GET`. Правило: `{kind?: тип|null (все типы), days: [1..7], from: 'HH:MM', to: 'HH:MM' (24:00; from = to — сутки), price_per_hour_kopecks, min_minutes (0…1440), step_minutes (1…60)}`, до 100 правил.
+  Цена — целые копейки строго больше нуля (№163, pentester Н-1): 0 ₽/ч — `400 bad_request` (в логе сервера
+  `rules[i].price_per_hour_kopecks: must be > 0`). Бесплатная игра — только ручным действием с причиной.
 - Проверка — по рабочим суткам клуба в его поясе, как в движке: для каждого типа столов в работе и каждого типа из правил
   каждая минута недели — ровно одно правило. Пересечение — `400 tariff_overlap`, дыра — `400 tariff_gap`, оба с
   `{kind?, weekday, from, to}` (`weekday` — день рабочих суток: ночь пятницы до 06:00 — пятница; `from/to` — местное время).

@@ -106,7 +106,8 @@ export function createKktService({ pool, withContext, clock, log, outbox, alarms
     if (res.job) {
       const conn = c.conns.get(res.job.bridgeId);
       if (!conn) return;
-      send(conn, { type: 'job', job_id: res.job.id, kind: res.job.kind, uuid: res.job.uuid, request: res.job.request });
+      // M5.1 №153: test — тестовый режим клуба; мост печатает только нефискальный «ТЕСТ» и не ждёт ФД.
+      send(conn, { type: 'job', job_id: res.job.id, kind: res.job.kind, uuid: res.job.uuid, request: res.job.request, ...(res.job.test ? { test: true } : {}) });
       c.inflight = { uuid: res.job.uuid, bridgeId: res.job.bridgeId, sentAtMs: Date.now() };
       log.info('kkt_job_sent', { club_id: clubId, bridge_id: res.job.bridgeId, kind: res.job.kind, id: res.job.id, attempt: res.job.attempt, resend: Boolean(res.resend) });
       schedulePublish(clubId);

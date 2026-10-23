@@ -136,11 +136,34 @@ describe('столы и план зала (№155)', { skip: SKIP }, () => {
     assert.ok(notes.some((n) => n.user_id === OWNER_A && n.text.includes('Поставили новый стол')), JSON.stringify(notes));
     const move = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${add.json.id}`, owner.token, { plan_x: 100 });
     assert.equal(move.status, 200);
+    assert.equal((await audit('manual.resource_kind')).length, 0, 'позиция — не ручное действие');
+    // №164 (tester Д3): смена типа стола в live — ручное действие: причина, журнал, уведомление владельцу.
+    const kindNo = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${add.json.id}`, owner.token, { kind: 'snooker', plan_x: 120 });
+    assert.deepEqual([kindNo.status, kindNo.json], [400, { error: 'reason_required' }]);
+    const still = (await t.admin.query('select type, plan_x from bl.resources where id = $1', [add.json.id])).rows[0];
+    assert.deepEqual([still.type, still.plan_x], ['billiard_pool', 100], 'без причины ничего не меняется');
+    const kind = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${add.json.id}`, manager.token, { kind: 'snooker', reason: 'Перетянули сукно под снукер' });
+    assert.equal(kind.status, 200, kind.text);
+    assert.equal(kind.json.kind, 'snooker');
+    const [k] = await audit('manual.resource_kind');
+    assert.equal(k.reason, 'Перетянули сукно под снукер');
+    assert.equal(k.actor_id, MANAGER_A);
+    assert.deepEqual(k.data.changed, { kind: { from: 'pool', to: 'snooker' } });
+    const kindAlarm = (await t.admin.query("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'action' = 'manual.resource_kind'", [CLUB_A])).rows;
+    assert.equal(kindAlarm.length, 1);
+    const kindNotes = (await t.admin.query("select user_id, text from bl.notifications where kind = 'alarm' and data->>'alarm_id' = $1", [kindAlarm[0].id])).rows;
+    assert.ok(kindNotes.some((n) => n.user_id === OWNER_A && n.text.includes('пул → снукер') && n.text.includes('Перетянули сукно под снукер')), JSON.stringify(kindNotes));
+    assert.equal((await audit('resource.update')).filter((r) => r.data.changed?.kind).length, 0, 'смена типа в live — не resource.update');
     assert.equal((await api('PATCH', `/api/clubs/${CLUB_A}/resources/${add.json.id}`, owner.token, { active: false })).json.error, 'reason_required');
     const off = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${add.json.id}`, owner.token, { active: false, reason: 'Стол на ремонте' });
     assert.equal(off.status, 200);
     assert.equal((await audit('manual.resource_remove'))[0].reason, 'Стол на ремонте');
     await setMode('test');
+    // В test смена типа — только журнал resource.update, без причины.
+    const testKind = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${add.json.id}`, owner.token, { kind: 'pool' });
+    assert.equal(testKind.status, 200, testKind.text);
+    assert.equal((await audit('manual.resource_kind')).length, 1);
+    assert.ok((await audit('resource.update')).some((r) => r.data.changed?.kind?.to === 'pool' && r.reason === null));
   });
 });
 
@@ -176,6 +199,10 @@ describe('тарифы (№156)', { skip: SKIP }, () => {
     assert.deepEqual(overlap.json, { error: 'tariff_overlap', weekday: 6, from: '12:00', to: '14:00', kind: 'pool' });
     assert.equal((await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: [{ days: [1], from: '06:00', to: '06:00', price_per_hour_kopecks: 1 }] })).status, 400);
     assert.equal((await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, reception.token, { rules: applyTemplate('single', { price: 1 }) })).status, 403);
+    // №163 (pentester Н-1): тариф 0 ₽/ч — 400 bad_request; бесплатная игра — только ручным действием.
+    const zero = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: applyTemplate('single', { price: 0 }), reason: 'Бесплатно' });
+    assert.deepEqual([zero.status, zero.json], [400, { error: 'bad_request' }]);
+    assert.ok(t.log.lines.some((e) => JSON.stringify(e).includes('rules[0].price_per_hour_kopecks: must be > 0')), 'поле цены — в логе сервера');
     assert.equal((await t.admin.query('select count(*)::int as n from bl.tariff_rules where club_id = $1 and active', [CLUB_A])).rows[0].n, seedRules);
   });
 

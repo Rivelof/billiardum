@@ -21,6 +21,11 @@ import { claimCodeHash, ROLES } from '../sessions/service.mjs';
 
 export const BIND_WINDOW_MS = 30 * 60_000;
 export const MAX_CLAIM_ATTEMPTS = 5;
+/**
+ * Заводская привязка закрыта после 5 неверных кодов на 30 минут (bl.device_factory_check, 1051).
+ * Срок закрытия app_api не читает (реестр — только bl_definer): Retry-After — верхняя граница.
+ */
+export const FACTORY_LOCK_SEC = 30 * 60;
 // Код привязки — ещё и пароль точки доступа WPA2 контроллера (не длиннее 63): 8…63 символа (protocol §7).
 export const CLAIM_CODE = /^[A-Za-z0-9-]{8,63}$/;
 
@@ -65,7 +70,7 @@ export function createBinding({ pool, withContext, clock, log, audit, encKey, mq
     // Заводской реестр (M5.1 №159): код с наклейки сверяется до открытия окна.
     const factory = (await db.query('select bl.device_factory_check($1, $2, $3) as r', [deviceId, claimCodeHash(deviceId, claimCode), t])).rows[0].r;
     if (factory === 'unknown' && requireFactory) fail('forbidden', 'device not in factory registry');
-    if (factory === 'locked') throw new HttpError(429, 'rate_limited', { detail: 'factory bind locked' });
+    if (factory === 'locked') throw new HttpError(429, 'rate_limited', { detail: 'factory bind locked', headers: { 'retry-after': String(FACTORY_LOCK_SEC) } });
     if (factory === 'bad') {
       log.warn('device_bind_bad_code', { device_id: deviceId });
       // Счётчик неверных кодов должен сохраниться: ответ без исключения фиксирует транзакцию.

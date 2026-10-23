@@ -64,7 +64,7 @@
 
 ## Привязка контроллера
 
-`POST /api/clubs/{club}/devices/bind {device_id, resource_id, claim_code}` (владелец, монтажник; `claim_code` с наклейки на корпусе) — окно 30 минут, в базе `sha256(device_id:claim_code)`. `POST /api/devices/claim {device_id, claim_code}` — без входа, 10 запросов в минуту с IP; 5 неверных кодов закрывают окно. Ответ: `mqtt_username`, `mqtt_password`, `device_key` (base64), `mqtt_url` (`MQTT_PUBLIC_URL` или `mqtts://{хост PUBLIC_HOST}:8883`), `club_id`. Нужны `MQTT_ADMIN_USER` и `MQTT_ADMIN_PASSWORD` в окружении сервера.
+`POST /api/clubs/{club}/devices/bind {device_id, resource_id, claim_code}` (владелец, монтажник; `claim_code` с наклейки на корпусе) — окно 30 минут, в базе `sha256(device_id:claim_code)`. `POST /api/devices/claim {device_id, claim_code}` — без входа, 60 запросов в минуту с IP и 6 в минуту на `device_id` (№161: контроллеры клуба выходят через один NAT; сверх лимита — `429 rate_limited` с `Retry-After`); 5 неверных кодов закрывают окно. Устройство из заводского реестра (M5.1 №159): неверный код при `bind` — 403 со счётчиком, пятый закрывает привязку на 30 минут — `429 rate_limited` с `Retry-After: 1800` (верхняя граница). Ответ: `mqtt_username`, `mqtt_password`, `device_key` (base64), `mqtt_url` (`MQTT_PUBLIC_URL` или `mqtts://{хост PUBLIC_HOST}:8883`), `club_id`. Нужны `MQTT_ADMIN_USER` и `MQTT_ADMIN_PASSWORD` в окружении сервера.
 
 ## Тесты
 

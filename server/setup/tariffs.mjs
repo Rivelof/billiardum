@@ -161,7 +161,9 @@ export function normalizeRules(input) {
     if (!fromText || !HHMM.test(fromText)) throw bad(`${where}.from`);
     if (!toText || !HHMM.test(toText)) throw bad(`${where}.to`);
     const price = r.price_per_hour_kopecks;
-    if (!Number.isSafeInteger(price) || price < 0 || price > MAX_PRICE_KOPECKS) throw bad(`${where}.price_per_hour_kopecks`);
+    // №163: цена строго больше нуля — бесплатная игра только ручным действием (инвариант 8), не тарифом 0 ₽.
+    if (!Number.isSafeInteger(price) || price > MAX_PRICE_KOPECKS) throw bad(`${where}.price_per_hour_kopecks`);
+    if (price <= 0) throw bad(`${where}.price_per_hour_kopecks: must be > 0`);
     if (!Number.isInteger(r.min_minutes) || r.min_minutes < 0 || r.min_minutes > DAY) throw bad(`${where}.min_minutes`);
     if (!Number.isInteger(r.step_minutes) || r.step_minutes < 1 || r.step_minutes > 60) throw bad(`${where}.step_minutes`);
     const from = minuteOf(fromText);
