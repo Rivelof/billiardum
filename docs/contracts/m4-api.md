@@ -14,9 +14,9 @@
 ## Турниры
 
 - `GET /api/public/tournaments` → `{items:[T]}`, T `{id, title, club:{id,name,city}, discipline, format:'single_elim'|'groups_playoff', race_to, rating_limit|null, fee_kopecks, prize_text, places, entries_count, starts_at, ends_at, status:'registration'|'closed'|'running'|'finished'|'canceled'}`.
-- `GET /api/public/tournaments/{id}` → T + `entries:[{nick, seed, rating}]` + `bracket:{rounds:[{title, matches:[{id, table_number, a:{nick,seed}|null, b, score_a, score_b, status:'scheduled'|'playing'|'pending_confirm'|'disputed'|'done', winner:'a'|'b'|null}]}]}`.
+- `GET /api/public/tournaments/{id}` → T + `entries:[{nick, seed, rating}]` + `bracket:{rounds:[{title, matches:[{id, table_number, a:{nick,seed}|null, b, score_a, score_b, status:'scheduled'|'playing'|'pending_confirm'|'disputed'|'done'|'canceled', winner:'a'|'b'|null}]}]}`.
 - `GET /api/tournaments/{id}/me` → `{entry:{id, status:'pending_payment'|'confirmed'|'canceled'}|null, match:{id, side:'a'|'b', opponent_nick, score_a, score_b, status, i_confirmed}|null}`.
-- `POST /api/tournaments/{id}/entries {return_url}` → `{entry_id, status, confirmation:{url}|null}`; 409 `rating_above_limit` с полями `limit` и `rating` (**core:** добавить в белый список полей ошибок).
+- `POST /api/tournaments/{id}/entries {return_url}` → `{entry_id, status, confirmation:{url}|null}`; без профиля Бильярдум+ — 409 `no_profile` (№150); 409 `rating_above_limit` с полями `limit` и `rating` (**core:** добавить в белый список полей ошибок).
 - Счёт: `POST /api/tournaments/matches/{id}/score {score_a, score_b}`, `…/confirm {score_a?, score_b?}` (счёт соперника, который видел игрок; изменился — 409 `score_changed`), `PATCH …/score {score_a, score_b, reason}`. Свет матча — по №147.
 - Клуб: `GET/POST /api/clubs/{club}/tournaments` (тело `{title, discipline, format, race_to, rating_limit, fee_kopecks, prize_text, places, starts_at, ends_at, resource_ids}`), `GET /api/clubs/{club}/tournaments/{id}` → T + `entries:[{entry_id, nick, rating, seed, status, paid}]` + bracket, PATCH, `POST …/start`, `POST …/cancel {reason, refund?:'all'|'none', reason_code?}` → `{refunded}`: до старта возврат всем (№138); после старта по умолчанию без возврата, `refund:'all'` только с `reason_code` `equipment`|`venue` (№149). После старта PATCH окна и времени матча — 409 `tournament_started`; продление — `POST …/extend {ends_at?, match_minutes?, reason}` (не дальше +12 ч от текущего момента; 409 `limit_exceeded` с `extend_limit_until`; журнал `manual.tournament_extend`, тревога владельцу). Возврат одному игроку после старта — `POST …/entries/{entry_id}/refund {reason_code:'health'|'equipment'|'venue', comment}` → `{entry_id, refund_status, reason_code, amount_kopecks}`; 409 `not_paid`, `already_refunded`, `bad_status` (до старта). Уведомление организатору `tournament.confirm_reminder` через 15 мин после первого счёта без подтверждения.
 - SSE `tournament:{id}`: событие `bracket` с полным bracket.
@@ -28,3 +28,13 @@
 - Заявка T25 (`/app/request/{listing_id}`): `GET /api/public/listings/{id}` → `{id, name, city, address, status}`; `POST /api/clubs/requests {listing_id, starts_at, minutes, people, comment}` → `{id, status}`; `GET /api/clubs/requests/{id}` → `{id, status:'sent'|'accepted'|'declined'|'operator'|'closed', club:{name}, starts_at, minutes, people, answer_text|null, updated_at}`.
 - Споры: `GET /api/clubs/{club}/plus/disputes` → `{items:[match + dispute_reason, table_number]}`, `POST /api/plus/matches/{id}/resolve {result:'a'|'b'|'annul', reason}`.
 - Оператор: `GET /api/me` → `user.platform_role 'platform_operator'|'platform_admin'|null`; `GET/PATCH /api/platform/{requests|leads|listings|reports}` → `{items}`, PATCH `{status|action, reason}`.
+
+## Окно турнира в котировке и брони (Д3, Д7)
+
+- Котировка старта и продления, бронь и ранний приход по брони на столе турнира: окно турнира работает как бронь — продление до начала окна − 5 мин (`extend_limit_until`); если не помещается — 409 `table_busy {reason:'tournament', busy_until}` (конец окна с примыкающими удержаниями матчей).
+- После отмены идущего турнира матчи `canceled`, стол свободен сразу.
+
+## Ссылка клуба на заявку (T25)
+
+- `GET /api/clubs/requests/{id}/answer?t=` → заявка + `timezone` клуба; `POST …/answer {t, decision, text?}`.
+- После ответа (клуба с любого устройства, оператора, отмены гостем) GET и POST по живой ссылке — 409 `request_closed {status}`, `status` ∈ `accepted|declined|operator|closed`; неверный или истёкший токен — 404.
