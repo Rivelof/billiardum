@@ -15,6 +15,10 @@
 // * Ошибка базы при отправке не теряет команду: она возвращается в очередь и повторяется
 //   через DB_RETRY_MS; sweep раз в 5 с дочитывает bl.device_commands онлайн-устройств
 //   (страховка от потерянного NOTIFY).
+// * Сообщение устройства не обработано из-за базы (сервер поднялся раньше Postgres): последние
+//   status и state устройства (и до 32 событий) повторяются через DB_RETRY_MS. Когда база снова
+//   отвечает — повторная подписка на state/status: брокер заново отдаёт retained всех
+//   контроллеров, и мост сверяет их с базой (регресс R4).
 // * M1: команды бизнес-логики лежат в bl.device_commands (queued); мост забирает их по
 //   wake(deviceId) после коммита (LISTEN bl_light) и перед отправкой зовёт prepare — тело
 //   (remaining_ms по paid_until и т. п.) считается в момент отправки, в той же транзакции,
@@ -139,6 +143,8 @@ export function createBridge({
   let lastReport = null;
   let connected = false;
   let everConnected = false;
+  let dbTrouble = false; // была ошибка базы — sweep проверяет, отвечает ли она снова
+  let probing = false;
   let stopped = false;
 
   function onlineCount() {
@@ -160,6 +166,7 @@ export function createBridge({
       total = await store.deviceTotal();
       if (!quiet) report();
     } catch (err) {
+      dbTrouble = true;
       log.error('db_error', { op: 'device_total', error: err.message });
     }
   }
@@ -198,6 +205,9 @@ export function createBridge({
         mismatchSince: null,
         mismatchAlarmed: false,
         nudgedAt: 0,
+        failed: new Map(), // kind → последнее необработанное сообщение (status, state)
+        failedEvents: [], // необработанные события по порядку (журнал дедуплицирует повтор)
+        failedAt: 0,
         queue: Promise.resolve(),
         inflight: null, // единственная неподтверждённая команда
         outbox: [], // ждут своей очереди: { type, body, rowId?, resendOf?, failures? } | { sync: true, reason, failures? }
@@ -649,7 +659,7 @@ export function createBridge({
         fresh = await store.recordEvent({ clubId: d.clubId, deviceId: d.id, ev: clean, at: new Date(now()) });
       } catch (err) {
         log.error('db_error', { op: 'record_event', device_id: d.id, error: err.message });
-        return;
+        throw err; // повтор через DB_RETRY_MS (событие запишется один раз по boot_id и n)
       }
       if (!fresh) {
         log.debug('device_event_duplicate', { device_id: d.id, type, boot_id: bootId, n });
@@ -703,6 +713,33 @@ export function createBridge({
     }
   }
 
+  /**
+   * Обработать сообщение; ошибка (почти всегда база) — запомнить для повтора: status и state —
+   * только последнее по устройству, события — по порядку, ack не повторяется (команду повторит мост).
+   */
+  async function processMessage(d, topic, payload) {
+    try {
+      await handle(d, topic, payload);
+      if (topic.kind === 'status' || topic.kind === 'state') d.failed.delete(topic.kind);
+    } catch (err) {
+      dbTrouble = true;
+      d.failedAt = now();
+      const retry = topic.kind !== 'ack';
+      if (topic.kind === 'status' || topic.kind === 'state') d.failed.set(topic.kind, { topic, payload });
+      else if (topic.kind === 'event' && d.failedEvents.length < 32) d.failedEvents.push({ topic, payload });
+      log.error('device_message_failed', { device_id: d.id, kind: topic.kind, error: err.message, retry });
+    }
+  }
+
+  /** Повтор необработанных сообщений устройства: сначала status, затем state и события. */
+  async function retryFailed(d) {
+    const items = [d.failed.get('status'), d.failed.get('state'), ...d.failedEvents].filter(Boolean);
+    d.failed.clear();
+    d.failedEvents = [];
+    for (const x of items) await processMessage(d, x.topic, x.payload);
+    if (d.failed.size === 0 && d.failedEvents.length === 0 && items.length > 0) log.info('device_message_recovered', { device_id: d.id, count: items.length });
+  }
+
   /** Входящее сообщение; сообщения одного устройства обрабатываются строго по порядку. */
   function onMessage(topicName, payload) {
     const topic = parseDeviceTopic(topicName);
@@ -713,13 +750,46 @@ export function createBridge({
     }
     const d = record(topic.deviceId);
     d.queue = d.queue
-      .then(() => handle(d, topic, payload))
+      .then(() => processMessage(d, topic, payload))
       .catch((err) => log.error('device_message_failed', { device_id: d.id, kind: topic.kind, error: err.message }));
     return d.queue;
   }
 
+  /** Повторная подписка на state/status: брокер заново отдаёт retained всех контроллеров (MQTT 3.1.1 §3.8.4). */
+  function resubscribe(reason) {
+    if (!connected) return;
+    const topics = SUBSCRIPTIONS.filter((x) => x.endsWith('/state') || x.endsWith('/status'));
+    log.info('mqtt_resubscribe', { reason });
+    client.subscribe(topics, { qos: 1 }, (err) => {
+      if (err) log.error('mqtt_subscribe_failed', { error: err.message });
+    });
+  }
+
+  /** База снова отвечает после ошибки: число устройств, retained заново — онлайн не «висит» на 0. */
+  function probeDb() {
+    if (!dbTrouble || probing || stopped) return;
+    probing = true;
+    Promise.resolve()
+      .then(() => store.deviceTotal())
+      .then((n) => {
+        dbTrouble = false;
+        total = n;
+        log.info('db_recovered', {});
+        report();
+        resubscribe('db_recovered');
+      })
+      .catch(() => {})
+      .finally(() => {
+        probing = false;
+      });
+  }
+
   function sweep() {
+    probeDb();
     for (const d of devices.values()) {
+      if ((d.failed.size > 0 || d.failedEvents.length > 0) && now() - d.failedAt >= dbRetryMs) {
+        d.queue = d.queue.then(() => retryFailed(d)).catch(() => {});
+      }
       if (d.online) {
         d.queue = d.queue
           .then(async () => {

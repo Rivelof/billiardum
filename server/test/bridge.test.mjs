@@ -364,6 +364,63 @@ describe('мост MQTT: очередь и повторы (protocol §6)', () =>
     await bridge.stop();
   });
 
+  it('база недоступна при старте 20 с (R4): после подъёма в пределах 30 с все устройства онлайн, актуальное состояние, retained заново', async () => {
+    await setup([device(1), device(2)]);
+    let down = true;
+    const fail = () => {
+      if (down) throw Object.assign(new Error('the database system is not accepting connections'), { code: '57P03' });
+    };
+    for (const name of ['deviceClub', 'deviceTotal', 'allocateCommand', 'touchDevice']) {
+      const real = store[name].bind(store);
+      store[name] = async (...args) => {
+        fail();
+        return real(...args);
+      };
+    }
+    // Брокер: retained state/status отдаются заново при повторной подписке.
+    const retained = new Map();
+    const subscribe = client.subscribe.bind(client);
+    client.subscribe = (topics, opts, cb) => {
+      subscribe(topics, opts, cb);
+      for (const [tp, payload] of retained) if (topics.some((f) => tp.endsWith(f.slice(f.lastIndexOf('/'))))) setImmediate(() => client.emit('message', tp, payload));
+    };
+    const deliver = async (dev, kind, payload) => {
+      if (kind === 'status' || kind === 'state') retained.set(topic(dev, kind), payload);
+      await bridge.onMessage(topic(dev, kind), payload);
+    };
+    // Контроллеры онлайн, сообщения пришли один раз (status retained и больше не повторится).
+    for (const dev of [DEV(1), DEV(2)]) {
+      await deliver(dev, 'status', Buffer.from('online'));
+      await deliver(dev, 'state', state());
+    }
+    assert.equal(bridge.stats().online, 0);
+    assert.equal(logs('device_message_failed').at(-1).retry, true);
+    const step = async () => {
+      mock.timers.tick(5_000);
+      await flush();
+      await bridge.idle();
+      await flush();
+      await bridge.idle();
+    };
+    for (let i = 0; i < 4; i += 1) await step(); // 20 с базы нет
+    assert.equal(bridge.stats().online, 0);
+    assert.equal(cmds(DEV(1)).length, 0);
+    down = false;
+    let waited = 0;
+    while (bridge.stats().online < 2 && waited < 30_000) {
+      await step();
+      waited += 5_000;
+    }
+    assert.equal(bridge.stats().online, 2, `онлайн через ${waited} мс после подъёма базы`);
+    assert.ok(waited <= 30_000);
+    assert.equal(lastCmd(DEV(1)).type, 'ping', 'актуальное состояние первому');
+    assert.equal(lastCmd(DEV(2)).type, 'ping', 'и второму');
+    assert.equal(logs('db_recovered').length, 1);
+    assert.ok(logs('mqtt_resubscribe').length >= 1, 'retained запрошены заново');
+    assert.equal(logs('devices_online').at(-1).online, 2, 'devices_online не висит на 0');
+    await bridge.stop();
+  });
+
   it('ошибка базы при отправке: команда не теряется, повтор после паузы; sweep дочитывает очередь из базы', async () => {
     await setup([device(1)]);
     await goOnline(DEV(1));

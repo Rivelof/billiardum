@@ -177,6 +177,7 @@ export class FakeMqtt extends EventEmitter {
     this.connected = true;
     this.published = [];
     this.handlers = new Map();
+    this.retained = new Map();
   }
 
   publish(topic, payload, _opts, cb) {
@@ -187,7 +188,12 @@ export class FakeMqtt extends EventEmitter {
   }
 
   subscribe(topics, _opts, cb) {
+    this.subscribes = (this.subscribes ?? 0) + 1;
     cb?.(null, topics.map((topic) => ({ topic, qos: 1 })));
+    // Как брокер: при подписке — retained state/status подходящих топиков (MQTT 3.1.1 §3.8.4).
+    for (const [topic, payload] of this.retained) {
+      if (topics.some((f) => topic.endsWith(f.slice(f.lastIndexOf('/'))))) setImmediate(() => this.emit('message', topic, payload));
+    }
   }
 }
 
@@ -224,7 +230,9 @@ export class FakeController {
   }
 
   async send(kind, obj) {
-    await this.bridge.onMessage(this.topic(kind), Buffer.from(typeof obj === 'string' ? obj : JSON.stringify(obj)));
+    const payload = Buffer.from(typeof obj === 'string' ? obj : JSON.stringify(obj));
+    if (kind === 'state' || kind === 'status') this.client.retained.set(this.topic(kind), payload);
+    await this.bridge.onMessage(this.topic(kind), payload);
   }
 
   /** Локальный автомат §5: active → ending → grace → free по своему таймеру. */
