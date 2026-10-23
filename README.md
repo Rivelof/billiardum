@@ -171,6 +171,38 @@ docker compose -p billiardum logs -f device-sim     # лог симулятор�
 docker compose -p billiardum restart device-sim     # все контроллеры перезагрузились
 ```
 
+### Подключение нового клуба (M5.1)
+
+Сценарии T26–T28: владелец сам заводит клуб в мастере `https://localhost:8443/club/start`. Вход для разработки — любой телефон, у пользователя не больше 3 клубов в тестовом режиме. Клуб сида работает в боевом режиме, как раньше.
+
+**Магазины ЮKassa.** В Compose эмулятор заводит три магазина для нового клуба (`scripts/dev-yookassa-emu.mjs`), заново при каждом старте контейнера. Это учётные данные эмулятора, не секреты: эмулятор работает только в разработке, его API открыт только внутри Compose.
+
+| `shop_id` | Секретный ключ | `GET /v3/me` | Куда вводить |
+|---|---|---|---|
+| `800001` | `test_emu_800001_dev_only` | `test: true`, чеки включены | «Тестовый магазин» |
+| `800002` | `live_emu_800002_dev_only` | `test: false`, чеки включены | «Боевой магазин» |
+| `800003` | `live_emu_800003_dev_only` | `test: false`, чеки выключены | T28: «Боевой магазин» → `fiscalization_off` |
+
+- Тестовый магазин в поле боевого, и наоборот, даёт `shop_mode_mismatch`.
+- Магазины общие: ими можно подключить сколько угодно клубов.
+- Вебхук эмулятор шлёт сам на `http://server:3000/api/webhooks/yookassa/{club_id}` по `metadata.club_id` платежа. Адрес вебхука из мастера нужен только для настоящей ЮKassa.
+- Проверочный платёж 1 ₽ подтверждается кнопкой «Оплатить» на `https://localhost:8443/pay/{id}` или командой `…/__emu/payments/{id}/succeed` (раздел «Оплата на эмуляторе ЮKassa»).
+- Магазин из `.env` (`YOOKASSA_EMU_SHOP_ID`) остаётся у клуба сида. По умолчанию он тестовый с чеками. `YOOKASSA_EMU_SHOP_TEST=0` и `YOOKASSA_EMU_SHOP_FISCALIZATION=0` меняют только его.
+
+**Новые контроллеры.** Заводские данные создаёт `node scripts/provision-factory.mjs --count 2`: PDF наклеек с QR `BLD1:…` и команды `factory …` кладутся в текущую папку. В корне репозитория они в git не попадают (`.gitignore`). Контроллеры симулятора с этими данными — отдельный процесс на хосте рядом с контейнером `device-sim`. Порт управления у него 18081, CA сервера — корень CA Caddy. Compose для этого менять не нужно: брокер открыт на `localhost:8883`, API — через Caddy.
+
+```sh
+docker compose -p billiardum cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt
+SIM_API_URL=https://localhost:8443 SIM_API_CA_FILE=./caddy-root.crt \
+MQTT_URL=mqtts://localhost:8883 MQTT_CA_FILE=deploy/dev/certs/ca.crt SIM_CONTROL_PORT=18081 \
+node tools/device-sim/index.mjs --claim 'BLD1:<device_id_1>:<код_1>' --claim 'BLD1:<device_id_2>:<код_2>'
+curl -s 127.0.0.1:18081/sim/tables     # после привязки в мастере: claim.state claimed, online true
+```
+
+Подробности и T28 со стороны контроллера описаны в [`tools/device-sim/README.md`](tools/device-sim/README.md), раздел «Новый контроллер». Ключи привязки лежат в `$TMPDIR/billiardum-device-sim-claim`, вне репозитория.
+
+**Оферта.** Перед переходом в боевой режим владелец принимает оферту платформы версии `CLUB_OFFER_VERSION` из `.env`. Если переменная пустая, действует версия по умолчанию сервера.
+
 ### Касса, бар и смены
 
 Всё — в программе клуба `https://localhost:8443/club/` под ресепшеном (`+70000000004`, PIN `1234`) или управляющим (`+70000000003`):

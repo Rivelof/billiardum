@@ -148,6 +148,8 @@ services:
       MQTT_PUBLIC_URL: ${MQTT_PUBLIC_URL:-}
       ALLOW_DEV_LOGIN: ${ALLOW_DEV_LOGIN:-}
       DEV_ALLOW_ANY_MINUTES: ${DEV_ALLOW_ANY_MINUTES:-}
+      # M5.1 №160: версия оферты платформы для клубов; пусто — версия по умолчанию сервера.
+      CLUB_OFFER_VERSION: ${CLUB_OFFER_VERSION:-}
       YOOKASSA_API_URL: ${YOOKASSA_API_URL:-http://yookassa-emu:8090/v3}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
@@ -221,18 +223,24 @@ services:
   # оплаты через Caddy (https://{PUBLIC_HOST}/pay/{id}).
   # Профиль: пока нет tools/yookassa-emu/index.mjs, сервис не стартует; npm run dev
   # включает его сам, когда пакет появится (scripts/dev.mjs).
+  # M5.1 №154: scripts/dev-yookassa-emu.mjs запускает эмулятор и заводит в нём магазины для
+  # нового клуба — тестовый 800001, боевой с чеками 800002 и боевой без чеков 800003
+  # (учётные данные эмулятора, не секреты; README, «Подключение нового клуба»).
   yookassa-emu:
     <<: *node-service
     profiles: [yookassa-emu]
-    command: ["node", "tools/yookassa-emu/index.mjs"]
+    command: ["node", "scripts/dev-yookassa-emu.mjs"]
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       YOOKASSA_EMU_PORT: "8090"
       # Все интерфейсы контейнера: иначе server и caddy из сети Compose не достучатся.
       YOOKASSA_EMU_HOST: 0.0.0.0
-      # Магазин, который принимает эмулятор (Basic shopId:secretKey).
+      # Магазин из .env (Basic shopId:secretKey): provision:dev кладёт его клубу сида.
       YOOKASSA_EMU_SHOP_ID: ${YOOKASSA_EMU_SHOP_ID}
       YOOKASSA_EMU_SECRET: ${YOOKASSA_EMU_SECRET}
+      # Его GET /v3/me (M5.1 №154): 0 — боевой (test: false) / без чеков; пусто или 1 — да.
+      YOOKASSA_EMU_SHOP_TEST: ${YOOKASSA_EMU_SHOP_TEST:-1}
+      YOOKASSA_EMU_SHOP_FISCALIZATION: ${YOOKASSA_EMU_SHOP_FISCALIZATION:-1}
       # Куда слать вебхук; {club_id} — из metadata.club_id платежа.
       YOOKASSA_EMU_WEBHOOK_URL: http://server:3000/api/webhooks/yookassa/{club_id}
       # Внешний адрес эмулятора: confirmation_url = {этот адрес}/pay/{id}, через Caddy.

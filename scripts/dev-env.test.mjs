@@ -145,6 +145,32 @@ test('BL_SITE_RATE_PER_MIN: целое число или пусто', () => {
   }
 });
 
+test('M5.1: флаги магазина эмулятора и версия оферты — пусто по умолчанию, неверные значения не проходят', () => {
+  const env = read();
+  for (const key of ['YOOKASSA_EMU_SHOP_TEST', 'YOOKASSA_EMU_SHOP_FISCALIZATION', 'CLUB_OFFER_VERSION']) assert.equal(env[key], '', key);
+  const f = join(dir, 'm51.env');
+  const base = readFileSync(envFile, 'utf8');
+  const set = (key, value) => writeFileSync(f, base.replace(new RegExp(`^${key}=.*$`, 'm'), `${key}=${value}`));
+  for (const key of ['YOOKASSA_EMU_SHOP_TEST', 'YOOKASSA_EMU_SHOP_FISCALIZATION']) {
+    for (const bad of ['false', 'no', '2']) {
+      set(key, bad);
+      assert.throws(() => quiet(() => ensureEnvFile({ envFile: f, volumes: noVolumes })), new RegExp(key), bad);
+    }
+    for (const ok of ['', '0', '1']) {
+      set(key, ok);
+      quiet(() => ensureEnvFile({ envFile: f, volumes: noVolumes }));
+    }
+  }
+  for (const bad of ['2026/10/23', 'x'.repeat(33)]) {
+    set('CLUB_OFFER_VERSION', bad);
+    assert.throws(() => quiet(() => ensureEnvFile({ envFile: f, volumes: noVolumes })), /CLUB_OFFER_VERSION/, bad);
+  }
+  for (const ok of ['', '2026-10-23', 'v2.1_rc']) {
+    set('CLUB_OFFER_VERSION', ok);
+    quiet(() => ensureEnvFile({ envFile: f, volumes: noVolumes }));
+  }
+});
+
 test('сборка фронтенда: без секретов .env и NODE_ENV, вход для разработки по ALLOW_DEV_LOGIN', () => {
   const files = read();
   const env = webBuildEnv(files, { PATH: '/bin', NODE_ENV: 'development' });

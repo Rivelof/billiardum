@@ -34,7 +34,7 @@ const DEPS = ['package-lock.json'];
 export const SERVICE_CODE = {
   server: ['server', 'api', 'shared', 'supabase', '.env', 'deploy/dev/certs/ca.crt', ...DEPS],
   'device-sim': ['tools/device-sim', 'deploy/dev/devices.json', 'deploy/dev/certs/ca.crt', ...DEPS],
-  'yookassa-emu': ['tools/yookassa-emu', ...DEPS],
+  'yookassa-emu': ['tools/yookassa-emu', 'scripts/dev-yookassa-emu.mjs', ...DEPS],
   'kkt-emu': ['tools/kkt-bridge/emu', 'tools/kkt-bridge/lib', ...DEPS],
   'kkt-bridge': ['tools/kkt-bridge', 'deploy/dev/kkt-bridge.json', 'deploy/dev/kkt-bridge.token', ...DEPS],
   // Сайт: свой код и shared. Сборку островов (dist/manifest.json) с BL_SITE_DEV=1 и статьи

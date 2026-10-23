@@ -164,6 +164,14 @@ function checkEnvValues(env) {
   if (env.BL_SITE_RATE_PER_MIN && !/^\d{1,6}$/.test(env.BL_SITE_RATE_PER_MIN)) {
     fail('BL_SITE_RATE_PER_MIN в .env — целое число запросов в минуту с IP гостя (0 — без лимита). Пусто — 120.');
   }
+  // Эмулятор ЮKassa считает «да» всё, кроме 0: опечатка вида false молча дала бы тестовый магазин.
+  for (const key of ['YOOKASSA_EMU_SHOP_TEST', 'YOOKASSA_EMU_SHOP_FISCALIZATION']) {
+    if (env[key] && !['0', '1'].includes(env[key])) fail(`${key} в .env — 1 (да), 0 (нет) или пусто (да).`);
+  }
+  // Сервер с неверной версией оферты не стартует (server/lib/config.mjs) — лучше сказать до запуска.
+  if (env.CLUB_OFFER_VERSION && !/^[0-9A-Za-z._-]{1,32}$/.test(env.CLUB_OFFER_VERSION)) {
+    fail('CLUB_OFFER_VERSION в .env — до 32 символов [0-9A-Za-z._-], например 2026-10-23. Пусто — версия по умолчанию сервера.');
+  }
   // Подсети стенда и доверенные прокси (scripts/dev-net.mjs, M4-I4).
   const net = checkNetworkEnv(env);
   if (net.errors.length > 0) fail(net.errors.join('\n  '));
