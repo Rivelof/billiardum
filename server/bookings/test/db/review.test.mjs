@@ -116,6 +116,66 @@ describe('ревью брони и очереди', { skip }, () => {
     assert.equal((await h.booking(p2.id)).expire_reason, 'no_show');
   });
 
+  it('R1 (№128): стол без связи всё окно удержания — table_unavailable по истории light, возврат целиком', async () => {
+    h.clock.set(T0 + 9 * DAY);
+    const start = T0 + 9 * DAY + 120 * MIN;
+    const u = await h.login('+79995550012');
+    const p = await paid(u, table(5), start);
+    const holdEnd = start + 30 * MIN;
+    // light: контроллер стола 5 без связи с начала − 30 с до конца удержания.
+    const off = { from: start - 30_000, to: holdEnd };
+    h.lightHooks.availabilityDuring = async (_db, a) => {
+      if (a.resourceId !== table(5)) return { unavailable: false, reasons: [], intervals: [] };
+      const hit = new Date(a.from).getTime() <= off.to && new Date(a.to).getTime() >= off.from;
+      return hit
+        ? { unavailable: true, reasons: ['offline'], intervals: [{ from: new Date(off.from).toISOString(), to: new Date(off.to).toISOString(), reason: 'offline' }] }
+        : { unavailable: false, reasons: [], intervals: [] };
+    };
+    try {
+      h.clock.set(start - 15 * MIN);
+      await h.tick();
+      assert.equal((await h.booking(p.id)).status, 'reserved'); // light не видит офлайн в setReserved — бронь «показана»
+      h.clock.set(start + 5 * MIN);
+      await h.tick();
+      assert.equal((await h.booking(p.id)).notified.unavailable, 'offline');
+      h.clock.set(holdEnd);
+      await h.tick();
+      const b = await h.booking(p.id);
+      assert.equal(b.expire_reason, 'table_unavailable');
+      assert.equal((await h.refunds(p.paymentId)).reduce((x, y) => x + Number(y.amount_kopecks), 0), p.amount);
+      // light получил окно и бронь (своё удержание не в счёт).
+      const call = h.lightCalls.filter((c) => c.fn === 'availabilityDuring' && c.args.refId === p.id).at(-1);
+      assert.equal(call.args.source, 'booking');
+      assert.equal(call.args.userId, u.id);
+    } finally {
+      h.lightHooks.availabilityDuring = null;
+    }
+  });
+
+  it('R3: тревога «стол недоступен» — своя на каждую бронь, владелец уведомлён о каждой', async () => {
+    h.clock.set(T0 + 10 * DAY);
+    const owner = await h.login(PHONES.owner);
+    const before = (await h.notifications(owner.id)).length;
+    const ids = [];
+    for (const [i, m] of [[0, 120], [1, 240]]) {
+      const start = T0 + 10 * DAY + m * MIN;
+      const p = await paid(await h.login(`+7999555010${i}`), table(6), start);
+      ids.push({ id: p.id, start });
+    }
+    const s = await h.session({ resourceId: table(6), payer: other.id, paidUntilMs: T0 + 10 * DAY + 290 * MIN, startedMs: T0 + 10 * DAY + 100 * MIN });
+    for (const x of ids) {
+      h.clock.set(x.start + 30 * MIN);
+      await h.tick();
+      assert.equal((await h.booking(x.id)).expire_reason, 'table_unavailable');
+    }
+    const alarms = await h.q("select * from bl.alarms where type = 'booking_table_unavailable' and resource_id = $1", [table(6)]);
+    assert.equal(alarms.length, 2);
+    assert.deepEqual(alarms.map((a) => a.data.booking_id).sort(), ids.map((x) => x.id).sort());
+    assert.ok((await h.notifications(owner.id)).length >= before + 2);
+    await h.closeSession(s);
+    await h.drain();
+  });
+
   it('3: «гость пришёл» — только бронь по телефону без предоплаты и только в окне прихода', async () => {
     h.clock.set(T0 + 3 * DAY);
     const start = T0 + 3 * DAY + 180 * MIN;

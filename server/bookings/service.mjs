@@ -900,7 +900,10 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       if (h.kind === 'pending' && h.user_id !== b.user_id) return 'pending';
       if (h.kind === 'reserved' && h.ref_id && h.ref_id !== b.id) return 'reserved_other';
     }
-    if (typeof deps.light.getResourceStatus === 'function') {
+    // Связь со столом и прочее по истории знает light (availabilityDuring); без неё — статус стола.
+    const light = await lightAvailability(db, b, t, t);
+    if (light?.unavailable) return String(light.reasons?.[0] ?? 'unavailable').slice(0, 32);
+    if (!light && typeof deps.light.getResourceStatus === 'function') {
       try {
         const st = await deps.light.getResourceStatus(db, b.resource_id, { userId: b.user_id ?? null });
         if (st?.status === 'offline') return 'offline';
@@ -912,10 +915,29 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     return null;
   }
 
+  /**
+   * Доступность стола гостю брони за [from, to] по истории light (№128): offline, игра, сервис,
+   * неактивен, чужое удержание → { unavailable, reasons, intervals } или null, если функции нет.
+   * Своё удержание и игра гостя брони не в счёт — light получает userId, source и refId брони.
+   */
+  async function lightAvailability(db, b, from, to) {
+    if (typeof deps.light.availabilityDuring !== 'function') return null;
+    try {
+      return await deps.light.availabilityDuring(db, {
+        resourceId: b.resource_id, from: new Date(from), to: new Date(to), userId: b.user_id ?? null, source: 'booking', refId: b.id,
+      });
+    } catch (err) {
+      log.warn('booking_availability_failed', { booking_id: b.id, code: err.code });
+      return null;
+    }
+  }
+
   /** Был ли стол недоступен гостю в окне удержания [from, to): чужая игра, сервис, чужие удержания. */
   async function unavailableInWindow(db, b, fromMs, toMs) {
     const from = new Date(fromMs);
     const to = new Date(toMs);
+    const light = await lightAvailability(db, b, from, to);
+    if (light?.unavailable) return true;
     const { rows: s } = await db.query(
       `select 1 from bl.sessions where resource_id = $1 and started_at < $3 and coalesce(ended_at, paid_until) > $2
           and payer_user_id is distinct from $4 limit 1`,
@@ -950,6 +972,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         level: 'important',
         resourceId: b.resource_id,
         data: { booking_id: b.id, why: String(b.notified?.unavailable ?? 'history').slice(0, 32) },
+        // Объект тревоги — бронь: вторая бронь того же стола — новая тревога и уведомление владельцу.
+        dedupeKey: `booking:${b.id}`,
         text: `Бронь стола ${b.resource_number} на ${at(b)}: стол был недоступен гостю, предоплата возвращена`,
       });
     }

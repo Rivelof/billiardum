@@ -71,6 +71,7 @@ export async function init(ctx) {
             type: 'booking_step_failed',
             level: 'important',
             data: { booking_id: row.id },
+            dedupeKey: `booking:${row.id}`,
             text: 'Бронь не обрабатывается планировщиком: проверьте её в программе клуба',
           }),
         );

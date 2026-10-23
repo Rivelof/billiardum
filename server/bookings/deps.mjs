@@ -24,7 +24,7 @@ const MODULES = {
 
 /** Необязательные функции соседей: есть — берутся, нет — модуль обходится своим способом. */
 const OPTIONAL = {
-  light: ['getResourceStatus'],
+  light: ['getResourceStatus', 'availabilityDuring'],
   payments: ['pendingPlayUntil'],
 };
 

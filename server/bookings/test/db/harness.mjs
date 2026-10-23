@@ -85,6 +85,7 @@ export async function setup({ settings = {} } = {}) {
 
   let lightService = null;
   const lightCalls = [];
+  const lightHooks = { availabilityDuring: null };
   const setupModule = {
     async init(ctx) {
       lightService = createLightService({
@@ -116,6 +117,13 @@ export async function setup({ settings = {} } = {}) {
           return lightService.clearReserved(d, a);
         },
         getResourceStatus: (d, id, o) => lightService.resourceStatus(d, id, o),
+        // История доступности стола (light, №128): настоящая, когда есть; тест может подменить.
+        availabilityDuring: (d, a) => {
+          lightCalls.push({ fn: 'availabilityDuring', args: a });
+          if (lightHooks.availabilityDuring) return lightHooks.availabilityDuring(d, a);
+          if (typeof lightService.availabilityDuring === 'function') return lightService.availabilityDuring(d, a);
+          return { unavailable: false, reasons: [], intervals: [] };
+        },
         holdPending: (d, a) => lightService.holdPending(d, a),
         releasePending: (d, a) => lightService.releasePending(d, a),
       };
@@ -202,6 +210,7 @@ export async function setup({ settings = {} } = {}) {
     sseEvents,
     moneyCalls,
     lightCalls,
+    lightHooks,
     request,
     login,
     q,
