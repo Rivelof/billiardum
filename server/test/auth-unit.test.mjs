@@ -153,3 +153,16 @@ describe('вход для разработки в проде не существ
     }
   });
 });
+
+describe('способы входа GET /api/auth/methods (U1)', () => {
+  it('telegram — бот настроен и может отвечать; max — пока нет; dev — только вне production с флагом', async () => {
+    const { authMethods } = await import('../../api/routes/auth.mjs');
+    const tg = { botToken: '1:x', botUsername: 'bl_bot', webhookSecret: 's'.repeat(32) };
+    const run = (config, telegram, maxOn = false) => authMethods({ config, telegram, notify: { configured: () => ({ max: maxOn }) } }).json.methods;
+    assert.deepEqual(run({ nodeEnv: 'production', allowDevLogin: true, telegram: tg }, { configured: true }), ['telegram']);
+    assert.deepEqual(run({ nodeEnv: 'production', telegram: tg }, { configured: false }), [], 'нет прокси — бот не ответит');
+    assert.deepEqual(run({ nodeEnv: 'production', telegram: { ...tg, webhookSecret: null } }, { configured: true }), []);
+    assert.deepEqual(run({ nodeEnv: 'development', allowDevLogin: true, telegram: {} }, null), ['dev']);
+    assert.deepEqual(run({ nodeEnv: 'development', allowDevLogin: false }, null, true), ['max']);
+  });
+});

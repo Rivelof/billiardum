@@ -413,6 +413,20 @@ async function unlockTerminal(ctx, req) {
   return { status: 200, json: { ok: true } };
 }
 
+/**
+ * GET /api/auth/methods (без входа) → { methods }: способы входа, которые реально работают
+ * (U1): telegram — бот настроен (токен, имя, секрет вебхука) и может отвечать (прокси);
+ * max — когда адаптер MAX настроен (пока заглушка — нет); dev — только вне production
+ * с ALLOW_DEV_LOGIN=1.
+ */
+export function authMethods(ctx) {
+  const methods = [];
+  if (telegramReady(ctx.config) && ctx.telegram?.configured) methods.push('telegram');
+  if (ctx.notify?.configured?.().max) methods.push('max');
+  if (devLoginEnabled(ctx.config)) methods.push('dev');
+  return { status: 200, json: { methods } };
+}
+
 async function notConfigured() {
   throw new HttpError(501, 'not_configured');
 }
@@ -426,6 +440,7 @@ export const routes = [
     rateLimit: { max: 30, windowMs: MINUTE },
     handler: devLogin,
   },
+  { method: 'GET', path: '/api/auth/methods', auth: 'none', db: false, rateLimit: { max: 120, windowMs: MINUTE }, handler: authMethods },
   { method: 'POST', path: '/api/auth/telegram', auth: 'none', rateLimit: { max: 30, windowMs: MINUTE }, handler: telegramLogin },
   { method: 'POST', path: '/api/auth/max', auth: 'none', rateLimit: { max: 30, windowMs: MINUTE }, handler: notConfigured },
   { method: 'POST', path: '/api/auth/bot-link', auth: 'none', actor: 'system', rateLimit: { max: 10, windowMs: MINUTE }, handler: botLinkCreate },

@@ -192,6 +192,13 @@ describe('Telegram: initData мини-приложения', () => {
     assert.equal((await t.request('POST', '/api/auth/telegram', { body: { init_data: foreign }, origin: null })).status, 401);
   });
 
+  it('GET /api/auth/methods без входа: только настроенные способы (U1)', async () => {
+    const res = await t.request('GET', '/api/auth/methods', { origin: null });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json, { methods: ['telegram', 'dev'] });
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+  });
+
   it('MAX — 501 not_configured до документации', async () => {
     const res = await t.request('POST', '/api/auth/max', { body: { init_data: 'x' }, origin: null });
     assert.equal(res.status, 501);
