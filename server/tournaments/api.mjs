@@ -71,7 +71,7 @@ export function tournamentHolds(db, { resourceId, from, to }) {
 /**
  * matchLightWindow(db, { matchId }) → { status, tournament_status, resource_id, until_max } | null —
  * для light (extendFromTournament, решение №147): продлевать свет можно только матчу playing идущего
- * турнира и не дальше until_max = ends_at + match_minutes. db — контекст клуба матча.
+ * турнира и не дальше until_max — меньший из ends_at + match_minutes и started_at матча + 2 × match_minutes. db — контекст клуба матча.
  */
 export function matchLightWindow(db, { matchId }) {
   return service().lightWindow(db, { matchId });

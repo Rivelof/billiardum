@@ -32,14 +32,15 @@ export const EXTEND_BEFORE_MS = 10 * MINUTE;
  * первого внесённого счёта — одно короткое фиксированное доведение, без продлений (№147, M4-2).
  */
 export const REPORTED_TAIL_MS = 5 * MINUTE;
-/** Тревога «матч затянулся» (№147): матч упёрся в предел света ends_at + match_minutes. */
+/** Тревога «матч затянулся» (№147): матч упёрся в предел света (меньший из двух, matchLimit). */
 export const OVERDUE_ALARM = 'tournament_match_overdue';
 /**
- * Продление идущего турнира (POST …/extend, ручное действие, №147): ends_at не дальше этого от
- * текущего момента и не дальше EXTEND_SPAN_MS от начала турнира (позднее из starts_at и started_at).
+ * Предел света от начала самого матча (№147): не дальше started_at матча + MATCH_LIGHT_FACTOR ×
+ * match_minutes — досрочный старт и многодневный турнир не дают матчу без счёта гореть до конца окна.
  */
+export const MATCH_LIGHT_FACTOR = 2;
+/** Продление идущего турнира (POST …/extend, ручное действие, №147): ends_at не дальше этого от текущего момента. */
 export const EXTEND_AHEAD_MS = 12 * 60 * MINUTE;
-export const EXTEND_SPAN_MS = 24 * 60 * MINUTE;
 /** Время матча при продлении: не больше (или не больше прежнего, если оно было больше). */
 export const EXTEND_MATCH_MAX = 240;
 /** Поля, от которых зависят окно турнира и предел света (№147): после старта — только через extend. */
@@ -55,6 +56,8 @@ export const LATE_REFUND_CODES = {
   equipment: 'поломка оборудования',
   venue: 'авария в клубе (свет, помещение)',
 };
+/** Возврат всем при отмене после старта — только авария: оборудование или клуб (№149). */
+export const ALL_REFUND_CODES = ['equipment', 'venue'];
 /** Кэш публичных ответов (контракт §4: кэш 60 с). */
 export const PUBLIC_CACHE_MS = 60_000;
 
@@ -108,9 +111,9 @@ function cleanText(v, field, max, { required = false } = {}) {
   return s;
 }
 
-/** Код причины возврата после старта (№149): только из LATE_REFUND_CODES, иначе 400. */
-function cleanRefundCode(v) {
-  if (typeof v !== 'string' || !Object.prototype.hasOwnProperty.call(LATE_REFUND_CODES, v)) fail('bad_request', 'reason_code');
+/** Код причины возврата после старта (№149): только из списка allowed (по умолчанию все LATE_REFUND_CODES), иначе 400. */
+function cleanRefundCode(v, allowed = Object.keys(LATE_REFUND_CODES)) {
+  if (typeof v !== 'string' || !allowed.includes(v)) fail('bad_request', 'reason_code');
   return v;
 }
 
@@ -518,8 +521,8 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
   /**
    * POST …/extend { ends_at?, match_minutes?, reason } — продление идущего турнира без оплаты (№147):
    * ручное действие (инвариант 8) — причина, журнал manual.tournament_extend, тревога manual_action
-   * владельцу (было → стало). Пределы: ends_at — позже текущего момента, не дальше EXTEND_AHEAD_MS от
-   * него и EXTEND_SPAN_MS от начала турнира; match_minutes — 10…EXTEND_MATCH_MAX (или до прежнего).
+   * владельцу (было → стало). Пределы: ends_at — позже текущего момента и не дальше EXTEND_AHEAD_MS от
+   * него; match_minutes — 10…EXTEND_MATCH_MAX (или до прежнего).
    * Сверх предела — 409 limit_exceeded { extend_limit_until }.
    */
   async function extend(db, { clubId, staffId, tournamentId, body }) {
@@ -537,8 +540,8 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     const after = { ...before };
     if (endsAt) {
       if (endsAt <= t0) fail('bad_request', 'ends_at: в прошлом');
-      const startRef = Math.max(new Date(t.starts_at).getTime(), new Date(t.started_at ?? t.starts_at).getTime());
-      const cap = new Date(Math.min(t0.getTime() + EXTEND_AHEAD_MS, startRef + EXTEND_SPAN_MS, new Date(t.starts_at).getTime() + 14 * 24 * 60 * MINUTE));
+      // Ограничение базы: окно турнира не длиннее 14 дней.
+      const cap = new Date(Math.min(t0.getTime() + EXTEND_AHEAD_MS, new Date(t.starts_at).getTime() + 14 * 24 * 60 * MINUTE));
       if (endsAt > cap) fail('limit_exceeded', 'ends_at', 409, { extend_limit_until: cap.toISOString() });
       after.ends_at = endsAt;
     }
@@ -1621,8 +1624,8 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
 
   /**
    * Отмена турнира клубом. До старта — взносы назад всем (№138). После старта (№149) — по умолчанию
-   * без возврата; refund: 'all' с reason_code из LATE_REFUND_CODES — возврат всем (авария), это
-   * ручное действие manual.tournament_refund с тревогой владельцу.
+   * без возврата; refund: 'all' с reason_code equipment или venue (ALL_REFUND_CODES) — возврат всем
+   * (авария), журнал manual.tournament_refund. Тревога manual_action — одна, об отмене, с данными о возврате.
    */
   async function cancel(db, { clubId, staffId, tournamentId, reason: rawReason, refund = null, reasonCode = null }) {
     const reason = cleanReason(rawReason);
@@ -1631,7 +1634,8 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     if (t.club_id !== clubId) fail('not_found');
     if (['finished', 'canceled'].includes(t.status)) fail('bad_status', t.status);
     const started = Boolean(t.started_at) || t.status === 'running';
-    const code = started && refund === 'all' ? cleanRefundCode(reasonCode) : null;
+    // Возврат всем — только авария (оборудование, клуб); здоровье — только одному игроку (№149).
+    const code = started && refund === 'all' ? cleanRefundCode(reasonCode, ALL_REFUND_CODES) : null;
     const refundAll = !started || code !== null;
     const t0 = now();
     const live = (await db.query("select * from bl.tournament_entries where tournament_id = $1 and status <> 'canceled' for update", [t.id])).rows;
@@ -1659,7 +1663,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     });
     const who = started ? await staffLabel(db, t.club_id, staffId) : null;
     if (code) {
-      // Возврат всем после старта (авария) — отдельное ручное действие (№149).
+      // Возврат всем после старта (авария) — своя запись журнала; тревога — одна, об отмене (ниже).
       await audit(db, {
         action: 'manual.tournament_refund',
         objectType: 'tournament',
@@ -1669,35 +1673,27 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
         reason,
         data: { tournament_id: t.id, scope: 'all', reason_code: code, entries: refundedIds, refunds: refunded, amount_kopecks: refundedKopecks },
       });
-      await raiseAlarm(db, t.club_id, {
-        type: 'manual_action',
-        level: 'important',
-        manual: true,
-        data: {
-          action: 'manual.tournament_refund',
-          tournament_id: t.id,
-          scope: 'all',
-          reason_code: code,
-          staff_id: staffId,
-          staff_name: who,
-          reason,
-          refunds: refunded,
-          amount_kopecks: refundedKopecks,
-        },
-        dedupeKey: `tournament_refund:${t.id}`,
-        text: `Турнир «${t.title}» отменён после старта, взносы возвращаются всем (${refunded}, ${rub(refundedKopecks)}): ${LATE_REFUND_CODES[code]} — ${who}: ${reason}`,
-      });
     }
+    // Одна тревога manual_action об отмене, с данными о возврате (№149).
+    let text = `Турнир «${t.title}» отменён. Взносы вернутся участникам: ${refunded}`;
+    if (started && code) text = `Турнир «${t.title}» отменён после старта, взносы возвращаются всем (${refunded}, ${rub(refundedKopecks)}): ${LATE_REFUND_CODES[code]} — ${who}: ${reason}`;
+    else if (started) text = `Турнир «${t.title}» отменён после старта — ${who}: ${reason}. Взносы не возвращаются`;
     const al = await savepoint(db, () =>
       deps.alarms.raise(db, t.club_id, {
         type: 'manual_action',
         level: 'important',
         manual: true,
-        data: { tournament_id: t.id, action: 'tournament_cancel', refund: refundAll ? 'all' : 'none' },
+        data: {
+          tournament_id: t.id,
+          action: 'tournament_cancel',
+          refund: refundAll ? 'all' : 'none',
+          ...(code ? { reason_code: code } : {}),
+          refunds: refunded,
+          amount_kopecks: refundedKopecks,
+          ...(started ? { staff_id: staffId, staff_name: who, reason } : {}),
+        },
         dedupeKey: `tournament_cancel:${t.id}`,
-        text: refundAll
-          ? `Турнир «${t.title}» отменён. Взносы вернутся участникам: ${refunded}`
-          : `Турнир «${t.title}» отменён после старта — ${who}: ${reason}. Взносы не возвращаются`,
+        text,
       }),
     );
     if (!al.ok) log.warn('tournament_alarm_failed', { error: al.error?.message });
@@ -1810,9 +1806,20 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
     if (touched) await changed(db, t);
   }
 
-  /** Предел света матча (№147): конец турнира по расписанию + время одного матча. */
+  /** Предел света по окну турнира (№147): конец турнира по расписанию + время одного матча. */
   function lightLimit(t) {
     return new Date(new Date(t.ends_at).getTime() + t.match_minutes * MINUTE);
+  }
+
+  /**
+   * Предел света матча (№147): меньший из предела окна турнира и started_at матча +
+   * MATCH_LIGHT_FACTOR × match_minutes. → { until, by: 'match'|'tournament', tournament_until, match_until }.
+   */
+  function matchLimit(t, startedAt) {
+    const tournamentUntil = lightLimit(t);
+    const matchUntil = startedAt ? new Date(new Date(startedAt).getTime() + MATCH_LIGHT_FACTOR * t.match_minutes * MINUTE) : null;
+    const byMatch = matchUntil !== null && matchUntil < tournamentUntil;
+    return { until: byMatch ? matchUntil : tournamentUntil, by: byMatch ? 'match' : 'tournament', tournament_until: tournamentUntil, match_until: matchUntil };
   }
 
   /**
@@ -1822,11 +1829,12 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
    */
   async function extendPlaying(db, t, m, t0) {
     if (!m.hold_until || m.hold_until.getTime() - t0.getTime() >= EXTEND_BEFORE_MS) return;
-    const limit = lightLimit(t);
+    const lim = matchLimit(t, m.started_at);
+    const limit = lim.until;
     const want = new Date(t0.getTime() + Math.max(15, Math.round(t.match_minutes / 2)) * MINUTE);
     const until = want > limit ? limit : want;
     if (until <= m.hold_until) {
-      if (m.hold_until > t0) await overdueAlarm(db, t, m, limit);
+      if (m.hold_until > t0) await overdueAlarm(db, t, m, lim);
       return;
     }
     if (typeof deps.light.extendFromTournament !== 'function') {
@@ -1839,11 +1847,15 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       return;
     }
     await db.query('update bl.tournament_matches set hold_until = $2 where id = $1', [m.id, until]);
-    if (until.getTime() === limit.getTime()) await overdueAlarm(db, t, m, limit);
+    if (until.getTime() === limit.getTime()) await overdueAlarm(db, t, m, lim);
   }
 
-  /** Тревога «матч затянулся» (№147): одна на матч (склейка по матчу), владельцу и управляющему. */
-  async function overdueAlarm(db, t, m, limit) {
+  /**
+   * Тревога «матч затянулся» (№147): одна на матч (склейка по матчу), владельцу и управляющему.
+   * lim — matchLimit: в данных оба предела и какой сработал (limit_by: match | tournament).
+   */
+  async function overdueAlarm(db, t, m, lim) {
+    const limit = lim.until;
     const key = `tournament_match:${m.id}`;
     const seen = await db.query('select 1 from bl.alarms where club_id = $1 and type = $2 and dedupe_key = $3 limit 1', [t.club_id, OVERDUE_ALARM, key]);
     if (seen.rowCount > 0) return;
@@ -1855,7 +1867,14 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       type: OVERDUE_ALARM,
       level: 'important',
       resourceId: m.resource_id ?? null,
-      data: { tournament_id: t.id, match_id: m.id, light_until: limit.toISOString() },
+      data: {
+        tournament_id: t.id,
+        match_id: m.id,
+        light_until: limit.toISOString(),
+        limit_by: lim.by,
+        tournament_until: lim.tournament_until.toISOString(),
+        match_until: lim.match_until ? lim.match_until.toISOString() : null,
+      },
       dedupeKey: key,
       text: `Турнир «${t.title}»: матч${table ? ` на столе ${table}` : ''} затянулся — свет погаснет в ${at}. Внесите счёт или решите в программе клуба.`,
     });
@@ -1943,12 +1962,13 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
 
   /**
    * Окно света матча для light (extendFromTournament, №147): статус матча и турнира, стол и предел
-   * until_max = ends_at + match_minutes. Матча нет (или чужой клуб — RLS) — null.
+   * until_max — меньший из ends_at + match_minutes и started_at матча + 2 × match_minutes.
+   * Матча нет (или чужой клуб — RLS) — null.
    */
   async function lightWindow(db, { matchId }) {
     if (!isUuid(matchId)) return null;
     const { rows } = await db.query(
-      `select m.status, m.resource_id, t.status as tournament_status, t.ends_at, t.match_minutes
+      `select m.status, m.resource_id, m.started_at as match_started_at, t.status as tournament_status, t.ends_at, t.match_minutes
          from bl.tournament_matches m join bl.tournaments t on t.id = m.tournament_id where m.id = $1`,
       [matchId],
     );
@@ -1958,7 +1978,7 @@ export function createTournamentService({ deps, log, clock, pool = null, withCon
       status: r.status,
       tournament_status: r.tournament_status,
       resource_id: r.resource_id,
-      until_max: lightLimit(r).toISOString(),
+      until_max: matchLimit(r, r.match_started_at).until.toISOString(),
     };
   }
 

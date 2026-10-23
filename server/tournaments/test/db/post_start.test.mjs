@@ -120,11 +120,6 @@ describe('№147: после старта окно турнира меняетс
     assert.equal(r.status, 409);
     assert.equal(r.json.error, 'limit_exceeded');
     assert.equal(r.json.extend_limit_until, new Date(h.clock.now().getTime() + 12 * 60 * MIN).toISOString());
-    // Дальше суток от начала: часы ушли на 20 ч вперёд, +12 ч уже за сутками.
-    h.clock.set(startedAt + 20 * 60 * MIN);
-    r = await h.request('POST', path(t, '/extend'), { token: manager.token, body: { ends_at: new Date(startedAt + 25 * 60 * MIN).toISOString(), reason: 'долго' } });
-    assert.equal(r.status, 409);
-    assert.equal(r.json.extend_limit_until, new Date(startedAt + 24 * 60 * MIN).toISOString());
     // В прошлом — 400.
     r = await h.request('POST', path(t, '/extend'), { token: manager.token, body: { ends_at: new Date(startedAt).toISOString(), reason: 'назад' } });
     assert.equal(r.status, 400);
@@ -137,7 +132,7 @@ describe('№147: после старта окно турнира меняетс
   });
 
   it('extend с причиной: окно и предел света сдвинуты, журнал manual.tournament_extend, тревога владельцу «было → стало», ручная строка отчёта смены', async () => {
-    const { t, m, manager, endsAt } = await running(6, 1020, { lenMin: 120, matchMinutes: 60 });
+    const { t, m, manager, endsAt, startedAt } = await running(6, 1020, { lenMin: 120, matchMinutes: 60 });
     const newEnds = new Date(endsAt + 90 * MIN).toISOString();
     const r = await h.request('POST', path(t, '/extend'), { token: manager.token, body: { ends_at: newEnds, match_minutes: 90, reason: 'Финал затянулся, гости просят доиграть' } });
     assert.equal(r.status, 200, r.text);
@@ -157,7 +152,8 @@ describe('№147: после старта окно турнира меняетс
         c.release();
       }
     });
-    assert.equal(win.until_max, new Date(endsAt + 90 * MIN + 90 * MIN).toISOString());
+    // Меньший из пределов: окно турнира (ends_at + 90) и начало матча + 2 × 90 минут.
+    assert.equal(win.until_max, new Date(Math.min(endsAt + 90 * MIN + 90 * MIN, startedAt + 2 * 90 * MIN)).toISOString());
     const [a] = (await h.audit('manual.tournament_extend')).filter((x) => x.data.tournament_id === t.id);
     assert.equal(a.reason, 'Финал затянулся, гости просят доиграть');
     assert.equal(a.actor_id, manager.id);
@@ -183,6 +179,38 @@ describe('№147: после старта окно турнира меняетс
     assert.equal(item.reason, 'Финал затянулся, гости просят доиграть');
     assert.equal(item.data.before.match_minutes, 60);
     assert.equal(item.data.after.ends_at, newEnds);
+  });
+
+  it('extend: больше суток от начала турнира — можно, предел только +12 ч от текущего момента', async () => {
+    const { t, manager, startedAt } = await running(6, 1025, { lenMin: 20 * 60 });
+    h.clock.set(startedAt + 20 * 60 * MIN);
+    const ends = new Date(startedAt + 30 * 60 * MIN).toISOString();
+    const r = await h.request('POST', path(t, '/extend'), { token: manager.token, body: { ends_at: ends, reason: 'Второй день турнира' } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.json.ends_at, ends);
+    h.clock.set(startedAt);
+  });
+
+  it('предел света от начала матча: не дальше started_at + 2 × match_minutes, даже если окно турнира длиннее; тревога с обоими пределами', async () => {
+    const { t, m, startedAt, endsAt } = await running(6, 1027, { lenMin: 10 * 60, matchMinutes: 60 });
+    const matchUntil = startedAt + 2 * 60 * MIN;
+    for (let x = startedAt; x + 5 * MIN <= startedAt + 4 * 60 * MIN; x += 5 * MIN) {
+      h.clock.set(x + 5 * MIN);
+      await h.tick();
+    }
+    const ext = h.calls.light.filter((c) => c.fn === 'extendFromTournament' && c.args.matchId === m.id);
+    assert.ok(ext.length >= 1, 'продлевалось');
+    for (const e of ext) assert.ok(Date.parse(e.args.until) <= matchUntil, 'не дальше начала матча + 2 × время матча');
+    assert.equal(Date.parse(ext.at(-1).args.until), matchUntil);
+    const [mm] = await h.matches(t.id);
+    assert.equal(mm.hold_until.getTime(), matchUntil);
+    const alarms = await h.q("select * from bl.alarms where club_id = $1 and type = 'tournament_match_overdue' and data->>'match_id' = $2", [CLUB_A, m.id]);
+    assert.equal(alarms.length, 1);
+    assert.deepEqual(
+      [alarms[0].data.limit_by, alarms[0].data.light_until, alarms[0].data.match_until, alarms[0].data.tournament_until],
+      ['match', new Date(matchUntil).toISOString(), new Date(matchUntil).toISOString(), new Date(endsAt + 60 * MIN).toISOString()],
+    );
+    h.clock.set(startedAt);
   });
 
   it('исправление счёта: в тревоге staff_name, в строке отчёта — tournament_id и было → стало', async () => {
@@ -280,6 +308,9 @@ describe('№149: взнос после старта', () => {
     const [a] = (await h.audit('manual.tournament_cancel')).filter((x) => x.data.tournament_id === t.id);
     assert.equal(a.data.refund, 'none');
     assert.equal((await h.audit('manual.tournament_refund')).filter((x) => x.data.tournament_id === t.id).length, 0);
+    const alarms = await h.q("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'tournament_id' = $2", [CLUB_A, t.id]);
+    assert.equal(alarms.length, 1);
+    assert.deepEqual([alarms[0].data.refund, alarms[0].data.refunds, alarms[0].data.reason], ['none', 0, 'Игроки разошлись']);
     const n = await h.notifications(ps[0].user.id, 'tournament.canceled');
     assert.ok(!/вернём/.test(n.at(-1).text));
   });
@@ -291,6 +322,9 @@ describe('№149: взнос после старта', () => {
     assert.equal(r.json.error, 'bad_request');
     r = await h.request('POST', path(t, '/cancel'), { token: manager.token, body: { reason: 'Пропал свет', refund: 'all' } });
     assert.equal(r.status, 400, 'без кода — 400');
+    r = await h.request('POST', path(t, '/cancel'), { token: manager.token, body: { reason: 'Все заболели', refund: 'all', reason_code: 'health' } });
+    assert.equal(r.status, 400, 'здоровье — только возврат одному игроку');
+    assert.equal(r.json.error, 'bad_request');
     r = await h.request('POST', path(t, '/cancel'), { token: manager.token, body: { reason: 'Пропал свет', refund: 'some', reason_code: 'venue' } });
     assert.equal(r.status, 400);
     assert.equal((await h.tournament(t.id)).status, 'running', 'ничего не отменено');
@@ -305,9 +339,19 @@ describe('№149: взнос после старта', () => {
     const [a] = (await h.audit('manual.tournament_refund')).filter((x) => x.data.tournament_id === t.id);
     assert.equal(a.reason, 'Пропал свет во всём клубе');
     assert.deepEqual([a.data.scope, a.data.reason_code, a.data.refunds, a.data.amount_kopecks], ['all', 'venue', 2, 60_000]);
-    const [al] = await h.q("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'action' = 'manual.tournament_refund' and data->>'tournament_id' = $2", [CLUB_A, t.id]);
-    assert.ok(al);
-    assert.equal(al.data.scope, 'all');
+    // Одна тревога об отмене — с данными о возврате.
+    const alarms = await h.q("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'tournament_id' = $2", [CLUB_A, t.id]);
+    assert.equal(alarms.length, 1);
+    const [al] = alarms;
+    assert.deepEqual(
+      [al.data.action, al.data.refund, al.data.reason_code, al.data.refunds, al.data.amount_kopecks, al.data.staff_id],
+      ['tournament_cancel', 'all', 'venue', 2, 60_000, manager.id],
+    );
+    assert.equal(typeof al.data.staff_name, 'string');
+    const owner = await h.login(STAFF.owner);
+    const n = (await h.notifications(owner.id, 'alarm')).filter((x) => x.data.alarm_id === al.id);
+    assert.equal(n.length, 1);
+    assert.match(n[0].text, /отменён после старта, взносы возвращаются всем \(2, 600 ₽\): авария в клубе/);
   });
 });
 
