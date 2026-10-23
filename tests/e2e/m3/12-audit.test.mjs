@@ -42,7 +42,8 @@ test('каждая команда свету столов 1–6 за окно и
       where c.club_id = $1 and c.created_at >= $2 and r.number = any($3::int[]) and c.sent_at is not null`,
     [CLUB_A, SINCE, TABLES],
   );
-  const simIds = logLines(SIM_CONTAINER, SINCE, 'sim_cmd').filter((l) => TABLES.includes(l.table) && l.cmd_id).map((l) => l.cmd_id);
+  // Исполненные контроллером (ok, resend); отклонённые подделки T9 (bad_sig, их подаёт тест через inject) — не команды сервера.
+  const simIds = logLines(SIM_CONTAINER, SINCE, 'sim_cmd').filter((l) => TABLES.includes(l.table) && l.cmd_id && ['ok', 'resend'].includes(l.result)).map((l) => l.cmd_id);
   const ids = [...new Set([...cmds.map((c) => c.id), ...simIds])];
   const { rows: au } = await db.query("select data->>'cmd_id' as id from bl.audit_log where club_id = $1 and action = 'device.cmd' and data->>'cmd_id' = any($2::text[])", [CLUB_A, ids]);
   const have = new Set(au.map((r) => r.id));

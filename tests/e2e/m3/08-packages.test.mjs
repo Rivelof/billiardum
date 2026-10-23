@@ -143,19 +143,22 @@ test('покупка в приложении (чек full_prepayment) и игр�
   assert.equal(b.minutes, 60);
   firstLot = b.lots[0];
 
-  const emuBefore = emu('/__emu/payments').length;
+  const tPlay = new Date();
   const g = await playByBalance(buyer, 2);
   t.diagnostic(`котировка балансом: ${g.q.amount_kopecks} коп., balance_minutes ${g.q.balance_minutes}; оплата ${JSON.stringify(g.p)}; свет ${g.on.state.relay}`);
   assert.equal(g.q.amount_kopecks, 0);
   assert.equal(g.q.balance_minutes, 2);
   const balPay = (await db.query('select id, provider, method, status, amount_kopecks, provider_payment_id from bl.payments where id = $1', [g.p.payment_id])).rows[0];
-  const emuAfter = emu('/__emu/payments').length;
+  // Платежи гостя в ЮKassa после начала игры (эмулятор общий с параллельными сценариями — считаем по гостю).
+  const { rows: ykNew } = await db.query("select count(*)::int as n from bl.payments where user_id = $1 and provider = 'yookassa' and created_at >= $2", [buyer.user.id, tPlay]);
   const ownReceipts = (await db.query('select kind, channel, status, amount_kopecks, settles_payment_id from bl.receipts where payment_id = $1', [balPay.id])).rows;
-  t.diagnostic(`платёж игры: ${balPay.provider}/${balPay.method}/${balPay.status}, стоимость ${balPay.amount_kopecks} коп., в ЮKassa ${balPay.provider_payment_id}; платежей эмулятора ${emuBefore} → ${emuAfter}; чеки по платежу игры ${JSON.stringify(ownReceipts)}`);
+  t.diagnostic(`платёж игры: ${balPay.provider}/${balPay.method}/${balPay.status}, стоимость ${balPay.amount_kopecks} коп., в ЮKassa ${balPay.provider_payment_id}; новых платежей ЮKassa гостя ${ykNew[0].n}; чеки по платежу игры ${JSON.stringify(ownReceipts)}`);
   assert.equal(balPay.method, 'balance');
   assert.equal(balPay.provider_payment_id, null);
-  assert.equal(emuAfter, emuBefore, 'нового платежа ЮKassa нет');
+  assert.equal(ykNew[0].n, 0, 'нового платежа ЮKassa нет');
   assert.ok(ownReceipts.every((x) => x.settles_payment_id), 'чека прихода по игре нет — только зачёт');
+  // Ревью п. 2: чек зачёта за минуты баланса — при закрытии сессии, за сыгранное.
+  await stopGame(buyer, g.sessionId);
   const settle = await waitSettlementSent(db, r.payment_id);
   const share = Math.floor((PRICE * 2 * 2 + 60) / (2 * 60));
   const er = emuReceipts(pid);
@@ -169,7 +172,6 @@ test('покупка в приложении (чек full_prepayment) и игр�
   assert.equal(b2.minutes, 58);
   const s = await session(buyer.token, g.sessionId);
   assert.ok(Math.abs(new Date(s.paid_until) - new Date(s.started_at) - 2 * MIN) < 2000);
-  await stopGame(buyer, g.sessionId);
 });
 
 test('возврат пакета: тронутый — package_used; нетронутый — целиком с чеком возврата (№118)', async (t) => {

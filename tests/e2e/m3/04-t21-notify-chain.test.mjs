@@ -4,7 +4,8 @@
 // MAX_BOT_TOKEN, TELEGRAM_BOT_TOKEN и TELEGRAM_PROXY_URL пусты), а подменить канал у живого
 // сервера нечем (dev-ручек для уведомлений нет). Поэтому две части:
 // 1. Живой стек. Гость с синтетическими id MAX и Telegram (в базе) выбирает порядок каналов
-//    PATCH /api/me {notify_channel: max, channels_order: [max, telegram]}; бронь стола
+//    порядок каналов max → telegram (PATCH /api/me с ненастроенными каналами — 400, №126; порядок
+//    записан в базу как сохранённый раньше); бронь стола
 //    E2E_T21_TABLE (по умолчанию 6) через 15–20 минут → сервер сам шлёт напоминание booking.soon
 //    за 15 минут до начала. В bl.notifications: попытки по порядку max → telegram (MAX не
 //    доставил — not_configured — и цепочка пошла дальше), итог skipped: доставить некуда.
@@ -66,7 +67,13 @@ test('T21 на живом стеке: MAX не доставил напомина
   const maxId = `e2e_max_${randomInt(1e9)}`;
   const tgId = 9_000_000_000 + randomInt(1e9);
   await db.query('update bl.users set max_user_id = $2, telegram_user_id = $3 where id = $1', [guest.user.id, maxId, tgId]);
-  const me = await ok(api('PATCH', '/api/me', { token: guest.token, body: { notify_channel: 'max', channels_order: ['max', 'telegram'] } }));
+  // №126: ненастроенные каналы гость выбрать не может (400); порядок max → telegram — как у гостя,
+  // выбравшего его, пока каналы были настроены (база, подготовка стенда).
+  const pt = await api('PATCH', '/api/me', { token: guest.token, body: { notify_channel: 'max', channels_order: ['max', 'telegram'] } });
+  t.diagnostic(`PATCH /api/me с ненастроенными каналами: ${pt.status} ${pt.text}`);
+  assert.equal(pt.status, 400);
+  await db.query("update bl.users set notify_channel = 'max', channels_order = $2 where id = $1", [guest.user.id, ['max', 'telegram']]);
+  const me = await ok(api('GET', '/api/me', { token: guest.token }));
   t.diagnostic(`гость: notify_channel ${me.user.notify_channel}, channels_order ${JSON.stringify(me.user.channels_order)}, каналы ${JSON.stringify(me.user.channels ?? null)}, можно предложить ${JSON.stringify(me.user.channels_available ?? null)}`);
   assert.deepEqual(me.user.channels_order, ['max', 'telegram']);
   // №126: ненастроенный на сервере канал гостю не показывается подключённым и не предлагается.

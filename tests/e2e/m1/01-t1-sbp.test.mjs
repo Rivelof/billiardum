@@ -110,7 +110,11 @@ test(`T1: стол ${TABLE}, 2 часа по СБП → свет, таймер 2
   assert.equal(s.status, 'active');
   assert.equal(s.is_payer, true);
   assert.equal(new Date(s.paid_until) - new Date(s.started_at), 120 * 60_000);
-  assert.equal(fmtMs(s.remaining_ms), '2:00:00');
+  // Таймер на старте — 2:00:00: остаток, приведённый к моменту старта (чтение идёт через
+  // секунду-другую после света — ожидание логов), ровно 2 часа.
+  const atStart = s.remaining_ms + (Date.now() - new Date(s.started_at).getTime());
+  assert.equal(fmtMs(Math.min(atStart, 120 * 60_000)), '2:00:00');
+  assert.ok(s.remaining_ms > 120 * 60_000 - 5000 && s.remaining_ms <= 120 * 60_000, `остаток ${s.remaining_ms} мс`);
   assert.ok(Math.abs(simNow.state.remaining_ms - s.remaining_ms) < 3000, 'остаток контроллера ≈ остатку сервера');
   assert.equal(simNow.state.mode, 'active');
   assert.equal(simNow.state.led, 'off');

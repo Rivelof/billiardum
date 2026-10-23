@@ -1,0 +1,41 @@
+# Черновик хода регресса M1–M3 после ревью (tester)
+
+Логи прогонов: `/tmp/claude-0/-home-user/a6758fe1-8da3-5420-8e39-bc60dc5b4dab/scratchpad/reg`, `reg2`, `reg3`.
+
+## Код и стенд
+- reg: f1052c2 (M1, M2 полностью; M3 частично — прерван перезапуском стека).
+- reg2: 9abf9a0 (M3 весь, review/*, M2 весь, M1 01–03 — прерван перезапуском сессии).
+- reg3: d3a4bc9 (M1 01, 03–13, M2 07, M3 12).
+
+## Итоги по файлам (последний результат)
+| Файл | Код | Итог | Примечание |
+|---|---|---|---|
+| m1/01 T1 | d3a4bc9 | PASS 4/4 | тест поправлен: таймер 2:00:00 приводится к моменту старта (чтение через ~0,6 с после света) |
+| m1/02 T2 | 9abf9a0 | PASS 5/5 | |
+| m1/03 T3–T4 | d3a4bc9 | PASS 3/3 (reg3/m1-03-r2.log) | первые два повтора — стол 6 занят хвостом прерванного прогона |
+| m1/04–13 | d3a4bc9 | PASS (04 1, 05 3, 06 1, 07 1, 08 3, 09 1, 10 3, 11 1, 12 1 — p95 72 мс в reg, 13 2) | |
+| m2/01–08 | 9abf9a0 | PASS 33/33 | m2/07 на d3a4bc9 — PASS 8/8 (скидка по PIN) |
+| m3/01 T18 | 9abf9a0 | PASS: B (reg2 run1), A (reg2 run2) | B в run2 упал из-за моего параллельного m3/08 (восстановил forfeit 100 %) — не дефект |
+| m3/02 T19 | 9abf9a0 | PASS | тест: при занятом столе бронь остаётся confirmed (ревью №14), reserved после конца игры; порядок stop→reserved без отказов |
+| m3/03 T20 | 9abf9a0 | PASS 2/2 | |
+| m3/04 T21 | 9abf9a0 | PASS 2/2 | тест: PATCH /api/me с ненастроенными каналами — 400 (№126), порядок каналов записан в базу |
+| m3/05 старт по брони | 9abf9a0 | PASS 4/4 | |
+| m3/06, 07 | 9abf9a0 | PASS 4/4, 3/3 | |
+| m3/08 пакеты | 9abf9a0 | PASS 4/4 | тест: чек зачёта баланса — при закрытии сессии (ревью п. 2); новые платежи ЮKassa считаются по гостю |
+| m3/09, 10, 11 | 9abf9a0 | PASS 2/2, 3/3, 3/3 | |
+| m3/12 журнал | d3a4bc9 | PASS 3/3 (reg3/m3-12-r.log) | тест поправлен: подделки T9 (bad_sig) не считаются; 319 команд, без записи 0; 1 отказ контроллера — R2 |
+| review/01 «Продолжить» дважды | 9abf9a0 | PASS | возврат 2000 = продление 2, продление 1 не возвращено |
+| review/02 обрезка по брони | 9abf9a0 | PASS | возвращено 42 784 из 60 000 (игра 17,2 мин), session.booking_cut |
+| review/03 стол недоступен | d3a4bc9 | FAIL — R1, R2, R3 (reg3/review-03.log) | сервис — table_unavailable, возврат 300 ₽, но сервисный свет погашен (R2); без связи — no_show, удержано 100 % (R1); вторая тревога по столу склеена, владелец не уведомлён (R3) |
+| review/04 обрыв MQTT | 9abf9a0 | PASS | extend superseded, resume acked, остаток 472/471 с |
+| review/05 очередь уведомлений | 9abf9a0 | PASS | 200 уведомлений: свет p95 238 мс; server/test/db/notify-queue PASS |
+| review/06 возврат кассы | 9abf9a0 | PASS | 500 → 503 payment_failed; повтор тем же ключом 201; новым ключом 409 already_paid; в ЮKassa 1 возврат, один ключ |
+| server unit (bridge, light/blocker, light/booking-cut, db/notify-queue) | 9abf9a0 | PASS 37/37 | |
+
+## Осталось
+- ничего: M1, M2, M3, review пройдены.
+
+## Дефекты
+- R1 (№128): стол без связи в окне удержания брони не признаётся недоступным — предоплата удержана 100 %. `server/bookings/service.mjs:903–911` (getResourceStatus отдаёт reserved раньше проверки связи, `server/sessions/service.mjs:161–163`), `unavailableInWindow` 916–932 связь не учитывает. Доказательство: стол 5, device_offline 03:04:30 – device_online 03:07:02, окно 03:05–03:07, expire_reason no_show, settled 30 000.
+- R2: сервисный свет и удержание брони на одном столе. Сервис включён (03:00:47), бронь подтверждена — первый тик пишет удержание reserved (не показано), второй тик (03:01:02) видит своё удержание reserved вместо сервиса → state.reserved контроллеру в сервисе → wrong_session → сверка шлёт service.stop (cause sync): сервисный свет погас, в базе сервис до 03:15:47, бронь стала reserved. `server/sessions/service.mjs` setReserved (`activeHold` → reserved, `shown = !busy && h?.kind !== 'service'`) и actualState в device-logic (reserved выигрывает у service). Доказательство: device_commands стола 3 queue 1168–1171, resource_holds стола 3.
+- R3: тревога booking_table_unavailable склеивается по столу: вторая бронь того же стола (другая booking_id) — только count 2, data прежней брони, владельцу уведомления-тревоги нет (только info о возврате). №128 требует тревогу владельцу. Ключ склейки без booking_id (alarms DEDUPE_FIELDS). Доказательство: bl.alarms booking_table_unavailable стол 3 count 2, data.booking_id 1b750823 (первая бронь), уведомлений alarm владельцу 1 (03:07), за 04:17 — только refund.

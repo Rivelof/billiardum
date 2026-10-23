@@ -128,6 +128,23 @@ node --test --test-concurrency=1 --test-timeout=5400000 "tests/e2e/m3/*.test.mjs
 
 Что меняют на стенде, кроме обычных данных через API: правила брони клуба (`clubs.settings`: шаг 5 минут, без упреждения, бронь от 15 минут, режим предоплаты) и `club_payment_settings.booking_forfeit_percent` — исходные значения сохраняются в `E2E_M3_STATE` (по умолчанию `$TMPDIR/bl-e2e-m3-state.json`) и возвращаются (T18 в конце, остальные — при следующем `restore`); синтетические id MAX и Telegram гостя T21 (сбрасываются). Столы по умолчанию: T18 — 2 и 3, T19 и телефонные брони — 4, T20 — 5, T21 и пакеты — 6, старт по брони — 3, депозит — 4 (переменные `E2E_T18_TABLE`, `E2E_T18_TABLE_B`, `E2E_T19_TABLE`, `E2E_T20_TABLE`, `E2E_T20_FREE_TABLE`, `E2E_T21_TABLE`, `E2E_START_TABLE`, `E2E_START_OTHER_TABLE`, `E2E_PHONE_TABLE`, `E2E_RACE_TABLE`, `E2E_PKG_TABLE`, `E2E_DEPOSIT_TABLE`).
 
+## Регресс после ревью бэкенда (`review/`)
+
+Сценарии к исправлениям независимого ревью (decisions №128–130 и ревью света, денег, кассы); итог — `REGRESSION-review.md`. Нужен тот же стенд, что для M3.
+
+```sh
+node --test --test-concurrency=1 --test-timeout=1800000 "tests/e2e/review/*.test.mjs"
+```
+
+| Файл | Что проверяет |
+|---|---|
+| `01-resume-twice-refund.test.mjs` | прерывание → «Продолжить» → прерывание → возврат: вернулось только неотыгранное последнего отрезка (стол `E2E_REVIEW_RESUME_TABLE`, 1) |
+| `02-booking-cut.test.mjs` | №129: бронь при живой котировке и неподтверждённом платеже — 409; платёж «состарен» (база), бронь принята, оплата → игра до брони − 5 мин, разница вернулась (`E2E_REVIEW_CUT_TABLE`, 2) |
+| `03-booking-table-unavailable.test.mjs` | №128: сервисный свет и стол без связи в окне удержания — бронь `table_unavailable`, предоплата целиком, тревога (`E2E_REVIEW_UNAV_TABLE_A/B`, 3 и 4) |
+| `04-mqtt-outage.test.mjs` | обрыв сервера с брокером без перезапуска Mosquitto: перехват сессии MQTT учёткой сервера (client id `bl-server`) на `E2E_REVIEW_MQTT_HOLD_MS`; команды за обрыв — superseded, после связи — актуальное состояние (`E2E_REVIEW_MQTT_TABLE`, 5). Ненадолго отключает живой сервер от брокера — гонять отдельно |
+| `05-notify-queue-light.test.mjs` | №130: 200 уведомлений в очереди — свет после оплаты не ждёт (p95 < 1,5 с) (`E2E_REVIEW_NOTIFY_TABLE`, 6) |
+| `06-pos-refund-retry.test.mjs` | возврат на кассе при 500 от ЮKassa и повторах (тот же и новый ключ) — один возврат, один ключ ЮKassa |
+
 ## Что тесты меняют
 
 - База: попытки записи — только внутри транзакций, которые всегда откатываются (ROLLBACK). `npm run test:db` создаёт и удаляет свои временные базы `bl_test_*`.

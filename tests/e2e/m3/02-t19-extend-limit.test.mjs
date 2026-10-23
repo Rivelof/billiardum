@@ -8,8 +8,8 @@
 // 3. Котировка продления на 60 минут — 409 booking_conflict; ровно до S − 5 — 200, в ответе
 //    extend_limit_until = S − 5; оплата → paid_until = S − 5 и в API, и в контроллере.
 //    Ещё минута — 409 booking_conflict.
-// 4. За 15 минут до начала бронь reserved, но стол занят игрой A — контроллер продолжает игру
-//    (свет горит, не синий). A заканчивает игру — стол сразу синий (state.reserved), чужой гость
+// 4. За 15 минут до начала стол занят игрой A — бронь остаётся confirmed (ревью №14: синий не
+//    показан, планировщик повторяет), контроллер продолжает игру. A заканчивает игру — стол сразу синий (state.reserved), чужой гость
 //    не может занять стол. Уборка: управляющий отменяет бронь B (предоплата возвращается).
 // Длится около 10 минут.
 
@@ -24,6 +24,7 @@ import {
   createBooking,
   extendGame,
   FAST_BOOKING,
+  getBooking,
   hhmm,
   MIN,
   newGuest,
@@ -34,6 +35,7 @@ import {
   RES,
   session,
   sim,
+  sleep,
   sleepUntil,
   slotAfter,
   startGame,
@@ -122,14 +124,18 @@ test(`T19: продление перед бронью ограничено «н�
 
   // 4. Бронь reserved при занятом столе: свет игры не трогается, синий — после конца игры.
   await sleepUntil(new Date(S.getTime() - 15 * MIN + 15_000), (m) => t.diagnostic(m));
-  const r = await waitBooking(B.token, created.id, (b) => b.status === 'reserved', { timeoutMs: 30_000, what: 'бронь B reserved' });
+  // Ревью №14: стол занят игрой — бронь не reserved (синий не показан), планировщик повторяет.
+  await sleep(25_000);
+  const r = await ok(getBooking(B.token, created.id));
   const during = await sim(T);
   t.diagnostic(`бронь ${r.status} при игре A: контроллер ${during.state.mode}/${during.state.led}, свет ${during.state.relay}`);
+  assert.equal(r.status, 'confirmed', 'занятый стол не показывает бронь');
   assert.equal(during.state.relay, true, 'игра A продолжается');
   assert.equal(during.state.session_id, A.sessionId);
   const stop = await api('POST', `/api/sessions/${A.sessionId}/stop`, { token: A.guest.token });
   assert.equal(stop.status, 200, stop.text);
-  const blue = await waitSim(T, (s) => s.state.mode === 'reserved', { timeoutMs: 10_000, what: 'стол синий после игры' });
+  const blue = await waitSim(T, (s) => s.state.mode === 'reserved', { timeoutMs: 20_000, what: 'стол синий после игры' });
+  await waitBooking(B.token, created.id, (b) => b.status === 'reserved', { timeoutMs: 20_000, what: 'бронь B reserved после игры' });
   t.diagnostic(`A закончил игру → контроллер ${blue.state.mode}/${blue.state.led}, свет ${blue.state.relay}`);
   assert.equal(blue.state.relay, false);
   const C = await newGuest();
