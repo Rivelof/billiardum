@@ -1,0 +1,30 @@
+{
+  "name": "@billiardum/web-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Бильярдум: публичный сайт-агрегатор с серверным рендером (Preact renderToString), SEO и островами интерактива",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "build:watch": "node scripts/build.mjs --watch",
+    "start": "node server.mjs",
+    "size": "node scripts/build.mjs --size",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "@billiardum/shared": "0.1.0",
+    "htm": "3.1.1",
+    "preact": "10.29.8",
+    "preact-render-to-string": "6.7.0"
+  },
+  "optionalDependencies": {
+    "@resvg/resvg-js": "2.6.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

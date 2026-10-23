@@ -151,3 +151,23 @@
 .tbl[data-tone='service'] .tbl__art { outline: 2px dashed var(--hall-text-2); outline-offset: 3px; }
 .tbl[data-tone='service'] .tbl__status { color: var(--hall-text); }
 .tbl[data-tone='offline'] .tbl__art { opacity: 0.5; }
+
+/* ---------- разбой пирамиды (break.mjs): картинка breakSvg до загрузки canvas и при reduced-motion ---------- */
+.brk { display: block; width: 100%; height: auto; }
+.brk-r1 { stop-color: var(--hall-rail-hi); }
+.brk-r2 { stop-color: var(--hall-rail); }
+.brk-r3 { stop-color: var(--hall-bg); }
+.brk-edge { fill: none; stroke: var(--hall-rail-hi); stroke-opacity: 0.5; stroke-width: 20; }
+.brk-brass { fill: var(--hall-brass); }
+.brk-c1 { stop-color: var(--hall-cloth-on); }
+.brk-c2 { stop-color: var(--hall-cloth-off); }
+.brk-l1 { stop-color: var(--lamp); }
+.brk-cushion { fill: none; stroke: var(--hall-bg); stroke-opacity: 0.35; stroke-width: 37; }
+.brk-pocket { fill: var(--hall-bg); }
+.brk-mark { fill: var(--hall-text); opacity: 0.6; }
+.brk-shadow { fill: var(--hall-bg); opacity: 0.55; }
+.brk-b1 { stop-color: var(--hall-ivory-hi); }
+.brk-b2 { stop-color: var(--hall-text); }
+.brk-b3 { stop-color: color-mix(in oklab, var(--hall-text-2) 75%, var(--hall-rail)); }
+.brk-cue { fill: var(--hall-brass); }
+.brk-num { fill: var(--hall-bg); font-family: var(--font-text); font-weight: 700; }

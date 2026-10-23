@@ -24,6 +24,9 @@
   --hall-brass: #C99A55;
   --hall-text: #F0E6D6;
   --hall-text-2: #BCAB92;
+  /* Блик на шаре из слоновой кости (разбой, места 1–3) и «в эфире» на тёмном зале в обеих темах (M4, сайт) */
+  --hall-ivory-hi: #FFFBF2;
+  --hall-alert: #EE6A50;
 
   /* Шрифты (§3). Dela Gothic One без знака ₽: он берётся из Geologica следующей в стеке */
   --font-display: 'Dela Gothic One', 'Geologica', system-ui, sans-serif;

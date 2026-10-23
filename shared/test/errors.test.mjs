@@ -65,3 +65,10 @@ test('коды M2 (касса, бар, смены, ККТ): у каждого т
   assert.match(errorMessage('shift_closed', { audience: 'guest' }).action, /онлайн/);
   assert.match(errorMessage('stop_list', { audience: 'guest' }).title, /сейчас нет/);
 });
+
+test('M4: стол занят турниром — «Стол занят турниром до HH:MM»', () => {
+  const err = { code: 'table_busy', data: { reason: 'tournament', busy_until: '2026-10-23T18:00:00Z' } };
+  assert.equal(errorMessage(err, { busyUntil: '23:00' }).title, 'Стол занят турниром до 23:00.');
+  assert.equal(errorMessage(err).title, 'Стол занят турниром.');
+  assert.equal(errorMessage({ code: 'table_busy' }, { busyUntil: '21:40' }).title, 'Стол занят до 21:40.');
+});
