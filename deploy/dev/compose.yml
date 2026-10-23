@@ -19,6 +19,14 @@ name: billiardum
 # restart: unless-stopped у всех сервисов (одноразовых в этом файле нет): процесс,
 # завершившийся сам (в том числе с кодом 0), и весь стек после перезапуска демона Docker
 # поднимаются сами; `npm run down` и `docker compose stop` останавливают их насовсем.
+#
+# Порядок старта (дефект R4): кому нужна база или брокер, ждёт их healthy через
+# depends_on: condition: service_healthy (база и брокер нужны только server; device-sim
+# ждёт брокер и server, kkt-bridge и caddy — server, чей /health требует и базу, и брокер).
+# depends_on соблюдает только Compose (`up`, `start`). После перезапуска демона Docker
+# или перезагрузки машины контейнеры поднимает сам Docker по restart-политике — все
+# сразу, без depends_on, поэтому server обязан сам переживать недоступную базу и брокер
+# на старте (повтор в мосте MQTT, зона backend).
 x-node-service: &node-service
   image: node:22.23.4-alpine
   restart: unless-stopped
@@ -40,9 +48,18 @@ services:
       - db-data:/var/lib/postgresql/data
       - db-config:/etc/postgresql-custom
     healthcheck:
-      # TCP-слушатель появляется только у рабочего сервера, не у временного на время init.
-      # pg_isready не входит в базу (только ping), роль указана для порядка.
-      test: ["CMD", "pg_isready", "-U", "supabase_admin", "-d", "postgres", "-h", "127.0.0.1"]
+      # Healthy — только когда база реально принимает соединения и запросы (дефект R4):
+      # настоящий вход и `select 1` по TCP, а не ping. TCP-слушатель появляется только у
+      # рабочего сервера, не у временного на время init; во время восстановления после сбоя
+      # вход отклоняется («the database system is starting up»), а pg_is_in_recovery()
+      # отсекает остальное. Роль supabase_admin: app_api появляется только с миграциями,
+      # а их npm run dev применяет после healthy db. Вход с 127.0.0.1 без пароля
+      # (pg_hba образа: trust для localhost), пароль в healthcheck не попадает.
+      test:
+        - CMD-SHELL
+        - >-
+          psql -X -U supabase_admin -h 127.0.0.1 -d postgres -Atq
+          -c 'select 1 where not pg_is_in_recovery()' | grep -qx 1
       interval: 30s
       timeout: 5s
       retries: 5
