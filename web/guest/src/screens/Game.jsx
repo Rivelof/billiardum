@@ -9,6 +9,8 @@ import { useNow } from '../components/hooks.js';
 import { PushOffer } from '../components/PushOffer.jsx';
 import { Pay } from './Pay.jsx';
 import { api, streamSession } from '../lib/api.js';
+import { auth } from '../lib/auth.js';
+import { useStore } from '../lib/store.js';
 import { clockSkew, gameView, timerTexts, maxExtendMinutes, lampState, pulseLamp, timeLeftShare } from '../lib/game.js';
 import { durationWords, minutesWords, optionLabel, tableName } from '../lib/words.js';
 import { navigate, linkHandler } from '../lib/router.js';
@@ -148,12 +150,33 @@ export function GameScreen({ id }) {
         <ExtendPending session={session} tz={tz} />
         <BarStrip sessionId={session.id} bar={bar} />
         <Participants session={session} />
+        <MatchSlot session={session} />
         <PushOffer />
       </main>
 
       <GameActions session={session} view={view} tz={tz} onUpdate={apply} reload={load} />
     </div>
   );
+}
+
+/**
+ * «Партия» Бильярдум+ (M4) — отдельный чанк: грузим, только когда за столом есть соперник с user_id.
+ */
+let matchPanel = null;
+function MatchSlot({ session }) {
+  const { user } = useStore(auth);
+  const hasRival = (session.participants ?? []).some((p) => p.user_id && p.user_id !== user?.id);
+  const [Panel, setPanel] = useState(() => matchPanel);
+  useEffect(() => {
+    if (!hasRival || Panel) return;
+    import('../components/MatchPanel.jsx')
+      .then((m) => {
+        matchPanel = m.MatchPanel;
+        setPanel(() => m.MatchPanel);
+      })
+      .catch(() => {});
+  }, [hasRival]);
+  return hasRival && Panel ? <Panel session={session} /> : null;
 }
 
 /** Для экранного диктора: объявить смену состояния (меньше 5 минут, льгота), а не каждую секунду. */
@@ -185,9 +208,10 @@ function Participants({ session }) {
       </h2>
       <ul class="players__list">
         {list.map((p, i) => (
-          <li class="players__item" key={`${p.nick}-${i}`}>
+          <li class="players__item" key={p.user_id ?? `${p.nick ?? p.label}-${i}`}>
             <Icon name="user" />
-            <span>{p.nick || `Игрок ${i + 1}`}</span>
+            {/* light (M4): nick — ник Бильярдум+ или null, label — «Игрок N» */}
+            <span>{p.nick ?? p.label ?? `Игрок ${i + 1}`}</span>
             {p.is_payer ? <span class="players__tag">оплатил</span> : null}
           </li>
         ))}

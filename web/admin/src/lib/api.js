@@ -187,6 +187,37 @@ export const api = {
   /** Снять блокировку после 10 неверных PIN за час. */
   unlockTerminal: (club, id) => client.post(`/clubs/${e(club)}/terminals/${e(id)}/unlock`),
 
+  // ---------- M4: турниры клуба (контракт m4 §4; формы — в mock/m4.js) ----------
+  tournaments: (club) => client.get(`/clubs/${e(club)}/tournaments`),
+  /** { title, discipline, format, race_to, rating_limit, fee_kopecks, prize_text, places, starts_at, ends_at, resource_ids } */
+  createTournament: (club, body) => client.post(`/clubs/${e(club)}/tournaments`, body),
+  tournament: (club, id) => client.get(`/clubs/${e(club)}/tournaments/${e(id)}`),
+  updateTournament: (club, id, body) => client.request('PATCH', `/clubs/${e(club)}/tournaments/${e(id)}`, { body }),
+  startTournament: (club, id) => client.post(`/clubs/${e(club)}/tournaments/${e(id)}/start`),
+  /** Отмена с причиной: взнос возвращается всем оплатившим → { refunded, refunded_kopecks }. */
+  cancelTournament: (club, id, reason) => client.post(`/clubs/${e(club)}/tournaments/${e(id)}/cancel`, { reason }),
+  /** Исправление счёта организатором — с причиной, в журнал. */
+  fixScore: (matchId, scoreA, scoreB, reason) => client.request('PATCH', `/tournaments/matches/${e(matchId)}/score`, { body: { score_a: scoreA, score_b: scoreB, reason } }),
+  /** ТВ-экран: публичный турнир без ПДн. */
+  publicTournament: (id) => client.get(`/public/tournaments/${e(id)}`),
+
+  // ---------- M4: споры по партиям, карточка клуба, отзывы ----------
+  disputes: (club) => client.get(`/clubs/${e(club)}/plus/disputes`),
+  /** { result: 'a' | 'b' | 'annul', reason } — решение в журнал. */
+  resolveMatch: (id, result, reason) => client.post(`/plus/matches/${e(id)}/resolve`, { result, reason }),
+  listing: (club) => client.get(`/clubs/${e(club)}/listing`),
+  updateListing: (club, body) => client.request('PATCH', `/clubs/${e(club)}/listing`, { body }),
+  reviews: (club) => client.get(`/clubs/${e(club)}/reviews`),
+  replyReview: (id, text) => client.post(`/reviews/${e(id)}/reply`, { text }),
+  reportReview: (id, reason) => client.post(`/reviews/${e(id)}/report`, { reason }),
+
+  // ---------- M4: оператор платформы (platform_operator, platform_admin) ----------
+  /** kind: requests | leads | listings | reports → { items }. */
+  platformList: (kind) => client.get(`/platform/${e(kind)}`),
+  platformUpdate: (kind, id, body) => client.request('PATCH', `/platform/${e(kind)}/${e(id)}`, { body }),
+  /** Справочник городов: { name, name_in, timezone, region?, slug?, active? }; slug после создания не меняется. */
+  createCity: (body) => client.post('/platform/cities', body),
+
   /** Пакеты часов: [{ id, title, hours, minutes, price_kopecks, valid_days, active }]. */
   packages: (club) => client.get(`/clubs/${e(club)}/packages`),
   /** { title, hours, price_kopecks, valid_days, reason } — управляющий, владельцу уходит уведомление. */
@@ -218,6 +249,11 @@ export { newIdempotencyKey };
  * M2: bar (заказ бара целиком, m2 §5), stop_list ({ product_id, stop_list }), pos_sale (продажа кассы: оплата СБП прошла
  * или отменена), shift, kkt (состояние кассы ККТ и очередь чеков). Бармену сервер шлёт из канала клуба только bar и stop_list (№97).
  */
+/** ТВ-сетка: SSE GET /api/public/tournaments/{id}/stream, событие `bracket` = { rounds } (без ПДн). */
+export function streamTournament(id, handlers) {
+  return openStream(client.url(`/public/tournaments/${encodeURIComponent(id)}/stream`), { ...handlers, events: ['bracket'], EventSource: EventSourceImpl });
+}
+
 export function streamClub(club, handlers) {
   return openStream(client.url('/stream', { club }), {
     ...handlers,

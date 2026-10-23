@@ -3,7 +3,7 @@ import { Shell, navItems } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api, getTerminal, setTerminal } from '../lib/api.js';
-import { auth, can, logout } from '../lib/auth.js';
+import { auth, can, logout, platformRole } from '../lib/auth.js';
 import { useStore } from '../lib/store.js';
 import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -35,6 +35,16 @@ export function More({ ctx }) {
             Выйти
           </button>
         </section>
+        {platformRole(user) ? (
+          <section class="panel">
+            <h2 class="section-title">Платформа Бильярдум</h2>
+            <p class="hint">Заявки гостей в клубы без программы, заявки клубов, модерация карточек и жалоб.</p>
+            <a class="btn btn--secondary" href={`${BASE}platform`} onClick={linkHandler}>
+              <Icon name="report" />
+              Экран оператора
+            </a>
+          </section>
+        ) : null}
         <Sections role={role} clubId={club.club_id} />
         {can.manage(role) ? <Stickers clubId={club.club_id} /> : null}
         {can.setPin(role) && principal === 'session' ? <SetPin clubId={club.club_id} role={role} /> : null}
@@ -52,6 +62,12 @@ const SECTION_HINT = {
   menu: 'Товары, модификаторы, стоп-лист, импорт CSV.',
   kkt: 'Мост к кассе клуба: подключение и состояние.',
   devices: 'Контроллеры столов: связь, прошивка, привязка.',
+  tournaments: 'Создание, запись со взносом, сетка и ТВ-экран.',
+  disputes: 'Оспоренные партии Бильярдум+ — решение с причиной.',
+  listing: 'Карточка клуба на сайте Бильярдума и ответы на отзывы.',
+  bookings: 'Брони на день: лента по столам, бронь по телефону.',
+  packages: 'Пакеты часов: продажа и возврат.',
+  staff: 'Сотрудники, роли и терминалы ресепшена.',
 };
 
 /** Разделы, которых нет в нижней панели телефона (у владельца и управляющего). */

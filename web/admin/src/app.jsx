@@ -1,7 +1,7 @@
 import { useEffect } from 'preact/hooks';
 import { useLocation, matchRoute, navigate, linkHandler } from './lib/router.js';
 import { BASE } from './lib/env.js';
-import { auth, can, logout } from './lib/auth.js';
+import { auth, can, logout, platformRole } from './lib/auth.js';
 import { useStore } from './lib/store.js';
 import { ROLE_LABEL } from './lib/words.js';
 import { SignIn } from './screens/SignIn.jsx';
@@ -22,6 +22,11 @@ import { Kkt } from './screens/Kkt.jsx';
 import { Bookings } from './screens/Bookings.jsx';
 import { Staff } from './screens/Staff.jsx';
 import { Packages } from './screens/Packages.jsx';
+import { Tournaments } from './screens/Tournaments.jsx';
+import { TournamentTv } from './screens/TournamentTv.jsx';
+import { Disputes } from './screens/Disputes.jsx';
+import { Listing } from './screens/Listing.jsx';
+import { Platform } from './screens/Platform.jsx';
 import { setClub } from './lib/api.js';
 import { Icon } from './components/Icon.jsx';
 
@@ -31,6 +36,14 @@ const ROUTES = [
   ['pin', 'pin'],
   ['c/:club/:screen', 'club'],
   ['c/:club/:screen/:id', 'club'],
+  // M4: ТВ-сетка турнира (без входа, публичные данные) и экран оператора платформы
+  ['tv/tournament/:id', 'tv'],
+  ['platform', 'platform'],
+  ['platform/:tab', 'platform'],
+  // Ссылка из уведомления о споре (№144): /club/plus/disputes → споры первого клуба, где можно решать
+  ['plus/disputes', 'plusdisputes'],
+  // Ссылка из уведомления о споре по счёту матча: /club/tournaments/{id} → турнир в первом клубе организатора
+  ['tournaments/:id', 'clubtour'],
 ];
 
 const SCREENS = {
@@ -51,6 +64,10 @@ const SCREENS = {
   bookings: { allow: can.bookings, render: (ctx) => <Bookings ctx={ctx} />, title: 'Брони' },
   staff: { allow: can.staff, render: (ctx) => <Staff ctx={ctx} />, title: 'Персонал' },
   packages: { allow: can.packages, render: (ctx) => <Packages ctx={ctx} />, title: 'Пакеты часов' },
+  // M4
+  tournaments: { allow: can.tournaments, render: (ctx) => <Tournaments ctx={ctx} />, title: 'Турниры' },
+  disputes: { allow: can.disputes, render: (ctx) => <Disputes ctx={ctx} />, title: 'Споры по партиям' },
+  listing: { allow: can.listing, render: (ctx) => <Listing ctx={ctx} />, title: 'Карточка в Бильярдуме' },
 };
 
 /** Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — касса, бармен — экран бара. */
@@ -76,6 +93,8 @@ export function App() {
   }, [params.screen]);
 
   if (name === 'pin') return <Pin />;
+  // ТВ у входа в зал: без входа сотрудника, только публичная сетка
+  if (name === 'tv') return <TournamentTv key={params.id} id={params.id} />;
   if (status === 'loading') {
     return (
       <div class="signin" data-theme="dark" aria-busy="true">
@@ -85,12 +104,23 @@ export function App() {
   }
   if (status === 'anon') return name === 'signin' ? <SignIn /> : <Redirect to={`${BASE}signin`} />;
 
+  if (name === 'platform') return <Platform tab={params.tab} />;
   if (!clubs.length) {
+    if (platformRole(user)) return <Redirect to={`${BASE}platform`} />;
     return (
       <Message title="Вас ещё нет в персонале клуба">
         Попросите владельца клуба добавить ваш номер телефона{user?.phone_masked ? ` (${user.phone_masked})` : ''} в персонал, затем войдите снова.
       </Message>
     );
+  }
+
+  if (name === 'clubtour') {
+    const c = clubs.find((m) => can.tournaments(m.role));
+    return <Redirect to={c ? `${BASE}c/${encodeURIComponent(c.club_id)}/tournaments/${encodeURIComponent(params.id)}` : BASE} />;
+  }
+  if (name === 'plusdisputes') {
+    const c = clubs.find((m) => can.disputes(m.role));
+    return <Redirect to={c ? `${BASE}c/${encodeURIComponent(c.club_id)}/disputes` : BASE} />;
   }
 
   if (name === 'root' || name === 'signin') {
@@ -105,7 +135,7 @@ export function App() {
     if (!screen.allow(membership.role)) return <Redirect to={homeFor(membership)} />;
     setClub(membership.club_id); // X-Club-Id для маршрутов без {club} (§14)
     // Вложенные пути: отчёт смены (/shift/{id}) — управляющему и владельцу; терминалы (/staff/terminals) — владельцу
-    const nested = (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals');
+    const nested = (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments';
     if (params.id && !nested) return <Redirect to={homeFor(membership)} />;
     const ctx = {
       club: membership,

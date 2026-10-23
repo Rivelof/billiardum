@@ -96,6 +96,24 @@ export function ReceiptScreen({ id }) {
 
         <InstallHint />
 
+        {/* M4 (№141): отзыв о клубе — после игры */}
+        {session?.club?.id ? (
+          <a class="rateclub" href={`${BASE}review/${encodeURIComponent(session.club.id)}?name=${encodeURIComponent(session.club.name ?? '')}`} onClick={linkHandler}>
+            <span class="rateclub__balls" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+              <span />
+              <span />
+            </span>
+            <span>
+              Как вам {session.club.name ? `«${session.club.name}»` : 'клуб'}?
+              <span class="rateclub__sub">Оцените — это 20 секунд</span>
+            </span>
+            <Icon name="forward" />
+          </a>
+        ) : null}
+
         <a class="btn btn--quiet btn--block" href={BASE} onClick={linkHandler}>
           На главную
         </a>

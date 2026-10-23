@@ -10,6 +10,7 @@
 
 import { barRoutes, barSeed } from './bar.js';
 import { m3Routes } from './m3.js';
+import { m4Routes } from './m4.js';
 
 const CLUB = { id: '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c', name: 'Клуб для разработки', timezone: 'Asia/Yekaterinburg' };
 const SESSION_ID = '6f1c2a9e-0d4b-4c7e-9a51-3b2f8e7d4c10';
@@ -141,7 +142,8 @@ export function createBackend(storage) {
       remaining_ms: status === 'interrupted' ? s.unplayed_ms : Math.max(0, s.paid_until - t),
       unlimited: Boolean(s.unlimited),
       is_payer: s.is_payer !== false,
-      participants: s.participants,
+      // M4: user_id участника — для выбора соперника в «Партии» (Бильярдум+)
+      participants: s.participants.map((p, i) => ({ user_id: p.user_id ?? m4.userIdOf(p.nick), ...p, nick: m4.plusNick(p.nick) ?? null, label: `Игрок ${i + 1}` })),
       extend_limit_until: s.extend_limit_until ? new Date(s.extend_limit_until).toISOString() : null,
       // M3 (№106): начало брони после этой игры — «Стол забронирован на 21:00, можно продлить до 20:55»
       next_booking_at: s.next_booking_at ? new Date(s.next_booking_at).toISOString() : null,
@@ -244,6 +246,8 @@ export function createBackend(storage) {
     }
     barSeed(state, name, t, SESSION_ID);
     m3.seed(name, t);
+    if (name === 'plusgame') mk({ participants: [{ nick: 'Игрок 1', is_payer: true }, { nick: 'Андрей К.' }] });
+    m4.seed(name, t);
     save();
   }
 
@@ -490,10 +494,29 @@ export function createBackend(storage) {
     emitMe: (name, data) => emit('me', data, name),
   });
   routes.unshift(...m3.routes);
+  const m4 = m4Routes({
+    state: () => state,
+    now,
+    club: CLUB,
+    tables: () => Object.values(state.tables),
+    resourceId,
+    err,
+    ok,
+    needUser,
+    meId: () => (state.user ? USER.id : undefined),
+    sessions: () => state.sessions,
+    sessionId: SESSION_ID,
+    // ТВ и страница турнира: канал tournament:{id}, событие bracket
+    emitTournament: (id, data) => {
+      for (const fn of listeners.get(`tournament:${id}`) ?? []) fn(data, 'bracket');
+    },
+  });
+  routes.unshift(...m4.routes);
 
   async function handle(method, path, body, query) {
     bar.tick();
     m3.tick();
+    m4.tick();
     for (const [m, re, fn] of routes) {
       if (m !== method) continue;
       const match = re.exec(path);
@@ -517,6 +540,11 @@ export function createBackend(storage) {
     confirm(paymentId, success) {
       const p = state.payments[paymentId];
       if (!p) return false;
+      if (p.kind === 'tournament') {
+        m4.confirm(p, success);
+        save();
+        return true;
+      }
       if (['booking', 'booking_start', 'package'].includes(p.kind)) {
         m3.confirm(p, success);
         save();

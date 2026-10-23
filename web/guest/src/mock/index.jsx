@@ -52,7 +52,9 @@ export function install(configureApi) {
       this.handlers = new Map();
       const q = new URL(url, location.origin).searchParams;
       // ?session={id} — канал сессии; ?me=1 — свой канал гостя (№120)
-      const id = q.get('me') === '1' ? 'me' : q.get('session');
+      // ?tournament={id} — сетка турнира (M4)
+      const tm = /\/public\/tournaments\/([^/]+)\/stream$/.exec(new URL(url, location.origin).pathname);
+      const id = q.get('me') === '1' ? 'me' : tm ? `tournament:${tm[1]}` : q.get('session');
       this.unsubscribe = backend.subscribe(id, (data, name = 'session') => this.dispatch(name, data));
       // Бар готовит заказы сам — статусы двигаются раз в 3 секунды
       this.timer = setInterval(() => backend.handle('GET', '/api/__tick'), 3000);

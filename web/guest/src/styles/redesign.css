@@ -23,3 +23,25 @@
 
 /* Вход недоступен (U1): заголовок пустого состояния — основным цветом */
 .empty .step__title { color: var(--ink); }
+
+/* M4: «Как вам клуб?» под чеком — пять шаров-оценок, ведёт на отзыв (№141) */
+.rateclub {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 20px;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line), inset 0 -3px 0 var(--brass);
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+.rateclub:hover { box-shadow: inset 0 0 0 1.5px var(--brass), inset 0 -3px 0 var(--brass); }
+.rateclub:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
+.rateclub__balls { display: flex; gap: 3px; }
+.rateclub__balls span { width: 12px; height: 12px; border-radius: 50%; background: var(--lamp); box-shadow: inset 0 -2px 3px rgb(0 0 0 / 0.25); }
+.rateclub__balls span:nth-child(n + 4) { background: var(--card-2); box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+.rateclub__sub { display: block; font-size: var(--fs-13); font-weight: 400; color: var(--ink-2); }
+.rateclub > .icon:last-child { width: 18px; height: 18px; color: var(--ink-3); }

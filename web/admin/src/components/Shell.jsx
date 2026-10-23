@@ -30,6 +30,10 @@ export function navItems(role, club) {
   if (can.menu(role)) add('menu', 'list', 'Меню', true);
   if (can.kkt(role)) add('kkt', 'printer', 'ККТ', true);
   if (can.packages(role)) add('packages', 'ticket', 'Пакеты', true);
+  // M4: турниры, споры по партиям Бильярдум+, карточка клуба в агрегаторе
+  if (can.tournaments(role)) add('tournaments', 'trophy', 'Турниры', true);
+  if (can.disputes(role)) add('disputes', 'report', 'Споры', true);
+  if (can.listing(role)) add('listing', 'star', 'Карточка', true);
   if (can.staff(role)) add('staff', 'users', 'Персонал', true);
   if (can.devices(role)) add('devices', 'chip', 'Контроллеры', manage);
   add('more', 'more', 'Ещё');

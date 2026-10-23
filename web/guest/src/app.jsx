@@ -29,12 +29,30 @@ const TITLES = {
   waitlist: 'Стол освободился — Бильярдум',
   me: 'Профиль — Бильярдум',
   notify: 'Уведомления — Бильярдум',
+  plus: 'Бильярдум+',
+  plussettings: 'Ник и приватность — Бильярдум+',
+  rating: 'Рейтинг — Бильярдум+',
+  rivals: 'Ищу соперника — Бильярдум+',
+  friends: 'Друзья — Бильярдум+',
+  match: 'Партия — Бильярдум+',
+  player: 'Игрок — Бильярдум+',
+  tournaments: 'Турниры — Бильярдум',
+  tournament: 'Турнир — Бильярдум',
+  review: 'Отзыв о клубе — Бильярдум',
+  request: 'Заявка в клуб — Бильярдум',
+  requeststatus: 'Заявка в клуб — Бильярдум',
+  diradd: 'Добавить клуб — Бильярдум',
+  dirclaim: 'Подтвердить клуб — Бильярдум',
 };
 
 // M3: бронь и профиль — отдельные чанки, как бар (бюджет первой загрузки < 200 КБ JS)
 const CHUNKS = {
   book: () => import('./screens/Book.jsx'),
   profile: () => import('./screens/Profile.jsx'),
+  // M4 — отдельными чанками: на первую загрузку (QR → стол → оплата) не нужны
+  plus: () => import('./screens/Plus.jsx'),
+  tour: () => import('./screens/Tournaments.jsx'),
+  club: () => import('./screens/ClubForms.jsx'),
 };
 const loaded = {};
 function Lazy({ chunk, label, render }) {
@@ -162,6 +180,34 @@ export function App({ extra }) {
       return <Lazy key="profile" chunk="profile" label="Открываем профиль…" render={(m) => <m.ProfileScreen search={search} />} />;
     case 'notify':
       return <Lazy key="profile" chunk="profile" label="Открываем уведомления…" render={(m) => <m.NotifyScreen />} />;
+    case 'plus':
+      return <Lazy key="plus" chunk="plus" label="Открываем Бильярдум+…" render={(m) => <m.PlusScreen />} />;
+    case 'plussettings':
+      return <Lazy key="plus" chunk="plus" label="Открываем настройки…" render={(m) => <m.PlusSettings />} />;
+    case 'rating':
+      return <Lazy key="plus" chunk="plus" label="Открываем рейтинг…" render={(m) => <m.RatingScreen />} />;
+    case 'rivals':
+      return <Lazy key="plus" chunk="plus" label="Ищем соперников…" render={(m) => <m.RivalsScreen />} />;
+    case 'friends':
+      return <Lazy key="plus" chunk="plus" label="Открываем друзей…" render={(m) => <m.FriendsScreen />} />;
+    case 'match':
+      return <Lazy key="plus" chunk="plus" label="Открываем партию…" render={(m) => <m.MatchScreen key={params.id} id={params.id} />} />;
+    case 'player':
+      return <Lazy key="plus" chunk="plus" label="Открываем игрока…" render={(m) => <m.PlayerScreen key={params.nick} nick={params.nick} />} />;
+    case 'tournaments':
+      return <Lazy key="tour" chunk="tour" label="Открываем турниры…" render={(m) => <m.TournamentsScreen />} />;
+    case 'tournament':
+      return <Lazy key="tour" chunk="tour" label="Открываем турнир…" render={(m) => <m.TournamentScreen key={params.id} id={params.id} search={search} />} />;
+    case 'review':
+      return <Lazy key="club" chunk="club" label="Открываем отзыв…" render={(m) => <m.ReviewScreen key={params.club} clubId={params.club} search={search} />} />;
+    case 'request':
+      return <Lazy key="club" chunk="club" label="Открываем заявку…" render={(m) => <m.RequestScreen key={params.club} listingId={params.club} />} />;
+    case 'diradd':
+      return <Lazy key="club" chunk="club" label="Открываем форму…" render={(m) => <m.DirectoryAdd />} />;
+    case 'dirclaim':
+      return <Lazy key="club" chunk="club" label="Открываем клуб…" render={(m) => <m.DirectoryClaim key={params.listing} listingId={params.listing} />} />;
+    case 'requeststatus':
+      return <Lazy key="club" chunk="club" label="Загружаем заявку…" render={(m) => <m.RequestStatusScreen key={params.id} id={params.id} />} />;
     default:
       if (MOCK && extra?.render(name, params)) return extra.render(name, params);
       return <NotFound />;

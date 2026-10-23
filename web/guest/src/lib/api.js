@@ -199,5 +199,72 @@ export const api = {
 
   /** Каналы уведомлений: { notify_channel, channels_order } — max | telegram | webpush (№110). */
   updateMe: (body) => client.request('PATCH', '/me', { body }),
+
+  // ---------- M4: Бильярдум+ (контракт m4 §4; формы — в mock/m4.js) ----------
+  /** Профиль: { nick, ratings, achievements, history, privacy }. */
+  plusMe: () => client.get('/plus/me'),
+  /** { nick?, privacy? }; 409 nick_taken. */
+  updatePlus: (body) => client.request('PATCH', '/plus/me', { body }),
+  /** Карточка игрока с учётом его приватности. */
+  player: (nick) => client.get(`/plus/players/${e(nick)}`),
+  /** Партии: свои, или партии сессии — { items: [match] }. */
+  matches: (sessionId) => client.get('/plus/matches', { query: sessionId ? { session_id: sessionId } : undefined }),
+  /** Одна партия (ссылка из уведомления): отдельного GET нет — ищем в своих партиях. */
+  match: async (id) => {
+    const res = await client.get('/plus/matches');
+    const m = (res?.items ?? []).find((x) => x.id === id);
+    if (!m) throw Object.assign(new Error('not_found'), { code: 'not_found' });
+    return m;
+  },
+  /** Внести партию: { session_id, discipline, opponent_id, my_score, opponent_score } → match (ждёт подтверждения соперника 30 минут). */
+  addMatch: (body) => client.post('/plus/matches', body),
+  confirmMatch: (id) => client.post(`/plus/matches/${e(id)}/confirm`),
+  disputeMatch: (id, reason) => client.post(`/plus/matches/${e(id)}/dispute`, { reason }),
+  /**
+   * Таблица: { discipline, scope: club|city|country, club?, city?, season: YYYY-MM|all } → { items, me }.
+   * Вошедшему — /api/plus/rating (отдаёт своё место me, №144), без входа — публичная, me: null.
+   */
+  rating: (query, signedIn = false) => client.get(signedIn ? '/plus/rating' : '/public/rating', { query }),
+  lfg: () => client.get('/plus/lfg'),
+  startLfg: (body) => client.post('/plus/lfg', body),
+  stopLfg: () => client.request('DELETE', '/plus/lfg'),
+  invites: () => client.get('/plus/invites'),
+  /** «Сыграем?»: { to_user_id, discipline, club_id, starts_at, minutes }; лимит 10 в день. */
+  invite: (body) => client.post('/plus/invites', body),
+  answerInvite: (id, accept) => client.post(`/plus/invites/${e(id)}/${accept ? 'accept' : 'decline'}`),
+  friends: () => client.get('/plus/friends'),
+  addFriend: (nick) => client.post('/plus/friends', { nick }),
+  removeFriend: (userId) => client.request('DELETE', `/plus/friends/${e(userId)}`),
+
+  // ---------- M4: турниры ----------
+  tournaments: (query) => client.get('/public/tournaments', { query }),
+  tournament: (id) => client.get(`/public/tournaments/${e(id)}`),
+  /** Моя запись и текущий матч: { entry, match }. */
+  myTournament: (id) => client.get(`/tournaments/${e(id)}/me`),
+  /** Запись со взносом: → { entry_id, status, confirmation }; 409 rating_above_limit { limit, rating } (T24). */
+  enterTournament: (id) =>
+    once(moneyKeys, `tournament:${id}`, (key) => client.post(`/tournaments/${e(id)}/entries`, { return_url: `${BASE}tournaments/${e(id)}?paid=1` }, { idempotencyKey: key })),
+  leaveTournament: (id) => client.request('DELETE', `/tournaments/${e(id)}/entries/me`),
+  tournamentScore: (matchId, scoreA, scoreB) => client.post(`/tournaments/matches/${e(matchId)}/score`, { score_a: scoreA, score_b: scoreB }),
+  confirmTournamentScore: (matchId) => client.post(`/tournaments/matches/${e(matchId)}/confirm`),
+
+  // ---------- M4: отзывы и заявка в клуб без программы (T25) ----------
+  myReview: (clubId) => client.get('/reviews/mine', { query: { club_id: clubId } }),
+  /** { club_id, rating 1–5, text ≤ 1000 }; 403 review_not_allowed — нет игры или брони за 90 дней. */
+  review: (body) => client.post('/reviews', body),
+  listing: (id) => client.get(`/public/listings/${e(id)}`),
+  /** { listing_id, starts_at, minutes, people, comment } → { id, status }. */
+  clubRequest: (body) => client.post('/clubs/requests', body),
+  clubRequestStatus: (id) => client.get(`/clubs/requests/${e(id)}`),
+  cancelClubRequest: (id) => client.post(`/clubs/requests/${e(id)}/cancel`),
+  /** «Добавить клуб» (с сайта): { city, name, address, phone?, hours_text?, disciplines?, tables_count?, comment? } → { id, status: 'new' }. */
+  directoryAdd: (body) => client.post('/directory/add', body),
+  /** «Подтвердить клуб»: { listing_id, comment? } → { id, status: 'new' }; 409 already_claimed. */
+  directoryClaim: (listingId, comment) => client.post('/directory/claim', { listing_id: listingId, ...(comment ? { comment } : {}) }),
 };
+
+/** Сетка турнира вживую: SSE GET /api/public/tournaments/{id}/stream, событие `bracket` = { rounds } (без ПДн). */
+export function streamTournament(id, handlers) {
+  return openStream(client.url(`/public/tournaments/${encodeURIComponent(id)}/stream`), { ...handlers, events: ['bracket'], EventSource: EventSourceImpl });
+}
 

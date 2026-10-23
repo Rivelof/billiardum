@@ -17,7 +17,9 @@
 }
 .nav__item[aria-current='page'] .icon { color: var(--brass); }
 @media (min-width: 640px) {
-  .nav { box-shadow: 1px 0 0 var(--line); }
+  /* M4: разделов больше, чем помещается по высоте планшета, — боковая панель прокручивается сама */
+  .nav { box-shadow: 1px 0 0 var(--line); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; gap: 4px; }
+  .nav__item { min-height: 60px; padding: 8px 4px; }
   .nav__item[aria-current='page'] { box-shadow: inset 3px 0 0 var(--brass); }
 }
 

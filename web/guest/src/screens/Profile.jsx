@@ -169,6 +169,14 @@ export function ProfileScreen({ search }) {
             ) : null}
 
             <nav class="plinks" aria-label="Разделы профиля">
+              <a class="plinks__item" href={`${BASE}plus`} onClick={linkHandler}>
+                <Icon name="trophy" />
+                <span>
+                  Бильярдум+
+                  <span class="plinks__sub">Рейтинг, партии, соперники, друзья и турниры</span>
+                </span>
+                <Icon name="forward" />
+              </a>
               <a class="plinks__item" href={`${BASE}bookings`} onClick={linkHandler}>
                 <Icon name="calendar" />
                 <span>Мои брони</span>

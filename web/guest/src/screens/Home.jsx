@@ -112,6 +112,14 @@ export function Home() {
             <span>Мои брони</span>
             <Icon name="forward" />
           </a>
+          <a class="homelinks__item" href={`${BASE}plus`} onClick={linkHandler}>
+            <Icon name="trophy" />
+            <span>
+              Бильярдум+
+              <span class="homelinks__sub">Рейтинг, соперники и турниры</span>
+            </span>
+            <Icon name="forward" />
+          </a>
           <a class="homelinks__item" href={`${BASE}me`} onClick={linkHandler}>
             <Icon name="user" />
             <span>Профиль, пакеты часов и уведомления</span>

@@ -83,6 +83,11 @@ export async function logout() {
   }
 }
 
+/** Роль платформы (M4, №135): оператор или Андрей; хранится отдельно от членства в клубе. */
+export function platformRole(user) {
+  return ['platform_operator', 'platform_admin'].includes(user?.platform_role) ? user.platform_role : null;
+}
+
 /** Права по роли в клубе (контракт §5–§7). */
 export const can = {
   reception: (role) => ['reception', 'manager', 'owner'].includes(role),
@@ -113,6 +118,10 @@ export const can = {
   bookings: (role) => ['reception', 'manager', 'owner'].includes(role),
   staff: (role) => role === 'owner',
   packages: (role) => ['manager', 'owner'].includes(role),
+  // M4: турниры, споры по партиям, карточка клуба и отзывы — управляющий и владелец
+  tournaments: (role) => ['manager', 'owner'].includes(role),
+  disputes: (role) => ['manager', 'owner'].includes(role),
+  listing: (role) => ['manager', 'owner'].includes(role),
   /** Скидку выше лимита даёт сам: управляющий и владелец (с причиной). */
   bigDiscount: (role) => ['manager', 'owner'].includes(role),
 };

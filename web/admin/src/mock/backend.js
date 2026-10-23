@@ -7,6 +7,7 @@
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
 import { m3Routes, m3State } from './m3.js';
+import { m4Routes, m4State } from './m4.js';
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -20,6 +21,8 @@ const STAFF = {
   reception: { id: 'u-recept-0003', name: 'Анна К.', phone_masked: '+7 *** ***-00-03', role: 'reception' },
   reception2: { id: 'u-recept-0004', name: 'Игорь П.', phone_masked: '+7 *** ***-00-04', role: 'reception' },
   bar: { id: 'u-bar-0005', name: 'Дима С.', phone_masked: '+7 *** ***-00-05', role: 'bar' },
+  // M4: оператор платформы без клуба (platform_operator)
+  operator: { id: 'u-oper-0006', name: 'Оператор Лена', phone_masked: '+7 *** ***-00-06', role: null, platform_role: 'platform_operator' },
 };
 
 const TYPES = { pyramid: ['billiard_pyramid', 'Пирамида 12 футов'], pool: ['billiard_pool', 'Пул 9 футов'] };
@@ -74,7 +77,7 @@ function freshState(scenario, t) {
   return {
     scenario,
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа
-    user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : { ...STAFF[role] },
+    user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : scenario === 'operator' ? { ...STAFF.operator } : scenario === 'platform' ? { ...STAFF.owner, platform_role: 'platform_admin' } : { ...STAFF[role] },
     hall,
     requests,
     alarms,
@@ -83,6 +86,7 @@ function freshState(scenario, t) {
     nextRequestAt: t + 45_000,
     m2: m2State(scenario, t, hall),
     m3: m3State(scenario, t, hall),
+    m4: m4State(scenario, t),
   };
 }
 
@@ -163,7 +167,8 @@ export function createBackend(storage, now = () => Date.now()) {
   }
 
   const routes = [
-    ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ }] }) : err(401, 'unauthorized'))],
+    // M4: user.platform_role — роль платформы (оператор без клуба видит только экран оператора)
+    ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: me().role ? [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ }] : [] }) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/auth\/dev$/, (_m, b) => {
       if (!/^\+7\d{10}$/.test(b?.phone ?? '')) return err(400, 'bad_request');
       const role = b.phone.endsWith('01') ? 'owner' : b.phone.endsWith('02') ? 'manager' : b.phone.endsWith('05') ? 'bar' : 'reception';
@@ -337,6 +342,7 @@ export function createBackend(storage, now = () => Date.now()) {
   routes.push(...m2Routes(m2ctx));
   const m3 = m3Routes({ state: () => state, now, me, err, ok, emit, audit });
   routes.push(...m3.routes);
+  routes.unshift(...m4Routes({ state: () => state, now, me, err, ok, emit, audit }).routes);
 
   async function handle(method, url) {
     tick();
