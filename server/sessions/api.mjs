@@ -5,7 +5,13 @@
 //       Код нормализуется (Crockford: регистр, I/L → 1, O → 0). Переводит транзакцию
 //       в контекст клуба стола (если контекста не было или он тот же).
 //   getResourceStatus(db, resourceId, { userId }?) → { status, busy_until, session_id, pending_mine? }
-//       status: free | pending | reserved | busy | service | offline
+//       status: free | pending | reserved | busy | service | offline; online — связь с контроллером
+//       сейчас при любом статусе (reserved/service/pending главнее offline, R1).
+//   availabilityDuring(db, { resourceId, from, to, userId?, source?, refId? })
+//       → { unavailable, reasons, intervals: [{ reason, from, to }] } (регресс R1, №128)
+//       reasons: offline | session | service | inactive | foreign_hold — по истории (эпизоды без связи
+//       bl.device_offline, сессии, удержания) и текущему состоянию. Не учитывает удержание этой
+//       брони (source + refId) и игру самого гостя (userId; и сессию брони refId). from = to — «сейчас».
 //   holdPending(db, { resourceId, userId, until }) → { ok: true, hold_id, until }
 //       ошибка — LightError с code table_busy | table_pending | table_offline | table_service
 //       (status 409), not_found (404), bad_request (400). Повтор тем же гостем продлевает удержание.
@@ -71,6 +77,10 @@ export function getResourceByCode(db, code) {
 
 export function getResourceStatus(db, resourceId, opts = {}) {
   return service().resourceStatus(db, resourceId, opts);
+}
+
+export function availabilityDuring(db, args) {
+  return service().availabilityDuring(db, args);
 }
 
 export function holdPending(db, { resourceId, userId, until }) {

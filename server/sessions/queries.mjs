@@ -100,11 +100,27 @@ export async function loadResource(db, resourceId) {
   return rows[0] ?? null;
 }
 
-/** Действующее удержание стола (одно: его гарантирует блокировка ресурса). */
+/**
+ * Главное действующее удержание стола (service, затем pending, затем reserved). Под сервисом
+ * может лежать удержание брони: оно ждёт, пока стол освободится.
+ */
 export async function activeHold(db, resourceId, now) {
   const { rows } = await db.query(
     `select id, kind, user_id, until, reason_code, reason_text, source, ref_id, created_at from bl.resource_holds
       where resource_id = $1 and released_at is null and until > $2
+      -- Сервис главнее брони и очереди: удержание reserved, записанное во время сервиса, не
+      -- перекрывает его (иначе сверка гасила бы сервисный свет, регресс R2). Затем pending.
+      order by case kind when 'service' then 0 when 'pending' then 1 else 2 end, created_at desc limit 1`,
+    [resourceId, now],
+  );
+  return rows[0] ?? null;
+}
+
+/** Действующее удержание reserved (бронь, очередь), даже если сверху идёт сервис. */
+export async function activeReserved(db, resourceId, now) {
+  const { rows } = await db.query(
+    `select id, kind, user_id, until, source, ref_id, created_at from bl.resource_holds
+      where resource_id = $1 and kind = 'reserved' and released_at is null and until > $2
       order by created_at desc limit 1`,
     [resourceId, now],
   );

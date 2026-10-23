@@ -49,6 +49,8 @@ export const TOUCH_EVERY_MS = 60_000;
 export const SEQ_GAP_LIMIT = 1_000_000;
 /** Расхождение state.mode с базой дольше этого — тревога (protocol §6). */
 export const MISMATCH_ALARM_MS = 10_000;
+/** hooks.expected().show: состояние допустимо, но индикатор не тот — подтолкнуть не чаще раза в 30 с. */
+export const SHOW_NUDGE_MS = 30_000;
 /** Офлайн во время сессии дольше этого — тревога critical (decisions №16). */
 export const OFFLINE_ALARM_MS = 120_000;
 /** boot сразу после выхода онлайн — та же загрузка: актуальное состояние уже отправлено. */
@@ -105,7 +107,8 @@ export async function defaultActualState() {
  *       — внутри транзакции выделения seq (store.allocateCommand); null — команда устарела.
  *   onAck({ clubId, deviceId, entry, ack, ok, at }) → { resync?: boolean }
  *   onEvent({ clubId, deviceId, ev, at }) — только новые события (после записи в журнал).
- *   expected({ clubId, deviceId }) → { modes: string[], sessionId: string|null, lightAllowed: boolean } | null
+ *   expected({ clubId, deviceId }) → { modes: string[], sessionId: string|null, lightAllowed: boolean, show?: string } | null
+ *       — show: режим, который должен гореть; state.mode = free при show — актуальное состояние без тревоги.
  *   onMismatch({ clubId, deviceId, expected, state, sinceMs })
  *   onOfflineAlarm({ clubId, deviceId, offlineMs }) → true, если тревога поднята (была сессия)
  *   onNoAck({ clubId, deviceId, entry })
@@ -194,6 +197,7 @@ export function createBridge({
         touchedAt: 0,
         mismatchSince: null,
         mismatchAlarmed: false,
+        nudgedAt: 0,
         queue: Promise.resolve(),
         inflight: null, // единственная неподтверждённая команда
         outbox: [], // ждут своей очереди: { type, body, rowId?, resendOf?, failures? } | { sync: true, reason, failures? }
@@ -453,6 +457,15 @@ export function createBridge({
 
   // Онлайн и офлайн ------------------------------------------------------------------
 
+  async function linkHistory(op, args) {
+    if (typeof store[op] !== 'function' || !args.clubId) return;
+    try {
+      await store[op](args);
+    } catch (err) {
+      log.error('db_error', { op: op === 'markOnline' ? 'mark_online' : 'mark_offline', device_id: args.deviceId, error: err.message });
+    }
+  }
+
   async function evaluate(d, reason) {
     const shouldBeOnline = d.status === 'online' && d.lastStateAt !== null && now() - d.lastStateAt <= offlineAfterMs;
     if (shouldBeOnline && !d.online) {
@@ -462,6 +475,7 @@ export function createBridge({
       d.offlineAlarmed = false;
       log.info('device_online', { device_id: d.id });
       report();
+      await linkHistory('markOnline', { clubId: d.clubId, deviceId: d.id, at: new Date(now()) });
       // Поставленные до возвращения команды заменяет актуальное состояние (protocol §6).
       if (typeof store.supersedeQueued === 'function') {
         try {
@@ -476,8 +490,11 @@ export function createBridge({
       queueActualState(d, 'online');
       await pump(d);
     } else if (!shouldBeOnline && d.online) {
+      const lastAlive = d.lastStateAt ?? now();
       d.online = false;
       d.offlineAt = now();
+      // История связи (booking: стол без связи в окне брони недоступен) — с последнего state.
+      await linkHistory('markOffline', { clubId: d.clubId, deviceId: d.id, from: new Date(Math.min(lastAlive, now())) });
       d.offlineAlarmed = false;
       d.mismatchSince = null;
       await dropUndelivered(d, 'offline');
@@ -485,6 +502,7 @@ export function createBridge({
       report();
     } else if (!shouldBeOnline && d.offlineAt === null && d.status === 'offline') {
       d.offlineAt = now(); // офлайн с момента, как узнали (например, после перезапуска сервера)
+      await linkHistory('markOffline', { clubId: d.clubId, deviceId: d.id, from: new Date(now()) });
     }
   }
 
@@ -510,6 +528,14 @@ export function createBridge({
       if (d.mismatchSince !== null) log.info('device_state_match', { device_id: d.id });
       d.mismatchSince = null;
       d.mismatchAlarmed = false;
+      // Допустимо, но не то, что должно гореть (бронь ждёт свободный стол после сервиса):
+      // тихо отправить актуальное состояние, не чаще раза в SHOW_NUDGE_MS, без тревоги.
+      if (expected.show && d.lastState.mode === 'free' && now() - d.nudgedAt >= SHOW_NUDGE_MS) {
+        d.nudgedAt = now();
+        log.info('device_state_nudge', { device_id: d.id, show: expected.show });
+        queueActualState(d, 'show');
+        await pump(d);
+      }
       return;
     }
     if (d.mismatchSince === null) {

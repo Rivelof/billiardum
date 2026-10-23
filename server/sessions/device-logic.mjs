@@ -243,7 +243,9 @@ export function createDeviceLogic({ kit, log, withContext, pool }) {
         return { modes: ending ? ['service', 'free'] : ['service'], sessionId: null, lightAllowed: true };
       }
       if (h?.kind === 'pending') return { modes: ['pending', 'free'], sessionId: null, lightAllowed: false };
-      if (h?.kind === 'reserved') return { modes: ['reserved', 'free'], sessionId: null, lightAllowed: false };
+      // Свободный стол со своей бронью: «free» — не расхождение (без тревоги), но индикатор
+      // брони надо показать (сервис кончился сам по таймеру контроллера) — show (регресс R2).
+      if (h?.kind === 'reserved') return { modes: ['reserved', 'free'], sessionId: null, lightAllowed: false, show: 'reserved' };
       return { modes: ['free', 'pending', 'reserved'], sessionId: null, lightAllowed: false };
     });
   }

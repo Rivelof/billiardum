@@ -13,6 +13,7 @@ import { fail, LightError } from './errors.mjs';
 import { createKit, minutesText, phaseOf, playEnd, premarkNotified, UNPLAYED_THRESHOLD_MS, unplayedMs } from './kit.mjs';
 import {
   activeHold,
+  activeReserved,
   addParticipant,
   currentClub,
   deviceOfResource,
@@ -150,18 +151,109 @@ export function createLightService(opts) {
 
   // Статус стола и удержание (§13, light → money) ----------------------------------
 
+  /**
+   * Статус стола. online — связь с контроллером сейчас, при любом статусе: у reserved, service,
+   * pending статус главнее offline, а booking надо видеть, что стол без связи (регресс R1).
+   */
   async function resourceStatus(db, resourceId, { userId = null } = {}) {
     await ensureResourceClub(db, resourceId);
     const t = now();
+    const online = deviceOnline(await deviceOfResource(db, resourceId));
     const s = await openSessionOn(db, resourceId);
-    if (s) return { status: 'busy', busy_until: iso(s.paid_until), session_id: s.id };
+    if (s) return { status: 'busy', busy_until: iso(s.paid_until), session_id: s.id, online };
     const h = await activeHold(db, resourceId, t);
-    if (h?.kind === 'service') return { status: 'service', busy_until: iso(h.until), session_id: null };
-    if (h?.kind === 'pending') return { status: 'pending', busy_until: iso(h.until), session_id: null, pending_mine: userId !== null && h.user_id === userId };
-    if (h?.kind === 'reserved') return { status: 'reserved', busy_until: iso(h.until), session_id: null };
+    if (h?.kind === 'service') return { status: 'service', busy_until: iso(h.until), session_id: null, online };
+    if (h?.kind === 'pending') return { status: 'pending', busy_until: iso(h.until), session_id: null, pending_mine: userId !== null && h.user_id === userId, online };
+    if (h?.kind === 'reserved') return { status: 'reserved', busy_until: iso(h.until), session_id: null, online };
+    if (!online) return { status: 'offline', busy_until: null, session_id: null, online };
+    return { status: 'free', busy_until: null, session_id: null, online };
+  }
+
+  /**
+   * Доступен ли стол в окне [from, to] (для booking, регресс R1 №128): по истории и текущему
+   * состоянию. Причины: offline (эпизоды без связи bl.device_offline; связи нет сейчас — до to;
+   * стол без контроллера — всё окно), session (игра), service, inactive, foreign_hold (чужое
+   * удержание pending/reserved). Не учитываются удержание этой брони (source + refId) и игра
+   * самого гостя (userId — плательщик или участник; и сессия этой брони). from = to — «сейчас».
+   * @returns {Promise<{ unavailable: boolean, reasons: string[], intervals: { reason: string, from: string, to: string }[] }>}
+   */
+  async function availabilityDuring(db, { resourceId, from, to, userId = null, source = null, refId = null }) {
+    if (!isUuid(resourceId)) fail('bad_request', 'resourceId');
+    if (userId !== null && !isUuid(userId)) fail('bad_request', 'userId');
+    if (refId !== null && !isUuid(refId)) fail('bad_request', 'refId');
+    if (source !== null && !['booking', 'waitlist', 'staff'].includes(source)) fail('bad_request', 'source');
+    const F = new Date(from).getTime();
+    const T0 = new Date(to).getTime();
+    if (!Number.isFinite(F) || !Number.isFinite(T0) || T0 < F || T0 - F > 7 * 24 * 3600_000) fail('bad_request', 'window');
+    // Точка («сейчас») — как окно в 1 мс: интервал [a, b) задевает её, если a ≤ from < b.
+    const T = Math.max(T0, F + 1);
+    await ensureResourceClub(db, resourceId);
+    const t = now();
+    const res = await loadResource(db, resourceId);
+    if (!res) fail('not_found', 'resource');
+    const intervals = [];
+    const add = (reason, a, b) => {
+      const lo = Math.max(F, new Date(a).getTime());
+      const hi = Math.min(T, b === null ? T : new Date(b).getTime());
+      if (hi > lo) intervals.push({ reason, from: new Date(lo).toISOString(), to: new Date(Math.min(hi, Math.max(T0, lo))).toISOString(), lo });
+    };
+    if (!res.active) add('inactive', F, T);
+    const ownBooking = source === 'booking' && refId !== null ? refId : null;
+    const sessions = await db.query(
+      `select s.id, s.status, s.started_at, s.ended_at, s.paid_until, s.grace_ms, s.interrupted_at, s.booking_id,
+              (s.payer_user_id = $4 or exists (select 1 from bl.session_participants p where p.session_id = s.id and p.user_id = $4)) as mine
+         from bl.sessions s
+        where s.resource_id = $1 and s.started_at < $3 and (s.ended_at is null or s.ended_at > $2)`,
+      [resourceId, new Date(F), new Date(T), userId],
+    );
+    for (const x of sessions.rows) {
+      if (x.mine || (ownBooking && x.booking_id === ownBooking)) continue;
+      let end;
+      if (OPEN_STATUSES.includes(x.status)) end = Math.max(x.paid_until.getTime() + x.grace_ms, t.getTime());
+      else if (x.status === 'interrupted') end = (x.interrupted_at ?? x.started_at).getTime(); // стол не держит
+      else end = (x.ended_at ?? x.paid_until).getTime();
+      add('session', x.started_at, end);
+    }
+    const holds = await db.query(
+      `select kind, source, ref_id, user_id, created_at, least(until, coalesce(released_at, until)) as ends
+         from bl.resource_holds
+        where resource_id = $1 and created_at < $3 and least(until, coalesce(released_at, until)) > $2`,
+      [resourceId, new Date(F), new Date(T)],
+    );
+    for (const h of holds.rows) {
+      if (h.kind === 'service') add('service', h.created_at, h.ends);
+      else if (source !== null && refId !== null && h.source === source && h.ref_id === refId) continue; // удержание этой брони
+      else if (h.kind === 'pending' && userId !== null && h.user_id === userId) continue; // гость сам идёт к оплате
+      else add('foreign_hold', h.created_at, h.ends);
+    }
     const device = await deviceOfResource(db, resourceId);
-    if (!deviceOnline(device)) return { status: 'offline', busy_until: null, session_id: null };
-    return { status: 'free', busy_until: null, session_id: null };
+    if (!device) {
+      add('offline', F, T);
+    } else {
+      let since = null;
+      await db.query('savepoint light_offline_hist');
+      try {
+        const eps = await db.query(
+          `select offline_from, online_at from bl.device_offline
+            where device_id = $1 and offline_from < $3 and (online_at is null or online_at > $2) order by offline_from`,
+          [device.id, new Date(F), new Date(T)],
+        );
+        await db.query('release savepoint light_offline_hist');
+        for (const e of eps.rows) {
+          if (e.online_at === null) since = e.offline_from;
+          else add('offline', e.offline_from, e.online_at);
+        }
+      } catch (err) {
+        await db.query('rollback to savepoint light_offline_hist');
+        if (err?.code !== '42P01') throw err;
+      }
+      // Связи нет сейчас: стол недоступен с начала эпизода (или с последнего контакта) до конца окна.
+      if (!deviceOnline(device)) add('offline', since ?? device.last_seen_at ?? F, T);
+    }
+    intervals.sort((a, b) => a.lo - b.lo);
+    const out = intervals.map(({ reason, from: a, to: b }) => ({ reason, from: a, to: b }));
+    const reasons = [...new Set(out.map((x) => x.reason))];
+    return { unavailable: out.length > 0, reasons, intervals: out };
   }
 
   /** Гость перешёл к оплате: стол за ним на until (3 минуты). Гонку решает FOR UPDATE ресурса. */
@@ -740,11 +832,13 @@ export function createLightService(opts) {
     const busy = await openSessionOn(db, resourceId);
     const h = await activeHold(db, resourceId, t);
     if (h?.kind === 'pending') return { ok: true, applied: false, reason: 'pending' };
-    if (h?.kind === 'reserved' && h.user_id === userId && h.source === source && (h.ref_id ?? null) === refId) {
-      await db.query('update bl.resource_holds set until = $2 where id = $1', [h.id, u]);
+    // Во время сервиса главное удержание — сервис; reserved ищем отдельно (регресс R2).
+    const r = await activeReserved(db, resourceId, t);
+    if (r && r.user_id === userId && r.source === source && (r.ref_id ?? null) === refId) {
+      await db.query('update bl.resource_holds set until = $2 where id = $1', [r.id, u]);
     } else {
       // Другое удержание reserved (другой гость, бронь вместо очереди) заменяется новым.
-      if (h?.kind === 'reserved') await releaseHold(db, h.id, t, 'replaced');
+      if (r) await releaseHold(db, r.id, t, 'replaced');
       await db.query(
         `insert into bl.resource_holds (club_id, resource_id, kind, user_id, until, source, ref_id, created_at) values ($1, $2, 'reserved', $3, $4, $5, $6, $7)`,
         [res.club_id, resourceId, userId, u, source, refId, t],
@@ -1397,6 +1491,7 @@ export function createLightService(opts) {
     clearReserved,
     startFromDeposit,
     resourceStatus,
+    availabilityDuring,
     holdPending,
     releasePending,
     getResourceByCode,

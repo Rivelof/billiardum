@@ -151,6 +151,24 @@ export function createLightStore(pool, { clock = { now: () => new Date() } } = {
       });
     },
 
+    /** Связь пропала (регресс R1): открыть эпизод без связи; уже открыт — ничего. */
+    async markOffline({ clubId, deviceId, from }) {
+      await withContext(pool, sys(clubId), (c) =>
+        c.query(
+          `insert into bl.device_offline (club_id, device_id, offline_from) values ($1, $2, $3)
+           on conflict (device_id) where online_at is null do nothing`,
+          [clubId, deviceId, from],
+        ),
+      );
+    },
+
+    /** Связь вернулась: закрыть открытый эпизод. */
+    async markOnline({ clubId, deviceId, at }) {
+      await withContext(pool, sys(clubId), (c) =>
+        c.query('update bl.device_offline set online_at = greatest($2, offline_from) where device_id = $1 and online_at is null', [deviceId, at]),
+      );
+    },
+
     /** Итог команды: acked | failed | no_ack | abandoned. */
     async markCommand({ clubId, cmdId, status, attempts = null, error = null, ackedAt = null }) {
       await withContext(pool, sys(clubId), (c) =>
