@@ -45,7 +45,8 @@ describe('каталог клубов', { skip }, () => {
     assert.equal(c.status, 200, c.text);
     assert.match(c.headers.get('cache-control'), /max-age=60/);
     const ekb = c.json.items.find((x) => x.slug === 'ekaterinburg');
-    assert.deepEqual({ ...ekb }, { slug: 'ekaterinburg', name: 'Екатеринбург', region: 'Свердловская область', clubs: 2, online_clubs: 1 });
+    assert.deepEqual({ ...ekb }, { slug: 'ekaterinburg', name: 'Екатеринбург', name_in: 'в Екатеринбурге', region: 'Свердловская область', clubs: 2, online_clubs: 1, free_now: 8 });
+    assert.equal(c.json.items.find((x) => x.slug === 'moskva').free_now, 0);
 
     const r = await h.request('GET', '/api/public/cities/ekaterinburg');
     assert.equal(r.status, 200, r.text);
@@ -54,12 +55,14 @@ describe('каталог клубов', { skip }, () => {
     const [first, second] = r.json.items;
     assert.equal(first.id, CARD_A); // в программе — первым
     assert.equal(first.booking, 'online');
+    assert.equal(first.club_id, CLUB_A);
     assert.equal(first.path, '/ekaterinburg/testovyy-klub/');
     assert.equal(first.tables_count, 8);
     assert.equal(first.free_now, 8);
     assert.equal(first.price_from_kopecks, 50_000);
     assert.deepEqual(first.disciplines.sort(), ['pool', 'pyramid']);
     assert.equal(second.booking, 'request');
+    assert.equal(second.club_id, null);
     assert.equal(second.free_now, null);
     noPii(r.text);
 

@@ -125,6 +125,8 @@ export function createPublicService({ deps, log, clock }) {
       path: `/${card.city_slug}/${card.slug}/`,
       name: card.name,
       status: card.status,
+      // Клуб программы (рейтинг клуба, бронь в приложении); у карточки без программы — null.
+      club_id: card.status === 'platform' ? card.club_id : null,
       booking: card.status === 'platform' ? 'online' : 'request',
       address: card.address,
       location: card.lat === null ? null : { lat: Number(card.lat), lng: Number(card.lng) },
@@ -140,17 +142,27 @@ export function createPublicService({ deps, log, clock }) {
 
   // Маршруты --------------------------------------------------------------------------------
 
-  /** GET /api/public/cities → { items: [{ slug, name, region, clubs, online_clubs }] }. */
+  /**
+   * GET /api/public/cities → { items: [{ slug, name, name_in, region, clubs, online_clubs, free_now }] }.
+   * free_now — свободные столы сейчас во всех клубах города на программе (light).
+   */
   async function cities(db) {
     return cached('cities', async () => {
       const { rows } = await db.query(
-        `select c.slug, c.name, c.region,
-                count(p.id)::int as clubs, count(p.id) filter (where p.status = 'platform')::int as online_clubs
+        `select c.slug, c.name, c.name_in, c.region,
+                count(p.id)::int as clubs, count(p.id) filter (where p.status = 'platform')::int as online_clubs,
+                coalesce(array_agg(p.club_id) filter (where p.status = 'platform' and p.club_id is not null), '{}') as club_ids
            from bl.cities c left join bl.club_public p on p.city_id = c.id and p.visible
           where c.active
           group by c.id order by count(p.id) desc, c.name`,
       );
-      return { items: rows };
+      const items = [];
+      for (const { club_ids: clubIds, ...c } of rows) {
+        let free = 0;
+        for (const clubId of clubIds) free += (await clubLiveStatus(db, { clubId })).free_now;
+        items.push({ ...c, free_now: free });
+      }
+      return { items };
     });
   }
 

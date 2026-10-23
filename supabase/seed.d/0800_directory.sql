@@ -7,6 +7,9 @@ insert into bl.cities (id, slug, name, region, timezone) values
   ('ca000000-0000-4000-8000-000000000002', 'moskva', 'Москва', 'Москва', 'Europe/Moscow')
 on conflict (id) do nothing;
 
+update bl.cities set name_in = 'в Екатеринбурге' where id = 'ca000000-0000-4000-8000-000000000001' and name_in is null;
+update bl.cities set name_in = 'в Москве' where id = 'ca000000-0000-4000-8000-000000000002' and name_in is null;
+
 insert into bl.club_public (id, city_id, slug, name, status, club_id, address, hours_text, around_the_clock, phone, disciplines, description)
 values
   ('cb100000-0000-4000-8000-000000000001', 'ca000000-0000-4000-8000-000000000001', 'testovyy-klub', 'Тестовый клуб', 'platform',

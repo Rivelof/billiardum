@@ -22,7 +22,7 @@
 
 `GET /api/public/cities` →
 ```json
-{ "items": [{ "slug": "ekaterinburg", "name": "Екатеринбург", "region": "Свердловская область", "clubs": 2, "online_clubs": 1 }] }
+{ "items": [{ "slug": "ekaterinburg", "name": "Екатеринбург", "name_in": "в Екатеринбурге", "region": "Свердловская область", "clubs": 2, "online_clubs": 1, "free_now": 8 }] }
 ```
 
 `GET /api/public/cities/{slug}?disciplines=pyramid,pool&free_now=1&online=1&around_the_clock=1&price_max=60000&sort=recommended|free|price|rating|name` →
@@ -32,7 +32,7 @@
   "updated_at": "ISO",
   "items": [ClubSummary] }
 ```
-`ClubSummary`: `{ id, slug, path: "/ekaterinburg/testovyy-klub/", name, status: "listed"|"claimed"|"platform", booking: "online"|"request", address, location: {lat, lng}|null, hours_text, around_the_clock, disciplines: ["pyramid","pool","snooker"], tables_count, free_now: n|null (только platform), price_from_kopecks: n|null (за час; platform — минимум тарифов), rating: { avg: 4.5|null, count } }`. Сортировка `recommended`: сначала онлайн-бронь, затем больше свободных, затем по названию. `disciplines` — клуб должен иметь все выбранные. Неверный фильтр — `400`, нет города — `404`.
+`ClubSummary`: `{ id, slug, path: "/ekaterinburg/testovyy-klub/", name, status: "listed"|"claimed"|"platform", club_id: "uuid"|null (только platform), booking: "online"|"request", address, location: {lat, lng}|null, hours_text, around_the_clock, disciplines: ["pyramid","pool","snooker"], tables_count, free_now: n|null (только platform), price_from_kopecks: n|null (за час; platform — минимум тарифов), rating: { avg: 4.5|null, count } }`. `name_in` — город с предлогом из справочника (миграция 0801), `free_now` в городах — сумма свободных столов клубов на программе. Сортировка `recommended`: сначала онлайн-бронь, затем больше свободных, затем по названию. `disciplines` — клуб должен иметь все выбранные. Неверный фильтр — `400`, нет города — `404`.
 
 `GET /api/public/clubs/{city}/{slug}` →
 ```json
