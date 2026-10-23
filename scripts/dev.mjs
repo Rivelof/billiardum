@@ -159,8 +159,8 @@ function checkEnvValues(env) {
     fail('SITE_ORIGIN в .env — адрес сайта со схемой, без пути и косой черты в конце, например https://billiardum.ru. Пусто — https://{PUBLIC_HOST}.');
   }
   if (env.YANDEX_METRIKA_ID && !/^\d{4,12}$/.test(env.YANDEX_METRIKA_ID)) fail('YANDEX_METRIKA_ID в .env — номер счётчика Метрики, только цифры.');
-  if (env.SITE_API_SUBNET && !/^\d{1,3}(\.\d{1,3}){3}\/(2[4-9]|30)$/.test(env.SITE_API_SUBNET)) {
-    fail('SITE_API_SUBNET в .env — подсеть IPv4 от /24 до /30, например 10.231.47.0/29.');
+  for (const k of ['SITE_API_SUBNET', 'SITE_WEB_SUBNET']) {
+    if (env[k] && !/^\d{1,3}(\.\d{1,3}){3}\/(2[4-9]|30)$/.test(env[k])) fail(`${k} в .env — подсеть IPv4 от /24 до /30, например 10.231.47.0/29.`);
   }
   if (lan && env.PUBLIC_HOST.split(':')[0] !== lan) {
     log(`DEV_LAN_HOST задан, а PUBLIC_HOST — нет: ссылки QR и оплаты ведут на ${env.PUBLIC_HOST}. Для телефона: PUBLIC_HOST=${lan}:8443`);

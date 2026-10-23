@@ -336,11 +336,17 @@ services:
       BL_SITE_DEV: "1"
       # Кэш OG-картинок на диске (том site-og): переживает перезапуск контейнера.
       OG_CACHE_DIR: /var/cache/site-og
+      # X-Forwarded-For (IP гостя для лимита заявок) сайт берёт только от этих адресов:
+      # сеть site-web, где из сервисов только caddy и site (ниже).
+      SITE_TRUSTED_PROXIES: ${SITE_TRUSTED_PROXIES:-${SITE_WEB_SUBNET:-10.231.47.8/29}}
     volumes:
       - ../..:/repo:ro
       - site-og:/var/cache/site-og
+    # Не в default: от Caddy — только site-web (адрес Caddy в доверенной подсети), к API —
+    # только site-api (адрес сайта в PUBLIC_API_TRUSTED_CIDRS). Имена caddy, site и
+    # server-api так однозначны.
     networks:
-      default:
+      site-web:
       site-api:
     depends_on:
       server:
@@ -371,6 +377,10 @@ services:
       - ../../web:/srv/web:ro
       - caddy-data:/data
       - caddy-config:/config
+    # site-web — к сайту (SITE_TRUSTED_PROXIES — её подсеть); в site-api Caddy не входит.
+    networks:
+      default:
+      site-web:
     depends_on:
       server:
         condition: service_healthy
@@ -386,14 +396,21 @@ services:
       start_period: 30s
       start_interval: 2s
 
-# Сеть сайта и API (M4): только server и site. Подсеть закреплена — по ней сервер узнаёт
-# сайт (PUBLIC_API_TRUSTED_CIDRS). Пересекается с вашей сетью или VPN — задайте другую в
-# SITE_API_SUBNET (.env) и пересоздайте сеть: npm run down, затем npm run dev.
+# Сети сайта (M4), подсети закреплены: по ним сервисы узнают друг друга.
+#   site-api — только server и site: сервер не ограничивает публичный API сайту
+#              (PUBLIC_API_TRUSTED_CIDRS);
+#   site-web — только caddy и site: сайт верит X-Forwarded-For от Caddy (SITE_TRUSTED_PROXIES).
+# Пересекается с вашей сетью или VPN — задайте другие в SITE_API_SUBNET и SITE_WEB_SUBNET
+# (.env) и пересоздайте сети: npm run down, затем npm run dev.
 networks:
   site-api:
     ipam:
       config:
         - subnet: ${SITE_API_SUBNET:-10.231.47.0/29}
+  site-web:
+    ipam:
+      config:
+        - subnet: ${SITE_WEB_SUBNET:-10.231.47.8/29}
 
 volumes:
   db-data:

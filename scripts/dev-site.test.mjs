@@ -30,7 +30,7 @@ test('compose: site — сервис Node той же версии, API по с�
   assert.match(site, /- \.\.\/\.\.:\/repo:ro\n/);
   assert.match(site, /server:\n {8}condition: service_healthy/);
   assert.match(site, /127\.0\.0\.1:3100\/health/);
-  assert.match(site, /networks:\n {6}default:\n {6}site-api:\n/);
+  assert.match(site, /networks:\n {6}site-web:\n {6}site-api:\n/, 'сайт не в default: имена caddy, site, server-api однозначны');
   assert.match(compose, /\nvolumes:\n[\s\S]*\n {2}site-og:\n/);
 });
 
@@ -44,13 +44,23 @@ test('compose: в сети site-api только server (имя server-api) и s
   assert.match(server, /PUBLIC_API_TRUSTED_CIDRS: \$\{PUBLIC_API_TRUSTED_CIDRS:-\$\{SITE_API_SUBNET:-10\.231\.47\.0\/29\}\}\n/);
   assert.match(compose, /\nnetworks:\n {2}site-api:\n {4}ipam:\n {6}config:\n {8}- subnet: \$\{SITE_API_SUBNET:-10\.231\.47\.0\/29\}\n/);
   // Caddy в site-api нет: иначе запросы браузеров шли бы с доверенного адреса без лимита.
-  assert.doesNotMatch(serviceBlock('caddy'), /site-api/);
+  assert.doesNotMatch(serviceBlock('caddy'), /\n {6}site-api:/);
   const caddyDeps = serviceBlock('caddy');
   assert.match(caddyDeps, /site:\n {8}condition: service_healthy\n(?: {8}#.*\n)* {8}required: false\n/);
 });
 
+test('compose: в сети site-web только caddy и site; сайт верит X-Forwarded-For только из неё', () => {
+  const inNet = [...compose.matchAll(/\n {2}([a-z][a-z-]*):\n[\s\S]*?(?=\n {2}[a-z][a-z-]*:\n|\n[a-z]+:\n)/g)]
+    .filter((m) => /\n {6}site-web:/.test(m[0]))
+    .map((m) => m[1]);
+  assert.deepEqual(inNet.sort(), ['caddy', 'site']);
+  assert.match(serviceBlock('site'), /SITE_TRUSTED_PROXIES: \$\{SITE_TRUSTED_PROXIES:-\$\{SITE_WEB_SUBNET:-10\.231\.47\.8\/29\}\}\n/);
+  assert.match(serviceBlock('caddy'), /networks:\n(?: {6}#.*\n)* {6}default:\n {6}site-web:\n/);
+  assert.match(compose, /\n {2}site-web:\n {4}ipam:\n {6}config:\n {8}- subnet: \$\{SITE_WEB_SUBNET:-10\.231\.47\.8\/29\}\n/);
+});
+
 test('.env.example: переменные сайта без значений', () => {
-  for (const k of ['SITE_ORIGIN', 'YANDEX_METRIKA_ID', 'YANDEX_VERIFICATION', 'BL_SITE_NOINDEX', 'SITE_API_SUBNET', 'PUBLIC_API_TRUSTED_CIDRS']) {
+  for (const k of ['SITE_ORIGIN', 'YANDEX_METRIKA_ID', 'YANDEX_VERIFICATION', 'BL_SITE_NOINDEX', 'SITE_API_SUBNET', 'PUBLIC_API_TRUSTED_CIDRS', 'SITE_WEB_SUBNET', 'SITE_TRUSTED_PROXIES']) {
     assert.match(envExample, new RegExp(`^${k}=$`, 'm'), k);
   }
 });
