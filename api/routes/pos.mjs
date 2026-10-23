@@ -89,8 +89,8 @@ export const routes = [
     auth: 'staff',
     roles: RECEPTION,
     rateLimit: { max: 20, windowMs: 60_000 },
-    handler: posRoute(({ db, deps, info, ctx }) =>
-      createApproval(db, deps, info, { pool: ctx.pool, withContext: ctx.withContext, pepper: ctx.config.pinPepper }), { status: 201 }),
+    // R-1: PIN проверяется в транзакции запроса (одно соединение пула), отказ — ответом с коммитом счётчика.
+    handler: posRoute(({ db, deps, info, ctx }) => createApproval(db, deps, info, { pepper: ctx.config.pinPepper }), { status: 201 }),
   },
   {
     method: 'GET',
