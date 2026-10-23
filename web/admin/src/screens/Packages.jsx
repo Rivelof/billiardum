@@ -8,7 +8,7 @@ import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api, newIdempotencyKey } from '../lib/api.js';
 import { normalizePhone } from '../lib/auth.js';
 import { parseRubles } from '../lib/cash.js';
-import { lotRefundCall, lotView, packagePerHour, refundDoneText } from '../lib/packages.js';
+import { createRefund, lotView, packagePerHour, refundDoneText, refundRetryable } from '../lib/packages.js';
 import { minutesShort } from '../lib/words.js';
 
 const HOURS = ['час', 'часа', 'часов'];
@@ -372,15 +372,18 @@ function RefundDialog({ lot, onClose, onDone }) {
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  // Один ключ идемпотентности на этот возврат: повтор после обрыва связи не вернёт деньги дважды
-  const key = useRef(null);
+  // Один возврат — один ключ идемпотентности и одно тело (createRefund): «Повторить» после сбоя ЮKassa
+  // или обрыва связи шлёт тот же запрос, деньги второй раз не уйдут
+  const refund = useRef(null);
   useEffect(() => {
     setReason('');
     setTried(false);
     setError(null);
-    key.current = lot ? newIdempotencyKey() : null;
+    refund.current = lot ? createRefund(api, lot, newIdempotencyKey) : null;
   }, [lot?.id]);
   if (!lot) return <Dialog open={false} onClose={onClose} title="" />;
+  const retry = refundRetryable(error);
+  const sent = Boolean(refund.current?.sent);
   return (
     <Dialog open onClose={onClose} title={`Вернуть «${lot.title ?? 'Пакет часов'}»?`} labelledBy="rf-title">
       <form
@@ -388,12 +391,11 @@ function RefundDialog({ lot, onClose, onDone }) {
         onSubmit={async (e) => {
           e.preventDefault();
           setTried(true);
-          if (reason.trim().length < 3) return;
+          if (!sent && reason.trim().length < 3) return;
           setBusy(true);
           setError(null);
           try {
-            const call = lotRefundCall(lot, reason.trim());
-            const res = call.kind === 'sale' ? await api.refundSale(call.id, call.body, key.current) : await api.refundLot(call.id, call.body.reason, key.current);
+            const res = await refund.current.send(reason.trim());
             onDone(lot, res?.amount_kopecks ?? lot.price_kopecks, res?.status ?? null);
           } catch (err) {
             setError(err);
@@ -411,13 +413,21 @@ function RefundDialog({ lot, onClose, onDone }) {
           <label class="field__label" for="rf-reason">
             Причина
           </label>
-          <input id="rf-reason" class="field__input" maxLength={300} value={reason} aria-invalid={tried && reason.trim().length < 3 ? 'true' : undefined} onInput={(e) => setReason(e.currentTarget.value)} />
+          <input id="rf-reason" class="field__input" maxLength={300} value={reason} readOnly={sent} aria-invalid={tried && reason.trim().length < 3 ? 'true' : undefined} onInput={(e) => setReason(e.currentTarget.value)} />
           {tried && reason.trim().length < 3 ? <p class="field__error">Напишите причину — её увидит владелец.</p> : <p class="field__hint">Например: «Гость переезжает, просит вернуть».</p>}
         </div>
-        <ErrorNote error={error} />
+        {retry ? (
+          <div class="note note--lamp" role="alert">
+            <Icon name="alert" />
+            <p class="note__title">{retry.title}</p>
+            <p class="note__body">{retry.body}</p>
+          </div>
+        ) : (
+          <ErrorNote error={error} />
+        )}
         <div class="dialog__actions dialog__actions--row">
           <button type="submit" class="btn btn--danger btn--lg" disabled={busy}>
-            {busy ? 'Возвращаем…' : `Вернуть ${formatMoney(lot.price_kopecks)}`}
+            {busy ? ((refund.current?.tries ?? 0) > 1 ? 'Повторяем…' : 'Возвращаем…') : retry ? 'Повторить' : `Вернуть ${formatMoney(lot.price_kopecks)}`}
           </button>
           <button type="button" class="btn btn--quiet btn--lg" onClick={onClose}>
             Не возвращать

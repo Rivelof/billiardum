@@ -74,3 +74,47 @@ export function refundDoneText({ title, amount, via, status }) {
     queued: false,
   };
 }
+
+/**
+ * Сбой ЮKassa при возврате (503 payment_failed): сервер доводит возврат тем же ключом, деньги могли
+ * уйти. Кассиру — не «не прошло», а «нажмите Повторить»: тот же Idempotency-Key и то же тело.
+ * @returns {{ retry: true, title: string, body: string } | null}
+ */
+export function refundRetryable(err) {
+  if (err?.code !== 'payment_failed') return null;
+  return {
+    retry: true,
+    title: 'ЮKassa не ответила. Возврат мог пройти — нажмите «Повторить»: второй раз деньги не спишутся',
+    body: 'Не возвращайте деньги вручную, пока возврат не подтвердится.',
+  };
+}
+
+/**
+ * Один возврат партии: ключ идемпотентности создаётся один раз, тело замораживается при первой
+ * отправке — «Повторить» после сбоя шлёт тот же запрос с тем же ключом (сервер доведёт, а не задвоит).
+ * @param {{ refundSale: Function, refundLot: Function }} api
+ * @param {object} lot
+ * @param {() => string} newKey
+ */
+export function createRefund(api, lot, newKey) {
+  const key = newKey();
+  let call = null;
+  let tries = 0;
+  return {
+    get key() {
+      return key;
+    },
+    get sent() {
+      return call !== null;
+    },
+    get tries() {
+      return tries;
+    },
+    /** Первая отправка с причиной; дальнейшие вызовы — повтор того же запроса (причина уже не меняется). */
+    async send(reason) {
+      call ??= lotRefundCall(lot, reason);
+      tries += 1;
+      return call.kind === 'sale' ? api.refundSale(call.id, call.body, key) : api.refundLot(call.id, call.body.reason, key);
+    },
+  };
+}

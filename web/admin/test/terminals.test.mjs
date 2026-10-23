@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pinErrorKind, pinMinLength, pinValid, sortTerminals, terminalState } from '../src/lib/terminals.js';
 import { alarmView } from '../src/lib/alarms.js';
-import { refundDoneText } from '../src/lib/packages.js';
+import { createRefund, refundDoneText, refundRetryable } from '../src/lib/packages.js';
 import { createBackend } from '../src/mock/backend.js';
 
 const MIN = 60_000;
@@ -83,4 +83,33 @@ test('заглушка: терминалы владельца — список, 
   assert.equal((await req(b, 'PUT', '/api/staff/pin', { club_id: 'c', pin: '123456' })).status, 200);
   b.scenario('pos');
   assert.equal((await req(b, 'GET', '/api/clubs/c/terminals')).body.error, 'forbidden');
+});
+
+test('сбой ЮKassa при возврате (503 payment_failed): «Повторить» шлёт тот же запрос с тем же ключом', async () => {
+  const calls = [];
+  let fail = true;
+  const api = {
+    refundSale: async (id, body, key) => {
+      calls.push({ id, body: structuredClone(body), key });
+      if (fail) throw Object.assign(new Error('payment_failed'), { code: 'payment_failed', status: 503 });
+      return { amount_kopecks: 320000, status: 'succeeded' };
+    },
+    refundLot: async () => assert.fail('пакет с кассы — возврат продажи'),
+  };
+  let n = 0;
+  const r = createRefund(api, { id: 'l1', source: 'pos', sale_id: 's1', idx: 0 }, () => `key-${(n += 1)}`);
+  const err = await r.send('Гость передумал').catch((e) => e);
+  const hint = refundRetryable(err);
+  assert.ok(hint?.retry);
+  assert.match(hint.title, /ЮKassa не ответила\. Возврат мог пройти — нажмите «Повторить»: второй раз деньги не спишутся/);
+  fail = false;
+  // причина в поле уже не участвует: повтор — тот же запрос
+  assert.equal((await r.send('другая причина')).status, 'succeeded');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].key, 'key-1');
+  assert.equal(calls[1].key, 'key-1');
+  assert.deepEqual(calls[1].body, calls[0].body);
+  assert.deepEqual(calls[0].body, { reason: 'Гость передумал', packages: [0] });
+  assert.equal(r.tries, 2);
+  assert.equal(refundRetryable({ code: 'package_used' }), null);
 });
