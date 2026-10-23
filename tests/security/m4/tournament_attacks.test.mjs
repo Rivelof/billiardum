@@ -51,7 +51,10 @@ async function liveMatch(extra = {}) {
   return { t, m, a, b, manager };
 }
 
-test('НАХОДКА M4-3 (низкая): соперник меняет счёт между просмотром и «Подтвердить» — подтверждается не тот счёт', async () => {
+// M4-3 закрыто в ef78f68; нужна база. Регресс — тесты backend server/tournaments/test/db/tournaments.test.mjs,
+// server/plus/test/db/matches.test.mjs и server/test/db/m4-core.test.mjs (test:db): «Подтвердить» с увиденным
+// счётом, иначе 409 score_changed.
+test.skip('НАХОДКА M4-3 (низкая): соперник меняет счёт между просмотром и «Подтвердить» — подтверждается не тот счёт', async () => {
   const { t, m, a, b } = await liveMatch();
   // A вносит «проиграл 1:2» — B видит в приложении, что соперник признал поражение.
   let r = await h.request('POST', `/api/tournaments/matches/${m.id}/score`, { token: a.user.token, body: { score_a: 1, score_b: 2 } });

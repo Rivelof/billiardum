@@ -66,7 +66,10 @@ async function runTicks(untilMs, stepMin = 5) {
   await h.flush();
 }
 
-test('НАХОДКА M4-2 (средняя): один игрок внёс счёт, второй молчит — стол и свет бесплатно продлеваются сутками после конца турнира', async () => {
+// M4-2 закрыто в ef78f68; нужна база. Регресс — тесты backend server/tournaments/test/db/tournaments.test.mjs
+// и server/test/light/m4.test.mjs (test:db): один внёс счёт — продлений нет, через 5 мин свет гаснет;
+// без счёта — не дальше конца турнира + матч, одна тревога tournament_match_overdue.
+test.skip('НАХОДКА M4-2 (средняя): один игрок внёс счёт, второй молчит — стол и свет бесплатно продлеваются сутками после конца турнира', async () => {
   const { t, m, players, endsAt } = await runningMatch({ suffix: 'a' });
   const [a] = players;
   const side = m.user_a === a.user.id ? { score_a: 2, score_b: 0 } : { score_a: 0, score_b: 2 };
@@ -91,7 +94,9 @@ test('НАХОДКА M4-2 (средняя): один игрок внёс счё�
   assert.equal(alarms.length, 0, 'тревоги о затянувшемся матче нет — организатор не узнаёт');
 });
 
-test('НАХОДКА M4-2 (средняя): разный счёт (disputed) — стол со светом ждёт организатора без предела', async () => {
+// M4-2 закрыто в ef78f68; нужна база. Регресс — тесты backend server/tournaments/test/db/tournaments.test.mjs
+// и server/test/light/m4.test.mjs (test:db): спор не даёт продлевать свет за предел №147.
+test.skip('НАХОДКА M4-2 (средняя): разный счёт (disputed) — стол со светом ждёт организатора без предела', async () => {
   const { t, m, players, endsAt } = await runningMatch({ suffix: 'b' });
   const [a, b] = players;
   const aWins = m.user_a === a.user.id ? { score_a: 2, score_b: 1 } : { score_a: 1, score_b: 2 };
