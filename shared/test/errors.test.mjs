@@ -82,3 +82,19 @@ test('M4-3: score_changed — соперник переписал счёт, пр
     assert.doesNotMatch(m.text, /\b[a-z_]{4,}\b/);
   }
 });
+
+test('M5.1: тексты кодов подключения клуба; дыра в тарифе — день и часы словами', () => {
+  for (const code of ['clubs_limit', 'checklist_incomplete', 'club_suspended', 'shop_invalid', 'shop_mode_mismatch', 'fiscalization_off', 'tariff_gap', 'tariff_overlap', 'xlsx_invalid', 'qr_invalid']) {
+    assert.ok(KNOWN_CODES.includes(code), code);
+    for (const audience of ['guest', 'staff']) {
+      const m = errorMessage(code, { audience });
+      assert.match(m.title, /[А-ЯЁ].*\.$/u, code);
+      assert.match(m.action, /[А-ЯЁ].*[.!]$/u, code);
+      assert.doesNotMatch(m.text, /\b[a-z_]{4,}\b/, `${code}: без кодов и английских слов`);
+    }
+  }
+  assert.equal(errorMessage(new ApiError('tariff_gap', { status: 400, data: { weekday: 3, from: '02:00', to: '06:00' } })).title, 'В среду с 02:00 до 06:00 нет цены.');
+  assert.equal(errorMessage(new ApiError('tariff_overlap', { status: 400, data: { weekday: 2, from: '17:00', to: '18:00' } })).title, 'Во вторник с 17:00 до 18:00 задано две цены.');
+  assert.equal(errorMessage(new ApiError('tariff_gap', { status: 400, data: { weekday: 9 } })).title, 'В неделе есть часы без цены.');
+  assert.equal(errorMessage(new ApiError('tariff_gap', { status: 400, data: { weekday: 7, from: 'x' } })).title, 'В воскресенье нет цены.');
+});

@@ -121,3 +121,9 @@ npm test -w @billiardum/shared      # или: cd shared && npm test
 ## Образец стиля
 
 `styleguide.html` открывается через любой статический сервер из папки `shared/`, например `python3 -m http.server -d shared 8080` → `http://localhost:8080/styleguide.html`. С диска (`file://`) тоже открывается, но браузер не даёт загрузить `format.mjs`: после клика по столу счётчики показываются без склонения.
+
+## M5.1
+
+- `errors.mjs`: `clubs_limit`, `checklist_incomplete`, `club_suspended`, `shop_invalid`, `shop_mode_mismatch`, `fiscalization_off`, `tariff_gap`, `tariff_overlap` (с `{weekday, from, to}` — «В среду с 02:00 до 06:00 нет цены.»), `xlsx_invalid`, `qr_invalid`.
+- `api.mjs`: `rawBody` и `contentType` — тело файлом (импорт `.xlsx`); поля ошибок `weekday`, `from`, `to`, `resource_type` и список `failed` (`ERROR_LIST_FIELDS`, только коды, не больше 20).
+- `icons.mjs`: `share`, `rotate`, `camera`, `flask`.

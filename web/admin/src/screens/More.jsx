@@ -34,6 +34,11 @@ export function More({ ctx }) {
             <Icon name="logout" />
             Выйти
           </button>
+          {can.owner(role) ? (
+            <a class="btn btn--link" href={`${BASE}start`} onClick={linkHandler}>
+              Подключить ещё клуб
+            </a>
+          ) : null}
         </section>
         {platformRole(user) ? (
           <section class="panel">
@@ -68,6 +73,7 @@ const SECTION_HINT = {
   bookings: 'Брони на день: лента по столам, бронь по телефону.',
   packages: 'Пакеты часов: продажа и возврат.',
   staff: 'Сотрудники, роли и терминалы ресепшена.',
+  onboarding: 'Мастер подключения: зал, тарифы, ЮKassa, контроллеры, запуск.',
 };
 
 /** Разделы, которых нет в нижней панели телефона (у владельца и управляющего). */

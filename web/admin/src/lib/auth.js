@@ -124,4 +124,21 @@ export const can = {
   listing: (role) => ['manager', 'owner'].includes(role),
   /** Скидку выше лимита даёт сам: управляющий и владелец (с причиной). */
   bigDiscount: (role) => ['manager', 'owner'].includes(role),
+  // M5.1: мастер подключения, магазины ЮKassa и чек-лист — только владелец (T28: ресепшн их не видит)
+  onboarding: (role) => role === 'owner',
 };
+
+/**
+ * Режим клуба (№153): test | live | suspended. Берём из членства (GET /api/me → clubs[].mode, допущение M5.1);
+ * сервер его не прислал — считаем клуб боевым, плашки нет.
+ */
+export function clubMode(membership) {
+  return ['test', 'live', 'suspended'].includes(membership?.mode) ? membership.mode : 'live';
+}
+
+/** Мастер узнал новый режим клуба (onboarding, go-live) — плашка «Тестовый режим» обновляется везде. */
+export function setClubMode(clubId, mode) {
+  if (!['test', 'live', 'suspended'].includes(mode)) return;
+  if (!auth.get().clubs.some((c) => c.club_id === clubId && c.mode !== mode)) return;
+  auth.set((s) => ({ clubs: s.clubs.map((c) => (c.club_id === clubId && c.mode !== mode ? { ...c, mode } : c)) }));
+}

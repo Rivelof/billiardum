@@ -3,11 +3,13 @@
  * Сценарии: ?mock=reception (по умолчанию) | owner | manager | anon | empty | broken | terminal;
  * M2 (mock/m2.js): pos | noshift (смены нет) | kktoff (касса ККТ не на связи) | bar (бармен);
  * M3 (mock/m3.js): брони, персонал, пакеты и депозит — в каждом сценарии (empty — без броней)
+ * M5.1 (mock/m5.js): onboarding — новый пользователь без клуба; testmode, testmode-owner — клуб в тестовом режиме
  */
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
 import { m3Routes, m3State } from './m3.js';
 import { m4Routes, m4State } from './m4.js';
+import { m5Routes, m5State, NEWCOMER } from './m5.js';
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -25,11 +27,16 @@ const STAFF = {
   operator: { id: 'u-oper-0006', name: 'Оператор Лена', phone_masked: '+7 *** ***-00-06', role: null, platform_role: 'platform_operator' },
 };
 
+// Коды столов (Crockford Base32, №47) — как в заглушке гостя; план — как в сиде (центр стола в см, зал 18 × 14 м)
+const CODES = { 1: 'A7N3K9QW2R', 2: '2M8X4KZ6CB', 3: '3B5R8WA2NP', 4: '4K7P9QW2XM', 5: '5S9N3VJ7AE', 6: '6C2J7MD5KT', 7: '7H3D2RT9QF', 8: '8F6T1YH4RD' };
+const PLAN = Object.fromEntries(
+  [[400, 300], [950, 300], [1500, 300], [400, 750], [950, 750], [350, 1150], [800, 1150], [1250, 1150]].map(([x, y], i) => [i + 1, { plan_x: x, plan_y: y, plan_rotation: 0 }]),
+);
 const TYPES = { pyramid: ['billiard_pyramid', 'Пирамида 12 футов'], pool: ['billiard_pool', 'Пул 9 футов'] };
 
 function freshState(scenario, t) {
   const table = (n, kind, status, extra = {}) => ({
-    resource: { id: rid(n), number: n, type: TYPES[kind][0], title: TYPES[kind][1] },
+    resource: { id: rid(n), number: n, type: TYPES[kind][0], title: TYPES[kind][1], code: CODES[n], ...PLAN[n] },
     status,
     session: null,
     until: null,
@@ -45,7 +52,8 @@ function freshState(scenario, t) {
     ...over,
   });
   const empty = scenario === 'empty';
-  const hall = [
+  const fresh = scenario === 'onboarding';
+  const hall = fresh ? [] : [
     table(1, 'pyramid', 'busy', { session: session(1, 80, 40) }),
     // ?mock=waitlist (№122): стол 2 предложен гостю из очереди — удержание до конца предложения
     scenario === 'waitlist'
@@ -58,13 +66,13 @@ function freshState(scenario, t) {
     table(7, 'pool', 'busy', { session: session(7, 35, null) }),
     table(8, 'pool', 'offline', { device: { online: false, rssi: null, fw: '1.0.0', caps: ['relay', 'led', 'buzzer', 'current'] } }),
   ];
-  const requests = empty
+  const requests = empty || fresh
     ? []
     : [
         { id: uuid(), status: 'waiting', kind: 'start', resource_number: 6, minutes: 60, amount_kopecks: 80000, created_at: new Date(t - 9 * MIN).toISOString(), expires_at: new Date(t + 6 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-71-08' },
         { id: uuid(), status: 'waiting', kind: 'start', resource_number: 4, minutes: 120, amount_kopecks: 160000, created_at: new Date(t - 2 * MIN).toISOString(), expires_at: new Date(t + 13 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-45-12' },
       ];
-  const alarms = [
+  const alarms = fresh ? [] : [
     { id: uuid(), type: 'bypass_detected', level: 'critical', resource_number: 2, created_at: new Date(t - 6 * MIN).toISOString() },
     { id: uuid(), type: 'device_offline', level: 'critical', resource_number: 8, created_at: new Date(t - 14 * MIN).toISOString() },
     { id: uuid(), type: 'manual_action', level: 'important', resource_number: 5, created_at: new Date(t - 3 * MIN).toISOString() },
@@ -84,7 +92,7 @@ function freshState(scenario, t) {
   return {
     scenario,
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа
-    user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : scenario === 'operator' ? { ...STAFF.operator } : scenario === 'platform' ? { ...STAFF.owner, platform_role: 'platform_admin' } : { ...STAFF[role] },
+    user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : scenario === 'operator' ? { ...STAFF.operator } : scenario === 'platform' ? { ...STAFF.owner, platform_role: 'platform_admin' } : fresh ? { ...NEWCOMER } : { ...STAFF[role] },
     hall,
     requests,
     alarms,
@@ -94,6 +102,7 @@ function freshState(scenario, t) {
     m2: m2State(scenario, t, hall),
     m3: m3State(scenario, t, hall),
     m4: m4State(scenario, t),
+    m5: m5State(scenario, t),
   };
 }
 
@@ -143,6 +152,7 @@ export function createBackend(storage, now = () => Date.now()) {
   // Состояние из sessionStorage до M2 — дополняем данными кассы, бара и смен
   if (!state.m2?.catalog) state.m2 = m2State(state.scenario, now(), state.hall);
   if (!state.m3?.lots) state.m3 = m3State(state.scenario, now(), state.hall);
+  if (!state.m5) state.m5 = m5State(state.scenario, now());
   const listeners = new Set();
   const save = () => storage.save(state);
   const emit = (name, data) => {
@@ -160,6 +170,7 @@ export function createBackend(storage, now = () => Date.now()) {
 
   // Новые заявки приходят сами, чтобы слышать звук очереди
   function tick() {
+    m5.advance();
     m2Tick(m2ctx);
     if (state.scenario === 'empty' || !state.user) return;
     if (now() < state.nextRequestAt) return;
@@ -175,7 +186,8 @@ export function createBackend(storage, now = () => Date.now()) {
 
   const routes = [
     // M4: user.platform_role — роль платформы (оператор без клуба видит только экран оператора)
-    ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: me().role ? [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ }] : [] }) : err(401, 'unauthorized'))],
+    // M5.1: клубы, созданные в заглушке, или клуб разработки; mode — режим клуба (test | live)
+    ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: m5.clubsFor(me()) ?? (me().role ? [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ, mode: state.m5.devMode }] : []) }) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/auth\/dev$/, (_m, b) => {
       if (!/^\+7\d{10}$/.test(b?.phone ?? '')) return err(400, 'bad_request');
       const role = b.phone.endsWith('01') ? 'owner' : b.phone.endsWith('02') ? 'manager' : b.phone.endsWith('05') ? 'bar' : 'reception';
@@ -204,11 +216,8 @@ export function createBackend(storage, now = () => Date.now()) {
       return ok({ user: me() });
     }],
     ['POST', /^\/api\/resources\/([^/]+)\/identify$/, (m) => (table(m[1]) ? ok({ ok: true }) : err(404, 'not_found'))],
-    ['POST', /^\/api\/clubs\/([^/]+)\/devices\/bind$/, (_m, b) => {
-      if (!['owner', 'installer'].includes(me()?.role)) return err(403, 'forbidden');
-      if (!/^[0-9a-f-]{36}$/.test(b.device_id ?? '') || !/^[A-Za-z0-9-]{6,64}$/.test(b.claim_code ?? '')) return err(400, 'bad_request');
-      return ok({ bind_until: new Date(now() + 30 * MIN).toISOString() });
-    }],
+    // №67, M5.1 №159: { device_id, claim_code } или { qr: 'BLD1:…' } и стол; контроллер выходит на связь через 5 с
+    ['POST', /^\/api\/clubs\/([^/]+)\/devices\/bind$/, (_m, b) => m5.bind(b)],
     ['POST', /^\/api\/staff\/pin$/, (_m, b) => {
       if (b.pin !== '1234') return err(401, 'unauthorized');
       const u = Object.values(STAFF).find((x) => x.id === b.user_id);
@@ -332,7 +341,9 @@ export function createBackend(storage, now = () => Date.now()) {
     }],
   ];
 
+  const m5 = m5Routes({ state: () => state, now, me, err, ok, emit, audit });
   const m2ctx = {
+    importFile: (b, dryRun) => m5.importFile(b, dryRun),
     state: () => state,
     now,
     emit,
@@ -350,6 +361,7 @@ export function createBackend(storage, now = () => Date.now()) {
   const m3 = m3Routes({ state: () => state, now, me, err, ok, emit, audit });
   routes.push(...m3.routes);
   routes.unshift(...m4Routes({ state: () => state, now, me, err, ok, emit, audit }).routes);
+  routes.unshift(...m5.routes);
 
   async function handle(method, url) {
     tick();

@@ -39,7 +39,14 @@ export function install(configureApi) {
   const fetchImpl = async (url, init = {}) => {
     await wait(LATENCY);
     const href = new URL(url, location.origin).href;
-    const res = await backend.handle(init.method ?? 'GET', { href, body: init.body ? JSON.parse(init.body) : undefined });
+    // Тело JSON — объектом; файл (M5.1, импорт меню .xlsx) — байтами с типом: { __raw, __type }
+    let body;
+    if (typeof init.body === 'string') body = JSON.parse(init.body);
+    else if (init.body !== undefined && init.body !== null) {
+      const buf = init.body instanceof Blob ? await init.body.arrayBuffer() : init.body;
+      body = { __raw: new Uint8Array(buf.buffer ?? buf), __type: init.headers?.['Content-Type'] ?? '' };
+    }
+    const res = await backend.handle(init.method ?? 'GET', { href, body });
     if (res.pdf) return new Response(new Blob([res.pdf], { type: 'application/pdf' }), { status: 200, headers: { 'content-type': 'application/pdf' } });
     return new Response(JSON.stringify(res.body), { status: res.status, headers: { 'content-type': 'application/json' } });
   };

@@ -1,3 +1,5 @@
+import { isTestClub } from '../lib/testmode.js';
+import { TestModeNote } from '../components/TestModeNote.jsx';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { formatDuration, formatMoney, formatTime } from '@billiardum/shared/format';
 import { tableKind } from '@billiardum/shared/hall';
@@ -147,6 +149,7 @@ export function GameScreen({ id }) {
       <PhaseAnnouncer phase={phase} />
 
       <main class="wrap content content--game">
+        {isTestClub(session) || (getFlow().testMode && getFlow().resourceId === session.resource?.id) ? <TestModeNote /> : null}
         <ExtendPending session={session} tz={tz} />
         <BarStrip sessionId={session.id} bar={bar} />
         <Participants session={session} />

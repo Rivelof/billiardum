@@ -1,3 +1,5 @@
+import { isTestClub } from '../lib/testmode.js';
+import { TestModeNote } from '../components/TestModeNote.jsx';
 import { useEffect, useState, useCallback, useRef } from 'preact/hooks';
 import { optionPrice } from '../lib/prices.js';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
@@ -50,6 +52,7 @@ export function TableScreen({ code, search }) {
       setTable(t);
       setLoadError(null);
       rememberClub(t.club);
+      setFlow({ testMode: isTestClub(t) });
       if (auth.get().status === 'user') {
         api
           .myBookings()
@@ -228,6 +231,7 @@ export function TableScreen({ code, search }) {
       </Stage>
 
       <main class="wrap content">
+        {isTestClub(table) ? <TestModeNote /> : null}
         {step === 'choose' && myBooking ? <MyBooking table={table} booking={myBooking} code={code} onReload={load} /> : null}
         {waitEntry?.status === 'expired' && waitlistView(waitEntry).note ? (
           <p class="note note--lamp" role="status">

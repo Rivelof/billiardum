@@ -219,3 +219,11 @@ export function fakeApi(responses, calls = []) {
     return new Response(JSON.stringify(body), { status: 200 });
   };
 }
+
+test('M5.1: «Для клубов» — кнопка «Подключить клуб» ведёт в программу клуба /club/start, форма заявки на месте', async () => {
+  const { get } = site({ now: () => 1_800_000_000_000 });
+  const body = (await get('/dlya-klubov/')).body;
+  assert.match(body, /<a class="btn btn--lamp btn--lg" href="\/club\/start">Подключить клуб<\/a>/);
+  assert.match(body, /id="zayavka"/);
+  assert.match(body, /Отправить заявку/);
+});

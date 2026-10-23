@@ -47,7 +47,18 @@ export const ERROR_FIELDS = Object.freeze([
   'reason',
   // M4 T25: ссылка клуба на заявку — 409 request_closed { status: accepted|declined|operator|closed }
   'status',
+  // M5.1: 400 tariff_gap | tariff_overlap { weekday, from, to } — день недели (1 — пн) и интервал местного времени клуба
+  'weekday',
+  'from',
+  'to',
+  'resource_type',
 ]);
+
+/**
+ * Поля-списки ошибки: 409 checklist_incomplete { failed: ['devices', 'shop_live'] } (M5.1).
+ * Берём только массив коротких кодов (не больше 20), остальное отбрасываем.
+ */
+export const ERROR_LIST_FIELDS = Object.freeze(['failed']);
 
 const CODE_RE = /^[a-z][a-z0-9_]{1,63}$/;
 
@@ -71,8 +82,8 @@ export async function readErrorCode(res) {
 /**
  * Код и безопасные поля ошибки: `{"error":"booking_start_required","booking_id":"…"}` →
  * { code: 'booking_start_required', data: { booking_id: '…' } }. Поля только из ERROR_FIELDS,
- * значения — строка, число, логическое или null.
- * @returns {Promise<{ code: string, data: Record<string, string | number | boolean | null> | null }>}
+ * значения — строка, число, логическое или null; из ERROR_LIST_FIELDS — список кодов.
+ * @returns {Promise<{ code: string, data: Record<string, string | number | boolean | null | string[]> | null }>}
  */
 export async function readError(res) {
   let body;
@@ -88,6 +99,10 @@ export async function readError(res) {
     for (const k of ERROR_FIELDS) {
       const v = obj[k];
       if (v === null || typeof v === 'boolean' || typeof v === 'number' || (typeof v === 'string' && v.length <= 64)) (data ??= {})[k] = v;
+    }
+    for (const k of ERROR_LIST_FIELDS) {
+      const v = obj[k];
+      if (Array.isArray(v) && v.length <= 20 && v.every((x) => typeof x === 'string' && CODE_RE.test(x))) (data ??= {})[k] = [...v];
     }
   }
   const code = obj?.error;
@@ -130,13 +145,15 @@ export function createClient(options = {}) {
   /**
    * @param {'GET' | 'POST'} method
    * @param {string} path путь без префикса: '/t/4K7P9QW2XM'
-   * @param {{ body?: unknown, query?: Record<string, unknown>, idempotencyKey?: string, signal?: AbortSignal, raw?: boolean }} [opts]
+   * @param {{ body?: unknown, rawBody?: Blob | ArrayBuffer | Uint8Array, contentType?: string, query?: Record<string, unknown>, idempotencyKey?: string, signal?: AbortSignal, raw?: boolean }} [opts]
+   *   rawBody — тело как есть (файл .xlsx импорта меню, M5.1) с типом contentType вместо JSON
    */
   async function request(method, path, opts = {}) {
     const headers = { Accept: 'application/json' };
     // Контракт §3: у изменяющих запросов Content-Type: application/json обязателен, даже без тела
     const hasBody = method !== 'GET' && method !== 'HEAD';
-    if (hasBody) headers['Content-Type'] = 'application/json';
+    const rawBody = hasBody && opts.rawBody !== undefined && opts.rawBody !== null;
+    if (hasBody) headers['Content-Type'] = rawBody ? (opts.contentType ?? 'application/octet-stream') : 'application/json';
     if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
     const token = options.token?.();
     if (token) headers.Authorization = `Bearer ${token}`;
@@ -147,7 +164,7 @@ export function createClient(options = {}) {
       res = await doFetch(url(path, opts.query), {
         method,
         headers,
-        body: hasBody ? JSON.stringify(opts.body ?? {}) : undefined,
+        body: rawBody ? opts.rawBody : hasBody ? JSON.stringify(opts.body ?? {}) : undefined,
         credentials: 'same-origin',
         signal: opts.signal,
       });

@@ -4,7 +4,7 @@ import { Icon } from './Icon.jsx';
 import { useNow } from './hooks.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
-import { can } from '../lib/auth.js';
+import { can, clubMode } from '../lib/auth.js';
 import { getTheme, setTheme, THEME_NEXT, THEME_LABEL } from '../lib/theme.js';
 
 const THEME_ICON = { auto: 'auto', light: 'sun', dark: 'moon' };
@@ -36,8 +36,43 @@ export function navItems(role, club) {
   if (can.listing(role)) add('listing', 'star', 'Карточка', true);
   if (can.staff(role)) add('staff', 'users', 'Персонал', true);
   if (can.devices(role)) add('devices', 'chip', 'Контроллеры', manage);
+  // M5.1: мастер подключения — владельцу, в боковой панели планшета (на телефоне — в плашке и в «Ещё»)
+  if (can.onboarding(role)) add('onboarding', 'flask', 'Подключение', true);
   add('more', 'more', 'Ещё');
   return items;
+}
+
+/**
+ * Плашка режима клуба (M5.1, №153): заметная, но не мешает работе — одна строка над экраном, прокручивается вместе с ним.
+ * Тестовый режим: свет настоящий, денег нет. Владельцу — переход к чек-листу запуска.
+ */
+export function ModeNote({ club, role, active }) {
+  const mode = clubMode(club);
+  if (mode !== 'test' && mode !== 'suspended') return null;
+  const href = `${BASE}c/${encodeURIComponent(club.club_id)}/onboarding/go_live`;
+  if (mode === 'suspended') {
+    return (
+      <p class="modenote modenote--stop" role="note">
+        <Icon name="alert" />
+        <span>
+          <b>Клуб приостановлен платформой.</b> Гости не могут оплатить игру через Бильярдум. Причина — у поддержки Бильярдума.
+        </span>
+      </p>
+    );
+  }
+  return (
+    <p class="modenote" role="note">
+      <Icon name="flask" />
+      <span>
+        <b>Тестовый режим.</b> Свет включается по-настоящему, а оплаты тестовые: деньги не списываются, чеки не пробиваются.
+      </span>
+      {can.onboarding(role) && active !== 'onboarding' ? (
+        <a class="modenote__link" href={href} onClick={linkHandler}>
+          Чек-лист запуска
+        </a>
+      ) : null}
+    </p>
+  );
 }
 
 /**
@@ -102,6 +137,7 @@ export function Shell({ club, role, active, title, user, timeZone, alarmsCount =
         </nav>
       ) : null}
       <main class="shell__main" id="main" tabIndex={-1}>
+        <ModeNote club={club} role={role} active={active} />
         {children}
       </main>
     </div>

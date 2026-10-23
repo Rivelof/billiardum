@@ -6,6 +6,7 @@
  * Сценарии для проверки глазами: ?mock=user | fresh | anon | game | warn | grace | unlimited | interrupted | closed | notpayer | decline;
  * M2 (mock/bar.js): barorders (игра, заказы бара и счёт стола) | closedtab (игра закончилась, счёт не оплачен);
  * M3 (mock/m3.js): book | mybooking | early | waitlist | balance; limit — продление ограничено бронью в 21:00 (№106)
+ * M5.1: testclub — клуб в тестовом режиме (плашка на столе, оплате и игре), testgame — то же с идущей игрой
  */
 
 import { barRoutes, barSeed } from './bar.js';
@@ -114,6 +115,8 @@ export function createBackend(storage) {
   const listeners = new Map(); // sessionId → Set(fn)
 
   const save = () => storage.save(state);
+  // M5.1: клуб в тестовом режиме (?mock=testclub, testgame) — гость видит плашку «деньги не списываются»
+  const clubView = () => ({ ...CLUB, mode: state.testMode ? 'test' : 'live' });
   const tableBy = (pred) => Object.values(state.tables).find(pred);
 
   function sessionView(s) {
@@ -134,7 +137,7 @@ export function createBackend(storage) {
     return {
       id: s.id,
       resource: { id: table.id ?? resourceId(table.number), number: table.number, type: table.type, title: table.title },
-      club: CLUB,
+      club: clubView(),
       status,
       started_at: new Date(s.started_at).toISOString(),
       paid_until: new Date(s.paid_until).toISOString(),
@@ -205,6 +208,7 @@ export function createBackend(storage) {
   function scenario(name) {
     state = freshState();
     state.scenario = name;
+    state.testMode = name === 'testclub' || name === 'testgame';
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа; nobots — вошёл, ботов нет
     if (['anon', 'nologin', 'tgonly'].includes(name)) return save();
     state.user = { ...USER, consent_version: name === 'fresh' ? null : 'draft-2026-10' };
@@ -226,7 +230,7 @@ export function createBackend(storage) {
       state.sessions[s.id] = s;
       Object.assign(table, { status: 'busy', session_id: s.id, busy_until: s.paid_until });
     };
-    if (name === 'game') mk({});
+    if (name === 'game' || name === 'testgame') mk({});
     if (name === 'notpayer') mk({ is_payer: false, participants: [{ nick: 'Андрей К.', is_payer: true }, { nick: 'Игрок 1' }] });
     if (name === 'warn') mk({ started_at: t - 115 * MIN, paid_until: t + 299_900 });
     if (name === 'grace') mk({ started_at: t - 120 * MIN, paid_until: t - 18 * 1000 });
@@ -269,7 +273,7 @@ export function createBackend(storage) {
       const isMine = Boolean(state.user && mineView && !['closed', 'cancelled'].includes(mineView.status) && mine.participants.some((p) => p.nick === state.user.nick));
       const status = mineView && ['closed', 'cancelled'].includes(mineView.status) ? 'free' : table.status;
       return ok({
-        club: CLUB,
+        club: clubView(),
         resource: { id: resourceId(table.number), number: table.number, type: table.type, title: table.title },
         status,
         busy_until: ['busy', 'service', 'reserved'].includes(status) && table.busy_until ? new Date(table.busy_until).toISOString() : null,
@@ -488,7 +492,7 @@ export function createBackend(storage) {
   const m3 = m3Routes({
     state: () => state,
     now,
-    club: CLUB,
+    club: clubView(),
     tables: () => Object.values(state.tables),
     resourceId,
     amountFor,
@@ -503,7 +507,7 @@ export function createBackend(storage) {
   const m4 = m4Routes({
     state: () => state,
     now,
-    club: CLUB,
+    club: clubView(),
     tables: () => Object.values(state.tables),
     resourceId,
     err,

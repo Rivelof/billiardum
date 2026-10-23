@@ -10,6 +10,7 @@ import { ROLE_LABEL } from '../lib/words.js';
 import { BASE } from '../lib/env.js';
 import { linkHandler } from '../lib/router.js';
 import { Terminals } from './Terminals.jsx';
+import { InviteShare } from '../components/InviteShare.jsx';
 
 /** Роли, которые владелец выдаёт сам (server/staff INVITE_ROLES): владельца приглашать нельзя. */
 export const INVITE_ROLES = ['manager', 'reception', 'bar', 'installer'];
@@ -66,6 +67,7 @@ function People({ ctx }) {
   const [editing, setEditing] = useState(null);
   const [revoking, setRevoking] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [shared, setShared] = useState(null); // M5.1: текст приглашения со ссылкой
 
   const load = useCallback(async () => {
     try {
@@ -104,6 +106,7 @@ function People({ ctx }) {
             <span class="note__title">{notice}</span>
           </p>
         ) : null}
+        {shared ? <InviteShare invite={shared} /> : null}
         {data === null && !error ? <p class="muted loading">Загружаем персонал…</p> : null}
 
         {staff.length ? (
@@ -190,7 +193,8 @@ function People({ ctx }) {
         onClose={() => setInviting(false)}
         onDone={(inv) => {
           setInviting(false);
-          setNotice(`Приглашение отправлено: ${inv.phone_masked}, ${(ROLE_LABEL[inv.role] ?? inv.role).toLowerCase()}. Действует до ${formatDate(inv.expires_at, timeZone)}.`);
+          setNotice(`Приглашение создано: ${inv.phone_masked}, ${(ROLE_LABEL[inv.role] ?? inv.role).toLowerCase()}. Действует до ${formatDate(inv.expires_at, timeZone)}.`);
+          setShared(inv);
           load();
         }}
       />
@@ -237,7 +241,7 @@ function RoleChoice({ value, onChange, name }) {
   );
 }
 
-function InviteDialog({ open, clubId, onClose, onDone }) {
+export function InviteDialog({ open, clubId, onClose, onDone }) {
   const [phone, setPhone] = useState('');
   const [role, setRole] = useState('reception');
   const [tried, setTried] = useState(false);

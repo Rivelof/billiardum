@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@billiardum/shared": "0.1.0",
+    "jsqr": "1.4.0",
     "preact": "10.29.8",
     "uqr": "0.1.3"
   }

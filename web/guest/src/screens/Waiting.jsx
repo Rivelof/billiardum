@@ -1,3 +1,5 @@
+import { isTestClub } from '../lib/testmode.js';
+import { TestModeNote } from '../components/TestModeNote.jsx';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
 import { DECLINE_REASONS } from '@billiardum/shared/reasons';
@@ -101,6 +103,7 @@ export function WaitPayment({ paymentId }) {
         </h1>
       </Stage>
       <main class="wrap content">
+        {flow.testMode || isTestClub(payment) ? <TestModeNote /> : null}
         <div class="step">
           {paid ? <PocketDrop /> : null}
           <p class="lead" aria-live="polite">

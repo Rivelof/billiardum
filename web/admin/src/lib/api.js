@@ -91,8 +91,9 @@ export const api = {
   verify: (club) => client.get(`/clubs/${e(club)}/audit/verify`),
   alarms: (club) => client.get(`/clubs/${e(club)}/alarms`, { query: { state: 'open' } }),
   ack: (id) => client.post(`/alarms/${e(id)}/ack`),
-  /** PDF наклеек: Response, чтобы забрать Blob. */
-  qrStickers: (club) => client.request('GET', `/clubs/${e(club)}/qr-stickers.pdf`, { raw: true }),
+  /** PDF наклеек: Response, чтобы забрать Blob. M5.1: resources — только выбранные столы (id через запятую). */
+  qrStickers: (club, resourceIds) =>
+    client.request('GET', `/clubs/${e(club)}/qr-stickers.pdf`, { raw: true, query: resourceIds?.length ? { resources: resourceIds.join(',') } : undefined }),
 
   // ---------- M2: касса POS (docs/contracts/m2.md §4) ----------
   /** Меню персонала: с алкоголем, стоп-листом, остатками; settings.discount_limit_percent — лимит скидки (№82). */
@@ -174,8 +175,19 @@ export const api = {
 
   /** Персонал (владелец): { staff: [{ user_id, name, phone_masked, role, active, pin_set }], invites: [{ id, phone_masked, role, expires_at }] }. */
   staff: (club) => client.get(`/clubs/${e(club)}/staff`),
-  /** Пригласить по телефону (+7…) с ролью manager | reception | installer | bar; приглашение на 7 дней (№111). */
-  inviteStaff: (club, phone, role) => client.post(`/clubs/${e(club)}/staff`, { phone, role }),
+  /**
+   * Пригласить по телефону (+7…) с ролью manager | reception | installer | bar; приглашение на 7 дней (№111).
+   * M5.1 (№158): POST …/staff/invites → ещё { invite_text, invite_url }. Пока сервер его не знает (404, 405) —
+   * прежний POST …/staff (ответ без текста приглашения).
+   */
+  async inviteStaff(club, phone, role) {
+    try {
+      return await client.post(`/clubs/${e(club)}/staff/invites`, { phone, role });
+    } catch (err) {
+      if (err?.status !== 404 && err?.status !== 405) throw err;
+      return client.post(`/clubs/${e(club)}/staff`, { phone, role });
+    }
+  },
   setStaffRole: (club, userId, role) => client.request('PATCH', `/clubs/${e(club)}/staff/${e(userId)}`, { body: { role } }),
   /** Отозвать доступ в один шаг: членство, PIN и все токены сотрудника. */
   revokeStaff: (club, userId) => client.request('DELETE', `/clubs/${e(club)}/staff/${e(userId)}`),
@@ -244,6 +256,41 @@ export const api = {
   releaseOffer: (id, reason) => client.post(`/waitlist/offers/${e(id)}/release`, { reason }),
   /** Действие тревоги «Повторить» чек зачёта (Д2, управляющий+): { reason } → { receipt_id, status, retried }. */
   retryReceiptSettle: (id, reason, idempotencyKey) => client.post(`/receipts/${e(id)}/retry`, { reason }, { idempotencyKey }),
+
+  // ---------- M5.1: подключение клуба без выезда (docs/contracts/m5-1.md §4) ----------
+  /** Создать клуб (№152): { name, city_id | city_name, timezone, listing_id? } → { club_id, mode: 'test' }; 409 clubs_limit. */
+  createClub: (body) => client.post('/clubs', body),
+  /** Справочник городов каталога: { items: [{ slug, name, … }] }. */
+  cities: () => client.get('/public/cities'),
+  /** Мои заявки «Подтвердить клуб» (M4) — допущение M5.1: { items: [{ id, status, listing: { id, name, city, timezone?, club_id? } }] }. */
+  myClaims: () => client.get('/directory/claims/mine'),
+  /** Мастер: { mode, steps: [{ id, done }], checklist: { items, ready }, hall?, payment_checks?, … }. */
+  onboarding: (club) => client.get(`/clubs/${e(club)}/onboarding`),
+  /** Перейти в боевой режим (№160) → { mode: 'live' }; 409 checklist_incomplete { failed }. */
+  goLive: (club) => client.post(`/clubs/${e(club)}/go-live`, { accept_offer: true }),
+  /** Магазин ЮKassa (№154): mode test | live → { shop_id, secret_mask, verified_at, test, fiscalization }. */
+  paymentSettings: (club, mode) => client.get(`/clubs/${e(club)}/payment-settings/${e(mode)}`),
+  /** { shop_id, secret_key?, reason? }; 400 shop_invalid, shop_mode_mismatch, fiscalization_off. */
+  savePaymentSettings: (club, mode, body) => client.request('PUT', `/clubs/${e(club)}/payment-settings/${e(mode)}`, { body }),
+  /** Проверочный платёж 1 ₽ с возвратом → { payment_id }; статус — в onboarding.payment_checks. */
+  checkPayment: (club, mode, idempotencyKey) => client.post(`/clubs/${e(club)}/payment-settings/${e(mode)}/check`, {}, { idempotencyKey }),
+  /** Стол (№155): { number, kind, plan_x, plan_y, plan_rotation } → стол. */
+  createResource: (club, body) => client.post(`/clubs/${e(club)}/resources`, body),
+  /** { number?, kind?, plan_x?, plan_y?, plan_rotation?, active?, reason? }. */
+  updateResource: (club, id, body) => client.request('PATCH', `/clubs/${e(club)}/resources/${e(id)}`, { body }),
+  /** Размер зала в сантиметрах: { width, height }. */
+  saveHall: (club, body) => client.request('PUT', `/clubs/${e(club)}/hall`, { body }),
+  /** Текущие правила тарифа — допущение M5.1: GET → { rules: [...] } (форма как у PUT). */
+  tariffs: (club) => client.get(`/clubs/${e(club)}/tariffs`),
+  /** { rules, reason? } → 400 tariff_gap | tariff_overlap { weekday, from, to }. */
+  saveTariffs: (club, body) => client.request('PUT', `/clubs/${e(club)}/tariffs`, { body }),
+  /** Импорт меню файлом (.xlsx или .csv) телом запроса с его типом; предпросмотр — ?dry_run=1 (допущение). */
+  importMenuFile: (club, file, type, dryRun) =>
+    client.request('POST', `/clubs/${e(club)}/catalog/import`, { rawBody: file, contentType: type, query: dryRun ? { dry_run: 1 } : undefined }),
+  /** Привязка по QR с корпуса (№159): { qr: 'BLD1:…', resource_id } → { bind_until }; 400 qr_invalid. */
+  bindByQr: (club, qr, resourceId) => client.post(`/clubs/${e(club)}/devices/bind`, { qr, resource_id: resourceId }),
+  /** Заявка «Заказать комплект» (№159): { kind: 'kit', … } — в форме лида M4. */
+  kitLead: (body) => client.post('/leads', body),
 
   /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
   deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),

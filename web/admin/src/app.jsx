@@ -1,7 +1,7 @@
 import { useEffect } from 'preact/hooks';
 import { useLocation, matchRoute, navigate, linkHandler } from './lib/router.js';
 import { BASE } from './lib/env.js';
-import { auth, can, logout, platformRole } from './lib/auth.js';
+import { auth, can, clubMode, logout, platformRole } from './lib/auth.js';
 import { useStore } from './lib/store.js';
 import { ROLE_LABEL } from './lib/words.js';
 import { SignIn } from './screens/SignIn.jsx';
@@ -29,11 +29,14 @@ import { Listing } from './screens/Listing.jsx';
 import { Platform } from './screens/Platform.jsx';
 import { setClub } from './lib/api.js';
 import { Icon } from './components/Icon.jsx';
+import { Lazy } from './components/Lazy.jsx';
 
 const ROUTES = [
   ['', 'root'],
   ['signin', 'signin'],
   ['pin', 'pin'],
+  // M5.1: «Подключить клуб» — создание клуба без выезда (отдельный чанк)
+  ['start', 'start'],
   ['c/:club/:screen', 'club'],
   ['c/:club/:screen/:id', 'club'],
   // M4: ТВ-сетка турнира (без входа, публичные данные) и экран оператора платформы
@@ -68,12 +71,21 @@ const SCREENS = {
   tournaments: { allow: can.tournaments, render: (ctx) => <Tournaments ctx={ctx} />, title: 'Турниры' },
   disputes: { allow: can.disputes, render: (ctx) => <Disputes ctx={ctx} />, title: 'Споры по партиям' },
   listing: { allow: can.listing, render: (ctx) => <Listing ctx={ctx} />, title: 'Карточка в Бильярдуме' },
+  // M5.1: мастер подключения — только владелец, отдельный чанк; шаг — в пути (/onboarding/{step})
+  onboarding: {
+    allow: can.onboarding,
+    render: (ctx) => <Lazy key="onboarding" chunk="onboarding" label="Открываем мастер подключения…" render={(m) => <m.Onboarding ctx={ctx} />} />,
+    title: 'Подключение клуба',
+  },
 };
 
-/** Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — касса, бармен — экран бара. */
+/**
+ * Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — касса, бармен — экран бара.
+ * M5.1: владелец клуба в тестовом режиме — мастер подключения.
+ */
 export function homeFor(membership) {
   const r = membership.role;
-  const screen = can.manage(r) ? 'now' : can.pos(r) ? 'pos' : can.bar(r) ? 'bar' : can.devices(r) ? 'devices' : 'more';
+  const screen = can.onboarding(r) && clubMode(membership) === 'test' ? 'onboarding' : can.manage(r) ? 'now' : can.pos(r) ? 'pos' : can.bar(r) ? 'bar' : can.devices(r) ? 'devices' : 'more';
   return `${BASE}c/${encodeURIComponent(membership.club_id)}/${screen}`;
 }
 
@@ -105,13 +117,11 @@ export function App() {
   if (status === 'anon') return name === 'signin' ? <SignIn /> : <Redirect to={`${BASE}signin`} />;
 
   if (name === 'platform') return <Platform tab={params.tab} />;
+  // M5.1: «Подключить клуб» — и без клубов, и чтобы добавить ещё один
+  if (name === 'start') return <Lazy key="start" chunk="start" label="Открываем подключение клуба…" render={(m) => <m.ClubStart />} />;
   if (!clubs.length) {
     if (platformRole(user)) return <Redirect to={`${BASE}platform`} />;
-    return (
-      <Message title="Вас ещё нет в персонале клуба">
-        Попросите владельца клуба добавить ваш номер телефона{user?.phone_masked ? ` (${user.phone_masked})` : ''} в персонал, затем войдите снова.
-      </Message>
-    );
+    return <Redirect to={`${BASE}start`} />;
   }
 
   if (name === 'clubtour') {
@@ -135,7 +145,8 @@ export function App() {
     if (!screen.allow(membership.role)) return <Redirect to={homeFor(membership)} />;
     setClub(membership.club_id); // X-Club-Id для маршрутов без {club} (§14)
     // Вложенные пути: отчёт смены (/shift/{id}) — управляющему и владельцу; терминалы (/staff/terminals) — владельцу
-    const nested = (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments';
+    const nested =
+      (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments' || params.screen === 'onboarding';
     if (params.id && !nested) return <Redirect to={homeFor(membership)} />;
     const ctx = {
       club: membership,
@@ -163,24 +174,19 @@ function ClubPick({ clubs }) {
                 <Icon name="hall" />
                 <span>
                   <span class="staff__name">{c.name ?? 'Клуб'}</span>
-                  <span class="staff__role">{ROLE_LABEL[c.role] ?? c.role}</span>
+                  <span class="staff__role">
+                    {ROLE_LABEL[c.role] ?? c.role}
+                    {clubMode(c) === 'test' ? ' · тестовый режим' : clubMode(c) === 'suspended' ? ' · приостановлен' : ''}
+                  </span>
                 </span>
               </a>
             </li>
           ))}
         </ul>
-      </div>
-    </div>
-  );
-}
-
-function Message({ title, children }) {
-  return (
-    <div class="signin" data-theme="dark">
-      <div class="signin__card">
-        <p class="signin__brand display">Бильярдум</p>
-        <h1 class="signin__title">{title}</h1>
-        <p class="hint">{children}</p>
+        <a class="btn btn--quiet btn--block" href={`${BASE}start`} onClick={linkHandler}>
+          <Icon name="plus" />
+          Подключить ещё клуб
+        </a>
         <button type="button" class="btn btn--quiet btn--block" onClick={() => logout().catch(() => {})}>
           Выйти
         </button>

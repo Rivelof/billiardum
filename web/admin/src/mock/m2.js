@@ -787,7 +787,9 @@ export function m2Routes(ctx) {
       for (const k of ['name', 'price_delta_kopecks', 'active', 'is_default']) if (b[k] !== undefined) mod[k] = b[k];
       return ok(mod);
     })],
-    ['POST', /^\/api\/clubs\/([^/]+)\/catalog\/import$/, managerOnly((_m, b) => {
+    ['POST', /^\/api\/clubs\/([^/]+)\/catalog\/import$/, managerOnly((_m, b, q) => {
+      // M5.1: файл телом запроса (.xlsx или .csv), предпросмотр — ?dry_run=1
+      if (b.__raw) return ctx.importFile(b, q?.get('dry_run') === '1');
       if (typeof b.csv !== 'string' || !b.csv) return err(400, 'bad_request');
       const parsed = menuFromCsv(b.csv);
       if (parsed.errors.length) return ok({ applied: false, created: 0, updated: 0, unchanged: 0, categories_created: [], errors: parsed.errors.map((e) => ({ line: e.line, field: null, code: 'bad_name' })) });
@@ -810,7 +812,7 @@ export function m2Routes(ctx) {
           if (!b.dry_run) cat().products.push({ id: uuid(), category_id: c?.id ?? null, name: r.name, description: null, sku: null, price_kopecks: r.price_kopecks, unit: r.unit, is_alcohol: r.is_alcohol, vat_code: r.vat_code, payment_subject: r.is_alcohol ? 'excise' : 'commodity', stop_list: false, track_stock: true, photo: null, sort: cat().products.length + 1, active: true, modifier_group_ids: [], stock_qty: 0, cost_kopecks: 0, min_qty: null });
         }
       }
-      return ok({ applied: !b.dry_run, created, updated, unchanged: 0, categories_created: newCats, errors: [] });
+      return ok({ applied: !b.dry_run, created, updated, unchanged: 0, categories_created: newCats, errors: [], rows: b.dry_run ? parsed.rows : undefined });
     })],
 
     // ---------- стоп-лист: бармен, ресепшн и выше (№88, №97); SSE stop_list в канал клуба ----------

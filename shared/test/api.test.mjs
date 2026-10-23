@@ -171,3 +171,29 @@ test('котировка QR на столе турнира: 409 table_busy { rea
   assert.equal(errorMessage(err, { audience: 'guest', busyUntil: '23:00' }).title, 'Стол занят турниром до 23:00.');
   assert.match(errorMessage(err).action, /после турнира/);
 });
+
+test('M5.1: тело файлом (.xlsx меню) уходит как есть со своим Content-Type', async () => {
+  const f = fakeFetch(() => json(200, { applied: false }));
+  const bytes = new Uint8Array([0x50, 0x4b, 3, 4]);
+  const type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  await createClient({ fetch: f }).request('POST', '/clubs/c/catalog/import', { rawBody: bytes, contentType: type, query: { dry_run: 1 } });
+  const { url, init } = f.calls[0];
+  assert.equal(url, '/api/clubs/c/catalog/import?dry_run=1');
+  assert.equal(init.headers['Content-Type'], type);
+  assert.equal(init.body, bytes);
+});
+
+test('M5.1: поля ошибок тарифа и чек-листа — день и интервал, список невыполненных пунктов', async () => {
+  assert.deepEqual(await readError(json(400, { error: 'tariff_gap', weekday: 3, from: '02:00', to: '06:00' })), {
+    code: 'tariff_gap',
+    data: { weekday: 3, from: '02:00', to: '06:00' },
+  });
+  assert.deepEqual(await readError(json(409, { error: 'checklist_incomplete', failed: ['devices', 'shop_live'] })), {
+    code: 'checklist_incomplete',
+    data: { failed: ['devices', 'shop_live'] },
+  });
+  // чужое в списке не проходит: не коды, слишком длинный список, не массив
+  assert.equal((await readError(json(409, { error: 'checklist_incomplete', failed: ['<b>x</b>'] }))).data, null);
+  assert.equal((await readError(json(409, { error: 'checklist_incomplete', failed: Array(21).fill('a1') }))).data, null);
+  assert.equal((await readError(json(409, { error: 'checklist_incomplete', failed: 'devices' }))).data, null);
+});

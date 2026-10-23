@@ -1,0 +1,99 @@
+/*
+ * M5.1 в основной сборке программы клуба: плашка режима клуба, переключатель вида, сканер QR контроллера,
+ * приглашение ссылкой. Остальное — в m5.css (чанк мастера подключения). Цвета — только токены.
+ */
+
+/* Плашка «Тестовый режим»: одна строка над экраном, прокручивается вместе с ним, не перекрывает работу */
+.modenote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  padding: 8px max(var(--gutter), env(safe-area-inset-right)) 8px max(var(--gutter), env(safe-area-inset-left));
+  background: var(--lamp-tint);
+  border-bottom: 1px solid color-mix(in oklab, var(--brass) 60%, transparent);
+  color: var(--ink);
+  font-size: var(--fs-15);
+  line-height: 1.4;
+}
+.modenote > .icon { flex: none; width: 20px; height: 20px; color: var(--brass); }
+.modenote > span { flex: 1 1 16rem; min-width: 0; }
+.modenote b { font-weight: 700; }
+.modenote__link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.modenote--stop { background: color-mix(in oklab, var(--ball-red) 14%, var(--card)); border-bottom-color: var(--ball-red); }
+.modenote--stop > .icon { color: var(--ball-red); }
+.kiosk .modenote { font-size: var(--fs-17); }
+
+/* Переключатель вида: кнопки с aria-pressed */
+.viewtog {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 24px;
+  background: var(--card-2);
+}
+.viewtog__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.viewtog__btn .icon { width: 18px; height: 18px; }
+.viewtog__btn:hover { color: var(--ink); }
+.viewtog__btn[aria-pressed='true'] { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 2px var(--cloth); }
+.viewtog__btn:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
+
+/* Сканер QR контроллера */
+.scan { display: grid; gap: 10px; justify-items: start; width: 100%; }
+.scan__view {
+  position: relative;
+  display: none;
+  width: min(100%, 360px);
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--hall-bg);
+}
+.scan__view--on { display: block; }
+.scan__video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scan__frame {
+  position: absolute;
+  inset: 18% 24%;
+  border: 3px solid var(--lamp);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 999px color-mix(in oklab, var(--hall-bg) 45%, transparent);
+}
+.bind .viewtog { margin-bottom: 4px; }
+
+/* Приглашение ссылкой */
+.invite__text {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.icon--flip { transform: scaleX(-1); }

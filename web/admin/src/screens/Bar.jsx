@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { formatTime, plural } from '@billiardum/shared/format';
 import { ORDER_ACTION, ORDER_NEXT, itemView, mergeOrder, normalizeMenu, orderPayWord, orderTable, orderWord, sortQueue, waitMinutes, waitTone } from '@billiardum/shared/bar';
 import { Icon } from '../components/Icon.jsx';
+import { ModeNote } from '../components/Shell.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { useNow } from '../components/hooks.js';
 import { api, streamClub } from '../lib/api.js';
@@ -196,6 +197,7 @@ export function BarScreen({ ctx }) {
           </a>
         </div>
       </header>
+      <ModeNote club={club} role={role} active="bar" />
       <p class="visually-hidden" aria-live="assertive">
         {announce}
       </p>

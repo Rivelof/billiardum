@@ -8,6 +8,7 @@ import './styles/admin.css';
 import './styles/m2.css';
 import './styles/m3.css';
 import './styles/redesign.css';
+import './styles/m5-base.css';
 import { App } from './app.jsx';
 import { configureApi } from './lib/api.js';
 import { loadMe } from './lib/auth.js';
