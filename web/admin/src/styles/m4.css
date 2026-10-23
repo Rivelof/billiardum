@@ -102,6 +102,18 @@ button.am:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; 
 .entries__rating { text-align: right; }
 .entries__paid { font-size: var(--fs-13); color: var(--accent-ink); }
 .entries__paid--ok { color: var(--free); }
+.entries__paid--off { color: var(--ink-3); }
+/* №149: оплата словом и «Вернуть взнос»; на узком экране кнопка уходит на свою строку */
+.entries__pay { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 10px; text-align: right; }
+@media (max-width: 479px) {
+  .entries__row { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 4px 10px; }
+  .entries__pay { grid-column: 2 / -1; justify-content: flex-start; text-align: left; }
+}
+/* Правка после старта (№147): время заблокировано, вместо полей — «Продлить турнир» */
+.tlock { display: grid; gap: 8px; justify-items: start; padding: 12px 14px; border-radius: var(--radius-md); background: var(--card-2); box-shadow: inset 0 0 0 1px var(--line); }
+.tlock__title { font-weight: 600; }
+.tc-switch .check__title { display: block; font-weight: 600; }
+.tc-switch .field__hint { display: block; }
 
 .fxscore { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: end; }
 .fxscore__colon { font-size: var(--fs-44); color: var(--brass); padding-bottom: 6px; }

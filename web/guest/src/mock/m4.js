@@ -5,7 +5,8 @@
  *
  * Сценарии: plus (профиль и история) | plusnew (ника ещё нет) | plusgame (игра на столе 4 с Андреем: три партии пары
  * уже засчитаны сегодня, четвёртая не попадёт в рейтинг — T23) | plusrace (игра на столе 4: Андрей внёс счёт и переписывает
- * его, пока вы подтверждаете — 409 score_changed, M4-3) | tour (турниры: запись, лимит рейтинга, мой матч)
+ * его, пока вы подтверждаете — 409 score_changed, M4-3) | pluslimit (игра на столе 4 с Андреем: у гостя уже 6 засчитанных
+ * партий за сутки — следующая не попадёт в рейтинг, №148, и обоим уходит plus.match_not_counted) | tour (турниры: запись, лимит рейтинга, мой матч)
  */
 
 import { levelOf } from '@billiardum/shared/plus';
@@ -101,6 +102,11 @@ export function m4Routes(ctx) {
     if (scenario === 'plusrace') {
       // M4-3: Андрей внёс 8:5 в свою пользу и ждёт подтверждения; при первом «Подтвердить» он уже переписал на 8:3
       addMatch({ a: andrey, b: id, discipline: 'pyramid', sa: 8, sb: 5, at: t - 3 * MIN, status: 'pending', counted: null, reason: null, delta: null, session_id: ctx.sessionId, confirmedA: true, confirmedB: false }).race = { sa: 8, sb: 3 };
+    }
+    if (scenario === 'pluslimit') {
+      // №148: у гостя уже 6 засчитанных партий за сутки с разными соперниками — партия с Андреем не попадёт в рейтинг
+      const opps = [PLAYERS[1], PLAYERS[2], PLAYERS[3], PLAYERS[4], PLAYERS[5], PLAYERS[6]];
+      opps.forEach((o, i) => addMatch({ a: id, b: o.id, discipline: 'pyramid', sa: i % 2 ? 5 : 8, sb: i % 2 ? 8 : 4, at: t - (300 - i * 40) * MIN, status: 'confirmed', counted: true, reason: null, delta: i % 2 ? -8 : 10 }));
     }
     if (scenario === 'plusgame') {
       // T23: с Андреем уже три засчитанные партии за эти сутки клуба
@@ -199,13 +205,24 @@ export function m4Routes(ctx) {
     return Object.values(S().matches).filter((m) => m.counted && ((m.a === a && m.b === b) || (m.a === b && m.b === a)) && t - m.at < DAY).length;
   }
 
+  /** №148: засчитанных партий игрока за сутки (по всем соперникам). */
+  function playerCountToday(id, t) {
+    return Object.values(S().matches).filter((m) => m.counted && (m.a === id || m.b === id) && t - m.at < DAY).length;
+  }
+
+  /** Как server/plus: обоим игрокам уведомление plus.match_not_counted с причиной (лимит пары или игрока). */
+  function notCounted(m, reason) {
+    Object.assign(m, { counted: false, reason, delta: null });
+    const why = reason === 'player_daily_limit' ? 'лимит партий за сутки — не больше 6 засчитанных у игрока' : 'это 4-я партия пары за сутки';
+    S().notifications ??= [];
+    for (const uid of [m.a, m.b]) S().notifications.push({ user_id: uid, kind: 'plus.match_not_counted', text: `Партия записана, но в рейтинг не засчитана: ${why}.`, data: { match_id: m.id, reason } });
+  }
+
   function settle(m) {
     if (m.status !== 'pending' || !(m.ca && m.cb)) return;
     m.status = 'confirmed';
-    if (pairCountToday(m.a, m.b, m.at) >= 3) {
-      Object.assign(m, { counted: false, reason: 'pair_daily_limit', delta: null });
-      return;
-    }
+    if (pairCountToday(m.a, m.b, m.at) >= 3) return notCounted(m, 'pair_daily_limit');
+    if (playerCountToday(m.a, m.at) >= 6 || playerCountToday(m.b, m.at) >= 6) return notCounted(m, 'player_daily_limit');
     const pa = player(m.a).ratings[m.discipline] ?? { rating: 1200, games: 0 };
     const pb = player(m.b).ratings[m.discipline] ?? { rating: 1200, games: 0 };
     const ea = 1 / (1 + 10 ** ((pb.rating - pa.rating) / 400));

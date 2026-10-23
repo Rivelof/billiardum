@@ -50,3 +50,22 @@ export const WRITEOFF_REASONS = Object.freeze([
   { code: 'staff_meal', label: 'Питание персонала' },
   { code: 'other', label: 'Другое' },
 ]);
+
+/**
+ * M4, №149. Возврат взноса за турнир после старта — только объективные причины из закрытого списка
+ * (POST …/tournaments/{id}/entries/{entry_id}/refund { reason_code, comment }). Личные причины не основание.
+ * Варианта «Другое» нет намеренно: неизвестный код подписывается «Причина не из списка».
+ */
+export const LATE_REFUND_REASONS = Object.freeze([
+  { code: 'health', label: 'Здоровье игрока' },
+  { code: 'equipment', label: 'Поломка оборудования' },
+  { code: 'venue', label: 'Авария в клубе (свет, помещение)' },
+]);
+
+/** Отмена турнира после старта с возвратом взносов всем — только авария (POST …/cancel { refund: 'all', reason_code }). */
+export const CANCEL_REFUND_CODES = Object.freeze(['equipment', 'venue']);
+
+/** Подпись причины возврата взноса: код не из списка — «причина не из списка». */
+export function lateRefundLabel(code) {
+  return LATE_REFUND_REASONS.find((r) => r.code === code)?.label ?? 'Причина не из списка';
+}

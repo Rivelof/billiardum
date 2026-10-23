@@ -125,6 +125,8 @@ function makeOrder(cat, { number, session, table, status, minAgo, pay, items, co
   };
 }
 
+/** Идущий турнир заглушки M4 (mock/m4.js «Вечерний пул») — переход из отчёта смены. */
+const LIVE_TOURNAMENT = 'd4000000-0000-4000-8000-000000000003';
 const STAFF_NAMES = { reception: 'Анна К.', reception2: 'Игорь П.', manager: 'Ольга Р.', owner: 'Андрей' };
 /** Доля часов игры по столам 1–8 в отчёте заглушки: один стол почти не играл. */
 const PLAY_SHARE = [0.19, 0.17, 0.16, 0.14, 0.13, 0.11, 0.08, 0.02];
@@ -151,8 +153,12 @@ function reportSeed(shift, x) {
     { at: new Date(opened + 210 * MIN).toISOString(), action: 'manual.extend_free', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Свет мигнул из-за сбоя питания, компенсировали 15 минут', resource_id: null, amount_kopecks: null },
     { at: new Date(opened + 300 * MIN).toISOString(), action: 'manual.discount', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Постоянный гость, турнир клуба', resource_id: null, amount_kopecks: 18000 },
     // M4 (№147): исправление счёта турнира и решение спора по партии — ручные строки
-    { at: new Date(opened + 330 * MIN).toISOString(), action: 'manual.tournament_score', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Игроки внесли счёт наоборот', resource_id: id('00000000', 7), resource_number: 7, amount_kopecks: null },
-    { at: new Date(opened + 345 * MIN).toISOString(), action: 'plus.match_resolve', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Посмотрели запись камеры: последний шар забит', resource_id: id('00000000', 3), resource_number: 3, amount_kopecks: null },
+    // Строки несут data (server/reports DETAIL_ACTIONS): было → стало и tournament_id для перехода
+    { at: new Date(opened + 330 * MIN).toISOString(), action: 'manual.tournament_score', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Игроки внесли счёт наоборот', resource_id: id('00000000', 7), resource_number: 7, amount_kopecks: null, data: { tournament_id: LIVE_TOURNAMENT, match_id: null, before: '2:3', after: '3:2' } },
+    { at: new Date(opened + 345 * MIN).toISOString(), action: 'plus.match_resolve', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Посмотрели запись камеры: последний шар забит', resource_id: id('00000000', 3), resource_number: 3, amount_kopecks: null, data: { match_id: null, result: 'a', before: '8:7', after: '8:7' } },
+    // M4 (№147, №149): продление турнира и возврат взноса одному игроку
+    { at: new Date(opened + 352 * MIN).toISOString(), action: 'manual.tournament_extend', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Полуфиналы затянулись', resource_id: null, resource_number: null, amount_kopecks: null, data: { tournament_id: LIVE_TOURNAMENT, before: { ends_at: new Date(opened + 360 * MIN).toISOString(), match_minutes: 90, light_until: new Date(opened + 450 * MIN).toISOString() }, after: { ends_at: new Date(opened + 420 * MIN).toISOString(), match_minutes: 90, light_until: new Date(opened + 510 * MIN).toISOString() } } },
+    { at: new Date(opened + 358 * MIN).toISOString(), action: 'manual.tournament_refund', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Травма руки во втором матче', resource_id: null, resource_number: null, amount_kopecks: 50000, data: { tournament_id: LIVE_TOURNAMENT, entry_id: null, scope: 'entry', reason_code: 'health', refunds: null } },
   ];
   return {
     shift: { ...shift, timezone: 'Asia/Yekaterinburg' },
@@ -193,7 +199,7 @@ function reportSeed(shift, x) {
     // №125: ручные и действия персонала — общим списком с kind; действия системы — automatic отдельно
     manual_actions: {
       count: items.length,
-      by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1, 'manual.tournament_score': 1, 'plus.match_resolve': 1 },
+      by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1, 'manual.tournament_score': 1, 'plus.match_resolve': 1, 'manual.tournament_extend': 1, 'manual.tournament_refund': 1 },
       items: items.map((it) => ({ kind: it.action.startsWith('manual.') ? 'manual' : 'staff', linked: [], ...it })),
       // Действия гостей (отмена брони гостем с возвратом) — отдельно, свёрнуто
       guests: {

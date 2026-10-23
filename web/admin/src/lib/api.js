@@ -194,8 +194,15 @@ export const api = {
   tournament: (club, id) => client.get(`/clubs/${e(club)}/tournaments/${e(id)}`),
   updateTournament: (club, id, body) => client.request('PATCH', `/clubs/${e(club)}/tournaments/${e(id)}`, { body }),
   startTournament: (club, id) => client.post(`/clubs/${e(club)}/tournaments/${e(id)}/start`),
-  /** Отмена с причиной: взнос возвращается всем оплатившим → { refunded, refunded_kopecks }. */
-  cancelTournament: (club, id, reason) => client.post(`/clubs/${e(club)}/tournaments/${e(id)}/cancel`, { reason }),
+  /**
+   * Отмена: { reason } до старта (взносы всем, №138); после старта { reason, refund: 'none' } или
+   * { reason, refund: 'all', reason_code: 'equipment' | 'venue' } (№149) → { refunded }. Строка — прежний вид { reason }.
+   */
+  cancelTournament: (club, id, body) => client.post(`/clubs/${e(club)}/tournaments/${e(id)}/cancel`, typeof body === 'string' ? { reason: body } : body),
+  /** Продление идущего турнира (№147): { ends_at?, match_minutes?, reason } → детали; 409 limit_exceeded { extend_limit_until }. */
+  extendTournament: (club, id, body) => client.post(`/clubs/${e(club)}/tournaments/${e(id)}/extend`, body),
+  /** Возврат взноса одному игроку после старта (№149): { reason_code, comment } → { entry_id, refund_status, reason_code, amount_kopecks }. */
+  refundEntry: (club, id, entryId, body) => client.post(`/clubs/${e(club)}/tournaments/${e(id)}/entries/${e(entryId)}/refund`, body),
   /** Исправление счёта организатором — с причиной, в журнал. */
   fixScore: (matchId, scoreA, scoreB, reason) => client.request('PATCH', `/tournaments/matches/${e(matchId)}/score`, { body: { score_a: scoreA, score_b: scoreB, reason } }),
   /** ТВ-экран: публичный турнир без ПДн. */

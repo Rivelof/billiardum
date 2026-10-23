@@ -74,7 +74,7 @@ function freshState(scenario, t) {
     ...(empty
       ? []
       : [
-          { id: uuid(), type: 'tournament_match_overdue', level: 'important', resource_number: 6, created_at: new Date(t - 2 * MIN).toISOString(), data: { tournament_id: 'd4000000-0000-4000-8000-000000000003', match_id: 'd4000000-0000-4000-8000-000000000003:r0m3', light_until: new Date(t + 8 * MIN).toISOString() } },
+          { id: uuid(), type: 'tournament_match_overdue', level: 'important', resource_number: 6, created_at: new Date(t - 2 * MIN).toISOString(), data: { tournament_id: 'd4000000-0000-4000-8000-000000000003', match_id: 'd4000000-0000-4000-8000-000000000003:r0m3', light_until: new Date(t + 8 * MIN).toISOString(), limit_by: 'match', match_until: new Date(t + 8 * MIN).toISOString(), tournament_until: new Date(t + 330 * MIN).toISOString() } },
           { id: uuid(), type: 'manual_action', level: 'important', resource_number: 7, created_at: new Date(t - 40 * MIN).toISOString(), data: { action: 'manual.tournament_score', tournament_id: 'd4000000-0000-4000-8000-000000000003', match_id: 'd4000000-0000-4000-8000-000000000003:r0m1', staff_id: 'u-manager', reason: 'Игроки внесли счёт наоборот', before: 'спор', after: '1:3' } },
         ]),
   ];

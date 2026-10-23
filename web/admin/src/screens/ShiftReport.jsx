@@ -5,7 +5,7 @@ import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { ACTION_LABEL } from '../lib/audit.js';
-import { reconcile, revenueTable, staffName } from '../lib/shift.js';
+import { manualDetail, reconcile, revenueTable, staffName } from '../lib/shift.js';
 import { METHOD_LABEL, minutesWords } from '../lib/words.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -94,7 +94,7 @@ export function ShiftReport({ ctx }) {
               <Revenue revenue={report.revenue} />
               <Play play={report.play} />
               <Service light={report.service_light} />
-              <Manual manual={report.manual_actions} timeZone={tz} />
+              <Manual manual={report.manual_actions} timeZone={tz} clubId={clubId} />
             </div>
           </>
         ) : null}
@@ -424,7 +424,7 @@ function Service({ light }) {
   );
 }
 
-function Manual({ manual, timeZone }) {
+function Manual({ manual, timeZone, clubId }) {
   const items = Array.isArray(manual) ? manual : Array.isArray(manual?.items) ? manual.items : [];
   const count = Number.isInteger(manual?.count) ? manual.count : items.length;
   return (
@@ -437,7 +437,7 @@ function Manual({ manual, timeZone }) {
       {items.length ? (
         <ul class="log">
           {items.map((a, i) => (
-            <LogItem a={a} timeZone={timeZone} key={`${a.at}-${i}`} />
+            <LogItem a={a} timeZone={timeZone} clubId={clubId} key={`${a.at}-${i}`} />
           ))}
         </ul>
       ) : (
@@ -474,8 +474,9 @@ function Folded({ title, group, timeZone }) {
 
 const WHO = { automatic: 'Система', guest: 'Гость' };
 
-function LogItem({ a, timeZone }) {
+function LogItem({ a, timeZone, clubId }) {
   const other = a.kind === 'automatic' || a.kind === 'guest';
+  const detail = manualDetail(a, timeZone);
   // Денежные записи той же операции сервер склеил с этой строкой (linked) — подпись мелко
   const linked = Array.isArray(a.linked) ? [...new Set(a.linked)].map((x) => (ACTION_LABEL[x] ?? x).toLowerCase()) : [];
   return (
@@ -488,11 +489,18 @@ function LogItem({ a, timeZone }) {
           {Number.isFinite(a.minutes) ? `, ${minutesWords(a.minutes)}` : ''}
           {Number.isSafeInteger(a.amount_kopecks) ? `, ${formatMoney(a.amount_kopecks)}` : ''}
         </p>
+        {detail.change || detail.note ? <p class="log__change">{detail.change ? <span class="mono">{detail.change}</span> : detail.note}</p> : null}
         {a.reason ? <p class="log__reason">«{a.reason}»</p> : null}
         <p class="log__meta">
           {WHO[a.kind] ?? a.actor_name ?? 'Сотрудник'}
           {linked.length ? ` · вместе с: ${linked.join(', ')}` : ''}
         </p>
+        {detail.tournamentId && clubId ? (
+          <a class="log__link" href={`${BASE}c/${encodeURIComponent(clubId)}/tournaments/${encodeURIComponent(detail.tournamentId)}`} onClick={linkHandler}>
+            <Icon name="trophy" />
+            Открыть турнир
+          </a>
+        ) : null}
       </div>
     </li>
   );

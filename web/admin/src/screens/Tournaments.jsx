@@ -9,7 +9,29 @@ import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api, streamTournament } from '../lib/api.js';
 import { linkHandler, navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
-import { cancelRefund, FORMATS, tournamentActions, tournamentBody, tournamentErrors } from '../lib/tournaments.js';
+import { LATE_REFUND_REASONS } from '@billiardum/shared/reasons';
+import {
+  CANCEL_REFUND_REASONS,
+  EXTEND_AHEAD_MS,
+  EXTEND_MATCH_MAX,
+  EXTEND_MATCH_MIN,
+  FORMATS,
+  canRefundEntry,
+  cancelBody,
+  cancelErrors,
+  cancelRefund,
+  editBody,
+  editErrors,
+  entryPayWord,
+  entryRefundErrors,
+  extendBody,
+  extendErrors,
+  isStarted,
+  paidOf,
+  tournamentActions,
+  tournamentBody,
+  tournamentErrors,
+} from '../lib/tournaments.js';
 import '../styles/m4.css';
 
 const WINS = ['победы', 'побед', 'побед'];
@@ -28,7 +50,9 @@ function Status({ status }) {
 
 /**
  * Турниры клуба (управляющий, №140): список, создание, запись, старт с посевом, сетка, исправление счёта
- * с причиной, отмена с возвратом взносов. Адреса: /tournaments, /tournaments/new, /tournaments/{id}.
+ * с причиной, отмена (до старта — с возвратом взносов, после — по №149), правка, продление идущего турнира
+ * (№147) и возврат взноса одному игроку по объективной причине (№149).
+ * Адреса: /tournaments, /tournaments/new, /tournaments/{id}.
  */
 export function Tournaments({ ctx }) {
   const { club, role, user, timeZone, id } = ctx;
@@ -302,6 +326,9 @@ function Detail({ clubId, id, base, timeZone }) {
   const [notice, setNotice] = useState(null);
   const [fixing, setFixing] = useState(null);
   const [canceling, setCanceling] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [extending, setExtending] = useState(false);
+  const [refunding, setRefunding] = useState(null);
   const load = useCallback(async () => {
     try {
       setT(await api.tournament(clubId, id));
@@ -334,7 +361,11 @@ function Detail({ clubId, id, base, timeZone }) {
 
   if (!t) return error ? <ErrorNote error={error} /> : <p class="muted loading">Загружаем турнир…</p>;
   const a = tournamentActions(t);
+  const started = isStarted(t);
   const paid = t.entries.filter((e) => e.paid).length;
+  // Взносы у клуба: оплаченные минус возвращённые и возвращаемые (№149)
+  const paidSum = t.entries.filter((e) => e.paid && (e.refund_status ?? 'none') === 'none').reduce((x, e) => x + paidOf(t, e), 0);
+  const ask = (fn) => () => (setNotice(null), fn());
   return (
     <>
       <a class="btn btn--quiet btn--sm tform__back" href={base} onClick={linkHandler}>
@@ -346,6 +377,7 @@ function Detail({ clubId, id, base, timeZone }) {
           <h2 class="thead__title display">{t.title}</h2>
           <p class="thead__sub">
             {formatDate(t.starts_at, timeZone)}, <span class="mono">{formatTime(t.starts_at, timeZone)}</span>–<span class="mono">{formatTime(t.ends_at, timeZone)}</span> · {DISCIPLINE_WORD[t.discipline]} · {FORMAT_WORD[t.format]} · до {t.race_to} {plural(t.race_to, WINS)}
+            {Number.isInteger(t.match_minutes) ? ` · матч ${t.match_minutes} мин` : ''}
           </p>
         </div>
         <Status status={t.status} />
@@ -364,7 +396,7 @@ function Detail({ clubId, id, base, timeZone }) {
         </div>
         <div>
           <dt>Взносы</dt>
-          <dd class="display mono">{formatMoney(paid * t.fee_kopecks)}</dd>
+          <dd class="display mono">{formatMoney(paidSum)}</dd>
         </div>
         <div>
           <dt>Лимит рейтинга</dt>
@@ -400,6 +432,17 @@ function Detail({ clubId, id, base, timeZone }) {
             {busy === 'start' ? 'Строим сетку…' : 'Начать турнир'}
           </button>
         ) : null}
+        {a.extend ? (
+          <button type="button" class="btn btn--secondary" disabled={busy} onClick={ask(() => setExtending(true))}>
+            <Icon name="clock" />
+            Продлить турнир
+          </button>
+        ) : null}
+        {a.edit ? (
+          <button type="button" class="btn btn--quiet" disabled={busy} onClick={ask(() => setEditing(true))}>
+            Изменить
+          </button>
+        ) : null}
         {t.status === 'running' || t.status === 'finished' ? (
           <a class="btn btn--secondary" href={`${BASE}tv/tournament/${encodeURIComponent(t.id)}`} target="_blank" rel="noopener">
             <Icon name="external" />
@@ -407,7 +450,7 @@ function Detail({ clubId, id, base, timeZone }) {
           </a>
         ) : null}
         {a.cancel ? (
-          <button type="button" class="btn btn--quiet person__revoke" onClick={() => setCanceling(true)}>
+          <button type="button" class="btn btn--quiet person__revoke" onClick={ask(() => setCanceling(true))}>
             Отменить турнир
           </button>
         ) : null}
@@ -427,18 +470,33 @@ function Detail({ clubId, id, base, timeZone }) {
         <h3 class="tables__title" id="td-en">
           Участники <span class="count">{t.entries.length}</span>
         </h3>
+        {started && t.fee_kopecks ? (
+          <p class="hint" id="td-refund-hint">
+            После старта взносы не возвращаются: время столов уже занято. Исключение — здоровье игрока, поломка оборудования или авария в клубе: тогда нажмите «Вернуть взнос» у игрока. Личные причины не основание для возврата.
+          </p>
+        ) : null}
         {t.entries.length ? (
           <ol class="entries">
             {[...t.entries]
               .sort((x, y) => (x.seed ?? 99) - (y.seed ?? 99) || y.rating - x.rating)
-              .map((e) => (
-                <li class="entries__row" key={e.entry_id}>
-                  <span class="entries__seed mono">{e.seed ?? '·'}</span>
-                  <span class="entries__nick">{e.nick}</span>
-                  <span class="entries__rating mono">{e.rating}</span>
-                  <span class={`entries__paid${e.paid ? ' entries__paid--ok' : ''}`}>{t.fee_kopecks ? (e.paid ? 'оплачен' : 'ждём оплату') : 'бесплатно'}</span>
-                </li>
-              ))}
+              .map((e) => {
+                const pay = entryPayWord(t, e);
+                return (
+                  <li class="entries__row" key={e.entry_id}>
+                    <span class="entries__seed mono">{e.seed ?? '·'}</span>
+                    <span class="entries__nick">{e.nick}</span>
+                    <span class="entries__rating mono">{e.rating}</span>
+                    <span class="entries__pay">
+                      <span class={`entries__paid entries__paid--${pay.tone}`}>{pay.word}</span>
+                      {canRefundEntry(t, e) ? (
+                        <button type="button" class="btn btn--quiet btn--sm" aria-describedby="td-refund-hint" onClick={ask(() => setRefunding(e))}>
+                          Вернуть взнос<span class="visually-hidden"> игроку {e.nick}</span>
+                        </button>
+                      ) : null}
+                    </span>
+                  </li>
+                );
+              })}
           </ol>
         ) : (
           <p class="muted">Пока никто не записался. Турнир виден игрокам в Бильярдуме.</p>
@@ -462,8 +520,48 @@ function Detail({ clubId, id, base, timeZone }) {
         onClose={() => setCanceling(false)}
         onDone={(x) => {
           setCanceling(false);
-          setT(x);
-          setNotice(x.refunded ? `Турнир отменён. Взнос вернём ${x.refunded} ${plural(x.refunded, PEOPLE)} целиком.` : 'Турнир отменён.');
+          // Сервер отвечает { refunded } — детали турнира перечитываем
+          load();
+          const n = Number.isInteger(x?.refunded) ? x.refunded : 0;
+          setNotice(n ? `Турнир отменён. Взнос вернём ${n} ${plural(n, PEOPLE)} целиком.` : started ? 'Турнир отменён. Взносы не возвращаются.' : 'Турнир отменён.');
+        }}
+      />
+      <EditDialog
+        open={editing}
+        t={t}
+        clubId={clubId}
+        timeZone={timeZone}
+        onClose={() => setEditing(false)}
+        onExtend={() => (setEditing(false), setExtending(true))}
+        onDone={(x) => {
+          setEditing(false);
+          if (x?.entries) setT(x);
+          else load();
+          setNotice('Изменения сохранены.');
+        }}
+      />
+      <ExtendDialog
+        open={extending}
+        t={t}
+        clubId={clubId}
+        timeZone={timeZone}
+        onClose={() => setExtending(false)}
+        onDone={(x) => {
+          setExtending(false);
+          if (x?.entries) setT(x);
+          else load();
+          setNotice(`Турнир продлён${x?.ends_at ? ` до ${formatTime(x.ends_at, timeZone)}` : ''}. Продление записано в журнал, владелец получил уведомление.`);
+        }}
+      />
+      <RefundDialog
+        entry={refunding}
+        t={t}
+        clubId={clubId}
+        onClose={() => setRefunding(null)}
+        onDone={(r, e) => {
+          setRefunding(null);
+          load();
+          setNotice(`Взнос ${formatMoney(r?.amount_kopecks ?? paidOf(t, e))} вернём игроку ${e.nick}. Владелец получил уведомление, чек возврата придёт игроку.`);
         }}
       />
     </>
@@ -595,11 +693,26 @@ function FixScoreDialog({ match, raceTo, onClose, onDone }) {
 }
 
 function CancelDialog({ open, t, clubId, onClose, onDone }) {
+  const started = isStarted(t);
   const [reason, setReason] = useState('');
+  const [refundAll, setRefundAll] = useState(false);
+  const [reasonCode, setReasonCode] = useState(null);
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const refund = cancelRefund(t);
+  useEffect(() => {
+    if (!open) return;
+    setReason('');
+    setRefundAll(false);
+    setReasonCode(null);
+    setTried(false);
+    setError(null);
+  }, [open]);
+  const f = { started, reason, refundAll, reasonCode };
+  const errs = cancelErrors(f);
+  const refund = cancelRefund(t, { refundAll });
+  const paidAll = cancelRefund(t, { refundAll: true });
+  const bad = (k) => (tried && errs[k] ? 'true' : undefined);
   return (
     <Dialog open={open} onClose={onClose} title="Отменить турнир?" labelledBy="tc-title">
       <form
@@ -608,11 +721,11 @@ function CancelDialog({ open, t, clubId, onClose, onDone }) {
         onSubmit={async (e) => {
           e.preventDefault();
           setTried(true);
-          if (reason.trim().length < 3) return;
+          if (Object.keys(errs).length) return;
           setBusy(true);
           setError(null);
           try {
-            onDone(await api.cancelTournament(clubId, t.id, reason.trim()));
+            onDone(await api.cancelTournament(clubId, t.id, cancelBody(f)));
           } catch (err) {
             setError(err);
           } finally {
@@ -620,25 +733,367 @@ function CancelDialog({ open, t, clubId, onClose, onDone }) {
           }
         }}
       >
-        <div class="note note--error">
-          <Icon name="alert" />
-          <p class="note__title">{refund.players ? `Вернём ${formatMoney(refund.kopecks)}: ${refund.players} ${plural(refund.players, PEOPLE)}` : 'Взносов к возврату нет'}</p>
-          <p class="note__body">При отмене клубом взнос возвращается всем целиком через ЮKassa. Игроки получат уведомление, столы освободятся. Действие попадёт в журнал.</p>
-        </div>
+        {started ? (
+          <>
+            <div class={`note ${refundAll ? 'note--error' : 'note--lamp'}`}>
+              <Icon name="alert" />
+              <p class="note__title">{refundAll ? (refund.players ? `Вернём ${formatMoney(refund.kopecks)}: ${refund.players} ${plural(refund.players, PEOPLE)}` : 'Взносов к возврату нет') : 'Взносы не возвращаются: время стола уже занято.'}</p>
+              <p class="note__body">
+                {refundAll
+                  ? 'Возврат всем после старта — только при поломке оборудования или аварии в клубе. Владелец получит уведомление, действие попадёт в журнал.'
+                  : `Турнир уже идёт, столы были заняты под матчи${paidAll.players ? ` — ${formatMoney(paidAll.kopecks)} взносов остаются у клуба` : ''}. Игроки получат уведомление, столы освободятся. Отмена попадёт в журнал, владелец получит уведомление.`}
+              </p>
+            </div>
+            {paidAll.players ? (
+              <label class="check tc-switch">
+                <input type="checkbox" role="switch" checked={refundAll} aria-describedby="tc-switch-hint" onChange={(e) => setRefundAll(e.currentTarget.checked)} />
+                <span>
+                  <span class="check__title">Вернуть взносы всем</span>
+                  <span class="field__hint" id="tc-switch-hint">
+                    Только если турнир сорвался по вине клуба: поломка оборудования или авария. Личные причины игроков не основание.
+                  </span>
+                </span>
+              </label>
+            ) : null}
+            {refundAll ? (
+              <fieldset aria-describedby={bad('reason_code') ? 'tc-code-err' : undefined}>
+                <legend class="field__label">Что случилось</legend>
+                <div class="choice choice--list">
+                  {CANCEL_REFUND_REASONS.map((r) => (
+                    <label class="choice__item" key={r.code}>
+                      <input type="radio" name="tc-code" value={r.code} checked={reasonCode === r.code} aria-invalid={bad('reason_code')} onChange={() => setReasonCode(r.code)} />
+                      <span class="choice__box">
+                        <span class="choice__title">{r.label}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {bad('reason_code') ? (
+                  <p class="field__error" id="tc-code-err">
+                    {errs.reason_code}
+                  </p>
+                ) : null}
+              </fieldset>
+            ) : null}
+          </>
+        ) : (
+          <div class="note note--error">
+            <Icon name="alert" />
+            <p class="note__title">{refund.players ? `Вернём ${formatMoney(refund.kopecks)}: ${refund.players} ${plural(refund.players, PEOPLE)}` : 'Взносов к возврату нет'}</p>
+            <p class="note__body">До старта при отмене клубом взнос возвращается всем целиком через ЮKassa. Игроки получат уведомление, столы освободятся. Действие попадёт в журнал.</p>
+          </div>
+        )}
         <div class="field">
           <label class="field__label" for="tc-reason">
-            Причина
+            {started && refundAll ? 'Комментарий' : 'Причина'}
           </label>
-          <input id="tc-reason" class="field__input" maxLength={300} value={reason} aria-invalid={tried && reason.trim().length < 3 ? 'true' : undefined} onInput={(e) => setReason(e.currentTarget.value)} />
-          {tried && reason.trim().length < 3 ? <p class="field__error">Напишите причину — её увидят игроки и владелец.</p> : null}
+          <input
+            id="tc-reason"
+            class="field__input"
+            maxLength={300}
+            value={reason}
+            placeholder={started && refundAll ? 'Отключили свет во всём здании, ремонт до утра' : ''}
+            aria-invalid={bad('reason')}
+            aria-describedby={bad('reason') ? 'tc-reason-err' : undefined}
+            onInput={(e) => setReason(e.currentTarget.value)}
+          />
+          {bad('reason') ? (
+            <p class="field__error" id="tc-reason-err">
+              {errs.reason}
+            </p>
+          ) : null}
         </div>
         <ErrorNote error={error} />
         <div class="dialog__actions dialog__actions--row">
           <button type="submit" class="btn btn--danger btn--lg" disabled={busy}>
-            {busy ? 'Отменяем…' : 'Отменить турнир'}
+            {busy ? 'Отменяем…' : started ? (refundAll ? 'Отменить и вернуть взносы' : 'Отменить без возврата') : 'Отменить турнир'}
           </button>
           <button type="button" class="btn btn--quiet btn--lg" onClick={onClose}>
             Не отменять
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+/** Правка турнира: после старта (№147) время не меняется — вместо полей кнопка «Продлить турнир». */
+function EditDialog({ open, t, clubId, timeZone, onClose, onExtend, onDone }) {
+  const started = isStarted(t);
+  const [f, setF] = useState(null);
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!open) return;
+    setF({ title: t.title ?? '', prize_text: t.prize_text ?? '', places: String(t.places ?? ''), starts_local: localInput(Date.parse(t.starts_at), timeZone), ends_local: localInput(Date.parse(t.ends_at), timeZone) });
+    setTried(false);
+    setError(null);
+  }, [open]);
+  if (!open || !f) return <Dialog open={false} onClose={onClose} title="" />;
+  const form = { ...f, starts_at: fromLocalInput(f.starts_local, timeZone), ends_at: fromLocalInput(f.ends_local, timeZone) };
+  const errs = editErrors(form, t);
+  const bad = (k) => (tried && errs[k] ? 'true' : undefined);
+  const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.currentTarget.value }));
+  const Err = ({ k }) =>
+    bad(k) ? (
+      <p class="field__error" id={`te-${k}-err`}>
+        {errs[k]}
+      </p>
+    ) : null;
+  const submit = async (e) => {
+    e.preventDefault();
+    setTried(true);
+    if (Object.keys(errs).length) return;
+    const body = editBody(form, t);
+    if (!Object.keys(body).length) return onClose();
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api.updateTournament(clubId, t.id, body));
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open onClose={onClose} title="Изменить турнир" labelledBy="te-title">
+      <form class="form" onSubmit={submit} noValidate>
+        <div class="field">
+          <label class="field__label" for="te-title-in">
+            Название
+          </label>
+          <input id="te-title-in" class="field__input" maxLength={80} value={f.title} aria-invalid={bad('title')} aria-describedby={bad('title') ? 'te-title-err' : undefined} onInput={set('title')} />
+          <Err k="title" />
+        </div>
+        <div class="field">
+          <label class="field__label" for="te-prize">
+            Призы
+          </label>
+          <input id="te-prize" class="field__input" maxLength={200} value={f.prize_text} onInput={set('prize_text')} />
+        </div>
+        {started ? (
+          <div class="tlock">
+            <p class="tlock__title">
+              Время: <span class="mono">{formatTime(t.starts_at, timeZone)}</span>–<span class="mono">{formatTime(t.ends_at, timeZone)}</span>
+              {Number.isInteger(t.match_minutes) ? `, матч ${t.match_minutes} мин` : ''}
+            </p>
+            <p class="field__hint">Турнир уже идёт: время конца и матча меняется только продлением — с причиной, владелец получит уведомление.</p>
+            <button type="button" class="btn btn--secondary" onClick={onExtend}>
+              <Icon name="clock" />
+              Продлить турнир
+            </button>
+          </div>
+        ) : (
+          <div class="tform__grid">
+            <div class="field">
+              <label class="field__label" for="te-places">
+                Мест
+              </label>
+              <input id="te-places" class="field__input mono" type="number" inputMode="numeric" min={4} max={128} value={f.places} aria-invalid={bad('places')} aria-describedby={bad('places') ? 'te-places-err' : undefined} onInput={set('places')} />
+              <Err k="places" />
+            </div>
+            <div class="field">
+              <label class="field__label" for="te-start">
+                Начало
+              </label>
+              <input id="te-start" class="field__input mono" type="datetime-local" value={f.starts_local} aria-invalid={bad('starts_at')} aria-describedby={bad('starts_at') ? 'te-starts_at-err' : undefined} onInput={set('starts_local')} />
+              <Err k="starts_at" />
+            </div>
+            <div class="field">
+              <label class="field__label" for="te-end">
+                Конец
+              </label>
+              <input id="te-end" class="field__input mono" type="datetime-local" value={f.ends_local} aria-invalid={bad('ends_at')} aria-describedby={bad('ends_at') ? 'te-ends_at-err' : undefined} onInput={set('ends_local')} />
+              <Err k="ends_at" />
+            </div>
+          </div>
+        )}
+        <ErrorNote error={error}>
+          {error?.code === 'tournament_started' ? (
+            <button type="button" class="btn btn--secondary btn--sm" onClick={onExtend}>
+              Продлить турнир
+            </button>
+          ) : null}
+        </ErrorNote>
+        <div class="dialog__actions">
+          <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
+            {busy ? 'Сохраняем…' : 'Сохранить изменения'}
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+/** Продление идущего турнира (№147): ручное действие — причина обязательна, владельцу уведомление. */
+function ExtendDialog({ open, t, clubId, timeZone, onClose, onDone }) {
+  const [f, setF] = useState(null);
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    if (!open) return;
+    const now = Date.now();
+    const cur = Date.parse(t.ends_at);
+    // По умолчанию — на час позже текущего конца, но не дальше 12 часов от текущего момента
+    const want = Math.min(Math.max(cur, now) + 3600000, now + EXTEND_AHEAD_MS);
+    setF({ ends_local: localInput(Math.floor(want / 60000) * 60000, timeZone), match_minutes: Number.isInteger(t.match_minutes) ? String(t.match_minutes) : '', reason: '' });
+    setTried(false);
+    setError(null);
+  }, [open]);
+  if (!open || !f) return <Dialog open={false} onClose={onClose} title="" />;
+  const form = { ...f, ends_at: fromLocalInput(f.ends_local, timeZone) };
+  const errs = extendErrors(form, t);
+  const bad = (k) => (tried && errs[k] ? 'true' : undefined);
+  const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.currentTarget.value }));
+  const limit = error?.code === 'limit_exceeded' ? Date.parse(error.data?.extend_limit_until) : NaN;
+  const limitText = Number.isFinite(limit) ? formatTime(limit, timeZone) : undefined;
+  const Err = ({ k }) =>
+    bad(k) ? (
+      <p class="field__error" id={`tx-${k}-err`}>
+        {errs[k]}
+      </p>
+    ) : null;
+  const submit = async (e) => {
+    e.preventDefault();
+    setTried(true);
+    if (Object.keys(errs).length) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api.extendTournament(clubId, t.id, extendBody(form, t)));
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open onClose={onClose} title="Продлить турнир" labelledBy="tx-title">
+      <form class="form" onSubmit={submit} noValidate>
+        <p class="lead">
+          Сейчас: до <span class="mono">{formatTime(t.ends_at, timeZone)}</span>
+          {Number.isInteger(t.match_minutes) ? `, матч ${t.match_minutes} мин` : ''}.
+        </p>
+        <div class="tform__grid">
+          <div class="field">
+            <label class="field__label" for="tx-end">
+              Новый конец
+            </label>
+            <input id="tx-end" class="field__input mono" type="datetime-local" value={f.ends_local} aria-invalid={bad('ends_at')} aria-describedby={bad('ends_at') ? 'tx-ends_at-err' : 'tx-end-hint'} onInput={set('ends_local')} />
+            {bad('ends_at') ? <Err k="ends_at" /> : <p class="field__hint" id="tx-end-hint">Не дальше 12 часов от текущего момента.</p>}
+          </div>
+          <div class="field">
+            <label class="field__label" for="tx-mm">
+              Время матча, мин
+            </label>
+            <input id="tx-mm" class="field__input mono" type="number" inputMode="numeric" min={EXTEND_MATCH_MIN} max={Math.max(EXTEND_MATCH_MAX, t.match_minutes ?? 0)} value={f.match_minutes} aria-invalid={bad('match_minutes')} aria-describedby={bad('match_minutes') ? 'tx-match_minutes-err' : 'tx-mm-hint'} onInput={set('match_minutes')} />
+            {bad('match_minutes') ? <Err k="match_minutes" /> : <p class="field__hint" id="tx-mm-hint">Сколько стол держится под один матч.</p>}
+          </div>
+        </div>
+        <div class="field">
+          <label class="field__label" for="tx-reason">
+            Причина
+          </label>
+          <input id="tx-reason" class="field__input" maxLength={300} value={f.reason} placeholder="Матчи затянулись, играем полуфиналы" aria-invalid={bad('reason')} aria-describedby={bad('reason') ? 'tx-reason-err' : 'tx-reason-hint'} onInput={set('reason')} />
+          {bad('reason') ? <Err k="reason" /> : <p class="field__hint" id="tx-reason-hint">Свет на матчах горит без оплаты: продление — ручное действие, владелец получит уведомление.</p>}
+        </div>
+        <ErrorNote error={error} limitUntil={limitText}>
+          {limitText ? (
+            <button type="button" class="btn btn--secondary btn--sm" onClick={() => (setF((x) => ({ ...x, ends_local: localInput(limit, timeZone) })), setError(null))}>
+              Поставить {limitText}
+            </button>
+          ) : null}
+        </ErrorNote>
+        <div class="dialog__actions">
+          <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
+            {busy ? 'Продлеваем…' : 'Продлить турнир'}
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+/** Возврат взноса одному игроку после старта (№149): причина из закрытого списка и комментарий. */
+function RefundDialog({ entry, t, clubId, onClose, onDone }) {
+  const [code, setCode] = useState(null);
+  const [comment, setComment] = useState('');
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    setCode(null);
+    setComment('');
+    setTried(false);
+    setError(null);
+  }, [entry?.entry_id]);
+  if (!entry) return <Dialog open={false} onClose={onClose} title="" />;
+  const errs = entryRefundErrors({ reasonCode: code, comment });
+  const bad = (k) => (tried && errs[k] ? 'true' : undefined);
+  const submit = async (e) => {
+    e.preventDefault();
+    setTried(true);
+    if (Object.keys(errs).length) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api.refundEntry(clubId, t.id, entry.entry_id, { reason_code: code, comment: comment.trim() }), entry);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open onClose={onClose} title="Вернуть взнос игроку" labelledBy="tr-title">
+      <form class="form" onSubmit={submit} noValidate>
+        <p class="lead">
+          {entry.nick} · <span class="mono">{formatMoney(paidOf(t, entry))}</span>
+        </p>
+        <fieldset aria-describedby={bad('reason_code') ? 'tr-code-err' : 'tr-code-hint'}>
+          <legend class="field__label">Причина</legend>
+          <div class="choice choice--list">
+            {LATE_REFUND_REASONS.map((r) => (
+              <label class="choice__item" key={r.code}>
+                <input type="radio" name="tr-code" value={r.code} checked={code === r.code} aria-invalid={bad('reason_code')} onChange={() => setCode(r.code)} />
+                <span class="choice__box">
+                  <span class="choice__title">{r.label}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {bad('reason_code') ? (
+            <p class="field__error" id="tr-code-err">
+              {errs.reason_code}
+            </p>
+          ) : (
+            <p class="field__hint" id="tr-code-hint">
+              Личные причины не основание для возврата.
+            </p>
+          )}
+        </fieldset>
+        <div class="field">
+          <label class="field__label" for="tr-comment">
+            Комментарий
+          </label>
+          <input id="tr-comment" class="field__input" maxLength={300} value={comment} placeholder="Травма руки во втором матче, врач клуба" aria-invalid={bad('comment')} aria-describedby={bad('comment') ? 'tr-comment-err' : undefined} onInput={(e) => setComment(e.currentTarget.value)} />
+          {bad('comment') ? (
+            <p class="field__error" id="tr-comment-err">
+              {errs.comment}
+            </p>
+          ) : null}
+        </div>
+        <p class="hint">Взнос вернётся через ЮKassa с чеком возврата. Игрок останется в сетке. Возврат попадёт в журнал, владелец получит уведомление.</p>
+        <ErrorNote error={error} />
+        <div class="dialog__actions">
+          <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
+            {busy ? 'Оформляем…' : `Вернуть ${formatMoney(paidOf(t, entry))}`}
+          </button>
+          <button type="button" class="btn btn--quiet btn--block" onClick={onClose}>
+            Не возвращать
           </button>
         </div>
       </form>

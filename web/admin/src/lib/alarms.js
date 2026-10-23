@@ -1,6 +1,7 @@
 /** Тревоги владельцу (PRODUCT §8, контракт §6–§7) словами. Неизвестный тип — общий текст, код — мелко. */
 
-import { formatMoney, formatTime } from '@billiardum/shared/format';
+import { formatMoney, formatTime, plural } from '@billiardum/shared/format';
+import { lateRefundLabel } from '@billiardum/shared/reasons';
 import { BASE } from './env.js';
 
 export const LEVEL_WORD = { critical: 'Критично', important: 'Важно', info: 'Для сведения' };
@@ -48,7 +49,7 @@ const TEXT = {
   booking_table_unavailable: ['Стол был недоступен гостю по брони', 'Гость пришёл, а стол был занят или без связи. Бронь закрыта, предоплата возвращена полностью.'],
   booking_step_failed: ['Бронь не обрабатывается', 'Сервер несколько раз не смог обработать бронь по расписанию. Проверьте её в разделе «Брони»; если повторится — сообщите в поддержку.'],
   // M4 (№147): свет матча турнира упёрся в предел окна турнира; data { tournament_id, match_id, light_until }
-  tournament_match_overdue: ['Матч турнира затянулся', 'Свет на столе дошёл до предела окна турнира и погаснет. Решите с игроками: внесите счёт или договоритесь, как доиграть.'],
+  tournament_match_overdue: ['Матч турнира затянулся', 'Свет на столе дошёл до предела турнира без оплаты и погаснет. Решите с игроками: внесите счёт или договоритесь, как доиграть.'],
   club_timezone_invalid: ['Неверный часовой пояс клуба', 'Тарифы и брони считаются по местному времени, а пояс клуба не распознан. Укажите пояс в настройках клуба или сообщите в поддержку.'],
 };
 
@@ -61,21 +62,52 @@ const why = (data) => {
   return r ? ` Причина: «${r}».` : '';
 };
 
-/** Ручные действия (manual_action) по data.action: инвариант 8 — что сделано, причина; сотрудник — в журнале. */
+/** Кто сделал: имя сотрудника из data.staff_name (сервер присылает с M4), иначе — «в журнале». */
+const who = (data, verb) => {
+  const n = str(data?.staff_name, 60);
+  return n ? ` ${verb}: ${n}${n.endsWith('.') ? '' : '.'}` : ` Кто ${verb.toLowerCase()} — в журнале.`;
+};
+const PLAYERS = ['игроку', 'игрокам', 'игрокам'];
+
+/** Ручные действия (manual_action) по data.action: инвариант 8 — что сделано, причина, кто. */
 const MANUAL_BY_ACTION = {
   // server/tournaments: before — '2:1', 'спор' или 'без счёта'; after — '3:2'
   'manual.tournament_score': (data) => {
     const before = str(data?.before, 20);
     const after = str(data?.after, 20);
     const change = before && after ? ` Было: ${before}, стало: ${after}.` : after ? ` Новый счёт: ${after}.` : '';
-    return ['Счёт матча турнира исправлен', `Сотрудник исправил счёт матча.${change}${why(data)} Кто исправил — в журнале.`];
+    return ['Счёт матча турнира исправлен', `Сотрудник исправил счёт матча.${change}${why(data)}${who(data, 'Исправил')}`];
   },
   // server/plus: result — 'a' | 'b' (победитель по решению) или 'annul' (не засчитана)
   'plus.match_resolve': (data) => {
     const what = data?.result === 'annul' ? 'Результат партии отменён — в рейтинг она не засчитана.' : 'Победитель партии назначен решением сотрудника.';
-    return ['Спор по партии решён', `${what}${why(data)} Кто решил — в журнале.`];
+    return ['Спор по партии решён', `${what}${why(data)}${who(data, 'Решил')}`];
   },
-  tournament_cancel: (data) => ['Турнир отменён', `Сотрудник отменил турнир, взносы возвращаются участникам.${why(data)} Кто отменил и причина — в журнале.`],
+  // №147: before/after — уже словами по времени клуба: 'до 22:00, матч 60 мин'
+  'manual.tournament_extend': (data) => {
+    const before = str(data?.before, 60);
+    const after = str(data?.after, 60);
+    const change = before && after ? ` Было: ${before}; стало: ${after}.` : after ? ` Теперь: ${after}.` : '';
+    return ['Турнир продлён', `Время турнира продлено без оплаты.${change}${why(data)}${who(data, 'Продлил')}`];
+  },
+  // №149: возврат взноса одному игроку после старта; nick — если сервер его пришлёт
+  'manual.tournament_refund': (data) => {
+    const sum = money(data?.amount_kopecks);
+    const nick = str(data?.nick, 40);
+    const code = data?.reason_code ? ` Основание: ${lateRefundLabel(data.reason_code).toLowerCase()}.` : '';
+    const to = nick ? `игроку ${nick}` : 'игроку';
+    const comment = str(data?.reason, 200);
+    return [sum ? `Возврат взноса ${sum}` : 'Возврат взноса', `После старта турнира взнос${sum ? ` ${sum}` : ''} возвращается ${to}.${code}${comment ? ` Комментарий: «${comment}».` : ''}${who(data, 'Вернул')}`];
+  },
+  // №149: одна тревога об отмене, refund — 'all' (до старта или авария после) или 'none' (после старта)
+  tournament_cancel: (data) => {
+    if (data?.refund === 'none') return ['Турнир отменён после старта', `Взносы не возвращаются: время столов уже было занято.${why(data)}${who(data, 'Отменил')}`];
+    const n = Number.isInteger(data?.refunds) ? data.refunds : null;
+    const sum = money(data?.amount_kopecks);
+    const back = n ? `Взносы возвращаются ${n} ${plural(n, PLAYERS)}${sum ? `, всего ${sum}` : ''}.` : 'Взносы возвращаются участникам.';
+    const code = data?.reason_code ? ` Основание: ${lateRefundLabel(data.reason_code).toLowerCase()}.` : '';
+    return [data?.reason_code ? 'Турнир отменён после старта с возвратом' : 'Турнир отменён', `${back}${code}${why(data)}${data?.staff_name ? who(data, 'Отменил') : ' Кто отменил и причина — в журнале.'}`];
+  },
 };
 
 /** Варианты текста по data тревоги. */
@@ -111,7 +143,9 @@ const BY_DATA = {
       return null;
     }
     const lamp = until > now ? `Свет на столе погаснет в ${at}` : `Свет на столе погас в ${at}`;
-    return ['Матч турнира затянулся', `${lamp}: это предел окна турнира, дальше без оплаты не продлится. Решите с игроками: внесите счёт или договоритесь, как доиграть.`];
+    // limit_by (№147): 'match' — вдвое больше времени матча от его начала, 'tournament' — окно турнира
+    const limit = data?.limit_by === 'match' ? 'предел матча (два времени матча от его начала)' : 'предел окна турнира';
+    return ['Матч турнира затянулся', `${lamp} — ${limit}, дальше без оплаты не продлится. Решите с игроками: внесите счёт или договоритесь, как доиграть.`];
   },
 };
 
@@ -138,6 +172,9 @@ export function alarmView(alarm, { timeZone, now = Date.now() } = {}) {
 export function sortAlarms(list) {
   return [...list].sort((a, b) => (LEVEL_ORDER[a.level] ?? 1) - (LEVEL_ORDER[b.level] ?? 1) || String(alarmTime(b)).localeCompare(String(alarmTime(a))));
 }
+
+/** Ручные действия турнира, у которых есть переход к турниру. */
+const TOURNAMENT_ACTIONS = ['manual.tournament_score', 'manual.tournament_extend', 'manual.tournament_refund', 'tournament_cancel'];
 
 const RETRY_URL = /^\/api\/receipts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/retry$/;
 
@@ -169,7 +206,7 @@ export function alarmLink(alarm) {
   const tid = typeof d?.tournament_id === 'string' && UUID.test(d.tournament_id) ? d.tournament_id : null;
   if (alarm?.type === 'tournament_match_overdue') return tid ? { screen: 'tournaments', id: tid, title: 'Открыть турнир' } : null;
   if (alarm?.type !== 'manual_action') return null;
-  if (tid && (d.action === 'manual.tournament_score' || d.action === 'tournament_cancel')) return { screen: 'tournaments', id: tid, title: 'Открыть турнир' };
+  if (tid && TOURNAMENT_ACTIONS.includes(d.action)) return { screen: 'tournaments', id: tid, title: 'Открыть турнир' };
   if (d?.action === 'plus.match_resolve') return { screen: 'disputes', id: null, title: 'Открыть споры по партиям' };
   return null;
 }

@@ -456,6 +456,11 @@
 .log__details { font-size: var(--fs-15); color: var(--ink-2); }
 .log__reason { font-size: var(--fs-15); font-style: italic; }
 .log__meta { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: var(--fs-13); color: var(--ink-3); }
+/* M4: было → стало у ручных действий турнира и переход к турниру */
+.log__change { font-size: var(--fs-15); color: var(--ink-2); overflow-wrap: anywhere; }
+.log__link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; font-size: var(--fs-15); font-weight: 600; color: var(--cloth); }
+.log__link:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; border-radius: 4px; }
+.log__link .icon { width: 18px; height: 18px; }
 
 /* ---------- широкие экраны ---------- */
 

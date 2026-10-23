@@ -9,6 +9,7 @@
  */
 
 import { applyScore, seedBracket } from '../lib/tournaments.js';
+import { CANCEL_REFUND_CODES, LATE_REFUND_REASONS } from '@billiardum/shared/reasons';
 
 const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
@@ -34,7 +35,8 @@ export function m4State(scenario, t) {
   const empty = scenario === 'empty';
   const at = (days, h) => new Date(Math.floor((t + days * DAY) / (60 * MIN)) * 60 * MIN + h * 60 * MIN).toISOString();
   const entries = (n, discipline, paid = true) =>
-    PLAYERS.slice(0, n).map(([nick, py, po], i) => ({ entry_id: uuid(), nick, rating: discipline === 'pool' ? po : py, seed: null, status: paid || i % 3 ? 'confirmed' : 'pending_payment', paid: paid || i % 3 !== 0 }));
+    PLAYERS.slice(0, n).map(([nick, py, po], i) => ({ entry_id: uuid(), nick, rating: discipline === 'pool' ? po : py, seed: null, status: paid || i % 3 ? 'confirmed' : 'pending_payment', paid: paid || i % 3 !== 0, refund_status: 'none' }));
+  // Идущий турнир со взносом 500 ₽ (№149: возврат одному игроку и отмена после старта)
   const live = entries(8, 'pool')
     .sort((x, y) => y.rating - x.rating)
     .map((e, i) => ({ ...e, seed: i + 1 }));
@@ -48,9 +50,9 @@ export function m4State(scenario, t) {
   const tournaments = empty
     ? []
     : [
-        { id: 'd4000000-0000-4000-8000-000000000003', title: 'Вечерний пул', discipline: 'pool', format: 'single_elim', race_to: 3, rating_limit: null, fee_kopecks: 0, prize_text: '', places: 8, starts_at: new Date(t - 90 * MIN).toISOString(), ends_at: new Date(t + 4 * 60 * MIN).toISOString(), status: 'running', resource_ids: [rid(6), rid(7), rid(8)], entries: live, bracket: liveBracket },
-        { id: 'd4000000-0000-4000-8000-000000000001', title: 'Кубок «Новичок»', discipline: 'pyramid', format: 'single_elim', race_to: 3, rating_limit: 1300, fee_kopecks: 50000, prize_text: 'Кий в подарок победителю', places: 16, starts_at: at(3, 0), ends_at: at(3, 6), status: 'registration', resource_ids: [rid(1), rid(2)], entries: entries(3, 'pyramid', false).map((e, i) => ({ ...e, nick: PLAYERS[6 + i]?.[0] ?? e.nick })), bracket: null },
-        { id: 'd4000000-0000-4000-8000-000000000002', title: 'Субботняя пирамида', discipline: 'pyramid', format: 'single_elim', race_to: 4, rating_limit: null, fee_kopecks: 100000, prize_text: '1 место — 10 000 ₽, 2 место — 5 000 ₽', places: 32, starts_at: at(5, 0), ends_at: at(5, 8), status: 'registration', resource_ids: [rid(1), rid(2), rid(3), rid(4)], entries: entries(10, 'pyramid', false), bracket: null },
+        { id: 'd4000000-0000-4000-8000-000000000003', title: 'Вечерний пул', discipline: 'pool', format: 'single_elim', race_to: 3, rating_limit: null, fee_kopecks: 50000, prize_text: '', places: 8, match_minutes: 90, starts_at: new Date(t - 90 * MIN).toISOString(), ends_at: new Date(t + 4 * 60 * MIN).toISOString(), status: 'running', resource_ids: [rid(6), rid(7), rid(8)], entries: live, bracket: liveBracket },
+        { id: 'd4000000-0000-4000-8000-000000000001', title: 'Кубок «Новичок»', discipline: 'pyramid', format: 'single_elim', race_to: 3, rating_limit: 1300, fee_kopecks: 50000, prize_text: 'Кий в подарок победителю', places: 16, starts_at: at(3, 0), ends_at: at(3, 6), status: 'registration', match_minutes: 90, resource_ids: [rid(1), rid(2)], entries: entries(3, 'pyramid', false).map((e, i) => ({ ...e, nick: PLAYERS[6 + i]?.[0] ?? e.nick })), bracket: null },
+        { id: 'd4000000-0000-4000-8000-000000000002', title: 'Субботняя пирамида', discipline: 'pyramid', format: 'single_elim', race_to: 4, rating_limit: null, fee_kopecks: 100000, prize_text: '1 место — 10 000 ₽, 2 место — 5 000 ₽', places: 32, starts_at: at(5, 0), ends_at: at(5, 8), status: 'registration', match_minutes: 120, resource_ids: [rid(1), rid(2), rid(3), rid(4)], entries: entries(10, 'pyramid', false), bracket: null },
       ];
   const disputes = empty
     ? []
@@ -108,7 +110,22 @@ export function m4Routes(ctx) {
   const T = (id) => S().tournaments.find((x) => x.id === id);
   // Идентификатор матча — глобальный, как у сервера: «{турнир}:{матч}»
   const bracketView = (x) => (x.bracket ? { rounds: x.bracket.rounds.map((r) => ({ ...r, matches: r.matches.map((mm) => ({ ...mm, id: `${x.id}:${mm.id}` })) })) } : null);
-  const view = (x) => ({ ...x, club: CLUB, bracket: bracketView(x), entries_count: x.entries.filter((e) => e.status !== 'canceled').length });
+  // Как server/tournaments clubEntries: paid_kopecks, refund_status ('none' | 'pending' | 'done')
+  const entryView = (x, e) => {
+    const paidK = e.paid_kopecks ?? (e.paid ? x.fee_kopecks : 0);
+    return { ...e, paid: e.status !== 'canceled' && paidK > 0, paid_kopecks: paidK, refund_status: e.refund_status ?? 'none' };
+  };
+  const view = (x) => ({ ...x, club: CLUB, bracket: bracketView(x), entries: x.entries.map((e) => entryView(x, e)), entries_count: x.entries.filter((e) => e.status !== 'canceled').length });
+  const staffName = () => ctx.me()?.name ?? { owner: 'владелец', manager: 'управляющий' }[role()] ?? 'сотрудник';
+  const raise = (data, extra = {}) => {
+    ctx.state().alarms.unshift({ id: uuid(), type: 'manual_action', level: 'important', created_at: new Date(now()).toISOString(), ...extra, data: { staff_id: ctx.me()?.id ?? null, staff_name: staffName(), ...data } });
+    ctx.emit('alarm', { type: 'manual_action' });
+  };
+  const started = (x) => x.status === 'running' || x.status === 'finished';
+  const tz = 'Asia/Yekaterinburg';
+  const hhmm = (v) => new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: tz }).format(new Date(v));
+  const words = (w) => `до ${hhmm(w.ends_at)}, матч ${w.match_minutes} мин`;
+  const windowOf = (w) => ({ ends_at: new Date(w.ends_at).toISOString(), match_minutes: w.match_minutes, light_until: new Date(Date.parse(w.ends_at) + w.match_minutes * MIN).toISOString() });
   const publicView = (x) => ({ ...view(x), entries: x.entries.filter((e) => e.status === 'confirmed').map((e) => ({ nick: e.nick, rating: e.rating, seed: e.seed })) });
   const needManage = (fn) => (m, b, q) => (manage() ? fn(m, b, q) : err(ctx.me() ? 403 : 401, ctx.me() ? 'forbidden' : 'unauthorized'));
   const needPlatform = (fn) => (m, b, q) => (platform() ? fn(m, b, q) : err(403, 'forbidden'));
@@ -128,8 +145,11 @@ export function m4Routes(ctx) {
     ['PATCH', /^\/api\/clubs\/([^/]+)\/tournaments\/([^/]+)$/, needManage((m, b) => {
       const x = T(m[2]);
       if (!x) return err(404, 'not_found');
-      if (b?.status && !['registration', 'closed'].includes(b.status)) return err(409, 'bad_status');
+      if (b?.status && (started(x) || !['registration', 'closed'].includes(b.status))) return err(409, 'bad_status');
+      // №147: после старта окно и время матча — только через extend (то же значение — не правка)
+      if (started(x)) for (const k of ['starts_at', 'ends_at', 'registration_closes_at', 'match_minutes']) if (b?.[k] !== undefined && String(b[k]) !== String(x[k])) return err(409, 'tournament_started');
       Object.assign(x, b ?? {});
+      ctx.audit('tournament.update', { data: { tournament_id: x.id } });
       return ok(view(x));
     })],
     ['POST', /^\/api\/clubs\/([^/]+)\/tournaments\/([^/]+)\/start$/, needManage((m) => {
@@ -149,14 +169,77 @@ export function m4Routes(ctx) {
       bracketEvent(x);
       return ok(view(x));
     })],
+    // №138/№149: до старта — возврат всем; после — без возврата, refund: 'all' только с equipment|venue
     ['POST', /^\/api\/clubs\/([^/]+)\/tournaments\/([^/]+)\/cancel$/, needManage((m, b) => {
       const x = T(m[2]);
       if (!x) return err(404, 'not_found');
+      if (['finished', 'canceled'].includes(x.status)) return err(409, 'bad_status');
       if (!String(b?.reason ?? '').trim()) return err(400, 'reason_required');
-      const refunded = x.entries.filter((e) => e.paid).length;
+      if (b.refund !== undefined && b.refund !== null && !['all', 'none'].includes(b.refund)) return err(400, 'bad_request');
+      const after = started(x);
+      if (after && b.refund === 'all' && !CANCEL_REFUND_CODES.includes(b.reason_code)) return err(400, 'bad_request');
+      const refundAll = !after || b.refund === 'all';
+      let refunded = 0;
+      let kopecks = 0;
+      for (const e of x.entries) {
+        const v = entryView(x, e);
+        if (refundAll && v.paid && v.refund_status === 'none') {
+          refunded += 1;
+          kopecks += v.paid_kopecks;
+          e.refund_status = 'pending';
+        }
+        e.status = 'canceled';
+      }
       x.status = 'canceled';
-      ctx.audit('tournament.cancel', { reason: b.reason, data: { refunded } });
-      return ok({ ...view(x), refunded, refunded_kopecks: refunded * x.fee_kopecks });
+      ctx.audit('manual.tournament_cancel', { reason: b.reason, data: { tournament_id: x.id, refunds: refunded, refund: refundAll ? 'all' : 'none', ...(after && b.refund === 'all' ? { reason_code: b.reason_code } : {}) } });
+      if (after && b.refund === 'all') ctx.audit('manual.tournament_refund', { reason: b.reason, data: { tournament_id: x.id, scope: 'all', reason_code: b.reason_code, refunds: refunded, amount_kopecks: kopecks } });
+      // Одна тревога об отмене с данными о возврате (как server/tournaments после №149)
+      raise({ action: 'tournament_cancel', tournament_id: x.id, refund: refundAll ? 'all' : 'none', ...(after && b.refund === 'all' ? { reason_code: b.reason_code } : {}), refunds: refunded, amount_kopecks: kopecks, ...(after ? { reason: b.reason } : { staff_id: undefined, staff_name: undefined }) });
+      bracketEvent(x);
+      return ok({ refunded });
+    })],
+    // №147: продление идущего турнира — ручное действие с причиной; не дальше +12 ч от текущего момента
+    ['POST', /^\/api\/clubs\/([^/]+)\/tournaments\/([^/]+)\/extend$/, needManage((m, b) => {
+      const x = T(m[2]);
+      if (!x) return err(404, 'not_found');
+      if (!String(b?.reason ?? '').trim()) return err(400, 'reason_required');
+      if (b.ends_at === undefined && b.match_minutes === undefined) return err(400, 'bad_request');
+      if (x.status !== 'running') return err(409, 'bad_status');
+      const before = { ends_at: x.ends_at, match_minutes: x.match_minutes ?? 90 };
+      const after = { ...before };
+      if (b.ends_at !== undefined) {
+        const end = Date.parse(b.ends_at);
+        if (!Number.isFinite(end) || end <= now()) return err(400, 'bad_request');
+        const cap = now() + 12 * 60 * MIN;
+        if (end > cap) return { status: 409, body: { error: 'limit_exceeded', extend_limit_until: new Date(cap).toISOString() } };
+        after.ends_at = new Date(end).toISOString();
+      }
+      if (b.match_minutes !== undefined) {
+        if (!Number.isInteger(b.match_minutes) || b.match_minutes < 10) return err(400, 'bad_request');
+        if (b.match_minutes > Math.max(240, before.match_minutes)) return err(409, 'limit_exceeded');
+        after.match_minutes = b.match_minutes;
+      }
+      Object.assign(x, after);
+      ctx.audit('manual.tournament_extend', { reason: b.reason, data: { tournament_id: x.id, before: windowOf(before), after: windowOf(after) } });
+      raise({ action: 'manual.tournament_extend', tournament_id: x.id, reason: b.reason, before: words(before), after: words(after), window_before: windowOf(before), window_after: windowOf(after) });
+      return ok(view(x));
+    })],
+    // №149: возврат взноса одному игроку после старта — код из закрытого списка и комментарий
+    ['POST', /^\/api\/clubs\/([^/]+)\/tournaments\/([^/]+)\/entries\/([^/]+)\/refund$/, needManage((m, b) => {
+      const x = T(m[2]);
+      if (!x) return err(404, 'not_found');
+      if (!LATE_REFUND_REASONS.some((r) => r.code === b?.reason_code)) return err(400, 'bad_request');
+      if (!String(b.comment ?? '').trim()) return err(400, 'reason_required');
+      if (!started(x)) return err(409, 'bad_status');
+      const e = x.entries.find((y) => y.entry_id === m[3]);
+      if (!e) return err(404, 'not_found');
+      const v = entryView(x, e);
+      if (!(v.paid_kopecks > 0)) return err(409, 'not_paid');
+      if (v.refund_status !== 'none') return err(409, 'already_refunded');
+      e.refund_status = 'pending';
+      ctx.audit('manual.tournament_refund', { reason: b.comment, data: { tournament_id: x.id, entry_id: e.entry_id, scope: 'entry', reason_code: b.reason_code, amount_kopecks: v.paid_kopecks } });
+      raise({ action: 'manual.tournament_refund', tournament_id: x.id, entry_id: e.entry_id, scope: 'entry', reason_code: b.reason_code, reason: b.comment, amount_kopecks: v.paid_kopecks });
+      return ok({ entry_id: e.entry_id, refund_status: 'pending', reason_code: b.reason_code, amount_kopecks: v.paid_kopecks });
     })],
     ['PATCH', /^\/api\/tournaments\/matches\/([^/]+)\/score$/, needManage((m, b) => {
       const [tid, mid] = decodeURIComponent(m[1]).split(':');
@@ -170,8 +253,7 @@ export function m4Routes(ctx) {
       x.bracket = applyScore(x.bracket, mid, b.score_a, b.score_b);
       // Как server/tournaments: журнал manual.tournament_score (до/после) и тревога manual_action владельцу (инвариант 8)
       ctx.audit('manual.tournament_score', { reason: b.reason, data: { tournament_id: x.id, match_id: `${x.id}:${mid}`, before, after: `${b.score_a}:${b.score_b}` } });
-      ctx.state().alarms.unshift({ id: uuid(), type: 'manual_action', level: 'important', resource_number: was.table_number ?? null, created_at: new Date(now()).toISOString(), data: { action: 'manual.tournament_score', tournament_id: x.id, match_id: `${x.id}:${mid}`, staff_id: ctx.me()?.id ?? null, reason: b.reason, before, after: `${b.score_a}:${b.score_b}` } });
-      ctx.emit('alarm', { type: 'manual_action' });
+      raise({ action: 'manual.tournament_score', tournament_id: x.id, match_id: `${x.id}:${mid}`, reason: b.reason, before, after: `${b.score_a}:${b.score_b}` }, { resource_number: was.table_number ?? null });
       bracketEvent(x);
       return ok(view(x));
     })],
@@ -188,8 +270,7 @@ export function m4Routes(ctx) {
       Object.assign(d, { status: 'resolved', result: b.result, resolve_reason: b.reason });
       ctx.audit('plus.match_resolve', { reason: b.reason, data: { match_id: d.id, result: b.result } });
       // Как server/plus: решение спора — ручное действие, тревога manual_action владельцу (инвариант 8)
-      ctx.state().alarms.unshift({ id: uuid(), type: 'manual_action', level: 'important', resource_number: d.table_number ?? null, created_at: new Date(now()).toISOString(), data: { action: 'plus.match_resolve', match_id: d.id, result: b.result, staff_id: ctx.me()?.id ?? null, reason: b.reason } });
-      ctx.emit('alarm', { type: 'manual_action' });
+      raise({ action: 'plus.match_resolve', match_id: d.id, result: b.result, reason: b.reason }, { resource_number: d.table_number ?? null });
       return ok(d);
     })],
 

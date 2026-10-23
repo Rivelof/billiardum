@@ -246,7 +246,7 @@ export function createBackend(storage) {
     }
     barSeed(state, name, t, SESSION_ID);
     m3.seed(name, t);
-    if (name === 'plusgame' || name === 'plusrace') mk({ participants: [{ nick: 'Игрок 1', is_payer: true }, { nick: 'Андрей К.' }] });
+    if (name === 'plusgame' || name === 'plusrace' || name === 'pluslimit') mk({ participants: [{ nick: 'Игрок 1', is_payer: true }, { nick: 'Андрей К.' }] });
     m4.seed(name, t);
     save();
   }

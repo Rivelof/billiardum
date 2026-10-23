@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBackend } from '../src/mock/backend.js';
+import { notCountedText } from '@billiardum/shared/plus';
 import { entryState, filterTournaments, opponents, placesLeft, sortMatches, disciplineOfTable, seasonNow, maskPhones, shownMatchScore, shownTournamentScore } from '../src/lib/plus.js';
 
 const memory = () => {
@@ -30,6 +31,26 @@ test('T22/T23 на заглушке: партия подтверждена — �
   const list = (await b.handle('GET', '/api/plus/matches', undefined, q({ session_id: session.id }))).body.items;
   assert.equal(list.length, 4);
   assert.equal(list.filter((x) => x.counted).length, 3);
+});
+
+test('№148 на заглушке: 7-я партия игрока за сутки не засчитана — «лимит партий за сутки», обоим plus.match_not_counted', async () => {
+  let now = T;
+  const mem = memory();
+  const b = createBackend({ ...mem, now: () => now });
+  b.scenario('pluslimit');
+  const session = (await b.handle('GET', '/api/sessions/6f1c2a9e-0d4b-4c7e-9a51-3b2f8e7d4c10')).body;
+  const me = (await b.handle('GET', '/api/me')).body.user.id;
+  const opp = opponents(session, me)[0];
+  const created = (await b.handle('POST', '/api/plus/matches', { session_id: session.id, discipline: 'pyramid', opponent_id: opp.user_id, my_score: 8, opponent_score: 5 })).body;
+  now += 5000;
+  const m = (await b.handle('GET', '/api/plus/matches')).body.items.find((x) => x.id === created.id);
+  assert.equal(m.counted, false);
+  assert.equal(m.not_counted_reason, 'player_daily_limit');
+  assert.equal(notCountedText(m.not_counted_reason), 'в рейтинг не засчитана — лимит партий за сутки');
+  const sent = (mem.load().m4.notifications ?? []).filter((n) => n.kind === 'plus.match_not_counted' && n.data.match_id === created.id);
+  assert.deepEqual(sent.map((n) => n.user_id).sort(), [me, opp.user_id].sort());
+  assert.equal(sent[0].data.reason, 'player_daily_limit');
+  assert.match(sent[0].text, /не засчитана: лимит партий за сутки/);
 });
 
 test('T22: обычная партия засчитана — рейтинг меняется у обоих', async () => {

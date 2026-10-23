@@ -1,5 +1,5 @@
 import { formatMoney, formatTime, formatDate } from '@billiardum/shared/format';
-import { DECLINE_REASONS, SERVICE_REASONS, reasonLabel } from '@billiardum/shared/reasons';
+import { DECLINE_REASONS, SERVICE_REASONS, lateRefundLabel, reasonLabel } from '@billiardum/shared/reasons';
 import { METHOD_LABEL, ROLE_LABEL, minutesWords } from './words.js';
 
 /** Действия журнала M1 (контракт §8) словами. */
@@ -115,11 +115,13 @@ export const ACTION_LABEL = {
   'tournament.winner_corrected': 'Победитель матча изменён',
   'manual.tournament_score': 'Счёт матча турнира исправлен',
   'manual.tournament_cancel': 'Турнир отменён',
+  'manual.tournament_extend': 'Турнир продлён без оплаты',
+  'manual.tournament_refund': 'Возврат взноса за турнир',
   'plus.match_resolve': 'Спор по партии решён',
 };
 
 /** Ручные действия (инвариант 8) — подсвечиваются в журнале. */
-export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'manual.discount', 'manual.receipt_mark_printed', 'pos.discount_approval', 'pos.sale_canceled', 'payment.refunded', 'pos.refund', 'order.cancel', 'stock.writeoff', 'kkt.receipt_retry', 'manual.tournament_score', 'manual.tournament_cancel', 'plus.match_resolve']);
+export const MANUAL_ACTIONS = new Set(['service.start', 'service.stop', 'manual.extend_free', 'manual.discount', 'manual.receipt_mark_printed', 'pos.discount_approval', 'pos.sale_canceled', 'payment.refunded', 'pos.refund', 'order.cancel', 'stock.writeoff', 'kkt.receipt_retry', 'manual.tournament_score', 'manual.tournament_cancel', 'manual.tournament_extend', 'manual.tournament_refund', 'plus.match_resolve']);
 
 /** Группы фильтра «Действие». В API уходит список через запятую, `*` — любое продолжение (запрошено у backend-core). */
 export const ACTION_GROUPS = [
@@ -189,6 +191,7 @@ export function auditView(raw, timeZone, ctx = {}) {
   if (raw.action?.startsWith('service.') && data.reason_code) details.push(reasonLabel(SERVICE_REASONS, data.reason_code));
   if (raw.action === 'reception.decline' && data.reason_code) details.push(reasonLabel(DECLINE_REASONS, data.reason_code));
   if (data.type && raw.action?.startsWith('device.')) details.push(String(data.type));
+  if (raw.action === 'manual.tournament_refund' && data.reason_code) details.push(lateRefundLabel(data.reason_code));
   if (data.paid_until) details.push(`до ${formatTime(data.paid_until, timeZone)}`);
 
   const actorName = actorLabel(raw);

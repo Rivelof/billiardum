@@ -4,6 +4,7 @@
  * здесь — для заглушки и подсказок на экране.
  */
 import { DISCIPLINES, roundTitle } from '@billiardum/shared/plus';
+import { CANCEL_REFUND_CODES, LATE_REFUND_REASONS } from '@billiardum/shared/reasons';
 
 export const FORMATS = ['single_elim', 'groups_playoff'];
 
@@ -56,6 +57,11 @@ export function tournamentBody(f, { publish = true } = {}) {
   };
 }
 
+/** Турнир начат: сетка построена, столы заняты (№147, №149 — после старта другие правила времени и взносов). */
+export function isStarted(t) {
+  return t?.status === 'running' || t?.status === 'finished' || Boolean(t?.started_at);
+}
+
 /** Какие действия доступны организатору по статусу турнира. */
 export function tournamentActions(t) {
   const s = t?.status;
@@ -66,13 +72,151 @@ export function tournamentActions(t) {
     start: (s === 'registration' || s === 'closed') && (t.entries_count ?? t.entries?.length ?? 0) >= 2,
     cancel: s === 'draft' || s === 'registration' || s === 'closed' || s === 'running',
     fixScore: s === 'running' || s === 'finished',
+    // Правка названия и призов — пока турнир не завершён; время — только до старта (после — «Продлить турнир»)
+    edit: s === 'draft' || s === 'registration' || s === 'closed' || s === 'running',
+    extend: s === 'running',
   };
 }
 
-/** Отмена турнира: кому и сколько вернём (взнос целиком всем оплатившим, №140). */
-export function cancelRefund(t) {
-  const paid = (t?.entries ?? []).filter((e) => e.paid).length;
-  return { players: paid, kopecks: paid * (t?.fee_kopecks ?? 0) };
+/** Сколько заплатил игрок: paid_kopecks из ответа, иначе взнос турнира у оплатившего. */
+export function paidOf(t, e) {
+  if (Number.isSafeInteger(e?.paid_kopecks)) return e.paid_kopecks;
+  return e?.paid ? (t?.fee_kopecks ?? 0) : 0;
+}
+
+/** Взнос ещё у клуба: оплачен и возврат не начат. */
+const refundableEntry = (t, e) => e?.status !== 'canceled' && paidOf(t, e) > 0 && (e.refund_status ?? 'none') === 'none';
+
+/**
+ * Отмена турнира: кому и сколько вернём. До старта — всем оплатившим целиком (№138); после старта —
+ * только с «Вернуть взносы всем» по аварии (№149), иначе никому.
+ * @param {object} t турнир с entries
+ * @param {{ refundAll?: boolean }} [opts]
+ */
+export function cancelRefund(t, { refundAll = false } = {}) {
+  if (isStarted(t) && !refundAll) return { players: 0, kopecks: 0 };
+  const list = (t?.entries ?? []).filter((e) => refundableEntry(t, e));
+  return { players: list.length, kopecks: list.reduce((a, e) => a + paidOf(t, e), 0) };
+}
+
+/** Причины, с которыми при отмене после старта можно вернуть взносы всем: только авария (№149). */
+export const CANCEL_REFUND_REASONS = LATE_REFUND_REASONS.filter((r) => CANCEL_REFUND_CODES.includes(r.code));
+
+/**
+ * Ошибки формы отмены. reason — комментарий (всегда обязателен); после старта с возвратом всем — и код аварии.
+ * @param {{ started: boolean, reason: string, refundAll?: boolean, reasonCode?: string | null }} f
+ */
+export function cancelErrors(f) {
+  const e = {};
+  if (String(f.reason ?? '').trim().length < 3) e.reason = f.started && f.refundAll ? 'Опишите, что случилось, — комментарий увидят игроки и владелец.' : 'Напишите причину — её увидят игроки и владелец.';
+  if (f.started && f.refundAll && !CANCEL_REFUND_CODES.includes(f.reasonCode)) e.reason_code = 'Выберите, что случилось: поломка оборудования или авария в клубе.';
+  return e;
+}
+
+/** Тело POST …/cancel: до старта — { reason }; после — с refund 'none' или 'all' и кодом аварии. */
+export function cancelBody(f) {
+  const reason = String(f.reason ?? '').trim();
+  if (!f.started) return { reason };
+  return f.refundAll ? { reason, refund: 'all', reason_code: f.reasonCode } : { reason, refund: 'none' };
+}
+
+/** Можно ли вернуть взнос одному игроку: турнир начат, игрок платил, возврат ещё не оформлен (№149). */
+export function canRefundEntry(t, e) {
+  return t?.status === 'running' && refundableEntry(t, e);
+}
+
+/** Ошибки формы возврата одному игроку: код из закрытого списка и комментарий. */
+export function entryRefundErrors(f) {
+  const e = {};
+  if (!LATE_REFUND_REASONS.some((r) => r.code === f.reasonCode)) e.reason_code = 'Выберите причину из списка.';
+  if (String(f.comment ?? '').trim().length < 3) e.comment = 'Напишите, что случилось, — комментарий увидит владелец.';
+  return e;
+}
+
+/** Оплата и возврат участника словами: статус не только цветом. */
+export function entryPayWord(t, e) {
+  if (!t?.fee_kopecks && !paidOf(t, e)) return { word: 'бесплатно', tone: 'off' };
+  if (e.refund_status === 'done') return { word: 'взнос возвращён', tone: 'off' };
+  if (e.refund_status === 'pending') return { word: 'возврат оформляется', tone: 'pending' };
+  if (e.status === 'canceled') return { word: 'запись отменена', tone: 'off' };
+  return paidOf(t, e) > 0 ? { word: 'оплачен', tone: 'ok' } : { word: 'ждём оплату', tone: 'pending' };
+}
+
+export const EXTEND_MATCH_MIN = 10;
+export const EXTEND_MATCH_MAX = 240;
+/** Подсказка: дальше этого от текущего момента сервер не продлит (№147); точный предел — в ответе 409. */
+export const EXTEND_AHEAD_MS = 12 * 3600000;
+
+/**
+ * Ошибки формы продления идущего турнира (POST …/extend).
+ * @param {{ ends_at: string, match_minutes: string | number, reason: string }} f ends_at — ISO
+ * @param {{ ends_at: string, match_minutes?: number }} t текущее окно
+ */
+export function extendErrors(f, t, now = Date.now()) {
+  const e = {};
+  const end = Date.parse(f.ends_at);
+  const curEnd = Date.parse(t?.ends_at);
+  const mm = Number(f.match_minutes);
+  const curMm = Number.isInteger(t?.match_minutes) ? t.match_minutes : null;
+  if (!Number.isFinite(end)) e.ends_at = 'Укажите время конца.';
+  else if (end <= now) e.ends_at = 'Конец — позже текущего времени.';
+  else if (end > now + EXTEND_AHEAD_MS) e.ends_at = 'Не дальше 12 часов от текущего момента.';
+  if (f.match_minutes !== '' && f.match_minutes !== null && f.match_minutes !== undefined) {
+    const max = Math.max(EXTEND_MATCH_MAX, curMm ?? 0);
+    if (!Number.isInteger(mm) || mm < EXTEND_MATCH_MIN || mm > max) e.match_minutes = `Время матча — от ${EXTEND_MATCH_MIN} до ${max} минут.`;
+  }
+  const sameEnd = Number.isFinite(end) && end === curEnd;
+  const sameMm = f.match_minutes === '' || f.match_minutes === null || f.match_minutes === undefined || mm === curMm;
+  if (!e.ends_at && !e.match_minutes && sameEnd && sameMm) e.ends_at = 'Ничего не меняется: укажите новый конец или время матча.';
+  if (String(f.reason ?? '').trim().length < 3) e.reason = 'Напишите причину — её увидит владелец, продление попадёт в журнал.';
+  return e;
+}
+
+/** Тело POST …/extend: только изменённые поля и причина. */
+export function extendBody(f, t) {
+  const out = { reason: String(f.reason ?? '').trim() };
+  const end = Date.parse(f.ends_at);
+  if (Number.isFinite(end) && end !== Date.parse(t?.ends_at)) out.ends_at = new Date(end).toISOString();
+  const mm = Number(f.match_minutes);
+  if (f.match_minutes !== '' && f.match_minutes !== null && f.match_minutes !== undefined && mm !== t?.match_minutes) out.match_minutes = mm;
+  return out;
+}
+
+/**
+ * Правка турнира (PATCH): до старта — название, призы, места и время; после старта (№147) — только
+ * название и призы, время не отправляем вовсе (иначе 409 tournament_started).
+ * @param {{ title: string, prize_text: string, places: string, starts_at: string, ends_at: string }} f
+ */
+export function editBody(f, t) {
+  const out = {};
+  const title = String(f.title ?? '').trim();
+  if (title && title !== t.title) out.title = title;
+  const prize = String(f.prize_text ?? '').trim();
+  if (prize !== (t.prize_text ?? '')) out.prize_text = prize;
+  if (isStarted(t)) return out;
+  const places = Number(f.places);
+  if (Number.isInteger(places) && places !== t.places) out.places = places;
+  for (const k of ['starts_at', 'ends_at']) {
+    const v = Date.parse(f[k]);
+    if (Number.isFinite(v) && v !== Date.parse(t[k])) out[k] = new Date(v).toISOString();
+  }
+  return out;
+}
+
+/** Ошибки правки: название, места не меньше записавшихся, конец позже начала (до старта). */
+export function editErrors(f, t) {
+  const e = {};
+  const title = String(f.title ?? '').trim();
+  if (!title || title.length > 80) e.title = 'Название — до 80 знаков.';
+  if (isStarted(t)) return e;
+  const places = Number(f.places);
+  const taken = t.entries_count ?? 0;
+  if (!Number.isInteger(places) || places < Math.max(4, taken) || places > 128) e.places = `Мест — от ${Math.max(4, taken)} до 128.`;
+  const s = Date.parse(f.starts_at);
+  const en = Date.parse(f.ends_at);
+  if (!Number.isFinite(s)) e.starts_at = 'Укажите начало.';
+  if (!Number.isFinite(en) || !(en > s)) e.ends_at = 'Конец — позже начала.';
+  return e;
 }
 
 /**

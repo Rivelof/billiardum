@@ -1,4 +1,5 @@
-import { formatMoney } from '@billiardum/shared/format';
+import { formatMoney, formatTime, plural } from '@billiardum/shared/format';
+import { lateRefundLabel } from '@billiardum/shared/reasons';
 
 /**
  * Смена и касса (PRODUCT §4.2, решения №81, №83). Наличные в кассе = размен + наличные продажи − наличные возвраты.
@@ -99,4 +100,44 @@ export function shiftList(res) {
 export function currentOf(res) {
   if (res && typeof res === 'object' && 'shift' in res && !('opened_at' in res)) return res.shift ?? null;
   return res ?? null;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const short = (v, max = 30) => (typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : null);
+
+/** Окно турнира { ends_at, match_minutes } словами по времени клуба: «до 22:00, матч 60 мин». */
+function windowWords(w, timeZone) {
+  if (!w || typeof w !== 'object') return null;
+  const end = Date.parse(w.ends_at);
+  const parts = [];
+  if (Number.isFinite(end) && timeZone) parts.push(`до ${formatTime(end, timeZone)}`);
+  if (Number.isInteger(w.match_minutes)) parts.push(`матч ${w.match_minutes} мин`);
+  return parts.length ? parts.join(', ') : null;
+}
+
+/**
+ * Суть строки ручных действий отчёта смены (server/reports: у турнирных строк и решения спора — data):
+ * было → стало словами, основание возврата и переход к турниру (только по UUID, адрес собирает клиент).
+ * @param {{ action: string, data?: object }} row
+ * @returns {{ change: string | null, note: string | null, tournamentId: string | null }}
+ */
+export function manualDetail(row, timeZone) {
+  const d = row?.data && typeof row.data === 'object' ? row.data : null;
+  const out = { change: null, note: null, tournamentId: null };
+  if (!d) return out;
+  if (typeof d.tournament_id === 'string' && UUID.test(d.tournament_id)) out.tournamentId = d.tournament_id;
+  if (row.action === 'manual.tournament_extend') {
+    const b = windowWords(d.before, timeZone);
+    const a = windowWords(d.after, timeZone);
+    if (b && a) out.change = `было ${b} → стало ${a}`;
+  } else if (row.action === 'manual.tournament_score' || row.action === 'plus.match_resolve') {
+    const b = short(d.before);
+    const a = short(d.after);
+    if (b && a) out.change = `было ${b} → стало ${a}`;
+    else if (a) out.change = `стало ${a}`;
+  } else if (row.action === 'manual.tournament_refund') {
+    const whom = d.scope === 'all' ? (Number.isInteger(d.refunds) ? `всем: ${d.refunds} ${plural(d.refunds, ['игрок', 'игрока', 'игроков'])}` : 'всем участникам') : 'одному игроку';
+    out.note = `${whom} · ${d.reason_code ? lateRefundLabel(d.reason_code).toLowerCase() : 'основание не указано'}`;
+  }
+  return out;
 }
