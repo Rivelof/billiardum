@@ -37,7 +37,7 @@ function line(description, amountKopecks, vatCode, paymentMode) {
 
 async function sessionRow(db, sessionId) {
   const { rows } = await db.query(
-    `select s.id, s.club_id, s.resource_id, s.payer_user_id, s.started_at, s.paid_until, s.ended_at, r.number
+    `select s.id, s.club_id, s.resource_id, s.payer_user_id, s.source, s.started_at, s.paid_until, s.ended_at, r.number
        from bl.sessions s join bl.resources r on r.id = s.resource_id where s.id = $1`,
     [sessionId],
   );
@@ -70,6 +70,9 @@ export async function takeDeposit(db, deps, { clubId, sessionId, amountKopecks, 
   if (!shift) throw new MoneyError('shift_closed');
   const s = await sessionRow(db, sessionId);
   if (!s) throw new MoneyError('not_found', 'session');
+  // Турнирный матч (M4): стол занят турниром, плательщика нет — депозит не принимается.
+  if (s.source === 'tournament') throw new MoneyError('table_busy', 'турнирный матч');
+  if (!s.payer_user_id) throw new MoneyError('bad_request', 'у сессии нет плательщика');
   const now = deps.clock.now();
   const minutes = Math.min(10080, Math.max(1, Math.round((new Date(s.paid_until) - new Date(s.started_at)) / 60_000)));
   const change = received - amountKopecks;

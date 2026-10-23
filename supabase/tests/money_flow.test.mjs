@@ -313,6 +313,8 @@ describe('оплата СБП и картой', () => {
       package_id: null,
       balance_minutes: 0,
       deposit: false,
+      tournament_id: null,
+      entry_id: null,
     });
     const audit = (await h.audit('payment.succeeded')).filter((a) => a.object_id === paid.payment_id);
     assert.equal(audit.length, 1);

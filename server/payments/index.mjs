@@ -10,7 +10,8 @@
 
 import { withContext as storeWithContext } from '../lib/store.mjs';
 import { expireRequest } from '../reception/index.mjs';
-import { setRuntime, syncRefund } from './api.mjs';
+import { refundTournamentFee, setRuntime, syncRefund } from './api.mjs';
+import { TOURNAMENT_REFUND_TOPIC } from './tournaments.mjs';
 import { onSessionClosed } from './capture.mjs';
 import { loadMoneyConfig } from './config.mjs';
 import { resolveDeps } from './deps.mjs';
@@ -135,6 +136,17 @@ export async function init(ctx) {
       await settleSessionBalance(db, log ? { ...deps, log } : deps, { sessionId: payload.session_id, now: deps.clock.now() });
     },
     { name: 'money.balance_settle' },
+  );
+  // M4: отмена турнира клубом — возврат взноса по каждой записи (сбой ЮKassa — повтор outbox).
+  deps.outbox.subscribe(
+    TOURNAMENT_REFUND_TOPIC,
+    async (payload, { db, log } = {}) => {
+      if (!payload?.entry_id || !payload?.club_id) return;
+      await enterClub(db, payload.club_id);
+      const inj = { deps: log ? { ...deps, log } : deps, config };
+      await refundTournamentFee(db, { entryId: payload.entry_id, reason: payload.reason, requestedBy: payload.requested_by ?? undefined }, inj);
+    },
+    { name: 'money.tournament_refund' },
   );
   let running = null;
   const timer = setInterval(() => {

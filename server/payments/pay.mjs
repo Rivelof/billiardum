@@ -244,13 +244,14 @@ export async function createYooKassaPayment(db, deps, config, spec) {
     `insert into bl.payments (id, club_id, resource_id, user_id, quote_id, session_id, kind, provider, method,
                               provider_payment_id, idempotence_key, request_key, status, amount_kopecks, capture,
                               minutes, unlimited, confirmation_url, booking_id, package_id, balance_minutes, settlement_status,
-                              created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6, $7, 'yookassa', $8, $9, $10, $11, 'pending', $12, $13, $14, $15, $16, $18, $19, $20, $21, $17, $17)
+                              tournament_id, entry_id, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $7, 'yookassa', $8, $9, $10, $11, 'pending', $12, $13, $14, $15, $16, $18, $19, $20, $21, $22, $23, $17, $17)
      returning *`,
     [paymentId, clubId, spec.resourceId ?? null, spec.userId ?? null, spec.quoteId ?? null, spec.sessionId ?? null, kind, method,
       remote.id, idempotenceKey, spec.requestKey ?? null, amount, capture, spec.minutes ?? null, Boolean(spec.unlimited),
       typeof stored === 'string' && stored.length <= 2000 ? stored : null, now,
-      spec.bookingId ?? null, spec.packageId ?? null, spec.balanceMinutes ?? 0, kind === 'booking' ? 'open' : null],
+      spec.bookingId ?? null, spec.packageId ?? null, spec.balanceMinutes ?? 0, kind === 'booking' ? 'open' : null,
+      spec.tournamentId ?? null, spec.entryId ?? null],
   );
   // Чек продажи (у заморозки — на сумму заморозки; при списании меньшей суммы capture.mjs
   // заменяет его чеком на фактическую сумму, телефон берёт из этой строки).

@@ -161,6 +161,9 @@ export async function createQuote(db, deps, info, config) {
     // «Без лимита» по депозиту наличными сам не продлевается (M3 §1 п. 11): доплата — на ресепшене.
     const dep = await db.query('select 1 from bl.payments where session_id = $1 and deposit limit 1', [session.id]);
     if (dep.rowCount > 0) throw new MoneyError('bad_request', 'депозитная сессия не продлевается');
+    // Турнирный матч (M4, light source tournament, без плательщика) оплатой не продлевается.
+    const src = await db.query('select source, payer_user_id from bl.sessions where id = $1', [session.id]);
+    if (src.rows[0]?.source === 'tournament' || !src.rows[0]?.payer_user_id) throw new MoneyError('bad_request', 'турнирный матч не продлевается оплатой');
     from = new Date(session.paid_until);
   }
 

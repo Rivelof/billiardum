@@ -140,6 +140,34 @@ export async function pendingPlayUntil(db, { resourceId, now = new Date() }) {
   return rows[0]?.until ? new Date(rows[0].until) : null;
 }
 
+// M4: взнос за участие в турнире (контракт m4.md, решение №138) -----------------------------
+
+/**
+ * Платёж ЮKassa kind tournament с чеком «полный расчёт» (услуга участия).
+ * { clubId, tournamentId, entryId, amountKopecks, customer: {phone}|{email}, returnUrl?, method?: 'sbp'|'card',
+ *   userId?, title? } → { payment, confirmation }; подтверждение — outbox payment.confirmed
+ * {kind: 'tournament', tournament_id, entry_id}.
+ */
+export async function createTournamentFee(db, args, injected) {
+  const { deps, config } = injected ?? (await rt());
+  const { createTournamentFee: impl } = await import('./tournaments.mjs');
+  return impl(db, deps, config, args);
+}
+
+/** Возврат взноса записи целиком с чеком возврата; идемпотентно (ключ trn-<payment_id>). */
+export async function refundTournamentFee(db, args, injected) {
+  const inj = injected ?? (await rt());
+  const { refundTournamentFee: impl } = await import('./tournaments.mjs');
+  return impl(db, inj.deps, args, (d, a) => refund(d, a, inj));
+}
+
+/** Отмена турнира клубом: возврат каждой оплаченной записи — событием outbox (по одному на запись). */
+export async function refundTournamentFees(db, args, injected) {
+  const { deps } = injected ?? (await rt());
+  const { refundTournamentFees: impl } = await import('./tournaments.mjs');
+  return impl(db, deps, args);
+}
+
 /**
  * Доступен ли клубу онлайн-способ оплаты (без создания платежа; касса зовёт до поиска гостя):
  * есть магазин ЮKassa (shop_id и секрет) и способ включён в настройках клуба.

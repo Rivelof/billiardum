@@ -36,6 +36,9 @@ export function confirmedPayload(p) {
     package_id: p.package_id ?? null,
     balance_minutes: p.balance_minutes ?? 0,
     deposit: Boolean(p.deposit),
+    // M4: взнос за турнир.
+    tournament_id: p.tournament_id ?? null,
+    entry_id: p.entry_id ?? null,
   };
 }
 
