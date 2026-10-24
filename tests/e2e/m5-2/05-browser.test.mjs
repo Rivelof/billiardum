@@ -124,7 +124,7 @@ async function screen(t, page, name, scheme) {
 }
 
 const bodyText = (page) => page.evaluate(() => globalThis.document.body.innerText.replace(/\s+/g, ' '));
-const rub = (k) => `${new Intl.NumberFormat('ru-RU').format(Math.round(k / 100)).replace(/ /g, ' ')}`;
+const rub = (k) => `${new Intl.NumberFormat('ru-RU').format(Math.round(k / 100)).replace(/\u00a0/g, ' ')}`;
 
 async function ownerContext({ width, scheme, phone = '+70000000001' }) {
   const viewport = width >= 1000 ? { width, height: 900 } : { width, height: 780 };
