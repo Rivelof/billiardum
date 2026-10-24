@@ -27,7 +27,7 @@ import { TournamentTv } from './screens/TournamentTv.jsx';
 import { Disputes } from './screens/Disputes.jsx';
 import { Listing } from './screens/Listing.jsx';
 import { Platform } from './screens/Platform.jsx';
-import { setClub } from './lib/api.js';
+import { api, setClub } from './lib/api.js';
 import { session } from './lib/store.js';
 import { SUB_RETURN_KEY } from './lib/billingBanner.js';
 import { Icon } from './components/Icon.jsx';
@@ -42,6 +42,11 @@ const ROUTES = [
   ['start', 'start'],
   ['c/:club/:screen', 'club'],
   ['c/:club/:screen/:id', 'club'],
+  // M5.7: журнал доставок одного адреса вебхука в клубе
+  ['c/:club/api/webhooks/:id', 'clubhook'],
+  // M5.7: ссылка из уведомления о сбое вебхука — /club/api/webhooks/{id} (без клуба) и /club/api
+  ['api', 'apiroot'],
+  ['api/webhooks/:id', 'apiroot'],
   // M4: ТВ-сетка турнира (без входа, публичные данные) и экран оператора платформы
   ['tv/tournament/:id', 'tv'],
   ['platform', 'platform'],
@@ -94,6 +99,18 @@ const SCREENS = {
     allow: can.subscription,
     render: (ctx) => <Lazy key="billing" chunk="billing" label="Открываем подписку…" fallback={<LazyShell ctx={ctx} active="subscription" title="Подписка" />} render={(m) => <m.Subscription ctx={ctx} />} />,
     title: 'Подписка',
+  },
+  // M5.6: уведомление maintenance.due ведёт на /club/c/{club}/maintenance — раздел живёт в «Отчётах»
+  maintenance: {
+    allow: can.reportsView,
+    render: (ctx) => <Redirect to={`${BASE}c/${encodeURIComponent(ctx.club.club_id)}/reports/maintenance`} />,
+    title: 'Обслуживание столов',
+  },
+  // M5.7: «API и вебхуки» — только владелец, отдельный чанк; журнал адреса — /api/webhooks/{id}
+  api: {
+    allow: can.clubApi,
+    render: (ctx) => <Lazy key="clubapi" chunk="clubapi" label="Открываем API и вебхуки…" fallback={<LazyShell ctx={ctx} active="api" title="API" />} render={(m) => <m.ClubApi ctx={ctx} webhookId={ctx.webhookId ?? null} />} />,
+    title: 'API и вебхуки',
   },
   onboarding: {
     allow: can.setup,
@@ -170,6 +187,12 @@ export function App() {
     const c = clubs.find((m) => m.club_id === back?.club_id && can.subscription(m.role)) ?? clubs.find((m) => can.subscriptionManage(m.role)) ?? clubs.find((m) => can.subscription(m.role));
     return <Redirect to={c ? `${BASE}c/${encodeURIComponent(c.club_id)}/subscription` : BASE} />;
   }
+  if (name === 'apiroot') {
+    const owned = clubs.filter((m) => can.clubApi(m.role));
+    if (!owned.length) return <Redirect to={BASE} />;
+    if (params.id && owned.length > 1) return <WebhookClub clubs={owned} id={params.id} />;
+    return <Redirect to={`${BASE}c/${encodeURIComponent(owned[0].club_id)}/api${params.id ? `/webhooks/${encodeURIComponent(params.id)}` : ''}`} />;
+  }
   if (name === 'plusdisputes') {
     const c = clubs.find((m) => can.disputes(m.role));
     return <Redirect to={c ? `${BASE}c/${encodeURIComponent(c.club_id)}/disputes` : BASE} />;
@@ -180,7 +203,8 @@ export function App() {
     return <ClubPick clubs={clubs} />;
   }
 
-  if (name === 'club') {
+  if (name === 'club' || name === 'clubhook') {
+    if (name === 'clubhook') params.screen = 'api';
     const membership = clubs.find((c) => c.club_id === params.club);
     const screen = SCREENS[params.screen];
     if (!membership || !screen) return <Redirect to={BASE} />;
@@ -189,18 +213,54 @@ export function App() {
     // Вложенные пути: отчёт смены (/shift/{id}) — управляющему и владельцу; терминалы (/staff/terminals) — владельцу
     const nested =
       (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments' || params.screen === 'onboarding' || params.screen === 'reports';
-    if (params.id && !nested) return <Redirect to={homeFor(membership)} />;
+    if (params.id && !nested && name !== 'clubhook') return <Redirect to={homeFor(membership)} />;
     const ctx = {
       club: membership,
       role: membership.role,
       user,
       id: params.id ?? null,
+      webhookId: name === 'clubhook' ? params.id : null,
       timeZone: membership.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
     return screen.render(ctx);
   }
 
   return <Redirect to={BASE} />;
+}
+
+/**
+ * Ссылка из уведомления о сбое вебхука без клуба (/club/api/webhooks/{id}) у владельца нескольких клубов:
+ * ищем адрес в списках вебхуков его клубов и открываем журнал в нужном; не нашли — первый клуб.
+ */
+function WebhookClub({ clubs, id }) {
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      let found = null;
+      for (const c of clubs) {
+        try {
+          const res = await api.webhooks(c.club_id);
+          if ((Array.isArray(res?.items) ? res.items : []).some((h) => h.webhook_id === id)) {
+            found = c;
+            break;
+          }
+        } catch {
+          // клуб недоступен — смотрим следующий
+        }
+      }
+      if (alive) navigate(`${BASE}c/${encodeURIComponent((found ?? clubs[0]).club_id)}/api/webhooks/${encodeURIComponent(id)}`, { replace: true });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+  return (
+    <main class="signin" data-theme="dark" aria-busy="true">
+      <p class="signin__brand display" role="status">
+        Ищем адрес вебхука…
+      </p>
+    </main>
+  );
 }
 
 function ClubPick({ clubs }) {

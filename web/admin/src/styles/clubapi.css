@@ -1,0 +1,45 @@
+/*
+ * M5.7 «API и вебхуки» (чанк clubapi): ключи и адреса списком, ключ и секрет один раз, журнал доставок.
+ * Статус — словом и значком (DESIGN §2), цвет только дублирует.
+ */
+
+.capi { display: grid; gap: 16px; }
+.capi .panel { display: grid; gap: 10px; }
+.capi__lead { color: var(--ink-2); }
+.capi__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.capi__head .section-title { margin: 0; }
+.capi__list { display: grid; gap: 10px; list-style: none; padding: 0; margin: 0; }
+.capi__item { display: grid; gap: 4px; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--card-2); min-width: 0; }
+.capi__item.is-off { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.capi__item.is-off .capi__name { color: var(--ink-2); }
+.capi__row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.capi__name { font-weight: 600; font-size: var(--fs-17); overflow-wrap: anywhere; }
+.capi__prefix { font-size: var(--fs-15); }
+.capi__url { font-size: var(--fs-15); overflow-wrap: anywhere; word-break: break-all; }
+.capi__acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.capi__act { justify-self: start; margin-top: 4px; }
+.capi__acts .btn, .capi__act { min-height: 44px; }
+.capi__checks { display: grid; gap: 4px; }
+.capi__mark { display: inline-block; width: 16px; height: 16px; vertical-align: -3px; margin-right: 4px; }
+.capi__mark--delivered { color: var(--free); }
+.capi__mark--failed { color: var(--ball-red); }
+.capi__mark--pending { color: var(--lamp); }
+.capi__mark--canceled { color: var(--ink-3); }
+.capi__st { display: inline-flex; align-items: center; white-space: nowrap; font-weight: 600; }
+.capi__filter { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; }
+.capi__filter .dfield { min-width: 12rem; }
+.capi__log { display: grid; gap: 4px; padding-left: 20px; margin: 0; font-size: var(--fs-15); }
+.capi__docs code { overflow-wrap: anywhere; }
+.capi__facts { display: grid; gap: 6px; margin: 0; font-size: var(--fs-15); }
+.capi__facts div { display: grid; gap: 0; }
+.capi__facts dt { color: var(--ink-2); font-size: var(--fs-13); font-weight: 600; }
+.capi__facts dd { margin: 0; overflow-wrap: anywhere; }
+.capi .dfield { display: grid; gap: 2px; }
+.capi .dfield__label { font-size: var(--fs-13); color: var(--ink-2); font-weight: 600; }
+.capi .dlink { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--cloth); font-weight: 600; justify-self: start; }
+.capi .dlink .icon { width: 18px; height: 18px; }
+.capi .dlink:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; border-radius: 3px; }
+
+@media (min-width: 900px) {
+  .capi__facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; }
+}

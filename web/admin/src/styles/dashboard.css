@@ -326,3 +326,34 @@ path.vline.viz-3 { stroke: var(--viz-3); fill: none; }
   .dtile__delta--good::after { content: ' (хорошо)'; }
   .dtile__delta--bad::after { content: ' (плохо)'; }
 }
+
+/* ---------- M5.6: «Факт / Прогноз», подсказки по цене, часы с замены сукна ---------- */
+
+.vcard__badge { display: inline-flex; align-items: center; margin-left: 8px; padding: 1px 10px; border-radius: var(--radius-pill); box-shadow: inset 0 0 0 1px var(--brass); color: var(--ink-2); font-size: var(--fs-13); font-weight: 600; vertical-align: 2px; }
+.dheatmode { border: 0; padding: 0; margin: 0; min-width: 0; }
+.dheatmode .seg { max-width: 320px; }
+.dheatmode .seg__box { min-height: 44px; }
+.dlink { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--cloth); font-weight: 600; }
+.dlink .icon { width: 18px; height: 18px; }
+.dlink:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; border-radius: 3px; }
+.dcloth { display: inline-grid; justify-items: end; gap: 2px; }
+.dcloth__flag { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-13); font-weight: 600; color: var(--ink); white-space: nowrap; }
+.dcloth__flag .icon { width: 16px; height: 16px; color: var(--lamp); }
+
+.phints { display: grid; gap: 10px; list-style: none; padding: 0; margin: 0; }
+.phint { display: grid; gap: 8px; align-content: start; min-width: 0; padding: 12px 14px; border-radius: var(--radius-md); background: var(--card-2); box-shadow: inset 4px 0 0 var(--brass); }
+.phint--raise { box-shadow: inset 4px 0 0 var(--lamp); }
+.phint__tag { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-13); font-weight: 600; color: var(--ink-2); }
+.phint__tag .icon { width: 18px; height: 18px; color: var(--brass); }
+.phint--raise .phint__tag .icon { color: var(--lamp); }
+.phint__text { font-size: var(--fs-17); font-weight: 600; line-height: 1.35; }
+.phint__nums { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; font-size: var(--fs-15); }
+.phint__nums div { display: flex; gap: 6px; }
+.phint__nums dt { color: var(--ink-2); }
+.phint__nums dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.phint__go { justify-self: start; min-height: 44px; }
+@media (min-width: 900px) {
+  .phints { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.dcloth__since { font-size: var(--fs-13); color: var(--ink-3); white-space: nowrap; }
+.phint__club { color: var(--ink); }

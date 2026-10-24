@@ -21,6 +21,28 @@ const pick = (r, list) => list[Math.floor(r() * list.length)];
 const maskedPhone = (r) => `+7 *** ***-${String(Math.floor(r() * 100)).padStart(2, '0')}-${String(Math.floor(r() * 100)).padStart(2, '0')}`;
 const localIso = (date, minutesFromMidnight) => new Date(Date.parse(`${date}T00:00:00+05:00`) + minutesFromMidnight * MIN).toISOString();
 
+const DEFAULT_CATEGORIES = [
+  ['rent', 'Аренда', 'expense'],
+  ['utilities', 'Коммунальные', 'expense'],
+  ['purchase', 'Закупка', 'expense'],
+  ['salary', 'Зарплата', 'expense'],
+  ['repair', 'Ремонт столов', 'expense'],
+  ['other_expense', 'Прочее', 'expense'],
+  ['other_income', 'Прочие доходы', 'income'],
+  ['opening', 'Начальный остаток', 'income'],
+];
+
+/** Касса управляющего заглушки (общая с M5.6: стоимость обслуживания стола — расход «Ремонт столов»). */
+export function ensureCashbook(S) {
+  if (!S.cashbook) {
+    S.cashbook = {
+      categories: DEFAULT_CATEGORIES.map(([id, name, kind], i) => ({ category_id: `cat-${id}`, kind, name, sort: i + 1, active: true })),
+      manual: [],
+    };
+  }
+  return S.cashbook;
+}
+
 /** Расхождение 100 ₽ три дня назад (смена 211), смена 213 сошлась — для дашборда и списка смен. */
 export function patchDashboardShifts(m2, empty) {
   if (!m2?.shifts) return;
@@ -269,26 +291,7 @@ export function reportsRoutes({ state, now, me, err, ok, audit, dash, manageOnly
   }
 
   // ---------- касса управляющего (№177) — форма server/dashboard (entries, by_category, categories) ----------
-  const DEFAULT_CATEGORIES = [
-    ['rent', 'Аренда', 'expense'],
-    ['utilities', 'Коммунальные', 'expense'],
-    ['purchase', 'Закупка', 'expense'],
-    ['salary', 'Зарплата', 'expense'],
-    ['repair', 'Ремонт столов', 'expense'],
-    ['other_expense', 'Прочее', 'expense'],
-    ['other_income', 'Прочие доходы', 'income'],
-    ['opening', 'Начальный остаток', 'income'],
-  ];
-  const cb = () => {
-    const S = state();
-    if (!S.cashbook) {
-      S.cashbook = {
-        categories: DEFAULT_CATEGORIES.map(([id, name, kind], i) => ({ category_id: `cat-${id}`, kind, name, sort: i + 1, active: true })),
-        manual: [],
-      };
-    }
-    return S.cashbook;
-  };
+  const cb = () => ensureCashbook(state());
   const catByName = (name) => cb().categories.find((c) => c.name === name);
   const entry = (o) => ({ comment: null, shift_id: null, reverses_id: null, reversed_by: null, reason: null, created_by: null, ...o, signed_kopecks: o.kind === 'expense' ? -o.amount_kopecks : o.amount_kopecks });
   function cashbookEntries(from, to) {

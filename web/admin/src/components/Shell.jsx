@@ -62,7 +62,9 @@ export function Shell({ club, role, active, title, user, timeZone, alarmsCount =
       <header class="bar">
         <div class="bar__club">
           <span class="bar__brand display">Бильярдум</span>
-          <span class="bar__name">{club.name ?? 'Клуб'}</span>
+          <span class="bar__name" title={club.name ?? 'Клуб'}>
+            {club.name ?? 'Клуб'}
+          </span>
         </div>
         <h1 class="bar__title">{title}</h1>
         <div class="bar__tools">

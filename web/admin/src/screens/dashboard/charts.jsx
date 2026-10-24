@@ -56,7 +56,7 @@ export function Legend({ items, kind = 'rect' }) {
 /**
  * Карточка графика: заголовок, легенда, кнопки «Показать таблицей» и «Скачать CSV», сам график или пустое состояние.
  */
-export function ChartCard({ id, title, sub, legend, onExport, exporting, table, empty, emptyText = 'За этот период игр не было.', children, busy }) {
+export function ChartCard({ id, title, sub, badge, switcher, legend, onExport, exporting, table, empty, emptyText = 'За этот период игр не было.', children, busy }) {
   const [open, setOpen] = useState(false);
   const tableId = `${id}-table`;
   return (
@@ -65,6 +65,7 @@ export function ChartCard({ id, title, sub, legend, onExport, exporting, table, 
         <div>
           <h3 class="vcard__title" id={`${id}-title`}>
             {title}
+            {badge ? <span class="vcard__badge">{badge}</span> : null}
           </h3>
           {sub ? <p class="vcard__sub">{sub}</p> : null}
         </div>
@@ -83,6 +84,7 @@ export function ChartCard({ id, title, sub, legend, onExport, exporting, table, 
           ) : null}
         </div>
       </div>
+      {switcher}
       {empty ? (
         <p class="vcard__empty">{emptyText}</p>
       ) : (
@@ -404,7 +406,9 @@ export function Ring({ segments, size = 168, thickness = 22, center, centerSub, 
  * Тепловая карта «день недели × час»: 7 строк, 24 часа в порядке рабочих суток клуба. Одна шкала — янтарь лампы:
  * чем ярче (в светлой теме — темнее), тем больше загрузка. Закрытые часы — без заливки.
  */
-export function Heatmap({ matrix, label }) {
+export function Heatmap({ matrix, label, forecast = false }) {
+  // M5.6: прогноз — те же ячейки, но слово «прогноз» и без «сыграно из» (это медиана прошлых недель)
+  const word = forecast ? 'прогноз загрузки' : 'загрузка';
   const [scroller, width] = useWidth();
   const cols = matrix.hours.length;
   const cell = Math.max(22, Math.floor(width / cols));
@@ -416,7 +420,7 @@ export function Heatmap({ matrix, label }) {
   const describe = (ri, ci) => {
     const row = matrix.rows[ri];
     const c = row.cells[ci];
-    return `${row.long}, ${hourSpan(c.hour)}: ${c.pct === null ? 'нет часов работы' : `загрузка ${Math.round(c.pct)} %`}`;
+    return `${row.long}, ${hourSpan(c.hour)}: ${c.pct === null ? 'нет часов работы' : `${word} ${Math.round(c.pct)} %`}`;
   };
   const move = (ri, ci, speak) => {
     const r = Math.max(0, Math.min(6, ri));
@@ -492,14 +496,14 @@ export function Heatmap({ matrix, label }) {
                 x={active[1] * cell + cell / 2}
                 plotWidth={plotWidth}
                 title={`${act.row.long[0].toUpperCase()}${act.row.long.slice(1)}, ${hourSpan(act.cell.hour)}`}
-                rows={[{ key: 'pct', value: act.cell.pct === null ? 'Нет часов работы' : `${Math.round(act.cell.pct)} %`, label: act.cell.pct === null ? '' : 'загрузка' }]}
-                footer={act.cell.pct === null ? null : `Сыграно ${Math.round(act.cell.play / 60)} ч из ${Math.round(act.cell.capacity / 60)} ч`}
+                rows={[{ key: 'pct', value: act.cell.pct === null ? 'Нет часов работы' : `${Math.round(act.cell.pct)} %`, label: act.cell.pct === null ? '' : forecast ? 'прогноз' : 'загрузка' }]}
+                footer={act.cell.pct === null || forecast ? null : `Сыграно ${Math.round(act.cell.play / 60)} ч из ${Math.round(act.cell.capacity / 60)} ч`}
               />
             ) : null}
           </div>
         </div>
       </div>
-      <ul class="vheatlegend" aria-label="Шкала загрузки">
+      <ul class="vheatlegend" aria-label={forecast ? 'Шкала прогноза загрузки' : 'Шкала загрузки'}>
         {HEAT_LEGEND.map((t, i) => (
           <li key={t}>
             <span class={`vheatlegend__sw vheat--l${i}`} aria-hidden="true" />
@@ -508,7 +512,7 @@ export function Heatmap({ matrix, label }) {
         ))}
         <li>
           <span class="vheatlegend__sw vheat-closed" aria-hidden="true" />
-          нет часов работы (клуб закрыт или час ещё не наступил)
+          {forecast ? 'нет часов работы (клуб закрыт)' : 'нет часов работы (клуб закрыт или час ещё не наступил)'}
         </li>
       </ul>
       <p class="visually-hidden" aria-live="polite">

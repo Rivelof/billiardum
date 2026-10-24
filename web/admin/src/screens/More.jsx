@@ -75,6 +75,7 @@ const SECTION_HINT = {
   staff: 'Сотрудники, роли и терминалы ресепшена.',
   onboarding: 'Мастер подключения: зал, тарифы, ЮKassa, контроллеры, запуск.',
   subscription: 'План, счета и карта для оплаты программы Бильярдума.',
+  api: 'Ключи API для CRM и сайта, вебхуки о играх, бронях и сменах.',
 };
 
 const SUBSCRIPTION_STATE_HINT = 'Состояние подписки клуба на Бильярдум.';
@@ -96,7 +97,7 @@ function Sections({ role, clubId }) {
             <a class="sections__link" href={it.href} onClick={linkHandler}>
               <Icon name={it.icon} />
               <span>
-                <span class="sections__name">{it.key === 'kkt' ? 'Касса ККТ' : it.label}</span>
+                <span class="sections__name">{it.key === 'kkt' ? 'Касса ККТ' : it.key === 'api' ? 'API и вебхуки' : it.label}</span>
                 <span class="sections__hint">{it.key === 'onboarding' && !can.onboarding(role) ? SETUP_HINT : it.key === 'subscription' && !can.subscriptionManage(role) ? SUBSCRIPTION_STATE_HINT : SECTION_HINT[it.key]}</span>
               </span>
               <Icon name="forward" class="sections__go" />

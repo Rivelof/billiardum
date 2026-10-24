@@ -136,6 +136,15 @@ export const ACTION_LABEL = {
   'cashbook.category_create': 'Статья кассы добавлена',
   'cashbook.category_update': 'Статья кассы изменена',
   'owner.export': 'Выгрузка отчёта',
+  // M5.6 (server/maintenance/README.md) и M5.7 (server/clubapi/README.md)
+  'maintenance.event': 'Обслуживание стола',
+  'maintenance.correct': 'Исправлено событие обслуживания',
+  'maintenance.thresholds_update': 'Пороги обслуживания изменены',
+  'maintenance.threshold_reached': 'Стол достиг порога обслуживания',
+  'api_key.create': 'Выпущен ключ API',
+  'api_key.revoke': 'Ключ API отозван',
+  'webhook.create': 'Добавлен адрес вебхука',
+  'webhook.disable': 'Адрес вебхука выключен',
 };
 
 /** Ручные действия (инвариант 8) — подсвечиваются в журнале. */
