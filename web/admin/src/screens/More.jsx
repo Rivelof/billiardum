@@ -74,7 +74,10 @@ const SECTION_HINT = {
   packages: 'Пакеты часов: продажа и возврат.',
   staff: 'Сотрудники, роли и терминалы ресепшена.',
   onboarding: 'Мастер подключения: зал, тарифы, ЮKassa, контроллеры, запуск.',
+  subscription: 'План, счета и карта для оплаты программы Бильярдума.',
 };
+
+const SUBSCRIPTION_STATE_HINT = 'Состояние подписки клуба на Бильярдум.';
 
 const SETUP_HINT = 'План зала, тарифы, меню из Excel, QR-наклейки.';
 
@@ -94,7 +97,7 @@ function Sections({ role, clubId }) {
               <Icon name={it.icon} />
               <span>
                 <span class="sections__name">{it.key === 'kkt' ? 'Касса ККТ' : it.label}</span>
-                <span class="sections__hint">{it.key === 'onboarding' && !can.onboarding(role) ? SETUP_HINT : SECTION_HINT[it.key]}</span>
+                <span class="sections__hint">{it.key === 'onboarding' && !can.onboarding(role) ? SETUP_HINT : it.key === 'subscription' && !can.subscriptionManage(role) ? SUBSCRIPTION_STATE_HINT : SECTION_HINT[it.key]}</span>
               </span>
               <Icon name="forward" class="sections__go" />
             </a>

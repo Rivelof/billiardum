@@ -98,3 +98,17 @@ test('M5.1: тексты кодов подключения клуба; дыра 
   assert.equal(errorMessage(new ApiError('tariff_gap', { status: 400, data: { weekday: 9 } })).title, 'В неделе есть часы без цены.');
   assert.equal(errorMessage(new ApiError('tariff_gap', { status: 400, data: { weekday: 7, from: 'x' } })).title, 'В воскресенье нет цены.');
 });
+
+test('M5.3: тексты кодов подписки — без кодов и без угроз отключением', () => {
+  for (const code of ['card_required', 'invoice_paid', 'billing_unavailable', 'yookassa_unavailable']) {
+    assert.ok(KNOWN_CODES.includes(code), code);
+    for (const audience of ['guest', 'staff']) {
+      const m = errorMessage(code, { audience });
+      assert.match(m.title, /[А-ЯЁ].*\.$/u, code);
+      assert.match(m.action, /[А-ЯЁ].*[.!]$/u, code);
+      assert.doesNotMatch(m.text, /\b[a-z_]{4,}\b/, `${code}: без кодов и английских слов`);
+      assert.doesNotMatch(m.text, /отключ|заблокир|приостанов/i, `${code}: подписка не отключает свет и игры (№184)`);
+    }
+  }
+  assert.equal(errorMessage('billing_unavailable', { audience: 'staff' }).title, 'Подписка ещё не подключена.');
+});

@@ -30,6 +30,8 @@ export function navItems(role, club) {
   if (can.disputes(role)) add('disputes', 'report', 'Споры', true);
   if (can.listing(role)) add('listing', 'star', 'Карточка', true);
   if (can.staff(role)) add('staff', 'users', 'Персонал', true);
+  // M5.3: подписка клуба на Бильярдум — владелец (план, счета, карта) и управляющий (состояние)
+  if (can.subscription(role)) add('subscription', 'card', 'Подписка', true);
   if (can.devices(role)) add('devices', 'chip', 'Контроллеры', manage);
   // M5.1: мастер подключения — в боковой панели планшета (на телефоне — в плашке и в «Ещё»);
   // управляющему — его шаги: зал, тарифы, меню, наклейки (№155–156)

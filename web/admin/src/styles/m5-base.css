@@ -34,6 +34,57 @@
 .modenote--stop > .icon { color: var(--ball-red); }
 .kiosk .modenote { font-size: var(--fs-17); }
 
+/* M5.3: плашка подписки — одна строка под шапкой; при неуспешной оплате заметнее; на кассе и ресепшене компактная */
+.subnote {
+  display: flex;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  padding: 2px max(calc(var(--gutter) - 8px), env(safe-area-inset-right)) 2px max(var(--gutter), env(safe-area-inset-left));
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  font-size: var(--fs-15);
+  line-height: 1.4;
+}
+.subnote > .icon { flex: none; width: 20px; height: 20px; color: var(--brass); }
+.subnote__text { flex: 1 1 auto; min-width: 0; padding-block: 8px; }
+.subnote__who { color: var(--ink-2); }
+.subnote__link {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+.subnote__link:hover { color: var(--cloth-deep); }
+.subnote__close { flex: none; color: var(--ink-2); }
+.subnote__close:hover { color: var(--ink); }
+.subnote--strong { background: color-mix(in oklab, var(--ball-red) 12%, var(--card)); border-bottom-color: color-mix(in oklab, var(--ball-red) 70%, transparent); }
+.subnote--strong > .icon { color: var(--ball-red); }
+.subnote--strong .subnote__text { font-weight: 600; }
+.subnote--compact { font-size: var(--fs-13); }
+.subnote--compact .subnote__text { padding-block: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subnote--compact > .icon { width: 18px; height: 18px; }
+.subnote--compact .subnote__link,
+.subnote--compact .subnote__close { min-height: 40px; height: 40px; }
+/* Телефон: текст и крестик в строку, «Перейти к оплате» — под текстом */
+@media (max-width: 599px) {
+  .subnote:not(.subnote--compact) { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: 'i t x' 'i l x'; column-gap: 10px; }
+  .subnote:not(.subnote--compact) > .icon { grid-area: i; align-self: start; margin-top: 10px; }
+  .subnote:not(.subnote--compact) .subnote__text { grid-area: t; padding-bottom: 0; }
+  .subnote:not(.subnote--compact) .subnote__link { grid-area: l; justify-self: start; padding: 0; }
+  .subnote:not(.subnote--compact) .subnote__close { grid-area: x; align-self: start; }
+  .subnote:not(.subnote--compact):not(:has(.subnote__link)) { grid-template-areas: 'i t x'; }
+  .subnote:not(.subnote--compact):not(:has(.subnote__link)) .subnote__text { padding-bottom: 8px; }
+}
+@media print { .subnote { display: none !important; } }
+
 /* Переключатель вида: кнопки с aria-pressed */
 .viewtog {
   display: inline-flex;

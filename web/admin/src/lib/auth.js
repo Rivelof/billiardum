@@ -135,6 +135,10 @@ export const can = {
   reportsView: (role) => ['owner', 'manager'].includes(role),
   cashbookCategories: (role) => role === 'owner',
   revealPhone: (role) => role === 'owner',
+  // M5.3 (№185): экран «Подписка» и плашка — владелец и управляющий (управляющему — только состояние);
+  // план, счета, карта и автоплатёж — только владелец. Ресепшн и бар подписку не видят
+  subscription: (role) => ['owner', 'manager'].includes(role),
+  subscriptionManage: (role) => role === 'owner',
 };
 
 /**

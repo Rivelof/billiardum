@@ -10,6 +10,9 @@ const CHUNKS = {
   // M5.2: дашборд владельца и отчёты — свои чанки, на первую загрузку кассы не влияют
   dashboard: () => import('../screens/dashboard/Dashboard.jsx'),
   reports: () => import('../screens/reports/Reports.jsx'),
+  // M5.3: экран «Подписка» владельца и «Клубы и подписки» платформы — свои чанки; плашка подписки — в каркасе
+  billing: () => import('../screens/billing/Subscription.jsx'),
+  platformBilling: () => import('../screens/billing/PlatformBilling.jsx'),
 };
 const loaded = {};
 

@@ -9,7 +9,8 @@ import { auth, logout, platformRole } from '../lib/auth.js';
 import { useStore } from '../lib/store.js';
 import { linkHandler, navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
-import { PLATFORM_FLOW, PLATFORM_TABS, RU_ZONES, actNeedsDialog, cityBody, cityErrors, needsReason, openCount } from '../lib/platform.js';
+import { Lazy } from '../components/Lazy.jsx';
+import { PLATFORM_FLOW, PLATFORM_SCREENS, PLATFORM_TABS, RU_ZONES, actNeedsDialog, cityBody, cityErrors, needsReason, openCount } from '../lib/platform.js';
 import '../styles/m4.css';
 
 const TZ = 'Europe/Moscow';
@@ -23,7 +24,8 @@ const ROLE_WORD = { platform_operator: 'Оператор платформы', pl
 export function Platform({ tab = 'requests' }) {
   const { user, clubs } = useStore(auth);
   const role = platformRole(user);
-  const kind = PLATFORM_TABS.some(([k]) => k === tab) ? tab : 'requests';
+  const kind = PLATFORM_TABS.some(([k]) => k === tab) || PLATFORM_SCREENS.some(([k]) => k === tab) ? tab : 'requests';
+  const screen = PLATFORM_SCREENS.some(([k]) => k === kind);
   const [data, setData] = useState({});
   const [error, setError] = useState(null);
   const [acting, setActing] = useState(null);
@@ -70,7 +72,7 @@ export function Platform({ tab = 'requests' }) {
     );
   }
 
-  const items = data[kind] ?? null;
+  const items = screen ? null : (data[kind] ?? null);
   const flow = PLATFORM_FLOW[kind];
   const apply = async (item, value, reason, note) => {
     try {
@@ -127,7 +129,7 @@ export function Platform({ tab = 'requests' }) {
         </div>
       </header>
       <main class="op__main" id="op-main">
-        <h1 class="op__title display">Заявки и модерация</h1>
+        <h1 class="op__title display">{kind === 'billing' ? 'Клубы и подписки' : 'Заявки и модерация'}</h1>
         <nav class="subnav subnav--scroll" aria-label="Разделы оператора">
           {PLATFORM_TABS.map(([k, label]) => {
             const n = openCount(k, data[k]);
@@ -138,15 +140,23 @@ export function Platform({ tab = 'requests' }) {
               </a>
             );
           })}
+          {PLATFORM_SCREENS.map(([k, label]) => (
+            <a class="subnav__item" key={k} href={`${BASE}platform/${k}`} onClick={linkHandler} aria-current={k === kind ? 'page' : undefined}>
+              {label}
+            </a>
+          ))}
         </nav>
-        <ErrorNote error={error ?? tabErrors[kind] ?? null} />
+        {kind === 'billing' ? (
+          <Lazy key="platformBilling" chunk="platformBilling" label="Открываем подписки…" fallback={<p class="muted loading" role="status">Загружаем…</p>} render={(m) => <m.PlatformBilling role={role} />} />
+        ) : null}
+        <ErrorNote error={screen ? null : (error ?? tabErrors[kind] ?? null)} />
         {notice ? (
           <p class="note note--free" role="status">
             <Icon name="check" />
             <span class="note__title">{notice}</span>
           </p>
         ) : null}
-        {items === null && !error && !tabErrors[kind] ? <p class="muted loading">Загружаем…</p> : null}
+        {!screen && items === null && !error && !tabErrors[kind] ? <p class="muted loading">Загружаем…</p> : null}
         {kind === 'cities' ? (
           <div class="row">
             <button type="button" class="btn btn--primary" onClick={() => setCityEdit({ mode: 'create', city: { name: '', name_in: '', timezone: 'Europe/Moscow', region: '', slug: '', active: true } })}>

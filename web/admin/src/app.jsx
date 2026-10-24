@@ -28,6 +28,8 @@ import { Disputes } from './screens/Disputes.jsx';
 import { Listing } from './screens/Listing.jsx';
 import { Platform } from './screens/Platform.jsx';
 import { setClub } from './lib/api.js';
+import { session } from './lib/store.js';
+import { SUB_RETURN_KEY } from './lib/billingBanner.js';
 import { Icon } from './components/Icon.jsx';
 import { Lazy } from './components/Lazy.jsx';
 import { Shell } from './components/Shell.jsx';
@@ -48,6 +50,8 @@ const ROUTES = [
   ['plus/disputes', 'plusdisputes'],
   // Ссылка из уведомления о споре по счёту матча: /club/tournaments/{id} → турнир в первом клубе организатора
   ['tournaments/:id', 'clubtour'],
+  // M5.3: возврат со страницы ЮKassa (PLATFORM_BILLING_RETURN_URL по умолчанию — /club/subscription) → «Подписка» клуба
+  ['subscription', 'subreturn'],
 ];
 
 const SCREENS = {
@@ -84,6 +88,12 @@ const SCREENS = {
     allow: can.reportsView,
     render: (ctx) => <Lazy key="reports" chunk="reports" label="Открываем отчёты…" fallback={<LazyShell ctx={ctx} active="reports" title="Отчёты" />} render={(m) => <m.Reports ctx={ctx} />} />,
     title: 'Отчёты',
+  },
+  // M5.3 (№185): «Подписка» — владелец (всё) и управляющий (только состояние); отдельный чанк
+  subscription: {
+    allow: can.subscription,
+    render: (ctx) => <Lazy key="billing" chunk="billing" label="Открываем подписку…" fallback={<LazyShell ctx={ctx} active="subscription" title="Подписка" />} render={(m) => <m.Subscription ctx={ctx} />} />,
+    title: 'Подписка',
   },
   onboarding: {
     allow: can.setup,
@@ -153,6 +163,12 @@ export function App() {
   if (name === 'clubtour') {
     const c = clubs.find((m) => can.tournaments(m.role));
     return <Redirect to={c ? `${BASE}c/${encodeURIComponent(c.club_id)}/tournaments/${encodeURIComponent(params.id)}` : BASE} />;
+  }
+  if (name === 'subreturn') {
+    // Клуб, с которого владелец ушёл на страницу ЮKassa (sessionStorage), иначе первый клуб, где он владелец
+    const back = session.get(SUB_RETURN_KEY);
+    const c = clubs.find((m) => m.club_id === back?.club_id && can.subscription(m.role)) ?? clubs.find((m) => can.subscriptionManage(m.role)) ?? clubs.find((m) => can.subscription(m.role));
+    return <Redirect to={c ? `${BASE}c/${encodeURIComponent(c.club_id)}/subscription` : BASE} />;
   }
   if (name === 'plusdisputes') {
     const c = clubs.find((m) => can.disputes(m.role));

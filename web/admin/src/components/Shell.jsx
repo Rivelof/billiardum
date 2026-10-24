@@ -7,6 +7,7 @@ import { BASE } from '../lib/env.js';
 import { can, clubMode } from '../lib/auth.js';
 import { navItems } from '../lib/nav.js';
 import { getTheme, setTheme, THEME_NEXT, THEME_LABEL } from '../lib/theme.js';
+import { SubBanner } from './SubBanner.jsx';
 
 const THEME_ICON = { auto: 'auto', light: 'sun', dark: 'moon' };
 
@@ -108,6 +109,8 @@ export function Shell({ club, role, active, title, user, timeZone, alarmsCount =
       ) : null}
       <main class="shell__main" id="main" tabIndex={-1}>
         <ModeNote club={club} role={role} active={active} />
+        {/* M5.3: плашка подписки — на кассе, ресепшене и в бронях (широкие рабочие экраны) компактная */}
+        <SubBanner club={club} role={role} active={active} timeZone={timeZone} compact={wide} />
         {children}
       </main>
     </div>

@@ -330,6 +330,21 @@ export const api = {
   /** Полный телефон гостя — только владельцу, с причиной; журнал guest.lookup и уведомление владельцу. */
   revealGuestPhone: (club, sessionId, reason) => client.post(`/clubs/${e(club)}/sessions/${e(sessionId)}/guest-phone`, { reason }),
 
+  // ---------- M5.3: подписка клубов (docs/contracts/m5-3.md §3, server/billing/README.md) ----------
+  /** Владелец — всё, управляющий — { mode, state, trial_until, paid_until, banner }; 503 billing_unavailable — подписка не подключена. */
+  subscription: (club) => client.get(`/clubs/${e(club)}/subscription`),
+  /** Привязать или сменить карту, оплатить открытый счёт: { email? } → { payment_id, purpose, amount_kopecks, confirmation_url }. */
+  subscriptionCard: (club, body) => client.post(`/clubs/${e(club)}/subscription/card`, body),
+  /** { reason? } → { autopay: false, card: null }; карты нет — 409 card_required. */
+  disableAutopay: (club, reason) => client.request('DELETE', `/clubs/${e(club)}/subscription/autopay`, { body: reason ? { reason } : {} }),
+  subscriptionInvoices: (club) => client.get(`/clubs/${e(club)}/subscription/invoices`),
+  /** Платформа: { items, plans, totals } — оператор и администратор. */
+  platformSubscriptions: () => client.get('/platform/subscriptions'),
+  /** Администратор: { invoice_id, reason, document } → { invoice_id, status, paid_via, paid_until }; 409 invoice_paid. */
+  markInvoicePaid: (club, body) => client.post(`/platform/subscriptions/${e(club)}/mark-paid`, body),
+  /** Администратор: { price_per_table_kopecks | null, reason } → { club_id, price_per_table_kopecks, personal_price }. */
+  setClubPrice: (club, body) => client.request('PUT', `/platform/subscriptions/${e(club)}/price`, { body }),
+
   /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
   deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),
 };

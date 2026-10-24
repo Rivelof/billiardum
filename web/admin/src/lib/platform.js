@@ -24,6 +24,9 @@ export const PLATFORM_TABS = [
   ['cities', 'Города'],
 ];
 
+/** Разделы платформы со своим экраном (не список записей оператора): M5.3 «Клубы и подписки» — отдельный чанк. */
+export const PLATFORM_SCREENS = [['billing', 'Клубы и подписки']];
+
 /** Пояса России для справочника городов (IANA). */
 export const RU_ZONES = [
   ['Europe/Kaliningrad', 'Калининград, МСК−1'],

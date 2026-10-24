@@ -4,6 +4,8 @@
  * M2 (mock/m2.js): pos | noshift (смены нет) | kktoff (касса ККТ не на связи) | bar (бармен);
  * M3 (mock/m3.js): брони, персонал, пакеты и депозит — в каждом сценарии (empty — без броней)
  * M5.1 (mock/m5.js): onboarding — новый пользователь без клуба; testmode, testmode-owner — клуб в тестовом режиме
+ * M5.3 (mock/billing.js): billing, billing-active, billing-overdue, billing-manager, billing-off — подписка клуба;
+ * platform-billing, platform-billing-operator — «Клубы и подписки» платформы
  */
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
@@ -12,6 +14,7 @@ import { m4Routes, m4State } from './m4.js';
 import { m5Routes, m5State, NEWCOMER } from './m5.js';
 import { createDashboardMock, DASHBOARD_CLUBS } from './dashboard.js';
 import { reportsRoutes, patchDashboardShifts } from './reports.js';
+import { billingRoutes, billingState } from './billing.js';
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -92,11 +95,13 @@ function freshState(scenario, t) {
   ];
   // Роль — по сценарию; «kktoff-owner» — касса не на связи, вошёл владелец
   const asRole = scenario?.split('-')[1];
-  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash ? 'owner' : 'reception';
+  // M5.3: сценарии подписки — владелец (billing-manager — управляющий), platform-billing — владелец и администратор платформы
+  const bill = String(scenario ?? '').startsWith('billing') || scenario === 'platform-billing';
+  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash || bill ? 'owner' : 'reception';
   return {
     scenario,
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа
-    user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : scenario === 'operator' ? { ...STAFF.operator } : scenario === 'platform' ? { ...STAFF.owner, platform_role: 'platform_admin' } : fresh ? { ...NEWCOMER } : { ...STAFF[role] },
+    user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : scenario === 'operator' || scenario === 'platform-billing-operator' ? { ...STAFF.operator } : scenario === 'platform' || scenario === 'platform-billing' ? { ...STAFF.owner, platform_role: 'platform_admin' } : fresh ? { ...NEWCOMER } : { ...STAFF[role] },
     hall,
     requests,
     alarms,
@@ -107,6 +112,7 @@ function freshState(scenario, t) {
     m3: m3State(scenario, t, hall),
     m4: m4State(scenario, t),
     m5: m5State(scenario, t),
+    billing: billingState(scenario, t),
   };
 }
 
@@ -181,6 +187,7 @@ export function createBackend(storage, now = () => Date.now()) {
   // Новые заявки приходят сами, чтобы слышать звук очереди
   function tick() {
     m5.advance();
+    billing.advance();
     m2Tick(m2ctx);
     if (state.scenario === 'empty' || !state.user) return;
     if (now() < state.nextRequestAt) return;
@@ -373,6 +380,9 @@ export function createBackend(storage, now = () => Date.now()) {
   routes.push(...m3.routes);
   routes.unshift(...m4Routes({ state: () => state, now, me, err, ok, emit, audit }).routes);
   routes.unshift(...m5.routes);
+  // M5.3: подписка клубов и «Клубы и подписки» платформы
+  const billing = billingRoutes({ state: () => state, now, me, err, ok, clubId: CLUB_ID, mode: () => state.m5.devMode });
+  routes.unshift(...billing.routes);
 
   // ---------- M5.2: дашборд владельца и отчёты (mock/dashboard.js, mock/reports.js) ----------
   // Второй клуб: у владельца в dashboard, dashboard-year; у управляющего — в dashboard-manager (он управляющий в двух клубах)

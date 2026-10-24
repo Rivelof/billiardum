@@ -1,0 +1,54 @@
+/*
+ * M5.3: экран «Подписка» владельца и «Клубы и подписки» платформы (свои чанки). Плашка подписки — в m5-base.css.
+ * Цвета только токенами; статус всегда словом в бейдже, не только цветом.
+ */
+
+.subpage { max-width: 880px; gap: 20px; }
+.subhead { justify-items: stretch; }
+.subhead__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.subhead__title { font-family: var(--font-display); font-size: var(--fs-24); line-height: 1.2; }
+.subhead__detail { color: var(--ink-2); max-width: 60ch; }
+.subfacts { width: 100%; }
+.subfacts dd { min-width: 0; overflow-wrap: anywhere; }
+.subfacts__mark { color: var(--ink); font-weight: 600; }
+.subfacts__calc { color: var(--ink-2); font-size: var(--fs-15); }
+.subcard__card { display: flex; align-items: center; gap: 10px; font-size: var(--fs-17); }
+.subcard__card .icon { color: var(--brass); }
+.subcard__email { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.subcard .row { width: 100%; }
+.subhist { justify-items: stretch; }
+.subinv__status { display: inline-grid; gap: 2px; justify-items: start; }
+.subinv__status .badge { min-height: 28px; padding: 2px 12px 2px 8px; font-size: var(--fs-13); }
+.subempty { justify-items: center; text-align: center; }
+.subempty .ill { width: 96px; height: auto; }
+.subdlg__actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.subdlg__actions .btn { flex: 1 1 12rem; }
+@media (max-width: 639px) {
+  .subinv__status { justify-items: end; text-align: right; }
+}
+
+/* ---------- платформа ---------- */
+.pbill { display: grid; gap: 16px; min-width: 0; }
+.pbill > * { min-width: 0; }
+.pbill__kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr)); gap: 12px; }
+.pbill__kpis > div { display: grid; gap: 2px; align-content: start; padding: 16px; border-radius: var(--radius-md); background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
+.pbill__kpis dt { font-size: var(--fs-13); color: var(--ink-2); font-weight: 600; }
+.pbill__kpis dd.display { font-size: var(--fs-32); line-height: 1.15; overflow-wrap: anywhere; }
+.pbill__kpi-debt { color: var(--ball-red); }
+.pbill__counts { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-15); padding-top: 4px; }
+.pbill__count b { font-weight: 700; }
+.pbill__club, .pbill__price, .pbill__debt { display: inline-grid; gap: 2px; }
+.pbill__name { font-weight: 600; }
+.pbill__personal { color: var(--ink-2); white-space: normal; }
+.pbill__price, .pbill__debt { justify-items: end; }
+.pbill__debt .small { white-space: normal; text-align: right; }
+.pbill__actions { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.pbill .rtable .badge { min-height: 28px; padding: 2px 12px 2px 8px; font-size: var(--fs-13); white-space: nowrap; }
+.pbill__kind { display: grid; gap: 6px; border: 0; padding: 0; margin: 0; }
+.pbill .viewtog__btn .num { color: var(--ink-3); font-weight: 600; }
+.pbill .viewtog__btn[aria-pressed='true'] .num { color: inherit; }
+@media (max-width: 639px) {
+  .pbill__club { justify-items: start; }
+  .pbill .rtable tbody th { font-size: var(--fs-17); }
+}
+.pbill > .viewtog { justify-self: start; }
