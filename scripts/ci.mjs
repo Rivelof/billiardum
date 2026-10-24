@@ -6,7 +6,8 @@
 //             (в том числе @billiardum/kkt-bridge) → test:it пакетов, где он есть (симулятор —
 //             свой брокер в Docker)
 //   --config  docker compose config (все профили), caddy validate, WebSocket моста ККТ через
-//             Caddy (scripts/ci-caddy-ws.mjs), mosquitto --test-config — в контейнерах
+//             Caddy (scripts/ci-caddy-ws.mjs), mosquitto --test-config — в контейнерах; то же для
+//             прода (deploy/prod: compose config с .env.prod.example, caddy validate, test-config)
 //   --web     сборка web/guest и web/admin, бюджет JS гостя (npm run size -w web/guest)
 //   --fw      нативные тесты прошивки: CMake + g++ (firmware/test/native), ctest
 //   --db      чистый Postgres (supabase/postgres) в отдельном контейнере на свободном порту →
@@ -49,6 +50,7 @@ import {
   makeLogger,
   packageScript,
   POSTGRES_IMAGE,
+  readEnvFile,
   RESERVED_ROLES_SCRIPT,
   ROOT,
   run,
@@ -202,6 +204,36 @@ async function stageConfig() {
       'mosquitto', '-c', '/mosquitto/config/mosquitto.conf', '--test-config'],
     {},
     'mosquitto --test-config',
+  );
+
+  // Прод (deploy/prod, docs/deploy/RUNBOOK.md): те же проверки с образцом .env.prod.example.
+  // Остальное про прод (без эмуляторов, прокси, порты, дайджесты) — scripts/ci-prod-config.test.mjs.
+  const prod = join(ROOT, 'deploy', 'prod');
+  log('прод: docker compose config (профиль release, переменные из deploy/prod/.env.prod.example)');
+  await runChecked(
+    'docker',
+    ['compose', '-p', 'billiardum-prod-ci', '-f', join(prod, 'compose.yml'), '--env-file', join(prod, '.env.prod.example'),
+      '--profile', 'release', 'config', '--quiet'],
+    {},
+    'docker compose config (прод)',
+  );
+  log(`прод: caddy validate (${CADDY_IMAGE})`);
+  await runChecked(
+    'docker',
+    ['run', '--rm', '-e', 'BL_DOMAIN=billiardum.example', '-e', 'ACME_EMAIL=ops@billiardum.example',
+      '-e', `YOOKASSA_WEBHOOK_IPS=${readEnvFile(join(prod, '.env.prod.example')).YOOKASSA_WEBHOOK_IPS}`,
+      '-v', `${join(prod, 'caddy')}:/etc/caddy:ro`, CADDY_IMAGE,
+      'caddy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'],
+    {},
+    'caddy validate (прод)',
+  );
+  log(`прод: mosquitto --test-config (${MOSQUITTO_IMAGE})`);
+  await runChecked(
+    'docker',
+    ['run', '--rm', '-v', `${join(prod, 'mosquitto')}:/mosquitto/config:ro`, MOSQUITTO_IMAGE,
+      'mosquitto', '-c', '/mosquitto/config/mosquitto.conf', '--test-config'],
+    {},
+    'mosquitto --test-config (прод)',
   );
 }
 

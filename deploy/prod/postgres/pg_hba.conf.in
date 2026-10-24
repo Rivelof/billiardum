@@ -1,0 +1,15 @@
+# pg_hba.conf прода «Бильярдума» (deploy/prod/compose.yml, сервис db).
+# Образец: @DB_NET_SUBNET@ подставляет вход контейнера из .env (DB_NET_SUBNET).
+# Отличия от pg_hba образа supabase/postgres 15.8.1.085:
+#   * по сети — только из подсети db (server, migrate, tools); образ пускал с любого адреса;
+#   * репликация (pg_basebackup в deploy/prod/backup/pg-backup.sh) — только изнутри контейнера.
+# Перечитать без перезапуска базы: select pg_reload_conf() (после пересоздания контейнера —
+# сам). Порты базы наружу не публикуются.
+
+# TYPE  DATABASE     USER            ADDRESS            METHOD
+local   all          supabase_admin                     scram-sha-256
+local   all          all                                peer map=supabase_map
+host    all          all             127.0.0.1/32       trust
+host    all          all             ::1/128            trust
+host    replication  supabase_admin  127.0.0.1/32       trust
+host    all          all             @DB_NET_SUBNET@    scram-sha-256

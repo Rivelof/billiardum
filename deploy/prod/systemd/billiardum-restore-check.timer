@@ -1,0 +1,9 @@
+[Unit]
+Description=Бильярдум: проверка восстановления — первый вторник месяца, 06:17 по Москве (окно обслуживания)
+
+[Timer]
+OnCalendar=Tue *-*-01..07 06:17:00 Europe/Moscow
+Persistent=false
+
+[Install]
+WantedBy=timers.target

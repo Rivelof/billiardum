@@ -182,6 +182,7 @@ docker compose -p billiardum restart device-sim     # все контролле�
 | `800001` | `test_emu_800001_dev_only` | `test: true`, чеки включены | «Тестовый магазин» |
 | `800002` | `live_emu_800002_dev_only` | `test: false`, чеки включены | «Боевой магазин» |
 | `800003` | `live_emu_800003_dev_only` | `test: false`, чеки выключены | T28: «Боевой магазин» → `fiscalization_off` |
+| `800010` | `test_emu_800010_platform_dev_only` | `test: true`, чеки включены | магазин **платформы** для подписки клубов (M5.3): в `.env` не вводится, Compose передаёт его серверу (`PLATFORM_YOOKASSA_*`) и эмулятору; вебхук — `http://server:3000/api/webhooks/yookassa-platform` |
 
 - Тестовый магазин в поле боевого, и наоборот, даёт `shop_mode_mismatch`.
 - Магазины общие: ими можно подключить сколько угодно клубов.
@@ -298,6 +299,19 @@ npm run down -- --volumes    # остановить и стереть данны
 
 `.env` и сертификаты при этом остаются. Если удалить `.env`, старые данные не открыть: сначала `npm run down -- --volumes`.
 
+## Прод
+
+Прод не поднимается командой разработки. Он живёт на сервере в РФ, конфиги — [`deploy/prod/`](deploy/prod/), порядок работ — [`docs/deploy/RUNBOOK.md`](docs/deploy/RUNBOOK.md), чек-лист пилота — [`docs/deploy/PILOT-CHECKLIST.md`](docs/deploy/PILOT-CHECKLIST.md).
+
+Выпуск — только после явного «да» Андрея. Mosquitto и база в часы работы клубов не перезапускаются.
+
+Проверить прод-конфиг локально, ничего не разворачивая:
+
+```sh
+node --test scripts/ci-prod-config.test.mjs     # без эмуляторов, NODE_ENV=production, прокси /32, порты, дайджесты
+docker compose -f deploy/prod/compose.yml --env-file deploy/prod/.env.prod.example --profile release config --quiet
+```
+
 ## Мост ККТ на ПК ресепшена (настоящая ККТ АТОЛ)
 
 Мост — скрипт на Node 22 с файлом настроек (decisions №85; установщик для Windows — после пилота). Он сам подключается к серверу по `wss://` и забирает задания на чек; на ПК наружу ничего не открывается, нужен только исходящий HTTPS (443) до сервера.
@@ -338,7 +352,7 @@ npm run ci -- --db  # только этап базы из CI: свой Postgres
 | Этап `npm run ci -- …` | Что проверяет |
 |---|---|
 | `--base` | каждый `*.test.mjs` запускает какой-то скрипт (иначе — ошибка со списком файлов), lint, юнит-тесты всех пакетов (и `@billiardum/kkt-bridge`), `test:it` пакетов, где он есть (симулятор — свой брокер в Docker) |
-| `--config` | `docker compose config` со всеми профилями, `caddy validate`, WebSocket `/api/kkt/ws` через Caddy (временная сеть, заглушка сервера: Upgrade, Authorization с токеном моста, кадры без буфера, 3 МБ, простой), `mosquitto --test-config` — образами из `compose.yml` |
+| `--config` | `docker compose config` со всеми профилями, `caddy validate`, WebSocket `/api/kkt/ws` через Caddy (временная сеть, заглушка сервера: Upgrade, Authorization с токеном моста, кадры без буфера, 3 МБ, простой), `mosquitto --test-config` — образами из `compose.yml`; то же для прода (`deploy/prod` с `.env.prod.example`) |
 | `--web` | сборка `web/guest` и `web/admin`, бюджет JS гостя: `npm run size -w web/guest` (≤ 200 КБ gzip) |
 | `--fw` | нативные тесты логики прошивки: CMake + g++ по `firmware/test/native`, `ctest` |
 | `--db` | одноразовый Postgres: все миграции (и `0400–0599` кассы и ККТ), сид, `npm run test:db` целиком, включая интеграцию light со своим брокером (нужен `openssl`) |
@@ -377,6 +391,6 @@ npm run ci -- --db  # только этап базы из CI: свой Postgres
 | `shared/` | токены дизайна, шрифты, форматы ru-RU |
 | `tools/yookassa-emu/` | эмулятор ЮKassa для разработки и тестов |
 | `tools/kkt-bridge/` | мост ККТ для ПК ресепшена и эмулятор веб-сервера АТОЛ (`emu/`) |
-| `deploy/` | Docker Compose для разработки, конфиги Mosquitto и Caddy |
+| `deploy/` | Docker Compose для разработки (`dev/`) и прода (`prod/`: Compose, Caddy, Mosquitto, бэкапы, монитор, systemd) |
 | `scripts/` | `dev*`, `ci*` — окружение и CI; `db-*`, `provision-*` — служебные скрипты сервера |
-| `docs/` | продукт, протокол, дизайн, план, решения, контракты |
+| `docs/` | продукт, протокол, дизайн, план, решения, контракты, регламент прода (`deploy/`) |

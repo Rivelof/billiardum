@@ -151,6 +151,13 @@ services:
       # M5.1 №160: версия оферты платформы для клубов; пусто — версия по умолчанию сервера.
       CLUB_OFFER_VERSION: ${CLUB_OFFER_VERSION:-}
       YOOKASSA_API_URL: ${YOOKASSA_API_URL:-http://yookassa-emu:8090/v3}
+      # M5.3: магазин платформы (подписка клубов). Пусто в .env — магазин эмулятора 800010
+      # (dev_only, те же значения — у yookassa-emu ниже).
+      PLATFORM_YOOKASSA_SHOP_ID: ${PLATFORM_YOOKASSA_SHOP_ID:-800010}
+      PLATFORM_YOOKASSA_SECRET: ${PLATFORM_YOOKASSA_SECRET:-test_emu_800010_platform_dev_only}
+      PLATFORM_VAT_CODE: ${PLATFORM_VAT_CODE:-}
+      PLATFORM_TAX_SYSTEM_CODE: ${PLATFORM_TAX_SYSTEM_CODE:-}
+      PLATFORM_BILLING_RETURN_URL: ${PLATFORM_BILLING_RETURN_URL:-}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
@@ -243,6 +250,11 @@ services:
       YOOKASSA_EMU_SHOP_FISCALIZATION: ${YOOKASSA_EMU_SHOP_FISCALIZATION:-1}
       # Куда слать вебхук; {club_id} — из metadata.club_id платежа.
       YOOKASSA_EMU_WEBHOOK_URL: http://server:3000/api/webhooks/yookassa/{club_id}
+      # M5.3: магазин платформы (подписка клубов) — те же значения, что PLATFORM_YOOKASSA_* у
+      # server выше; свой вебхук без {club_id}.
+      YOOKASSA_EMU_PLATFORM_SHOP_ID: ${PLATFORM_YOOKASSA_SHOP_ID:-800010}
+      YOOKASSA_EMU_PLATFORM_SECRET: ${PLATFORM_YOOKASSA_SECRET:-test_emu_800010_platform_dev_only}
+      YOOKASSA_EMU_PLATFORM_WEBHOOK_URL: http://server:3000/api/webhooks/yookassa-platform
       # Внешний адрес эмулятора: confirmation_url = {этот адрес}/pay/{id}, через Caddy.
       YOOKASSA_EMU_PUBLIC_URL: https://${PUBLIC_HOST:-localhost:8443}
       # Управление для тестов /__emu/* наружу не опубликовано (ни порт, ни Caddy):

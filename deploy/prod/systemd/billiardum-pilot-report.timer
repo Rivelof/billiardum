@@ -1,0 +1,9 @@
+[Unit]
+Description=Бильярдум: отчёт пилота по понедельникам, 09:07 по Москве
+
+[Timer]
+OnCalendar=Mon *-*-* 09:07:00 Europe/Moscow
+Persistent=true
+
+[Install]
+WantedBy=timers.target

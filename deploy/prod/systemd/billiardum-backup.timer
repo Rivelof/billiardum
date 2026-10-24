@@ -1,0 +1,10 @@
+[Unit]
+Description=Бильярдум: ежедневный бэкап в 05:23 по Москве
+
+[Timer]
+OnCalendar=*-*-* 05:23:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

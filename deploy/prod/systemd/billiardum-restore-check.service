@@ -1,0 +1,17 @@
+# Проверка восстановления из бэкапа раз в месяц (deploy/prod/backup/restore-check.sh, RUNBOOK §7.3).
+[Unit]
+Description=Бильярдум: проверка восстановления из бэкапа
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+OnFailure=billiardum-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/billiardum/deploy/prod/backup/restore-check.sh
+TimeoutStartSec=3h
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

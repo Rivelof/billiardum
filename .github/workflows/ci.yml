@@ -54,8 +54,10 @@ jobs:
         run: node scripts/ci.mjs --base
 
       # docker compose config (все профили), caddy validate, WebSocket моста ККТ
-      # /api/kkt/ws через Caddy (заглушка сервера), mosquitto --test-config — образами из compose.yml.
-      - name: Конфиги окружения разработки
+      # /api/kkt/ws через Caddy (заглушка сервера), mosquitto --test-config — образами из compose.yml;
+      # то же для прода (deploy/prod с .env.prod.example). Прочие проверки прода —
+      # scripts/ci-prod-config.test.mjs в шаге lint, test.
+      - name: Конфиги окружения разработки и прода
         run: node scripts/ci.mjs --config
 
       # Одноразовый Postgres → роли в supautils.reserved_roles → db:migrate (все миграции,

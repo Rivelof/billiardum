@@ -5,6 +5,8 @@ node_modules/
 .env
 .env.*
 !.env.example
+# Образец настроек прода (без значений секретов): deploy/prod/.env.prod.example
+!.env.prod.example
 
 # Блокировка npm для параллельной работы агентов
 .npm.lock

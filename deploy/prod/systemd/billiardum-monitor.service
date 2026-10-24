@@ -1,0 +1,13 @@
+# Монитор прода: сервисы, контроллеры, очереди, ЮKassa, диск, бэкапы (deploy/prod/monitor/monitor.sh, RUNBOOK §6).
+[Unit]
+Description=Бильярдум: монитор и тревоги Андрею
+After=docker.service
+OnFailure=billiardum-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/billiardum/deploy/prod/monitor/monitor.sh
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

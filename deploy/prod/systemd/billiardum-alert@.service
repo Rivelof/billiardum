@@ -1,0 +1,10 @@
+# Тревога Андрею, если служба billiardum-* упала (OnFailure=billiardum-alert@%n.service).
+[Unit]
+Description=Бильярдум: тревога о сбое службы %i
+
+[Service]
+Type=oneshot
+ExecStart=/opt/billiardum/deploy/prod/bin/alert.sh %i
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+PrivateTmp=yes

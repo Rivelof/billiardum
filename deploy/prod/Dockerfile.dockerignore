@@ -1,0 +1,36 @@
+# Контекст сборки deploy/prod/Dockerfile (BuildKit берёт этот файл вместо корневого .dockerignore).
+# Секреты, данные разработки и всё, что не нужно для сборки, в контекст не попадают.
+
+# Секреты и данные
+**/.env
+**/.env.*
+deploy/dev/certs
+deploy/dev/devices.json
+deploy/dev/kkt-bridge.token
+deploy/dev/code-state.json*
+deploy/dev/kkt-bridge-data
+deploy/dev/data
+/factory*
+/*.crt
+*.pem
+*.key
+
+# Служебное
+.git
+.github
+.claude
+**/node_modules
+**/dist
+**/.pio
+coverage
+.lighthouse
+*.bundle
+*.log
+build
+
+# Не нужно для сборки и прода (манифесты tools/* нужны npm ci: workspaces)
+docs
+tests
+firmware
+tools/**
+!tools/*/package.json

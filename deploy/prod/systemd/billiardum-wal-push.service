@@ -1,0 +1,15 @@
+# Архив WAL → хранилище в РФ каждые 5 минут (deploy/prod/backup/wal-push.sh, RUNBOOK §7).
+[Unit]
+Description=Бильярдум: отправка архива WAL
+Wants=network-online.target
+After=network-online.target
+OnFailure=billiardum-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/billiardum/deploy/prod/backup/wal-push.sh
+TimeoutStartSec=30min
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

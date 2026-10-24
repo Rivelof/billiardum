@@ -1,0 +1,13 @@
+# Еженедельный отчёт пилота Андрею: метрики PRODUCT §21 (deploy/prod/monitor/pilot-report.sh).
+[Unit]
+Description=Бильярдум: еженедельный отчёт пилота
+After=docker.service
+OnFailure=billiardum-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/billiardum/deploy/prod/monitor/pilot-report.sh
+TimeoutStartSec=10min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

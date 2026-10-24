@@ -1,0 +1,18 @@
+# Ежедневный бэкап базы и брокера в хранилище в РФ (deploy/prod/backup/pg-backup.sh, RUNBOOK §7).
+[Unit]
+Description=Бильярдум: ежедневный бэкап Postgres и брокера
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+OnFailure=billiardum-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/billiardum/deploy/prod/backup/pg-backup.sh
+TimeoutStartSec=3h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

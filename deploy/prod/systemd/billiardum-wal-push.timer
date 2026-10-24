@@ -1,0 +1,11 @@
+[Unit]
+Description=Бильярдум: отправка архива WAL каждые 5 минут
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/5
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

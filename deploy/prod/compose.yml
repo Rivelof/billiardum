@@ -1,0 +1,449 @@
+# Прод «Бильярдума» (подготовка к пилоту, ROADMAP «Пилот»). Порядок работ — docs/deploy/RUNBOOK.md.
+#
+# Запуск только через обёртку, она подставляет файл настроек и имя проекта:
+#   /opt/billiardum/deploy/prod/bin/compose.sh ps
+# Обновление — deploy/prod/bin/deploy.sh, откат — deploy/prod/bin/rollback.sh. Голый
+# `docker compose up -d` без имён сервисов пересоздаёт и db с mosquitto, если их настройки
+# разошлись с .env: в часы работы клубов так нельзя (CLAUDE.md), поэтому скрипты всегда
+# называют сервисы и ставят --no-deps.
+#
+# Отличия от deploy/dev/compose.yml:
+#   * нет эмуляторов (ЮKassa, АТОЛ), симулятора контроллеров, моста ККТ и сида: только
+#     настоящие сервисы; ЮKassa — https://api.yookassa.ru/v3;
+#   * NODE_ENV=production задан здесь, а не в .env: вход для разработки и ускоренное время
+#     на сервере не регистрируются (ALLOW_DEV_LOGIN, DEV_ALLOW_ANY_MINUTES сюда не передаются);
+#   * сторонние образы закреплены по дайджесту (decisions №40), свой образ приложения
+#     собирается из deploy/prod/Dockerfile и помечается выпуском (BL_RELEASE — git sha);
+#   * наружу открыты только 443 (Caddy, TLS от Let's Encrypt) и 8883 (MQTT по TLS, свой CA
+#     платформы, закреплённый в прошивке). Postgres без портов, в сети без выхода наружу;
+#   * у каждой пары «прокси → сервис» своя сеть /29 с фиксированными адресами, сервер верит
+#     X-Forwarded-For только от Caddy и сайта (decisions №70, M4-I4): адреса — в .env;
+#   * WAL архивируется в /var/lib/billiardum/wal-archive, ежедневный бэкап и проверка
+#     восстановления — deploy/prod/backup/ (таймеры systemd, deploy/prod/systemd/);
+#   * логи контейнеров — json-file с ротацией; персональных данных в них нет (телефоны
+#     маскирует сервер).
+
+name: billiardum-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "10"
+
+# Образ приложения: сервер, сайт и служебные команды (миграции, провижининг брокера,
+# заводской реестр). Корень файловой системы только для чтения, без привилегий.
+x-app: &app
+  image: billiardum-app:${BL_RELEASE:-unreleased}
+  build:
+    context: ../..
+    dockerfile: deploy/prod/Dockerfile
+    target: app
+  pull_policy: never
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  logging: *logging
+
+services:
+  db:
+    image: supabase/postgres:15.8.1.085@sha256:af083ef64d0408c8f098ee6f5c364a59b26f36fbc0f3a334a62c5c1d57362e9b
+    restart: unless-stopped
+    # Портов нет: в базу ходят только server и служебные команды по сети db (internal).
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NET_SUBNET: ${DB_NET_SUBNET}
+    shm_size: 256m
+    # Postgres завершается сам (checkpoint), не обрывать через 10 с.
+    stop_grace_period: 120s
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # supautils.conf с нашими ролями в reserved_roles (deploy/postgres/reserved-roles.sh).
+      - db-config:/etc/postgresql-custom
+      # Образец pg_hba.conf прода: вход по сети только из подсети db, репликация (бэкап) —
+      # только изнутри контейнера. Подсеть подставляет вход ниже.
+      - ./postgres:/etc/bl-postgres:ro
+      # Архив WAL на диске сервера; deploy/prod/backup/wal-push.sh шифрует и отправляет его
+      # в хранилище в РФ каждые 5 минут.
+      - ${BL_STATE_DIR:-/var/lib/billiardum}/wal-archive:/wal-archive
+    # Перед обычным входом образа: папка архива WAL — пользователю postgres, pg_hba.conf —
+    # из образца с подсетью db (перечитывается без перезапуска: select pg_reload_conf()).
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        case "$$DB_NET_SUBNET" in
+          ''|*[!0-9./]*) echo "DB_NET_SUBNET должна быть подсетью IPv4, например 10.231.48.32/28" >&2; exit 1 ;;
+        esac
+        mkdir -p /wal-archive
+        chown postgres:postgres /wal-archive
+        chmod 700 /wal-archive
+        sed "s#@DB_NET_SUBNET@#$$DB_NET_SUBNET#g" /etc/bl-postgres/pg_hba.conf.in > /etc/postgresql/pg_hba.bl.conf
+        chown postgres:postgres /etc/postgresql/pg_hba.bl.conf
+        chmod 640 /etc/postgresql/pg_hba.bl.conf
+        exec docker-entrypoint.sh "$$@"
+      - db-entrypoint
+    command:
+      - postgres
+      - -D
+      - /etc/postgresql
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.bl.conf
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1536MB}
+      # WAL: непрерывный архив для восстановления на момент времени (PRODUCT §20).
+      # archive_timeout — сегмент закрывается не реже раза в 5 минут (RPO, RUNBOOK §7).
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=cp %p /wal-archive/%f.part && mv -f /wal-archive/%f.part /wal-archive/%f
+      - -c
+      - archive_timeout=300
+      - -c
+      - wal_keep_size=1024
+    networks:
+      db:
+    healthcheck:
+      # Как в разработке: настоящий вход и select 1, не на восстановлении после сбоя.
+      test:
+        - CMD-SHELL
+        - >-
+          psql -X -U supabase_admin -h 127.0.0.1 -d postgres -Atq
+          -c 'select 1 where not pg_is_in_recovery()' | grep -qx 1
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+      start_interval: 2s
+    logging: *logging
+
+  mosquitto:
+    image: eclipse-mosquitto:2.1.2-alpine@sha256:860aeb5d63ce509508f6dcfb2bc8a1c1dd2bc60555b562b45ce90e52d8dabb0f
+    restart: unless-stopped
+    # НЕ ПЕРЕЗАПУСКАТЬ В ЧАСЫ РАБОТЫ КЛУБОВ (CLAUDE.md). Клиенты и права Dynamic Security
+    # меняются на ходу; новый сертификат и mosquitto.conf перечитываются по SIGHUP
+    # (deploy/prod/bin/mqtt-reload.sh), без перезапуска.
+    ports:
+      - "8883:8883"
+    environment:
+      MQTT_ADMIN_USER: ${MQTT_ADMIN_USER}
+      MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD}
+    volumes:
+      # Папка, а не файл: после git checkout в контейнере виден новый mosquitto.conf.
+      - ./mosquitto:/mosquitto/config:ro
+      # ca.crt, mqtt.crt, mqtt.key от CA платформы (deploy/prod/bin/mqtt-certs.sh); ca.key здесь нет.
+      - ${BL_MQTT_CERTS_DIR:-/etc/billiardum/mqtt}:/certs:ro
+      - mosquitto-data:/mosquitto/data
+    # Первый старт: создаёт Dynamic Security с администратором MQTT_ADMIN_USER. Каждый старт:
+    # копирует сертификаты с правами пользователя mosquitto и сверяет пароль администратора с
+    # .env. Пароль администратора на ходу меняет deploy/prod/bin/mqtt-rotate.sh, не этот вход.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -z "$$MQTT_ADMIN_USER" ] || [ $${#MQTT_ADMIN_PASSWORD} -lt 24 ]; then
+          echo "MQTT_ADMIN_USER и MQTT_ADMIN_PASSWORD (от 24 символов) должны быть в .env" >&2
+          exit 1
+        fi
+        mkdir -p /mosquitto/certs
+        cp /certs/ca.crt /certs/mqtt.crt /certs/mqtt.key /mosquitto/certs/
+        chown -R mosquitto:mosquitto /mosquitto/certs /mosquitto/data
+        chmod 600 /mosquitto/certs/mqtt.key
+        DYNSEC=/mosquitto/data/dynamic-security.json
+        if [ -s "$$DYNSEC" ]; then
+          mosquitto_ctrl -f "$$DYNSEC" dynsec setClientPassword "$$MQTT_ADMIN_USER" "$$MQTT_ADMIN_PASSWORD" >/dev/null
+        else
+          mosquitto_ctrl dynsec init "$$DYNSEC" "$$MQTT_ADMIN_USER" "$$MQTT_ADMIN_PASSWORD" >/dev/null
+          echo "Dynamic Security: создан администратор $$MQTT_ADMIN_USER"
+        fi
+        chown mosquitto:mosquitto "$$DYNSEC"
+        chmod 600 "$$DYNSEC"
+        exec mosquitto -c /mosquitto/config/mosquitto.conf
+    networks:
+      edge-mqtt:
+    healthcheck:
+      # TLS, вход администратора и плагин Dynamic Security разом.
+      test:
+        - CMD-SHELL
+        - >-
+          mosquitto_ctrl -h localhost -p 8883 --cafile /mosquitto/certs/ca.crt
+          -u "$$MQTT_ADMIN_USER" -P "$$MQTT_ADMIN_PASSWORD"
+          dynsec getDefaultACLAccess >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+      start_interval: 2s
+    logging: *logging
+
+  server:
+    <<: *app
+    command: ["node", "server/index.mjs"]
+    # Портов нет: Caddy ходит по сети server-web, сайт — по site-api.
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://app_api:${DB_APP_PASSWORD}@db:5432/postgres
+      MQTT_URL: mqtts://mosquitto:8883
+      MQTT_CA_FILE: /etc/billiardum/mqtt/ca.crt
+      # Администратор Dynamic Security нужен серверу для привязки контроллеров (claim).
+      MQTT_ADMIN_USER: ${MQTT_ADMIN_USER}
+      MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD}
+      MQTT_SERVER_USER: ${MQTT_SERVER_USER}
+      MQTT_SERVER_PASSWORD: ${MQTT_SERVER_PASSWORD}
+      # Брокер для контроллеров (ответ claim): mqtts://mqtt.{домен}:8883.
+      MQTT_PUBLIC_URL: ${MQTT_PUBLIC_URL}
+      SECRETS_ENC_KEY: ${SECRETS_ENC_KEY}
+      PUBLIC_HOST: ${BL_DOMAIN}
+      # Только конкретные адреса Caddy и сайта (/32), decisions №70; проверяет preflight.sh.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS}
+      # Только адрес сайта: с него публичный API без лимита 120 запросов в минуту с IP.
+      PUBLIC_API_TRUSTED_CIDRS: ${PUBLIC_API_TRUSTED_CIDRS}
+      CLUB_OFFER_VERSION: ${CLUB_OFFER_VERSION:-}
+      CONSENT_VERSION: ${CONSENT_VERSION:-}
+      # Ключи магазинов ЮKassa клубов — в базе (зашифрованы SECRETS_ENC_KEY), не здесь.
+      YOOKASSA_API_URL: https://api.yookassa.ru/v3
+      # Магазин платформы для подписки клубов (M5.3, №183): только в .env.
+      PLATFORM_YOOKASSA_SHOP_ID: ${PLATFORM_YOOKASSA_SHOP_ID:-}
+      PLATFORM_YOOKASSA_SECRET: ${PLATFORM_YOOKASSA_SECRET:-}
+      # Чек 54-ФЗ за подписку: ставка НДС и система налогообложения юрлица платформы.
+      PLATFORM_VAT_CODE: ${PLATFORM_VAT_CODE:-}
+      PLATFORM_TAX_SYSTEM_CODE: ${PLATFORM_TAX_SYSTEM_CODE:-}
+      PLATFORM_BILLING_RETURN_URL: ${PLATFORM_BILLING_RETURN_URL:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      # api.telegram.org с сервера в РФ закрыт: только через прокси.
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+    volumes:
+      - ${BL_MQTT_CERTS_DIR:-/etc/billiardum/mqtt}/ca.crt:/etc/billiardum/mqtt/ca.crt:ro
+    # server-web — от Caddy, site-api — от сайта, db — база, edge-mqtt — брокер и выход
+    # наружу (ЮKassa, прокси Telegram, Web Push).
+    networks:
+      db:
+      edge-mqtt:
+      server-web:
+        aliases: [server-web]
+        ipv4_address: ${SERVER_WEB_SERVER_IP}
+      site-api:
+        aliases: [server-api]
+        ipv4_address: ${SITE_API_SERVER_IP}
+    depends_on:
+      db:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    # SIGTERM: сервер закрывает SSE и мосты ККТ и выходит сам (до 10 с, server/index.mjs).
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+
+  site:
+    <<: *app
+    command: ["node", "web/site/server.mjs"]
+    environment:
+      NODE_ENV: production
+      PORT: "3100"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Только настоящий API: пустой BL_API_URL включил бы заглушку с выдуманными клубами.
+      BL_API_URL: http://server-api:3000
+      PUBLIC_HOST: ${BL_DOMAIN}
+      SITE_ORIGIN: ${SITE_ORIGIN}
+      # Яндекс Метрика только на сайте (№141); пусто — счётчика нет.
+      YANDEX_METRIKA_ID: ${YANDEX_METRIKA_ID:-}
+      YANDEX_VERIFICATION: ${YANDEX_VERIFICATION:-}
+      BL_SITE_NOINDEX: ${BL_SITE_NOINDEX:-}
+      BL_SITE_RATE_PER_MIN: ${BL_SITE_RATE_PER_MIN:-120}
+      OG_CACHE_DIR: /var/cache/site-og
+      # Только адрес Caddy в сети site-web.
+      SITE_TRUSTED_PROXIES: ${SITE_TRUSTED_PROXIES}
+    volumes:
+      - site-og:/var/cache/site-og
+    networks:
+      site-web:
+        ipv4_address: ${SITE_WEB_SITE_IP}
+      site-api:
+        ipv4_address: ${SITE_API_SITE_IP}
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3100/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+  caddy:
+    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    restart: unless-stopped
+    ports:
+      # Только 443: сертификат по TLS-ALPN-01, порт 80 не нужен (RUNBOOK §2).
+      - "443:443"
+    environment:
+      BL_DOMAIN: ${BL_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      YOOKASSA_WEBHOOK_IPS: ${YOOKASSA_WEBHOOK_IPS}
+    volumes:
+      # Папка, а не файл: после git checkout `caddy reload` видит новый Caddyfile.
+      - ./caddy:/etc/caddy:ro
+      # Сборки web/guest и web/admin, их кладёт web-publish (сервис ниже) при каждом выпуске.
+      - web-static:/srv/web:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      edge-web:
+      server-web:
+        ipv4_address: ${SERVER_WEB_CADDY_IP}
+      site-web:
+        ipv4_address: ${SITE_WEB_CADDY_IP}
+    depends_on:
+      server:
+        condition: service_healthy
+      site:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    logging: *logging
+
+  # --- Служебные команды выпуска: не работают постоянно (профиль release) ---
+
+  # Миграции supabase/migrations под supabase_admin и пароль роли app_api (deploy.sh).
+  # Сида в проде нет: supabase/seed.sql в образ не входит.
+  migrate:
+    <<: *app
+    profiles: [release]
+    restart: "no"
+    command: ["node", "supabase/bin/migrate.mjs"]
+    environment:
+      NODE_ENV: production
+      DATABASE_ADMIN_URL: postgres://supabase_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD}
+    networks:
+      db:
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Сборки приложений гостя и клуба из образа выпуска в том web-static (без перезапуска Caddy).
+  web-publish:
+    <<: *app
+    profiles: [release]
+    restart: "no"
+    # Корень тома принадлежит root: копирует root без привилегий (cap_drop: ALL).
+    user: "0:0"
+    command: ["/bin/sh", "deploy/prod/bin/publish-web.sh"]
+    environment:
+      NODE_ENV: production
+    volumes:
+      - web-static:/srv/web
+    network_mode: none
+
+  # Разовые команды оператора (RUNBOOK): учётная запись сервера в брокере, заводской
+  # реестр контроллеров, вебхук Telegram. Пример:
+  #   deploy/prod/bin/compose.sh run --rm tools node deploy/prod/bin/mqtt-server-client.mjs
+  tools:
+    <<: *app
+    profiles: [release]
+    restart: "no"
+    command: ["node", "--version"]
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_ADMIN_URL: postgres://supabase_admin:${POSTGRES_PASSWORD}@db:5432/postgres
+      MQTT_URL: mqtts://mosquitto:8883
+      MQTT_CA_FILE: /etc/billiardum/mqtt/ca.crt
+      MQTT_ADMIN_USER: ${MQTT_ADMIN_USER}
+      MQTT_ADMIN_PASSWORD: ${MQTT_ADMIN_PASSWORD}
+      MQTT_SERVER_USER: ${MQTT_SERVER_USER}
+      MQTT_SERVER_PASSWORD: ${MQTT_SERVER_PASSWORD}
+      PUBLIC_HOST: ${BL_DOMAIN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
+    volumes:
+      - ${BL_MQTT_CERTS_DIR:-/etc/billiardum/mqtt}/ca.crt:/etc/billiardum/mqtt/ca.crt:ro
+      # Наклейки и команды заводского реестра (provision-factory): папка 0700, после
+      # передачи на производство файлы стираются (RUNBOOK §4.6).
+      - ${BL_STATE_DIR:-/var/lib/billiardum}/factory:/out
+    networks:
+      db:
+      edge-mqtt:
+
+# Сети. Адреса и подсети — в .env (.env.prod.example), сервер и сайт верят X-Forwarded-For
+# только от этих адресов (decisions №70):
+#   server-web — caddy → server: сервер верит Caddy;
+#   site-api   — site → server: сервер верит сайту и не ограничивает ему публичный API;
+#   site-web   — caddy → site: сайт верит Caddy;
+#   db         — база, сервер и миграции; без выхода наружу;
+#   edge-web   — Caddy: порт 443 и ACME;
+#   edge-mqtt  — брокер (порт 8883) и выход сервера в интернет.
+# internal: true — у сети нет выхода наружу и опубликованных портов.
+networks:
+  server-web:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SERVER_WEB_SUBNET}
+  site-api:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SITE_API_SUBNET}
+  site-web:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${SITE_WEB_SUBNET}
+  db:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${DB_NET_SUBNET}
+  edge-web:
+    ipam:
+      config:
+        - subnet: ${EDGE_WEB_SUBNET}
+  edge-mqtt:
+    ipam:
+      config:
+        - subnet: ${EDGE_MQTT_SUBNET}
+
+volumes:
+  db-data:
+  db-config:
+  mosquitto-data:
+  caddy-data:
+  caddy-config:
+  site-og:
+  web-static:
