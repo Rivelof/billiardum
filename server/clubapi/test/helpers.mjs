@@ -74,3 +74,26 @@ export function fakeLookup(table) {
   lookup.calls = calls;
   return lookup;
 }
+
+/**
+ * Кривые курсоры страниц (Н-1, Н-2 pentester M5.7): каждый — 400 bad_request, не 500.
+ * [описание, значение параметра cursor].
+ */
+export function badCursors() {
+  const b = (v) => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64url');
+  const id = '00000000-0000-4000-8000-000000000000';
+  const at = '2026-10-24T10:00:00.000Z';
+  return [
+    ['время "1"', b(['1', id])],
+    ['месяц 13', b(['2026-13-01T00:00:00.000Z', id])],
+    ['дата без времени', b(['2026-10-24', id])],
+    ['время числом', b([1761300000000, id])],
+    ['не массив', b({ at, id })],
+    ['лишний элемент', b([at, id, 1])],
+    ['один элемент', b([at])],
+    ['36 дефисов', b([at, '-'.repeat(36)])],
+    ['не JSON', b('not json')],
+    ['не base64', '@@@!'],
+    ['base64 с паддингом', `${b([at, id])}=`],
+  ];
+}

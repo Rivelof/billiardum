@@ -10,7 +10,7 @@ import { formatTime } from '@billiardum/shared/format';
 import { waitFor } from '../../../test/db/helpers.mjs';
 import { httpsSend, RETRY_WINDOW_MS } from '../../deliver.mjs';
 import { isPublicAddress } from '../../ssrf.mjs';
-import { fakeLookup, HOOK_HOST, startReceiver } from '../helpers.mjs';
+import { badCursors, fakeLookup, HOOK_HOST, startReceiver } from '../helpers.mjs';
 import { allKeys, CLUB, CLUB_B, startClubApi, T, testClock } from './harness.mjs';
 
 const GUEST = 'a9000000-0000-4000-8000-0000000000f1';
@@ -209,6 +209,17 @@ describe('T46: события, подпись, без ПДн', () => {
     const items = await deliveriesOf(h.webhook_id);
     assert.equal(items.length, 5);
     assert.ok(items.every((d) => d.status === 'delivered' && d.attempts === 1 && d.http_status === 200 && d.log.length === 1));
+    // Страницы журнала по курсору; кривой курсор (Н-2) — 400, а не 500 на ::timestamptz.
+    const base = `/api/clubs/${CLUB}/webhooks/${h.webhook_id}/deliveries`;
+    const p1 = await t.as('owner', 'GET', `${base}?limit=2`);
+    assert.equal(p1.json.items.length, 2);
+    assert.ok(p1.json.next_cursor);
+    const p2 = await t.as('owner', 'GET', `${base}?limit=10&cursor=${p1.json.next_cursor}`);
+    assert.deepEqual([...p1.json.items, ...p2.json.items].map((d) => d.delivery_id), items.map((d) => d.delivery_id));
+    for (const [what, cursor] of badCursors()) {
+      const r = await t.as('owner', 'GET', `${base}?cursor=${encodeURIComponent(cursor)}`);
+      assert.deepEqual([r.status, r.json], [400, { error: 'bad_request' }], what);
+    }
     await t.as('owner', 'POST', `/api/clubs/${CLUB}/webhooks/${h.webhook_id}/disable`);
   });
 

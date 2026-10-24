@@ -10,6 +10,7 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { HttpError } from '../http/errors.mjs';
 import { decryptSecret, encryptSecret } from '../lib/secrets.mjs';
+import { decodeCursor, encodeCursor } from './cursor.mjs';
 import { DEFAULT_PORTS, validateWebhookUrl } from './ssrf.mjs';
 
 export const EVENTS = Object.freeze(['session.started', 'session.ended', 'booking.created', 'booking.canceled', 'shift.closed']);
@@ -306,15 +307,7 @@ export async function listDeliveries(db, { clubId, webhookId, query }) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new HttpError(400, 'bad_request', { detail: 'limit' });
   const status = query.status === undefined || query.status === '' ? null : query.status;
   if (status !== null && !['pending', 'delivered', 'failed', 'canceled'].includes(status)) throw new HttpError(400, 'bad_request', { detail: 'status' });
-  let cursor = null;
-  if (query.cursor !== undefined && query.cursor !== '') {
-    try {
-      cursor = JSON.parse(Buffer.from(String(query.cursor), 'base64url').toString('utf8'));
-    } catch {
-      cursor = null;
-    }
-    if (!Array.isArray(cursor) || cursor.length !== 2 || Number.isNaN(Date.parse(cursor[0])) || !UUID.test(String(cursor[1]))) throw new HttpError(400, 'bad_request', { detail: 'cursor' });
-  }
+  const cursor = decodeCursor(query.cursor);
   const { rows } = await db.query(
     `select d.id, d.event_id, d.event, d.status, d.attempts, d.created_at, d.last_attempt_at, d.next_attempt_at, d.delivered_at, d.last_http_status, d.last_error
        from bl.webhook_deliveries d
@@ -335,7 +328,7 @@ export async function listDeliveries(db, { clubId, webhookId, query }) {
   return {
     webhook_id: webhookId,
     items: page.map((d) => deliveryJson(d, by.get(d.id) ?? [])),
-    next_cursor: more ? Buffer.from(JSON.stringify([iso(last.created_at), last.id])).toString('base64url') : null,
+    next_cursor: more ? encodeCursor(last.created_at, last.id) : null,
   };
 }
 

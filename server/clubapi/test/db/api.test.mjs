@@ -3,6 +3,7 @@
 // продажи = CSV дашборда, транзакция ключа — только чтение.
 
 import assert from 'node:assert/strict';
+import { badCursors } from '../helpers.mjs';
 import { randomUUID } from 'node:crypto';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import { cache as dashboardCache } from '../../../../api/routes/dashboard.mjs';
@@ -305,11 +306,15 @@ describe('T45: данные по ключу', () => {
     assert.deepEqual([...page1.json.items, ...page2.json.items].map((b) => b.booking_id), r.json.items.map((b) => b.booking_id));
     assert.equal((await t.api(key, `/api/v1/club/bookings?from=${data.D1}&to=${addDays(data.D1, 94)}`)).status, 400);
     assert.equal((await t.api(key, '/api/v1/club/bookings?cursor=zzz')).status, 400);
-    // Второй элемент курсора — UUID (как в роутере): 36 дефисов — 400, а не 500 на ::uuid.
+    // Кривой курсор (Н-1, Н-2): строгое ISO-время и UUID — 400, а не 500 на ::timestamptz и ::uuid.
     for (const id of ['-'.repeat(36), '0123456789abcdef0123456789abcdef----', 'g'.repeat(36)]) {
       const bad = Buffer.from(JSON.stringify([new Date().toISOString(), id])).toString('base64url');
       const r = await t.api(key, `/api/v1/club/bookings?cursor=${bad}`);
       assert.deepEqual([r.status, r.json], [400, { error: 'bad_request' }], id);
+    }
+    for (const [what, cursor] of badCursors()) {
+      const r = await t.api(key, `/api/v1/club/bookings?cursor=${encodeURIComponent(cursor)}`);
+      assert.deepEqual([r.status, r.json], [400, { error: 'bad_request' }], what);
     }
     // Ключ клуба Б броней клуба А не видит.
     const kb = await t.newKey(['bookings:read'], 'ownerB', CLUB_B);

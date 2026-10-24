@@ -8,7 +8,8 @@ import { deliveryHeaders, errorCode, httpsSend, nextAttemptAt, RETRY_WINDOW_MS, 
 import { keyFromHeader, keyHash, keyPepper, newKey } from '../keys.mjs';
 import { checkUrlSyntax, isPublicAddress, parseIPv6, safeLookup, validateWebhookUrl } from '../ssrf.mjs';
 import { gameId, gamePepper } from '../webhooks.mjs';
-import { fakeLookup, HOOK_HOST, startReceiver } from './helpers.mjs';
+import { badCursors, fakeLookup, HOOK_HOST, startReceiver } from './helpers.mjs';
+import { decodeCursor, encodeCursor, isIsoTime } from '../cursor.mjs';
 
 const BLOCKED = [
   '127.0.0.1', '127.255.255.254', '10.0.0.1', '10.255.1.2', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254',
@@ -206,5 +207,22 @@ describe('ключи и псевдонимы', () => {
     assert.equal(a, gameId(p, 'c1000000-0000-4000-8000-000000000001', s));
     assert.notEqual(a, s);
     assert.notEqual(a, gameId(p, 'c2000000-0000-4000-8000-000000000002', s));
+  });
+});
+
+describe('курсор страниц (Н-1, Н-2)', () => {
+  it('свой курсор разбирается обратно; кривой — 400 bad_request', () => {
+    const id = '0d1b2c3a-0000-4000-8000-0000000000aa';
+    const at = new Date('2026-10-24T10:00:00.123Z');
+    assert.deepEqual(decodeCursor(encodeCursor(at, id)), [at.toISOString(), id]);
+    assert.equal(decodeCursor(undefined), null);
+    assert.equal(decodeCursor(''), null);
+    for (const [what, c] of badCursors()) {
+      assert.throws(() => decodeCursor(c), (err) => err.status === 400 && err.code === 'bad_request', what);
+    }
+    assert.equal(isIsoTime('1'), false);
+    assert.equal(isIsoTime('2026-02-30T00:00:00.000Z'), false);
+    assert.equal(isIsoTime('2026-10-24T10:00:00Z'), false, 'только каноническая запись');
+    assert.equal(isIsoTime('2026-10-24T10:00:00.000Z'), true);
   });
 });
