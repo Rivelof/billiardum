@@ -261,6 +261,50 @@ alter event trigger bl_audit_guard_drop enable always;
 
 `bl_definer` дополнительно видит: `clubs(mode, mode_before_suspend, created_by, city_id, listing_id, went_live_at)` и вставляет и меняет столбцы режима, `directory_claims(id, kind, card_id, user_id, status)`, `club_public(id, club_id, status, city_id)`, `cities(id, name, timezone, active)`, `club_payment_settings(club_id)` (вставка строки нового клуба), `is_test` платежей, возвратов, сессий и турниров, поля вебхука платежей и `shop_checks`. Тесты — `server/clubs/test/db`.
 
+## Дашборд и касса управляющего (M5.2, 1100–1102)
+
+Контракт `docs/contracts/m5-2.md`, решения №166–179; формулы — `server/dashboard/README.md`.
+
+| Миграция | Таблица, функция | Суть |
+|---|---|---|
+| `1100` | `stats_daily`, `stats_hourly` | агрегаты закрытых рабочих суток клуба (итоги и структура суток в `data`) и минуты по столу и местному часу; `app_api` только читает (RLS по клубу), пишет только `bl.stats_put_day` |
+| `1100` | `stats_dirty` | закрытые сутки к пересчёту: отметки ставит триггер `stats_dirty_mark` на `payments`, `refunds`, `sessions`, `resource_holds`, `bookings`, `alarms` (функция `bl.stats_mark_dirty`), счётчик `gen` |
+| `1100` | `bl.stats_day_of(ts, tz, day_start)` | рабочие сутки момента (не definer) |
+| `1100` | индексы | `payments (club_id, confirmed_at)`, `refunds (club_id, created_at)`, `sessions (club_id, started_at)`, `resource_holds (club_id, created_at) where service`, `alarms (club_id, raised_at)`, `device_commands (club_id, created_at)` |
+| `1101` | `cashbook_categories`, `cashbook_entries` | касса управляющего: статьи клуба; записи книги только добавляются (триггер `bl.cashbook_append_only` на UPDATE, DELETE, TRUNCATE всем ролям, `ENABLE ALWAYS`), сторно — новой записью (`reverses_id` уникален, сумма — минус исходной, причина обязательна, проверка `bl.cashbook_storno_check`); инкассация — одна на смену (уникальный `shift_id`); `is_test` — `bl.set_is_test` |
+
+Узкие функции (`bl_definer`, `search_path = pg_catalog, pg_temp`, `EXECUTE` у `app_api`; `bl_definer` получил `EXECUTE` на `ctx_club_id`, `ctx_user_id`, `ctx_actor_type` и `SELECT (created_at, active)` у `clubs`):
+
+| Функция | Возвращает | Зачем |
+|---|---|---|
+| `bl.stats_clubs()` (1100) | `(club_id, timezone, day_start_local, created_at)` активных клубов | планировщик дашборда в контексте платформы |
+| `bl.stats_put_day(day, gen, version, daily, hourly)` (1100) | — | записать сутки клуба из контекста; только `actor_type = system`; снимает отметку «грязных», если `gen` не вырос |
+| `bl.stats_mark_dirty()` (1100, триггер) | — | отметить закрытые сутки клуба к пересчёту в любом контексте записи; ошибка — предупреждение, запись денег идёт |
+| `bl.guest_phone(session_id, user_id)` (1102) | телефон участника игры или `NULL` | «Кто играл за столом» (№179): только участник игры клуба из контекста и только активному владельцу этого клуба; плательщика сервер берёт сам под RLS (столбца `sessions.payer_user_id` владелец функций не видит) |
+
+## Подписка клубов (M5.3 backend-billing, 1150)
+
+Деньги платформы — отдельно от денег гостей: свои таблицы, свой магазин ЮKassa (ключи только в `.env`), свой вебхук. Подробно — `server/billing/README.md`.
+
+| Таблица | Суть | `app_api` |
+|---|---|---|
+| `billing_settings` | `released_at` — выкатка M5.3: начало пробного периода клубов, работавших в `live` раньше (№181) | чтение |
+| `billing_plans` | тарифы платформы (№180), старт — «Клуб» 79 000 коп. за стол в месяц, 60 дней пробного периода | чтение; изменение — только `platform_admin` |
+| `club_subscriptions` | подписка клуба: план, персональная цена с причиной, пробный период, день счёта, `paid_until`, автоплатёж, способ оплаты (зашифрован в приложении), маска карты, email для чека | чтение — свой клуб и платформа; служебные поля — только контекст платформы; цены, пробного периода и `paid_until` в правах нет |
+| `billing_invoices` | счёт за месяц вперёд: столы × цена, `open`/`paid`, способ оплаты (`card`, `manual`, `free`), попытки | чтение — свой клуб и платформа; запись — только контекст платформы; «оплачен» — только `bl.billing_settle_invoice` |
+| `billing_payments` | платежи в магазин платформы: привязка карты и оплата счёта; `provider_payment_id` и `idempotence_key` уникальны | чтение — свой клуб и платформа; владелец создаёт только `pending`; итог — только контекст платформы |
+
+| Функция | Возвращает | Кто и зачем |
+|---|---|---|
+| `bl.billing_ensure_subscription(club)` (1150) | `true`, если создана | подписка с пробным периодом клубу в боевом режиме; свой клуб, платформа, фоновые задачи |
+| `bl.billing_settle_invoice(invoice, via, payment, reason, document, now)` (1150) | `true` — оплачен сейчас, `false` — уже был | `card`/`free` — только `bl.ctx_is_platform()` (платёж сверен с суммой счёта); `manual` — `platform_admin` с причиной и номером платёжки; продлевает `paid_until` |
+| `bl.billing_set_price(club, price, reason, now)` (1150) | прежняя персональная цена | только `platform_admin`, с причиной; `NULL` — цена плана |
+| `bl.billing_disable_autopay(club, now)` (1150) | была ли карта | владелец клуба из контекста: автоплатёж выключен, способ оплаты забыт |
+| `bl.billing_resume(club, now)` (1150) | `{kind: 'shift' \| 'restart', from, to}` или `NULL` | только фоновые задачи (№188): после приостановки срок сдвигается на её длительность; если он кончился до приостановки — `paid_until` = дата возобновления, долг остаётся |
+| `bl.billing_clubs()` (1150) | клубы для подписки: название, город, пояс, режим, `suspended_at`, столы в работе | платформа и фоновые задачи |
+
+Узкие функции читают контекст через `bl.billing_ctx()` (без SECURITY DEFINER, владелец `bl_definer`): у `bl_definer` нет права на `bl.ctx_*`.
+
 ## Деньги
 
 Таблицы `0200_money.sql`, `0201_holidays.sql` (платежи, котировки, заявки ресепшена, чеки, возвраты, настройки ЮKassa клуба, праздники), их RLS и узкие функции — `server/payments/README.md`. Тесты — `tests/money_rls.test.mjs`, `tests/money_flow.test.mjs`.

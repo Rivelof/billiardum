@@ -10,6 +10,8 @@ import { m2Routes, m2State, m2Tick } from './m2.js';
 import { m3Routes, m3State } from './m3.js';
 import { m4Routes, m4State } from './m4.js';
 import { m5Routes, m5State, NEWCOMER } from './m5.js';
+import { createDashboardMock, DASHBOARD_CLUBS } from './dashboard.js';
+import { reportsRoutes, patchDashboardShifts } from './reports.js';
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -51,8 +53,10 @@ function freshState(scenario, t) {
     unlimited: leftMin === null,
     ...over,
   });
-  const empty = scenario === 'empty';
+  const empty = scenario === 'empty' || scenario === 'dashboard-empty';
   const fresh = scenario === 'onboarding';
+  // M5.2: dashboard, dashboard-empty, dashboard-year — владелец; dashboard-manager — управляющий
+  const dash = String(scenario ?? '').startsWith('dashboard');
   const hall = fresh ? [] : [
     table(1, 'pyramid', 'busy', { session: session(1, 80, 40) }),
     // ?mock=waitlist (№122): стол 2 предложен гостю из очереди — удержание до конца предложения
@@ -88,7 +92,7 @@ function freshState(scenario, t) {
   ];
   // Роль — по сценарию; «kktoff-owner» — касса не на связи, вошёл владелец
   const asRole = scenario?.split('-')[1];
-  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : 'reception';
+  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash ? 'owner' : 'reception';
   return {
     scenario,
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа
@@ -104,6 +108,12 @@ function freshState(scenario, t) {
     m4: m4State(scenario, t),
     m5: m5State(scenario, t),
   };
+}
+
+/** M5.2: в сценариях дашборда расхождение кассы — 100 ₽ три дня назад (смена 211), остальные смены сошлись. */
+function withDashboard(state) {
+  if (String(state.scenario ?? '').startsWith('dashboard')) patchDashboardShifts(state.m2, state.scenario === 'dashboard-empty');
+  return state;
 }
 
 function makeAudit(t) {
@@ -148,7 +158,7 @@ function makeAudit(t) {
 const PDF = '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n';
 
 export function createBackend(storage, now = () => Date.now()) {
-  let state = storage.load() ?? freshState('reception', now());
+  let state = storage.load() ?? withDashboard(freshState('reception', now()));
   // Состояние из sessionStorage до M2 — дополняем данными кассы, бара и смен
   if (!state.m2?.catalog) state.m2 = m2State(state.scenario, now(), state.hall);
   if (!state.m3?.lots) state.m3 = m3State(state.scenario, now(), state.hall);
@@ -187,7 +197,8 @@ export function createBackend(storage, now = () => Date.now()) {
   const routes = [
     // M4: user.platform_role — роль платформы (оператор без клуба видит только экран оператора)
     // M5.1: клубы, созданные в заглушке, или клуб разработки; mode — режим клуба (test | live)
-    ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: m5.clubsFor(me()) ?? (me().role ? [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ, mode: state.m5.devMode }] : []) }) : err(401, 'unauthorized'))],
+    // M5.2: у владельца в сценариях дашборда (кроме пустого) — второй клуб, чтобы была сводка «Все мои клубы»
+    ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: m5.clubsFor(me()) ?? (me().role ? [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ, mode: state.m5.devMode }, ...(secondClub() ? [{ club_id: DASHBOARD_CLUBS[1].id, role: me().role, name: DASHBOARD_CLUBS[1].name, timezone: TZ, mode: 'live' }] : [])] : []) }) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/auth\/dev$/, (_m, b) => {
       if (!/^\+7\d{10}$/.test(b?.phone ?? '')) return err(400, 'bad_request');
       const role = b.phone.endsWith('01') ? 'owner' : b.phone.endsWith('02') ? 'manager' : b.phone.endsWith('05') ? 'bar' : 'reception';
@@ -363,6 +374,25 @@ export function createBackend(storage, now = () => Date.now()) {
   routes.unshift(...m4Routes({ state: () => state, now, me, err, ok, emit, audit }).routes);
   routes.unshift(...m5.routes);
 
+  // ---------- M5.2: дашборд владельца и отчёты (mock/dashboard.js, mock/reports.js) ----------
+  // Второй клуб: у владельца в dashboard, dashboard-year; у управляющего — в dashboard-manager (он управляющий в двух клубах)
+  const secondClub = () => String(state.scenario ?? '').startsWith('dashboard') && state.scenario !== 'dashboard-empty' && ['owner', 'manager'].includes(me()?.role);
+  let dash = null;
+  const dashFor = () => {
+    if (!dash || dash.scenario !== state.scenario) {
+      dash = Object.assign(createDashboardMock({ now, scenario: state.scenario }), { scenario: state.scenario });
+      dash.setDiscrepancyShift(state.m2?.shifts?.find((s) => s.discrepancy_kopecks === -10000) ?? null);
+    }
+    return dash;
+  };
+  const manageOnly = (fn) => (m, b, q) => (!me() ? err(401, 'unauthorized') : ['owner', 'manager'].includes(me().role) ? fn(m, b, q) : err(403, 'forbidden'));
+  routes.unshift(
+    ['GET', /^\/api\/clubs\/([^/]+)\/dashboard$/, manageOnly((mm, _b, q) => dashFor().response(mm[1], q, me()))],
+    ['GET', /^\/api\/clubs\/([^/]+)\/dashboard\/now$/, manageOnly((mm) => dashFor().nowResponse(mm[1], state.hall, me()))],
+    ['GET', /^\/api\/clubs\/([^/]+)\/dashboard\/export\.csv$/, manageOnly((mm, _b, q) => dashFor().exportCsv(mm[1], q, me()))],
+    ...reportsRoutes({ state: () => state, now, me, err, ok, audit, emit, dash: dashFor, manageOnly, staff: STAFF }),
+  );
+
   async function handle(method, url) {
     tick();
     const u = new URL(url.href);
@@ -371,6 +401,8 @@ export function createBackend(storage, now = () => Date.now()) {
       const match = re.exec(u.pathname);
       if (match) {
         const res = fn(match, url.body ?? {}, u.searchParams);
+        // M5.2: маршрут может уступить следующему (список смен без периода — как в M2)
+        if (res === undefined) continue;
         save();
         return res;
       }
@@ -382,7 +414,7 @@ export function createBackend(storage, now = () => Date.now()) {
   return {
     handle,
     scenario(name) {
-      state = freshState(name, now());
+      state = withDashboard(freshState(name, now()));
       save();
     },
     subscribe(fn) {

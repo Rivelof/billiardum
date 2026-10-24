@@ -1,0 +1,123 @@
+/*
+ * M5.2: отчёты (чанк reports) — истории, смены, касса управляющего, «Кто играл», ведомость ревизии — и печать A4.
+ * Печать: без шапки, меню и кнопок; заголовок таблицы повторяется на каждой странице; номер страницы внизу;
+ * сверху — клуб, отчёт, период и дата печати. Цвета только токенами.
+ */
+
+.reports { gap: 16px; }
+.rnav { display: flex; flex-wrap: wrap; gap: 6px; }
+.rnav__item {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  color: var(--ink-2);
+  font-size: var(--fs-15);
+  font-weight: 600;
+  text-decoration: none;
+}
+.rnav__item:hover { color: var(--ink); background: var(--card-2); }
+.rnav__item[aria-current='page'] { color: var(--ink); background: var(--cloth-tint); box-shadow: inset 0 0 0 2px var(--cloth); }
+.rnav__item:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
+
+.rscreen { display: grid; gap: 12px; min-width: 0; }
+.rhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.rhead .section-title { margin: 0; }
+.rtools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rtools .icon { width: 18px; height: 18px; }
+.rtools__hint { flex-basis: 100%; text-align: right; }
+.rfilters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; align-items: end; padding: 12px; border-radius: var(--radius-md); background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
+.rfilters__search { grid-column: 1 / -1; }
+.rfilters__err { grid-column: 1 / -1; }
+.rsummary { font-size: var(--fs-15); color: var(--ink-2); }
+.rmore { justify-self: start; margin-top: 8px; }
+.rlink { color: var(--cloth); font-weight: 600; }
+.rlink:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; border-radius: 3px; }
+
+.rstatus { display: inline-block; font-weight: 600; font-size: var(--fs-15); }
+.rstatus--served, .rstatus--ok { color: var(--free); }
+.rstatus--new, .rstatus--preparing, .rstatus--ready { color: var(--ink); }
+.rstatus--canceled, .rstatus--refunded, .rstatus--short, .rstatus--over { color: var(--ball-red); }
+.rstatus--open { color: var(--ink); }
+.rtable tr.is-muted > * { color: var(--ink-2); }
+.rkind { display: inline-block; padding: 0 8px; border-radius: var(--radius-pill); font-size: var(--fs-13); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.rkind--income { color: var(--free); }
+.rkind--expense { color: var(--ink-2); }
+
+.rexp { display: grid; gap: 6px; }
+.rexp__lines { display: grid; gap: 4px; list-style: none; padding: 0; margin: 0; }
+.rexp__lines li { display: flex; justify-content: space-between; gap: 12px; }
+.rexp__table th, .rexp__table td { padding: 4px 6px; }
+
+.rcash { display: grid; gap: 12px; }
+.rcash__sum { max-width: 520px; }
+.rguest { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; }
+.rguest__phone { color: var(--ink); }
+
+.rsheet__table { max-width: 900px; }
+.rsheet__table th:nth-child(2), .rsheet__table td:nth-child(2) { width: 4.5rem; }
+.rsheet__table thead th:nth-child(3):not(.rsheet__blank) { width: 7rem; }
+.rsheet__group th { background: var(--card-2); font-weight: 700; }
+.rsheet__blank { min-width: 7rem; border-left: 1px solid var(--line); }
+.rsheet__signs { display: grid; gap: 18px; margin-top: 18px; font-size: var(--fs-15); }
+
+.print-head { display: none; }
+
+@media (min-width: 640px) {
+  .rfilters { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  .rfilters__search { grid-column: span 2; }
+}
+
+/* ---------- печать A4 ---------- */
+
+@page {
+  size: A4;
+  margin: 14mm 12mm 16mm;
+  @bottom-right { content: 'Стр. ' counter(page) ' из ' counter(pages); font: 9pt 'Geologica', sans-serif; color: #5A4A3A; }
+}
+
+@media print {
+  :root, [data-theme] {
+    --paper: #FFFFFF;
+    --card: #FFFFFF;
+    --card-2: #F2EEE8;
+    --line: #BFB3A3;
+    --line-strong: #6E5E4C;
+    --ink: #000000;
+    --ink-2: #333333;
+    --ink-3: #444444;
+    --free: #1A6E43;
+    --ball-red: #9A2A1C;
+    --cloth: #1F6B4A;
+  }
+  html, body { background: #FFFFFF !important; color: #000000; font-size: 10.5pt; }
+  .bar, .nav, .skip, .modenote, .no-print, .dtable__sortsel, .dtable__x, .rnav, dialog { display: none !important; }
+  .shell { display: block; padding: 0; min-height: 0; }
+  .shell__main, .page { display: block; max-width: none; padding: 0; margin: 0; }
+  .rscreen { display: block; }
+  .print-head { display: block; margin-bottom: 8mm; padding-bottom: 3mm; border-bottom: 1.5pt solid #000; }
+  .print-head__brand { font-size: 9pt; color: #333; }
+  .print-head__title { font-size: 16pt; font-weight: 700; }
+  .print-head__meta { font-size: 9pt; color: #333; }
+  .rhead .section-title { display: none; }
+  .rsummary { margin: 0 0 3mm; color: #000; }
+  .rcash__sum { margin-bottom: 4mm; }
+  .dsec { box-shadow: none; padding: 0; break-inside: avoid; }
+  .is-busy { opacity: 1; }
+  /* Таблица — настоящей таблицей и на узкой бумаге; шапка повторяется на каждой странице */
+  .rtable { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  .rtable thead { display: table-header-group !important; position: static !important; width: auto !important; height: auto !important; overflow: visible !important; clip-path: none !important; }
+  .rtable tr { display: table-row !important; break-inside: avoid; }
+  .rtable th, .rtable td { display: table-cell !important; padding: 1.6mm 2mm !important; border: 0.5pt solid #8A7761 !important; }
+  .rtable td::before { content: none !important; }
+  .rtable caption { display: none; }
+  .dtable__sort .icon { display: none; }
+  .dtable__more > td { background: #F2EEE8 !important; }
+  .rsheet__blank { min-width: 30mm; }
+  .rsheet__table tbody tr { height: 8mm; }
+  .rsheet__signs { margin-top: 10mm; break-inside: avoid; }
+  a { color: #000; text-decoration: none; }
+  .tscroll { overflow: visible !important; }
+}

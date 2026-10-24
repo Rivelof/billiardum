@@ -39,7 +39,7 @@ export function categoryOf(kind) {
 export async function shiftPayments(db, { clubId, from, to }) {
   const { rows } = await db.query(
     `select p.id, p.kind, p.provider, p.method, p.status, p.capture, p.amount_kopecks, p.captured_kopecks, p.provider_payment_id, p.confirmed_at,
-            p.resource_id, coalesce(ps.package_kopecks, 0)::bigint as package_kopecks
+            p.resource_id, p.deposit, coalesce(ps.package_kopecks, 0)::bigint as package_kopecks
        from bl.payments p
        left join bl.pos_sales ps on ps.payment_id = p.id
       where p.club_id = $1 and p.confirmed_at >= $2 and p.confirmed_at <= $3 and p.status in ('succeeded', 'waiting_for_capture')
@@ -130,13 +130,14 @@ export function revenueOf(payments, refunds, lateRefunds = []) {
 }
 
 /**
- * Часы игры и загрузка: сессии, пересекающие смену; по столам — минуты игры и выручка столов
+ * Часы игры и загрузка (№187): игры (sessions) — начатые в интервале (игра относится к суткам или
+ * смене начала), минуты — фактические минуты всех сессий, пересекающих интервал, внутри него; по столам — минуты игры и выручка столов
  * (платежи смены за стол и возвраты по ним).
  * @param {{ clubId: string, from: Date, to: Date, payments?: object[], refunds?: object[] }} args
  */
 export async function playStats(db, { clubId, from, to, payments = [], refunds = [] }) {
   const { rows } = await db.query(
-    `select s.resource_id, count(*)::int as sessions,
+    `select s.resource_id, count(*) filter (where s.started_at >= $2)::int as sessions,
             coalesce(sum(greatest(0, extract(epoch from (least(coalesce(s.ended_at, s.interrupted_at, $3), $3) - greatest(s.started_at, $2))))), 0)::float8 as secs
        from bl.sessions s
       where s.club_id = $1 and s.started_at <= $3 and coalesce(s.ended_at, s.interrupted_at, $3) >= $2
@@ -173,7 +174,7 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
     shift_minutes: Math.round(shiftMinutes),
     utilization_percent: capacity > 0 ? Math.round((secs / 60 / capacity) * 1000) / 10 : 0,
     by_resource: [...byId.values()]
-      .filter((t) => t.active || t.sessions > 0 || t.revenue_kopecks > 0 || t.refunds_kopecks > 0)
+      .filter((t) => t.active || t.sessions > 0 || t.secs > 0 || t.revenue_kopecks > 0 || t.refunds_kopecks > 0)
       .map(({ secs: tSecs, active: _active, ...t }) => {
         const m = Math.round(tSecs / 60);
         return {

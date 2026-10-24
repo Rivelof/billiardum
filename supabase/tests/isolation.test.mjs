@@ -197,6 +197,15 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['auth_attach_phone', 'bl_definer'],
         ['auth_resolve', 'bl_definer'],
         ['auth_user_for', 'bl_definer'],
+        // M5.3 backend-billing (1150): подписка клубов — клубы платформы, отключение автоплатежа владельцем,
+        // подписка с пробным периодом, персональная цена (platform_admin), оплата счёта (один раз)
+        ['billing_clubs', 'bl_definer'],
+        ['billing_disable_autopay', 'bl_definer'],
+        ['billing_ensure_subscription', 'bl_definer'],
+        // №188: возобновление после приостановки — сдвиг срока, счёт с даты возобновления
+        ['billing_resume', 'bl_definer'],
+        ['billing_set_price', 'bl_definer'],
+        ['billing_settle_invoice', 'bl_definer'],
         // M3 booking (0600): дела планировщика броней и листа ожидания
         ['booking_due', 'bl_definer'],
         // M5.1 backend-A (1000): переход в live владельцем, режим клуба, возобновление и приостановка платформой, создание клуба
@@ -216,6 +225,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         // M5.1 backend-B (1053, №162): есть ли устройство в реестре (без хеша и счётчиков)
         ['device_factory_known', 'bl_definer'],
         ['device_total', 'bl_definer'],
+        // M5.2 (1102, №179): полный телефон плательщика игры — только владельцу клуба
+        ['guest_phone', 'bl_definer'],
         // M2 kkt (0500): чеки ККТ, не пробитые дольше 10 минут
         ['kkt_due', 'bl_definer'],
         // M1 light
@@ -257,6 +268,10 @@ describe('узкие функции SECURITY DEFINER', () => {
         // M3 core (0701, 0702): сводки и персонал
         ['staff_accept_invites', 'bl_definer'],
         ['staff_revoke', 'bl_definer'],
+        // M5.2 (1100): дашборд — клубы планировщика, отметка «грязных» суток (триггер), запись суток
+        ['stats_clubs', 'bl_definer'],
+        ['stats_mark_dirty', 'bl_definer'],
+        ['stats_put_day', 'bl_definer'],
         ['summary_clubs', 'bl_definer'],
         // M1 core
         ['user_brief', 'bl_definer'],

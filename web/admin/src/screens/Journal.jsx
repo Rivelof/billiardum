@@ -6,7 +6,7 @@ import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { can } from '../lib/auth.js';
-import { ACTION_GROUPS, actorLabel, auditView, groupByDate, legacyActionParam, matchesAction } from '../lib/audit.js';
+import { ACTION_GROUPS, actorLabel, auditView, groupByDate, journalLink, legacyActionParam, matchesAction } from '../lib/audit.js';
 import { periodRange } from '../lib/zone.js';
 
 const PERIODS = [
@@ -23,10 +23,12 @@ const RECORDS = ['запись', 'записи', 'записей'];
 export function Journal({ ctx }) {
   const { club, role, user, timeZone } = ctx;
   const clubId = club.club_id;
-  const [period, setPeriod] = useState('today');
-  const [group, setGroup] = useState('');
+  // M5.2: переход из «Контроля» дашборда — ?group=manual&period=week&actor={id}
+  const [initial] = useState(() => journalLink(typeof location === 'undefined' ? '' : location.search));
+  const [period, setPeriod] = useState(initial.period);
+  const [group, setGroup] = useState(initial.group);
   const [resource, setResource] = useState('');
-  const [actor, setActor] = useState('');
+  const [actor, setActor] = useState(initial.actor);
   const [items, setItems] = useState(null);
   const [cursor, setCursor] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -164,6 +166,7 @@ export function Journal({ ctx }) {
               </label>
               <select id="f-actor" class="field__input" value={actor} onChange={(e) => setActor(e.currentTarget.value)}>
                 <option value="">Все</option>
+                {actor && !actors.has(actor) ? <option value={actor}>Выбранный сотрудник</option> : null}
                 {[...actors].map(([id, name]) => (
                   <option key={id} value={id}>
                     {name}

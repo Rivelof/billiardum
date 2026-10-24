@@ -26,6 +26,8 @@ npm run start -w @billiardum/yookassa-emu
 | `YOOKASSA_EMU_WEBHOOK_RETRIES` | `3` | попыток доставки вебхука (ЮKassa повторяет, пока клуб не ответит 200) |
 | `YOOKASSA_EMU_WEBHOOK_RETRY_DELAY_MS` | `1000` | пауза между попытками (растёт линейно) |
 | `YOOKASSA_EMU_CONTROL_TOKEN` | — | если задан, `/__emu/*` только с заголовком `X-Emu-Token` |
+| `YOOKASSA_EMU_PLATFORM_SHOP_ID`, `YOOKASSA_EMU_PLATFORM_SECRET` | — | магазин платформы (подписка клубов, M5.3): те же значения — `PLATFORM_YOOKASSA_SHOP_ID` и `PLATFORM_YOOKASSA_SECRET` сервера |
+| `YOOKASSA_EMU_PLATFORM_WEBHOOK_URL` | — | адрес вебхука магазина платформы, например `http://server:3000/api/webhooks/yookassa-platform` |
 
 ## API v3
 
@@ -34,6 +36,8 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 | Метод | Что делает |
 |---|---|
 | `POST /v3/payments` | `amount {value: "1600.00", currency: "RUB"}`, `capture` (по умолчанию `false`, как у ЮKassa), `confirmation {type: "redirect", return_url}` или `{type: "qr"}` (только СБП; в ответе `confirmation {type: "qr", confirmation_data}` — в эмуляторе это ссылка на `/pay/{id}`, её можно отсканировать телефоном), `payment_method_data.type` (`bank_card`, `sbp`), `description` ≤ 128, `metadata` (≤ 16 строк), **`receipt` обязателен**. Ответ — платёж `pending` с `confirmation.confirmation_url = {PUBLIC_URL}/pay/{id}` |
+| `POST /v3/payments` с `save_payment_method: true` (M5.3) | только `bank_card`; после подтверждения у платежа `payment_method.saved: true`, способ запоминается за магазином |
+| `POST /v3/payments` с `payment_method_id` (M5.3, автоплатёж) | способ, сохранённый этим магазином (чужой или неизвестный — `400`, `parameter: payment_method_id`); без `confirmation`, нельзя вместе с `payment_method_data` и `save_payment_method`; чек обязателен. Итог сразу: `succeeded` (или `waiting_for_capture` при `capture: false`) и вебхук; в режиме «отказ списания» или у отозванного способа — `canceled` с `cancellation_details` |
 | `GET /v3/payments/{id}` | платёж своего магазина (чужой — `404`) |
 | `GET /v3/me` | сведения о магазине (M5.1 №154): `{account_id, test, fiscalization_enabled, payment_methods, status}` — сервер проверяет пару магазина клуба при сохранении |
 | `POST /v3/payments/{id}/capture` | только `waiting_for_capture`; `amount` ≤ заморожённой; при другой сумме — чек на неё обязателен |
@@ -61,18 +65,20 @@ Basic `shopId:secretKey` (иначе `401 invalid_credentials`), у каждог
 | `POST /__emu/payments/{id}/cancel[?wait=1]` | как «Отказ» (заморозка — `expired_on_capture`) |
 | `POST /__emu/payments/{id}/webhook?repeat=N[&event=…]` | повтор вебхука N раз (до 50); тело `{override: {...}}` — подмена полей объекта, `{raw: "..."}` — тело как есть, `{url}` — другой адрес (для pentester) |
 | `POST /__emu/config` | `{webhook_delay_ms, webhook_retries, webhook_retry_delay_ms, webhook_url, fail_next: {count, status}, lose_next_response, down}`: задержка вебхуков, сбой следующих N запросов API (по умолчанию 500, операция не выполняется), «ответ потерян» (см. ниже), API недоступен (503) |
+| `POST /__emu/config {decline_recurring}` (M5.3) | «отказ списания» платежей по `payment_method_id`: `true` — все, пока не снят (`false`); число — следующие N; `{count?, reason?}` — с причиной (`insufficient_funds` по умолчанию, `card_expired` …) |
+| `GET /__emu/payment-methods`, `POST /__emu/payment-methods/{id}/revoke` (M5.3) | сохранённые способы; отзыв разрешения — дальше `canceled`, `reason: permission_revoked` |
 | `POST /__emu/shops` | `{shop_id, secret, webhook_url?, test?, fiscalization_enabled?}` — ещё магазин (второй клуб; `test: false` — боевой, `fiscalization_enabled: false` — без чеков; по умолчанию оба `true`); тот же `shop_id` — замена |
 | `GET /__emu/payments`, `GET /__emu/payments/{id}` | платежи с чеками (`receipt`, `receipts`: платёж, списание, возвраты) |
 | `GET /__emu/receipts` | отдельные чеки (зачёты) |
 | `GET /__emu/webhooks` | доставки вебхуков и попытки со статусами |
 | `GET /__emu/requests` | журнал запросов API (метод, путь, `Idempotence-Key`, статус) |
-| `POST /__emu/reset` | очистить всё, кроме магазинов |
+| `POST /__emu/reset` | очистить всё, кроме магазинов (в том числе сохранённые способы и режим отказа списания) |
 
 ## Тесты
 
-`npm test -w @billiardum/yookassa-emu` — 26 тестов: авторизация, ключ идемпотентности, отказ без чека и при несовпадении суммы позиций, форма объекта, QR для СБП, страница подтверждения, вебхуки с повтором до 200, двухстадийный платёж, возвраты, управление.
+`npm test -w @billiardum/yookassa-emu` — 34 теста: авторизация, ключ идемпотентности, отказ без чека и при несовпадении суммы позиций, форма объекта, QR для СБП, страница подтверждения, вебхуки с повтором до 200, двухстадийный платёж, возвраты, управление; M5.3 — сохранение способа оплаты, автоплатёж без подтверждения, отказ списания, повтор ключа без второго списания.
 
-Поля, в которых эмулятор опирается на память, а не на проверенную документацию (сверить с настоящим магазином, когда откроется `api.yookassa.ru`): ответ на повтор `Idempotence-Key` с другим телом; `capture` по умолчанию; требование чека при `capture` с меньшей суммой и при возврате; `quantity` числом или строкой; диапазон `vat_code` (1–12, включая ставки 5 %, 7 % и 22 % с 2026 года); поддержка СБП в двухстадийной оплате; `expires_at` заморозки.
+Поля, в которых эмулятор опирается на память, а не на проверенную документацию (сверить с настоящим магазином, когда откроется `api.yookassa.ru`): ответ на повтор `Idempotence-Key` с другим телом; `capture` по умолчанию; требование чека при `capture` с меньшей суммой и при возврате; `quantity` числом или строкой; диапазон `vat_code` (1–12, включая ставки 5 %, 7 % и 22 % с 2026 года); поддержка СБП в двухстадийной оплате; `expires_at` заморозки; (M5.3) сохранение способа только после подтверждения, синхронный итог платежа по `payment_method_id`, стороны и причины отказа (`payment_network`/`insufficient_funds`, `yoo_money`/`permission_revoked`).
 
 ### «Операция выполнена, ответ потерян»
 

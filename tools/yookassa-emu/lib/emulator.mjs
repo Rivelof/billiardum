@@ -2,6 +2,8 @@
 //
 // Подмножество API: POST /v3/payments, GET /v3/payments/{id}, POST /v3/payments/{id}/capture,
 // POST /v3/payments/{id}/cancel, POST /v3/refunds, GET /v3/refunds/{id}. Basic shopId:secretKey,
+// M5.3: save_payment_method (способ сохраняется после подтверждения) и платёж по payment_method_id
+// без подтверждения (автоплатёж); режим «отказ списания» для тестов (decline_recurring).
 // заголовок Idempotence-Key на каждый POST. Форма объектов и статусы — как у ЮKassa.
 // Платёж и возврат без чека или с суммой позиций, не равной сумме, — 400 (магазин клуба
 // работает с чеками 54-ФЗ, инвариант 7).
@@ -67,6 +69,8 @@ export function createEmulator(opts = {}) {
     payments: new Map(),
     refunds: new Map(),
     receipts: new Map(),
+    // M5.3: сохранённые способы оплаты (id → { shopId, type, card, title, revoked }).
+    methods: new Map(),
     idempotence: new Map(),
     webhooks: [],
     requests: [],
@@ -83,6 +87,9 @@ export function createEmulator(opts = {}) {
     // «Операция выполнена, ответ потерян»: следующие N изменяющих запросов (POST) выполняются,
     // результат сохраняется под Idempotence-Key, а клиент получает 500 или обрыв соединения.
     loseNext: { count: 0, path: null, method: 'POST', mode: 'error' },
+    // M5.3: «отказ списания» — следующие count платежей по payment_method_id отклоняются
+    // (count: -1 — все, пока режим не снят); reason — cancellation_details.reason.
+    declineRecurring: { count: 0, reason: 'insufficient_funds' },
     down: false,
   };
 
@@ -242,9 +249,17 @@ export function createEmulator(opts = {}) {
 
   // Переходы платежа ------------------------------------------------------------------------
 
+  /** Способ оплаты платежа с save_payment_method сохраняется после подтверждения (M5.3). */
+  function saveMethod(p) {
+    if (!p.savePaymentMethod || p.paymentMethod.type !== 'bank_card') return;
+    p.paymentMethod = { ...p.paymentMethod, saved: true };
+    state.methods.set(p.paymentMethod.id, { id: p.paymentMethod.id, shopId: p.shopId, type: p.paymentMethod.type, title: p.paymentMethod.title, card: p.paymentMethod.card, revoked: false });
+  }
+
   function confirm(p) {
     if (p.status !== 'pending') throw new EmuError(400, 'invalid_request', `Платёж в статусе ${p.status}`, 'status');
     p.paid = true;
+    saveMethod(p);
     if (p.capture) {
       p.status = 'succeeded';
       p.capturedAt = nowIso();
@@ -290,12 +305,71 @@ export function createEmulator(opts = {}) {
     return response;
   }
 
-  function createPayment(shop, body) {
+  /** Отказ списания по сохранённому способу (режим теста или отозванное разрешение): причина или null. */
+  function recurringDecline(method) {
+    if (method.revoked) return 'permission_revoked';
+    const d = config.declineRecurring;
+    if (d.count === 0) return null;
+    if (d.count > 0) d.count -= 1;
+    return d.reason;
+  }
+
+  /** Платёж по payment_method_id (автоплатёж, M5.3): без подтверждения, сразу итог и вебхук. */
+  function createRecurringPayment(shop, body) {
     const amountKopecks = parseAmount(body.amount);
     const capture = body.capture === undefined ? false : body.capture;
     if (typeof capture !== 'boolean') throw new EmuError(400, 'invalid_request', 'capture — true или false', 'capture');
+    if (body.payment_method_data !== undefined || body.save_payment_method !== undefined) {
+      throw new EmuError(400, 'invalid_request', 'payment_method_id нельзя вместе с payment_method_data и save_payment_method', 'payment_method_id');
+    }
+    const method = state.methods.get(body.payment_method_id);
+    if (!method || method.shopId !== shop.shopId) throw new EmuError(400, 'invalid_request', 'Неизвестный или чужой payment_method_id', 'payment_method_id');
+    const description = checkDescription(body.description);
+    const metadata = checkMetadata(body.metadata);
+    checkReceipt(body.receipt, amountKopecks);
+    const id = ykId('000f');
+    const p = {
+      id,
+      shopId: shop.shopId,
+      status: 'pending',
+      paid: false,
+      amountKopecks,
+      authorizedKopecks: amountKopecks,
+      capture,
+      description,
+      metadata,
+      confirmationType: null,
+      returnUrl: null,
+      paymentMethod: { type: method.type, id: method.id, saved: true, title: method.title, card: method.card },
+      recurring: true,
+      createdAt: nowIso(),
+      receipt: body.receipt,
+      receiptRegistration: 'pending',
+      receipts: [{ kind: 'payment', receipt: body.receipt, amount_kopecks: amountKopecks }],
+      refundedKopecks: 0,
+    };
+    state.payments.set(id, p);
+    const reason = recurringDecline(method);
+    if (reason) decline(p, reason, reason === 'permission_revoked' ? 'yoo_money' : 'payment_network');
+    else confirm(p);
+    return view(p);
+  }
+
+  function createPayment(shop, body) {
+    if (body.payment_method_id !== undefined) {
+      if (typeof body.payment_method_id !== 'string' || !/^[\w-]{1,64}$/.test(body.payment_method_id)) {
+        throw new EmuError(400, 'invalid_request', 'Неверный payment_method_id', 'payment_method_id');
+      }
+      return createRecurringPayment(shop, body);
+    }
+    const amountKopecks = parseAmount(body.amount);
+    const capture = body.capture === undefined ? false : body.capture;
+    if (typeof capture !== 'boolean') throw new EmuError(400, 'invalid_request', 'capture — true или false', 'capture');
+    const savePaymentMethod = body.save_payment_method === undefined ? false : body.save_payment_method;
+    if (typeof savePaymentMethod !== 'boolean') throw new EmuError(400, 'invalid_request', 'save_payment_method — true или false', 'save_payment_method');
     const conf = body.confirmation;
     const methodType = body.payment_method_data?.type ?? (conf?.type === 'qr' ? 'sbp' : 'bank_card');
+    if (savePaymentMethod && methodType !== 'bank_card') throw new EmuError(400, 'invalid_request', 'Эмулятор сохраняет только bank_card', 'save_payment_method');
     if (!['bank_card', 'sbp'].includes(methodType)) throw new EmuError(400, 'invalid_request', 'Эмулятор знает bank_card и sbp', 'payment_method_data.type');
     if (conf?.type === 'qr') {
       // QR на экране кассы (контракт M2 §5): эмулятор принимает его только для СБП.
@@ -324,6 +398,7 @@ export function createEmulator(opts = {}) {
       metadata,
       confirmationType: conf.type,
       returnUrl: conf.return_url ?? null,
+      savePaymentMethod,
       paymentMethod: methodType === 'sbp'
         ? { type: 'sbp', id: randomUUID(), saved: false }
         : { type: 'bank_card', id: randomUUID(), saved: false, title: 'Bank card *4477', card: { first6: '555555', last4: '4477', expiry_year: '2030', expiry_month: '12', card_type: 'MasterCard' } },
@@ -515,6 +590,16 @@ export function createEmulator(opts = {}) {
     }
   }
 
+  /** decline_recurring: true (все, пока не снят) | false | N | { count?, reason? } (M5.3). */
+  function parseDecline(v) {
+    const reasonOf = (r) => (typeof r === 'string' && /^[a-z_]{1,64}$/.test(r) ? r : 'insufficient_funds');
+    if (v === true) return { count: -1, reason: 'insufficient_funds' };
+    if (v === false || v === null) return { count: 0, reason: 'insufficient_funds' };
+    if (typeof v === 'number') return { count: Math.max(-1, Math.floor(v) || 0), reason: 'insufficient_funds' };
+    if (typeof v === 'object') return { count: v.count === undefined ? -1 : Math.max(-1, Math.floor(Number(v.count)) || 0), reason: reasonOf(v.reason) };
+    throw new EmuError(400, 'invalid_request', 'decline_recurring — true, false, число или объект', 'decline_recurring');
+  }
+
   /** lose_next_response: N | { path?, method?, count?, mode?: 'error' | 'reset' }. */
   function parseLoseNext(v) {
     if (typeof v === 'number') return { count: Math.max(0, Math.floor(v) || 0), path: null, method: 'POST', mode: 'error' };
@@ -654,11 +739,13 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       state.payments.clear();
       state.refunds.clear();
       state.receipts.clear();
+      state.methods.clear();
       state.idempotence.clear();
       state.webhooks.length = 0;
       state.requests.length = 0;
       config.failNext = { count: 0, status: 500 };
       config.loseNext = { count: 0, path: null, method: 'POST', mode: 'error' };
+      config.declineRecurring = { count: 0, reason: 'insufficient_funds' };
       config.down = false;
       config.webhookDelayMs = opts.webhookDelayMs ?? 0;
       return send(res, 200, { ok: true });
@@ -675,6 +762,7 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       if (b.webhook_retry_delay_ms !== undefined) config.webhookRetryDelayMs = Math.max(0, Number(b.webhook_retry_delay_ms) || 0);
       if (b.fail_next !== undefined) config.failNext = { count: Math.max(0, Number(b.fail_next.count ?? 1)), status: Number(b.fail_next.status ?? 500) };
       if (b.lose_next_response !== undefined) config.loseNext = parseLoseNext(b.lose_next_response);
+      if (b.decline_recurring !== undefined) config.declineRecurring = parseDecline(b.decline_recurring);
       if (b.down !== undefined) config.down = Boolean(b.down);
       if (b.webhook_url !== undefined) config.webhookUrl = b.webhook_url;
       return send(res, 200, { ok: true, config: { ...config, controlToken: undefined } });
@@ -707,6 +795,14 @@ form{margin:12px 0 0}button{width:100%;padding:14px;font-size:17px;border-radius
       }
       const results = url.searchParams.get('wait') === '0' ? [] : await Promise.all(deliveries);
       return send(res, 200, { ok: true, deliveries: results.map((r) => ({ delivered: r.delivered, attempts: r.attempts })) });
+    }
+    if (req.method === 'GET' && path === '/__emu/payment-methods') return send(res, 200, [...state.methods.values()].map((m) => ({ ...m, shop_id: m.shopId, shopId: undefined })));
+    if (req.method === 'POST' && (m = /^\/__emu\/payment-methods\/([\w-]{1,64})\/revoke$/.exec(path))) {
+      await readBody(req);
+      const method = state.methods.get(m[1]);
+      if (!method) throw new EmuError(404, 'not_found', 'Способ оплаты не найден');
+      method.revoked = true;
+      return send(res, 200, { ok: true });
     }
     if (req.method === 'GET' && path === '/__emu/webhooks') return send(res, 200, state.webhooks);
     if (req.method === 'GET' && path === '/__emu/receipts') return send(res, 200, [...state.receipts.values()]);

@@ -85,6 +85,11 @@ export const ERROR_CODES = new Set([
   'shop_mode_mismatch',
   'fiscalization_off',
   'yookassa_unavailable',
+  // M5.3 backend-billing (m5-3.md §3): у клуба нет сохранённой карты (409), счёт подписки уже
+  // оплачен (409), магазин ЮKassa платформы не настроен или клуб ещё в test (503 / 409).
+  'card_required',
+  'invoice_paid',
+  'billing_unavailable',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',

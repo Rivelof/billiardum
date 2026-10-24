@@ -47,6 +47,8 @@ export function install(configureApi) {
       body = { __raw: new Uint8Array(buf.buffer ?? buf), __type: init.headers?.['Content-Type'] ?? '' };
     }
     const res = await backend.handle(init.method ?? 'GET', { href, body });
+    // M5.2: CSV экспорта — как у сервера, с именем файла
+    if (res.csv !== undefined) return new Response(res.csv, { status: 200, headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${res.name ?? 'export.csv'}"` } });
     if (res.pdf) return new Response(new Blob([res.pdf], { type: 'application/pdf' }), { status: 200, headers: { 'content-type': 'application/pdf' } });
     return new Response(JSON.stringify(res.body), { status: res.status, headers: { 'content-type': 'application/json' } });
   };

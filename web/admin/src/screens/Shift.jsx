@@ -355,6 +355,11 @@ function History({ list, clubId, timeZone }) {
       <h2 class="section-title" id="history-title">
         Отчёты смен
       </h2>
+      {/* M5.2 (№176): все смены с фильтрами, экспорт и печать */}
+      <a class="btn btn--quiet btn--sm" href={`${BASE}c/${encodeURIComponent(clubId)}/reports/shifts`} onClick={linkHandler}>
+        <Icon name="report" />
+        Все смены с фильтрами
+      </a>
       {list === null ? <p class="muted loading">Загружаем…</p> : null}
       {list?.length === 0 ? <p class="hint">Закрытых смен пока нет. Отчёт появится здесь после закрытия первой смены.</p> : null}
       {list?.length ? (

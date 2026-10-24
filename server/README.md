@@ -91,6 +91,10 @@
 
 Создание клуба (`POST /api/clubs`, не больше 3 тестовых), режим `test` | `live` | `suspended` и `is_test` тестовых записей, два магазина ЮKassa с проверкой `GET /v3/me`, проверочный платёж 1 ₽ и тревога «вебхук ЮKassa не настроен», чек-лист и `go-live`, приостановка платформой — `clubs/README.md`. Переменная `CLUB_OFFER_VERSION` — версия оферты для клубов (по умолчанию `2026-10-23`).
 
+## Дашборд владельца, истории, касса управляющего (M5.2)
+
+Модуль `dashboard` (`server/dashboard`, в `MODULES` после `clubs`): планировщик суточных агрегатов `bl.stats_daily`/`bl.stats_hourly` и инкассаций кассы управляющего, расчёт текущих суток на лету теми же формулами, что у отчёта смены и утренней сводки (№168); маршруты `api/routes/dashboard.mjs` (`/api/clubs/{club|all}/dashboard`, `…/now`, `…/export.csv`), `history.mjs` (истории заказов, ревизий, списаний, приходов, ведомость ревизии), `cashbook.mjs` (касса управляющего), `who-played.mjs` («Кто играл за столом», полный телефон только владельцу), фильтры и CSV списка смен в `shifts.mjs`. Формулы, формы ответов и тесты — `dashboard/README.md`. `shiftPayments` (`reports/queries.mjs`) отдаёт ещё `deposit` платежа.
+
 ## `scripts/provision-factory.mjs` (M5.1 №159)
 
 `node scripts/provision-factory.mjs --count 24 --batch B-2026-10 [--out stickers.pdf] [--commands-out factory.txt] [--dry-run]` — `device_id` и код привязки на каждый контроллер; в `bl.device_factory` (через `DATABASE_ADMIN_URL`) только `sha256(device_id:код)`; PDF наклеек на корпус (QR `BLD1:…`, 3 × 8 на A4, права 0600) и команды консоли прошивки `factory <device_id> <код>`. Привязка устройства из реестра сверяет код сразу: неверный — `403`, пять подряд — привязка закрыта на 30 минут (`429`).

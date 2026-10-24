@@ -128,6 +128,13 @@ export const can = {
   onboarding: (role) => role === 'owner',
   // №155–156: план зала, тарифы (и меню, наклейки) в мастере — ещё и управляющий; его шаги — stepsFor в onboarding.js
   setup: (role) => ['owner', 'manager'].includes(role),
+  // M5.2 (№166, №172–179): дашборд и отчёты — владелец и управляющий; экспорт дашборда — только владелец;
+  // экспорт историй — и управляющий (рабочие ведомости, §7); справочник статей кассы и полный телефон гостя — владелец
+  dashboard: (role) => ['owner', 'manager'].includes(role),
+  dashboardExport: (role) => role === 'owner',
+  reportsView: (role) => ['owner', 'manager'].includes(role),
+  cashbookCategories: (role) => role === 'owner',
+  revealPhone: (role) => role === 'owner',
 };
 
 /**

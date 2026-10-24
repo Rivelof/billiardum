@@ -40,6 +40,10 @@ export const MODULES = [
   { name: 'tournaments', spec: '../tournaments/index.mjs' },
   // M5.1: подключение клуба (backend-A): проверочные платежи, тревога вебхука, карточка каталога при live.
   { name: 'clubs', spec: '../clubs/index.mjs' },
+  // M5.2: дашборд владельца — планировщик суточных агрегатов и касса управляющего.
+  { name: 'dashboard', spec: '../dashboard/index.mjs' },
+  // M5.3: подписка клубов (backend-billing) — счета, автоплатежи, повторы, напоминания.
+  { name: 'billing', spec: '../billing/index.mjs' },
 ];
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
 

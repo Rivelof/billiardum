@@ -118,6 +118,24 @@ export const ACTION_LABEL = {
   'manual.tournament_extend': 'Турнир продлён без оплаты',
   'manual.tournament_refund': 'Возврат взноса за турнир',
   'plus.match_resolve': 'Спор по партии решён',
+  // M5.1–M5.2: подключение клуба, касса управляющего, экспорт, «Кто играл»
+  'manual.tariff_change': 'Тариф изменён',
+  'tariff.update': 'Тарифы сохранены',
+  'manual.resource_add': 'Стол добавлен',
+  'manual.resource_remove': 'Стол выведен из работы',
+  'manual.resource_kind': 'Тип стола изменён',
+  'manual.payment_settings': 'Настройки оплаты изменены',
+  'manual.free_game': 'Бесплатная игра',
+  'manual.item_remove': 'Удаление из чека',
+  'manual.cancel': 'Отмена',
+  'manual.refund': 'Возврат',
+  'guest.lookup': 'Просмотрен телефон гостя',
+  'cashbook.entry': 'Запись в кассе управляющего',
+  'cashbook.storno': 'Сторно в кассе управляющего',
+  'cashbook.collection': 'Инкассация из смены',
+  'cashbook.category_create': 'Статья кассы добавлена',
+  'cashbook.category_update': 'Статья кассы изменена',
+  'owner.export': 'Выгрузка отчёта',
 };
 
 /** Ручные действия (инвариант 8) — подсвечиваются в журнале. */
@@ -229,4 +247,16 @@ export function groupByDate(items) {
     else groups.push({ date: it.date, items: [it] });
   }
   return groups;
+}
+
+/**
+ * Фильтры журнала из адреса (M5.2, переход из «Контроля» дашборда): ?group=manual — ручные действия,
+ * ?period=today | yesterday | week, ?actor={id сотрудника}. Неизвестное — по умолчанию.
+ */
+export function journalLink(search) {
+  const q = new URLSearchParams(search ?? '');
+  const period = ['today', 'yesterday', 'week'].includes(q.get('period')) ? q.get('period') : 'today';
+  const group = q.get('group') === 'manual' ? (ACTION_GROUPS.find((g) => g.label === 'Ручные действия')?.value ?? '') : '';
+  const actor = /^[\w-]{1,64}$/.test(q.get('actor') ?? '') ? q.get('actor') : '';
+  return { period, group, actor };
 }

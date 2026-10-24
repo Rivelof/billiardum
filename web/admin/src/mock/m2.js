@@ -132,7 +132,7 @@ const STAFF_NAMES = { reception: 'Анна К.', reception2: 'Игорь П.', m
 const PLAY_SHARE = [0.19, 0.17, 0.16, 0.14, 0.13, 0.11, 0.08, 0.02];
 
 /** Отчёт смены как buildShiftReport backend-kkt (server/reports/shift-report.mjs): числа сходятся до копейки. */
-function reportSeed(shift, x) {
+export function reportSeed(shift, x) {
   const opened = Date.parse(shift.opened_at);
   const closed = shift.closed_at ? Date.parse(shift.closed_at) : opened + 6 * 60 * MIN;
   const shiftMinutes = Math.round((closed - opened) / MIN);
@@ -240,7 +240,7 @@ function reportSeed(shift, x) {
 }
 
 /** Смена в виде shiftView backend-kkt (server/shifts/service.mjs). */
-function shiftRow({ opened, closed = null, float, cash, by, closer = null, actual = null, comment = null, number }) {
+export function shiftRow({ opened, closed = null, float, cash, by, closer = null, actual = null, comment = null, number }) {
   const expected = float + cash;
   return {
     id: uuid(),

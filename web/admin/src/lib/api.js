@@ -301,6 +301,35 @@ export const api = {
   /** Заявка «Заказать комплект» (№159): { kind: 'kit', … } — в форме лида M4. */
   kitLead: (body) => client.post('/leads', body),
 
+  // ---------- M5.2: дашборд владельца и отчёты (docs/contracts/m5-2.md §4, §7–§8) ----------
+  /** club — id клуба или 'all' (сводка по клубам владельца); query: { from, to, kind?, compare, tab }. */
+  dashboard: (club, query) => client.get(`/clubs/${e(club)}/dashboard`, { query }),
+  dashboardNow: (club) => client.get(`/clubs/${e(club)}/dashboard/now`),
+  /** CSV (только владелец, журнал owner.export): Response, чтобы забрать файл. query: { from, to, kind?, table }. */
+  dashboardExport: (club, query) => client.request('GET', `/clubs/${e(club)}/dashboard/export.csv`, { raw: true, query }),
+  /** Истории (№173): kind — orders | audits | writeoffs | arrivals; query: { from, to, q?, status?, sort?, cursor? }. */
+  history: (club, kind, query) => client.get(`/clubs/${e(club)}/history/${e(kind)}`, { query }),
+  historyExport: (club, kind, query) => client.request('GET', `/clubs/${e(club)}/history/${e(kind)}/export.csv`, { raw: true, query }),
+  /** Ведомость ревизии (№174): { groups: [{ category_id, name, items: [{ product_id, name, unit, system_qty }] }], items_count }; blind — без остатка. */
+  stockSheet: (club, blind) => client.get(`/clubs/${e(club)}/stock/sheet`, { query: blind ? { blind: 1 } : undefined }),
+  /** Список смен (№176): ?from&to&staff&status=open|closed|discrepancy&cursor → { items, next_cursor }. */
+  shiftsExport: (club, query) => client.request('GET', `/clubs/${e(club)}/shifts/export.csv`, { raw: true, query }),
+  /** Касса управляющего (№177): { opening_kopecks, income_kopecks, collections_kopecks, expenses_kopecks, closing_kopecks, by_category, entries, categories }. */
+  cashbook: (club, query) => client.get(`/clubs/${e(club)}/cashbook`, { query }),
+  cashbookExport: (club, query) => client.request('GET', `/clubs/${e(club)}/cashbook/export.csv`, { raw: true, query }),
+  /** { kind: income | expense, amount_kopecks, category_id, date?, comment? }. */
+  addCashbook: (club, body, idempotencyKey) => client.post(`/clubs/${e(club)}/cashbook`, body, { idempotencyKey }),
+  /** Сторно записи новой записью с причиной (записи не правятся, инвариант 2); повтор — 409 duplicate. */
+  stornoCashbook: (club, id, reason, idempotencyKey) => client.post(`/clubs/${e(club)}/cashbook/${e(id)}/storno`, { reason }, { idempotencyKey }),
+  cashbookCategories: (club) => client.get(`/clubs/${e(club)}/cashbook/categories`),
+  /** Только владелец: { kind, name, sort? }. */
+  addCashbookCategory: (club, body, idempotencyKey) => client.post(`/clubs/${e(club)}/cashbook/categories`, body, { idempotencyKey }),
+  updateCashbookCategory: (club, id, body) => client.request('PATCH', `/clubs/${e(club)}/cashbook/categories/${e(id)}`, { body }),
+  /** «Кто играл за столом» (№179): { resource, items: [{ session_id, started_at, ended_at, amount_kopecks, methods, guest: { nick, phone_masked }, staff_name }] }. */
+  tableGames: (club, resourceId, query) => client.get(`/clubs/${e(club)}/resources/${e(resourceId)}/sessions`, { query }),
+  /** Полный телефон гостя — только владельцу, с причиной; журнал guest.lookup и уведомление владельцу. */
+  revealGuestPhone: (club, sessionId, reason) => client.post(`/clubs/${e(club)}/sessions/${e(sessionId)}/guest-phone`, { reason }),
+
   /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
   deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),
 };

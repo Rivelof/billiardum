@@ -1,0 +1,36 @@
+/*
+ * M5.2: таблицы отчётов и дашборда (components/DataTable.jsx). На телефоне строки — карточки (правила .rtable в m2.css),
+ * сортировка — выпадающим списком над таблицей; на планшете — кнопками в заголовках столбцов.
+ */
+.dtable { display: grid; gap: 8px; min-width: 0; }
+.dtable .rtable { font-variant-numeric: tabular-nums; }
+.dtable__sort { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-align: inherit; }
+.dtable__sort .icon { width: 14px; height: 14px; flex: none; }
+.dtable__sorticon { opacity: 0.45; }
+.dtable__sort:hover { color: var(--ink); }
+.dtable__sort:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; border-radius: 3px; }
+.rtable th.num .dtable__sort { flex-direction: row-reverse; }
+.dtable__x { width: 48px; }
+.dtable__toggle { width: 36px; height: 36px; }
+.dtable__toggle .icon { width: 18px; height: 18px; }
+.dtable__more > td { background: var(--card-2); padding: 10px 12px; border-radius: var(--radius-sm); }
+.dtable__moreBtn { justify-self: start; }
+.dtable__sortsel { display: none; }
+.dtable__plain { display: none; }
+@media print {
+  .dtable__sort { display: none !important; }
+  .dtable__plain { display: inline; }
+}
+.rtable tr.is-problem > th:first-child, .rtable tr.is-problem > td:first-child { box-shadow: inset 3px 0 0 var(--ball-red); padding-left: 8px; }
+.dtable-empty { padding: 12px 0; }
+
+@media (max-width: 639px) {
+  .dtable__sortsel { display: grid; gap: 2px; max-width: 280px; }
+  .dtable__sortsel .field__input { min-height: 44px; padding: 6px 10px; font-size: var(--fs-15); }
+  .dtable__x { width: auto; }
+  .dtable .rtable tr { position: relative; }
+  .dtable .rtable td.dtable__x { position: absolute; top: 2px; right: 0; padding: 0; }
+  .dtable .rtable td.dtable__x::before { content: none; }
+  .dtable__more { padding-top: 0 !important; }
+  .dtable .rtable td[data-label='']::before { content: none; }
+}

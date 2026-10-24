@@ -7,10 +7,13 @@ import { useEffect, useState } from 'preact/hooks';
 const CHUNKS = {
   start: () => import('../screens/ClubStart.jsx'),
   onboarding: () => import('../screens/onboarding/Onboarding.jsx'),
+  // M5.2: дашборд владельца и отчёты — свои чанки, на первую загрузку кассы не влияют
+  dashboard: () => import('../screens/dashboard/Dashboard.jsx'),
+  reports: () => import('../screens/reports/Reports.jsx'),
 };
 const loaded = {};
 
-export function Lazy({ chunk, label, render }) {
+export function Lazy({ chunk, label, render, fallback }) {
   // Модуль храним вместе с именем чанка: тот же компонент на новом маршруте не отдаст чужой модуль
   const [state, setState] = useState(() => ({ chunk, mod: loaded[chunk] ?? null }));
   const [failed, setFailed] = useState(false);
@@ -41,6 +44,7 @@ export function Lazy({ chunk, label, render }) {
     );
   }
   if (!mod) {
+    if (fallback) return fallback;
     return (
       <main class="signin" data-theme="dark" aria-busy="true">
         <p class="signin__brand display" role="status">

@@ -472,3 +472,90 @@ describe('управление /__emu', () => {
     emu.config.controlToken = null;
   });
 });
+
+describe('M5.3: сохранённый способ оплаты и автоплатёж', () => {
+  const card = (value = '1.00', extra = {}) =>
+    payment(value, { capture: false, save_payment_method: true, payment_method_data: { type: 'bank_card' }, metadata: { club_id: CLUB, kind: 'subscription' }, ...extra });
+
+  async function savedMethod() {
+    const p = (await api('POST', '/v3/payments', { body: card(), key: key() })).json;
+    assert.equal(p.payment_method.saved, false, 'до подтверждения не сохранён');
+    await api('POST', `/__emu/payments/${p.id}/succeed?wait=1`, { shop: null });
+    const after = (await api('GET', `/v3/payments/${p.id}`)).json;
+    assert.equal(after.status, 'waiting_for_capture');
+    assert.equal(after.payment_method.saved, true);
+    return after.payment_method.id;
+  }
+
+  const recurring = (methodId, value = '6320.00', extra = {}) => {
+    const body = { ...payment(value, { payment_method_id: methodId, ...extra }) };
+    delete body.confirmation;
+    delete body.payment_method_data;
+    return body;
+  };
+
+  it('save_payment_method: способ сохраняется после подтверждения; СБП не сохраняется', async () => {
+    const id = await savedMethod();
+    const methods = (await api('GET', '/__emu/payment-methods', { shop: null })).json;
+    assert.ok(methods.some((m) => m.id === id && m.shop_id === SHOP.shopId && m.card.last4 === '4477'));
+    const sbp = await api('POST', '/v3/payments', { body: payment('1.00', { save_payment_method: true }), key: key() });
+    assert.equal(sbp.status, 400);
+    assert.equal(sbp.json.parameter, 'save_payment_method');
+    assert.equal((await api('POST', '/v3/payments', { body: card('1.00', { save_payment_method: 'yes' }), key: key() })).status, 400);
+  });
+
+  it('платёж по payment_method_id — без подтверждения, сразу succeeded и вебхук; чек обязателен', async () => {
+    const id = await savedMethod();
+    received.length = 0;
+    const r = await api('POST', '/v3/payments', { body: recurring(id), key: key() });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.status, 'succeeded');
+    assert.equal(r.json.confirmation, undefined);
+    assert.equal(r.json.payment_method.id, id);
+    await emu.settle();
+    assert.ok(received.some((w) => JSON.parse(w.body).event === 'payment.succeeded' && JSON.parse(w.body).object.id === r.json.id));
+    const noReceipt = recurring(id);
+    delete noReceipt.receipt;
+    assert.equal((await api('POST', '/v3/payments', { body: noReceipt, key: key() })).json.parameter, 'receipt');
+  });
+
+  it('чужой или неизвестный payment_method_id — 400; вместе с save_payment_method — 400', async () => {
+    const id = await savedMethod();
+    assert.equal((await api('POST', '/v3/payments', { body: recurring(id), key: key(), shop: SHOP_B })).json.parameter, 'payment_method_id');
+    assert.equal((await api('POST', '/v3/payments', { body: recurring('nope'), key: key() })).status, 400);
+    assert.equal((await api('POST', '/v3/payments', { body: recurring(id, '1.00', { save_payment_method: true }), key: key() })).status, 400);
+  });
+
+  it('режим «отказ списания»: count и reason, затем снова проходит; отозванный способ — permission_revoked', async () => {
+    const id = await savedMethod();
+    await api('POST', '/__emu/config', { shop: null, body: { decline_recurring: { count: 1, reason: 'card_expired' } } });
+    const bad = (await api('POST', '/v3/payments', { body: recurring(id), key: key() })).json;
+    assert.equal(bad.status, 'canceled');
+    assert.deepEqual(bad.cancellation_details, { party: 'payment_network', reason: 'card_expired' });
+    assert.equal((await api('POST', '/v3/payments', { body: recurring(id), key: key() })).json.status, 'succeeded');
+    await api('POST', '/__emu/config', { shop: null, body: { decline_recurring: true } });
+    assert.equal((await api('POST', '/v3/payments', { body: recurring(id), key: key() })).json.cancellation_details.reason, 'insufficient_funds');
+    assert.equal((await api('POST', '/v3/payments', { body: recurring(id), key: key() })).json.status, 'canceled');
+    await api('POST', '/__emu/config', { shop: null, body: { decline_recurring: false } });
+    await api('POST', `/__emu/payment-methods/${id}/revoke`, { shop: null });
+    assert.equal((await api('POST', '/v3/payments', { body: recurring(id), key: key() })).json.cancellation_details.reason, 'permission_revoked');
+  });
+
+  it('повтор с тем же Idempotence-Key — тот же платёж, второго списания нет', async () => {
+    const id = await savedMethod();
+    const k = key();
+    const a = (await api('POST', '/v3/payments', { body: recurring(id), key: k })).json;
+    const b = (await api('POST', '/v3/payments', { body: recurring(id), key: k })).json;
+    assert.equal(a.id, b.id);
+    const all = (await api('GET', '/__emu/payments', { shop: null })).json.filter((p) => p.payment_method?.id === id && p.status === 'succeeded');
+    assert.equal(all.length, 1);
+  });
+
+  it('/__emu/reset забывает способы и снимает режим отказа', async () => {
+    await savedMethod();
+    await api('POST', '/__emu/config', { shop: null, body: { decline_recurring: true } });
+    await api('POST', '/__emu/reset', { shop: null });
+    assert.deepEqual((await api('GET', '/__emu/payment-methods', { shop: null })).json, []);
+    assert.equal(emu.config.declineRecurring.count, 0);
+  });
+});

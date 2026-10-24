@@ -4,7 +4,8 @@
 //   проверяет пару запросом GET /v3/me: пара верная (account_id = shop_id), у test — test: true,
 //   у live — test: false и fiscalization_enabled: true. Неверно — 400 shop_invalid,
 //   shop_mode_mismatch, fiscalization_off; ЮKassa не ответила — 503 yookassa_unavailable;
-//   ничего не сохраняется. Секрет — только зашифрованным (№23), наружу — маска
+//   ничего не сохраняется. Магазин платформы (PLATFORM_YOOKASSA_SHOP_ID) — 400 shop_invalid (№188).
+//   Секрет — только зашифрованным (№23), наружу — маска
 //   { last4, length }.
 // * Клуб в боевом режиме (live, или приостановлен после live): изменение магазина — ручное
 //   действие владельца: причина, журнал manual.payment_settings, тревога владельцу (инвариант 8).
@@ -119,6 +120,10 @@ export async function putShop(db, { clubId, userId, mode, body, config, now, man
   if (!config.encKey) throw new Error('нет SECRETS_ENC_KEY');
   const shopId = typeof body?.shop_id === 'string' ? body.shop_id.trim() : body?.shop_id;
   if (typeof shopId !== 'string' || !SHOP_ID.test(shopId)) throw new HttpError(400, 'bad_request', { detail: 'shop_id' });
+  // №188: магазин клуба не может совпадать с магазином платформы (подписка клубов, M5.3) — деньги
+  // гостей и деньги платформы не пересекаются.
+  const platformShopId = config.platformShopId ?? process.env.PLATFORM_YOOKASSA_SHOP_ID ?? null;
+  if (platformShopId && shopId === platformShopId) throw new HttpError(400, 'shop_invalid', { detail: 'platform shop' });
   const row = await settingsRow(db, clubId);
   if (!row) throw new HttpError(404, 'not_found');
   const live = isLiveClub(row.club_mode, row.mode_before_suspend);

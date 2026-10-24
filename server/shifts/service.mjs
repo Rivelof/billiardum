@@ -110,20 +110,34 @@ export async function getShift(db, id) {
   return s ? shiftView(s) : null;
 }
 
-/** Список смен (управляющий и выше): с выручкой смены revenue_total_kopecks (у открытой — на сейчас). */
-export async function listShifts(db, { clubId, limit = 30, before = null, now = new Date() }) {
-  const lim = Math.min(Math.max(Number(limit) || 30, 1), 100);
+/**
+ * Список смен (управляющий и выше, №176): с выручкой смены revenue_total_kopecks (у открытой — на сейчас).
+ * Фильтры: from/to — моменты UTC (начало и конец периода по открытию смены), staff — открыл или закрыл
+ * сотрудник, status — open (идёт) | closed (закрыта без расхождения) | discrepancy (закрыта с расхождением);
+ * курсор — номер смены (before), страницы — по убыванию номера.
+ */
+export async function listShifts(db, { clubId, limit = 30, before = null, now = new Date(), from = null, to = null, staff = null, status = null }) {
+  const lim = Math.min(Math.max(Number(limit) || 30, 1), 500);
   const { rows } = await db.query(
     `select s.*, (select u.name from bl.users u where u.id = s.opened_by) as opened_by_name,
             (select u.name from bl.users u where u.id = s.closed_by) as closed_by_name,
             ${REVENUE_TOTAL_SQL.replace('$NOW', '$4::timestamptz')} as revenue_total_kopecks
        from bl.shifts s
       where s.club_id = $1 and ($2::integer is null or s.number < $2)
+        and ($5::timestamptz is null or s.opened_at >= $5) and ($6::timestamptz is null or s.opened_at < $6)
+        and ($7::uuid is null or s.opened_by = $7 or s.closed_by = $7)
+        and ($8::text is null
+             or ($8 = 'open' and s.closed_at is null)
+             or ($8 = 'closed' and s.closed_at is not null and s.discrepancy_kopecks = 0)
+             or ($8 = 'discrepancy' and s.closed_at is not null and s.discrepancy_kopecks <> 0))
       order by s.number desc limit $3`,
-    [clubId, before, lim, now],
+    [clubId, before, lim, now, from, to, staff, status],
   );
   return {
-    items: rows.map((r) => ({ ...shiftView(r), revenue_total_kopecks: Number(r.revenue_total_kopecks) })),
+    items: rows.map((r) => {
+      const v = shiftView(r);
+      return { ...v, revenue_total_kopecks: Number(r.revenue_total_kopecks), is_test: Boolean(r.is_test), state: v.status === 'open' ? 'open' : v.discrepancy_kopecks ? 'discrepancy' : 'closed' };
+    }),
     next_cursor: rows.length === lim ? rows[rows.length - 1].number : null,
   };
 }

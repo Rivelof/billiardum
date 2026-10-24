@@ -101,14 +101,15 @@ export function HallPlan({ items, timeZone, onSelect, perRow, label = 'План 
                 data-tone={st.tone}
                 data-kind={p.kind}
                 aria-pressed={selected === p.id ? 'true' : undefined}
-                aria-label={`Стол ${p.number}, ${(st.spoken ?? st.word).toLowerCase()}. ${typeLabel(item.resource.type, item.resource.title)}`}
+                // Имя начинается с видимой подписи «Стол 4 До 21:40» (WCAG 2.5.3), затем — полностью для диктора
+                aria-label={`Стол ${p.number} ${st.word.toLowerCase()}${st.spoken ? `, ${st.spoken}` : ''}. ${typeLabel(item.resource.type, item.resource.title)}`}
                 style={{ left: pct(p.x / layout.width), top: pct(p.y / layout.height), width: pct(p.w / layout.width) }}
                 onClick={() => onSelect?.(item)}
               >
                 <span class="tbl__glow" aria-hidden="true" />
                 <span class="tbl__art" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svgs.get(p.id) }} />
                 <span class="tbl__cap" aria-hidden="true">
-                  <span class="tbl__num">Стол {p.number}</span>
+                  <span class="tbl__num">Стол {p.number}</span>{' '}
                   <span class="tbl__status">{st.word}</span>
                 </span>
               </button>

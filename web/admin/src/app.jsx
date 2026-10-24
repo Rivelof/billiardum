@@ -30,6 +30,7 @@ import { Platform } from './screens/Platform.jsx';
 import { setClub } from './lib/api.js';
 import { Icon } from './components/Icon.jsx';
 import { Lazy } from './components/Lazy.jsx';
+import { Shell } from './components/Shell.jsx';
 
 const ROUTES = [
   ['', 'root'],
@@ -73,6 +74,17 @@ const SCREENS = {
   listing: { allow: can.listing, render: (ctx) => <Listing ctx={ctx} />, title: 'Карточка в Бильярдуме' },
   // M5.1: мастер подключения — владелец (все шаги) и управляющий (зал, тарифы, меню, наклейки — №155–156),
   // отдельный чанк; шаг — в пути (/onboarding/{step})
+  // M5.2: дашборд владельца (главный экран владельца, №166) и отчёты (№173–179) — отдельные чанки
+  dashboard: {
+    allow: can.dashboard,
+    render: (ctx) => <Lazy key="dashboard" chunk="dashboard" label="Открываем дашборд…" fallback={<LazyShell ctx={ctx} active="dashboard" title="Дашборд" />} render={(m) => <m.Dashboard ctx={ctx} />} />,
+    title: 'Дашборд',
+  },
+  reports: {
+    allow: can.reportsView,
+    render: (ctx) => <Lazy key="reports" chunk="reports" label="Открываем отчёты…" fallback={<LazyShell ctx={ctx} active="reports" title="Отчёты" />} render={(m) => <m.Reports ctx={ctx} />} />,
+    title: 'Отчёты',
+  },
   onboarding: {
     allow: can.setup,
     render: (ctx) => <Lazy key="onboarding" chunk="onboarding" label="Открываем мастер подключения…" render={(m) => <m.Onboarding ctx={ctx} />} />,
@@ -80,13 +92,26 @@ const SCREENS = {
   },
 };
 
+/** Пока грузится чанк раздела — каркас программы с разделами, чтобы экран не мигал. */
+function LazyShell({ ctx, active, title }) {
+  return (
+    <Shell club={ctx.club} role={ctx.role} user={ctx.user} timeZone={ctx.timeZone} active={active} title={title}>
+      <div class="page" aria-busy="true">
+        <p class="muted loading" role="status">
+          Загружаем…
+        </p>
+      </div>
+    </Shell>
+  );
+}
+
 /**
- * Первый экран по роли: владелец и управляющий — «Сейчас», ресепшн — касса, бармен — экран бара.
+ * Первый экран по роли: владелец — дашборд (M5.2, №166), управляющий — «Сейчас», ресепшн — касса, бармен — экран бара.
  * M5.1: владелец клуба в тестовом режиме — мастер подключения.
  */
 export function homeFor(membership) {
   const r = membership.role;
-  const screen = can.onboarding(r) && clubMode(membership) === 'test' ? 'onboarding' : can.manage(r) ? 'now' : can.pos(r) ? 'pos' : can.bar(r) ? 'bar' : can.devices(r) ? 'devices' : 'more';
+  const screen = can.onboarding(r) && clubMode(membership) === 'test' ? 'onboarding' : can.owner(r) ? 'dashboard' : can.manage(r) ? 'now' : can.pos(r) ? 'pos' : can.bar(r) ? 'bar' : can.devices(r) ? 'devices' : 'more';
   return `${BASE}c/${encodeURIComponent(membership.club_id)}/${screen}`;
 }
 
@@ -147,7 +172,7 @@ export function App() {
     setClub(membership.club_id); // X-Club-Id для маршрутов без {club} (§14)
     // Вложенные пути: отчёт смены (/shift/{id}) — управляющему и владельцу; терминалы (/staff/terminals) — владельцу
     const nested =
-      (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments' || params.screen === 'onboarding';
+      (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments' || params.screen === 'onboarding' || params.screen === 'reports';
     if (params.id && !nested) return <Redirect to={homeFor(membership)} />;
     const ctx = {
       club: membership,

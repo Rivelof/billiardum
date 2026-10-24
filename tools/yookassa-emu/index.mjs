@@ -33,6 +33,16 @@ if (env.YOOKASSA_EMU_SHOP_ID && env.YOOKASSA_EMU_SECRET) {
 } else {
   log('warn', 'emu_no_shop', { hint: 'YOOKASSA_EMU_SHOP_ID и YOOKASSA_EMU_SECRET не заданы: магазины — через POST /__emu/shops' });
 }
+// M5.3: магазин платформы (подписка клубов) — свой адрес вебхука, без {club_id}.
+if (env.YOOKASSA_EMU_PLATFORM_SHOP_ID && env.YOOKASSA_EMU_PLATFORM_SECRET) {
+  shops.push({
+    shopId: env.YOOKASSA_EMU_PLATFORM_SHOP_ID,
+    secret: env.YOOKASSA_EMU_PLATFORM_SECRET,
+    webhookUrl: env.YOOKASSA_EMU_PLATFORM_WEBHOOK_URL || null,
+    test: true,
+    fiscalization: true,
+  });
+}
 
 const emu = createEmulator({
   shops,

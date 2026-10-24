@@ -5,6 +5,8 @@ import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api, newIdempotencyKey } from '../lib/api.js';
+import { linkHandler } from '../lib/router.js';
+import { BASE } from '../lib/env.js';
 import { parseRubles } from '../lib/cash.js';
 import { arrivalTotal, auditLine, auditTotals, lowStock, parseQty, qtyText, unitWord } from '../lib/stock.js';
 
@@ -82,7 +84,7 @@ export function Stock({ ctx }) {
             {tab === 'left' ? <Left items={items} /> : null}
             {tab === 'arrival' ? <Arrival items={items} onDone={finish} /> : null}
             {tab === 'writeoff' ? <Writeoff items={items} onDone={finish} /> : null}
-            {tab === 'audit' ? <Audit items={items} onDone={finish} /> : null}
+            {tab === 'audit' ? <Audit items={items} onDone={finish} clubId={clubId} /> : null}
           </>
         ) : null}
       </div>
@@ -372,7 +374,7 @@ function Writeoff({ items, onDone }) {
   );
 }
 
-function Audit({ items, onDone }) {
+function Audit({ items, onDone, clubId }) {
   const [facts, setFacts] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -423,6 +425,11 @@ function Audit({ items, onDone }) {
       <h2 class="section-title" id="aud-title">
         Ревизия
       </h2>
+      {/* M5.2 (№174): ведомость на бумаге — перед пересчётом */}
+      <a class="btn btn--quiet btn--sm" href={`${BASE}c/${encodeURIComponent(clubId)}/reports/audit-sheet`} onClick={linkHandler}>
+        <Icon name="printer" />
+        Распечатать ведомость
+      </a>
       <p class="hint">Пересчитайте товар и введите факт. Пустые строки не меняются. Расхождение в деньгах — по средней себестоимости.</p>
       <ul class="audit">
         {lines.map((l) => (
