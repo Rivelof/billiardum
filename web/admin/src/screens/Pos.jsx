@@ -231,8 +231,12 @@ export function Pos({ ctx }) {
       {kkt.known ? (
         <span class={`badge ${kktOff || kkt.warning ? 'badge--alert' : 'badge--free'} pos__kkt`} role="status">
           <span class="badge__dot" aria-hidden="true" />
-          {kktOff ? 'Касса ККТ не на связи' : kkt.warning ? 'Касса ККТ: проверьте чеки' : 'Касса ККТ на связи'}
-          {kkt.pending ? `, в очереди ${kkt.pending} ${plural(kkt.pending, ['чек', 'чека', 'чеков'])}` : ''}
+          {/* На телефоне «Касса » скрыта визуально (шапка не шире экрана), экранный диктор читает фразу целиком */}
+          <span class="pos__kkt-text">
+            <span class="bar__label">Касса </span>
+            {kktOff ? 'ККТ не на связи' : kkt.warning ? 'ККТ: проверьте чеки' : 'ККТ на связи'}
+            {kkt.pending ? `, в очереди ${kkt.pending} ${plural(kkt.pending, ['чек', 'чека', 'чеков'])}` : ''}
+          </span>
         </span>
       ) : null}
     </>

@@ -51,6 +51,15 @@
 .bar__live { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-13); color: var(--ball-red); font-weight: 600; }
 .bar__live .icon { width: 18px; height: 18px; }
 .bar__tools .btn--sm { min-height: 44px; }
+/*
+ * Телефон: шапка не шире экрана. Бейджи и «Нет связи» в инструментах переносятся, а не расширяют страницу.
+ * На рабочих экранах (касса, ресепшн, брони) инструментов больше — заголовок отдельной строкой во всю ширину,
+ * иначе от него остаётся одна буква (Д2 M5.3).
+ */
+@media (max-width: 639px) {
+  .bar__tools .badge, .bar__tools .bar__live { min-width: 0; white-space: normal; line-height: 1.25; }
+  .shell--wide .bar { grid-template-areas: 'club tools' 'title title'; }
+}
 
 .nav {
   position: fixed;
