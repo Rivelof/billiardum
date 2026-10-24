@@ -112,8 +112,9 @@ export async function recomputeDay(db, club, day, now) {
 }
 
 /**
- * Какие закрытые сутки клуба считать: нет агрегата (догоняем после простоя, не дальше horizonDays),
- * старая версия формул, отметка «грязные». lastClosed — последние закрытые сутки.
+ * Какие закрытые сутки клуба считать обязательно: нет агрегата (догоняем после простоя, не дальше
+ * horizonDays) и отметка «грязные». lastClosed — последние закрытые сутки. Сутки старой версии
+ * формул — отдельно (staleDays): их пересчёт ограничен бюджетом и не идёт в часы пик.
  */
 export async function dueDays(db, club, { lastClosed, horizonDays = 400, limit = 31 }) {
   const first = firstDayOf(club);
@@ -122,11 +123,24 @@ export async function dueDays(db, club, { lastClosed, horizonDays = 400, limit =
   if (lo > lastClosed) return [];
   const { rows } = await db.query(
     `select d::date::text as day from generate_series($2::date, $3::date, interval '1 day') d
-      where not exists (select 1 from bl.stats_daily s where s.club_id = $1 and s.day = d::date and s.version >= $4)
+      where not exists (select 1 from bl.stats_daily s where s.club_id = $1 and s.day = d::date)
      union
      select day::text from bl.stats_dirty where club_id = $1 and day <= $3 and day >= $2
-     order by 1 limit $5`,
-    [club.id, lo, lastClosed, VERSION, limit],
+     order by 1 limit $4`,
+    [club.id, lo, lastClosed, limit],
+  );
+  return rows.map((r) => r.day);
+}
+
+/**
+ * Закрытые сутки клуба с агрегатом старой версии формул (version < VERSION), свежие первыми: их
+ * чаще смотрят. Без горизонта — пересчитываются все сохранённые сутки.
+ */
+export async function staleDays(db, club, { lastClosed, limit }) {
+  if (!(limit > 0)) return [];
+  const { rows } = await db.query(
+    'select day::text as day from bl.stats_daily where club_id = $1 and version < $2 and day <= $3 order by day desc limit $4',
+    [club.id, VERSION, lastClosed, limit],
   );
   return rows.map((r) => r.day);
 }

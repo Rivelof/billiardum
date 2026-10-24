@@ -18,8 +18,13 @@ import { maskPhones } from '../notify/index.mjs';
 import { manualActions, revenueOf, shiftLateRefunds, shiftPayments, shiftRefunds } from '../reports/queries.mjs';
 import { dayBounds, localParts, openWindows, overlapMs, sliceByHour } from './time.mjs';
 
-/** Версия формул: закрытые сутки старой версии планировщик пересчитывает. */
-export const VERSION = 1;
+/**
+ * Версия формул: закрытые сутки старой версии планировщик пересчитывает (порциями, вне часов пик —
+ * server/dashboard/index.mjs). Поднимать при любой правке расчёта суток.
+ *   1 — M5.2.
+ *   2 — ёмкость округляется один раз на сутки (Н1, apportionMinutes): карта = кольцо.
+ */
+export const VERSION = 2;
 export const TYPES = ['billiard_pyramid', 'billiard_pool', 'billiard_snooker'];
 export const METHODS = ['cash', 'card_terminal', 'sbp', 'card'];
 export const SOURCES = ['qr', 'booking', 'reception', 'staff', 'tournament'];
