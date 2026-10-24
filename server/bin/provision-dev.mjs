@@ -3,29 +3,33 @@
 //
 // 1. Через bl-admin в Dynamic Security: роль и клиент bl-server (bl/v1/#) с паролем из .env
 //    и закреплённым client id bl-server.
-// 2. Для каждого устройства в базе: новый device_key (32 байта) и пароль MQTT, роль
+// 2. Только устройства клуба сида (server/devices/provision-dev.mjs, дефект Н1): не привязанные
+//    через bind/claim и не из заводского реестра bl.device_factory. Остальные контроллеры
+//    скрипт не читает и не трогает. Каждому — device_key (32 байта) и пароль MQTT, роль
 //    с точными топиками протокола §2, клиент (логин и client id = device_id).
 // 3. device_key — в bl.devices.device_key_enc (AES-256-GCM, SECRETS_ENC_KEY).
-// 4. deploy/dev/devices.json (или SIM_DEVICES_FILE) для симулятора, права 0600.
+// 4. deploy/dev/devices.json (или SIM_DEVICES_FILE) для симулятора, права 0600, только сид.
 // 5. PIN персонала сида без PIN (владелец, управляющий, ресепшн тестового клуба) — DEV_STAFF_PIN
 //    (по умолчанию 1234): хеш зависит от SECRETS_ENC_KEY, поэтому его ставит провижининг, а не сид.
 // 6. Деньги: server/payments/provision-dev.mjs (backend-money) — магазин ЮKassa тестового
 //    клуба на эмуляторе, если модуль есть.
-// Повторный запуск выдаёт новые ключи и пароли и согласованно обновляет брокер, базу и файл.
-// Секреты не печатаются.
+// Повторный запуск оставляет ключ и пароль устройства, если ключ в базе совпадает с прежним
+// devices.json (работающий симулятор не отключается); иначе или с --rotate — новые, согласованно
+// в базе, брокере и файле. Секреты не печатаются.
 
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import mqtt from 'mqtt';
 import pg from 'pg';
 import { REPO_ROOT, repoPath } from '../lib/config.mjs';
-import { createDynsec, deviceRoleAcls, deviceRoleName, ensureServerClient, SERVER_CLIENT_ID } from '../lib/dynsec.mjs';
+import { createDynsec, ensureServerClient, SERVER_CLIENT_ID } from '../lib/dynsec.mjs';
 import { createLogger } from '../lib/log.mjs';
-import { deviceKeyContext, encryptSecret, loadEncKey } from '../lib/secrets.mjs';
+import { loadEncKey } from '../lib/secrets.mjs';
 import { hashPin, PIN, pinPepper } from '../auth/pin.mjs';
+import { provisionSeedDevices, SEED_CLUB_ID } from '../devices/provision-dev.mjs';
 
-const DEV_CLUB_ID = 'c1000000-0000-4000-8000-000000000001';
+const DEV_CLUB_ID = SEED_CLUB_ID;
 const DEV_STAFF = ['a1000000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000004'];
 
 const log = createLogger({ level: process.env.LOG_LEVEL || 'info' });
@@ -38,46 +42,6 @@ function env(name, fallback) {
   const value = process.env[name] || fallback;
   if (!value) throw new Error(`не задана переменная окружения ${name}`);
   return value;
-}
-
-async function loadDevices(databaseUrl) {
-  const db = new pg.Client({ connectionString: databaseUrl, application_name: 'bl-provision-dev' });
-  await db.connect();
-  try {
-    const { rows } = await db.query(`
-      select d.id, d.club_id, d.resource_id, r.number as table_number
-        from bl.devices d
-        left join bl.resources r on r.id = d.resource_id
-       order by d.club_id, r.number nulls last, d.id`);
-    return rows;
-  } finally {
-    await db.end();
-  }
-}
-
-async function saveKeys(databaseUrl, devices, encKey) {
-  const db = new pg.Client({ connectionString: databaseUrl, application_name: 'bl-provision-dev' });
-  await db.connect();
-  try {
-    await db.query('begin');
-    for (const d of devices) {
-      const enc = encryptSecret(d.keyBytes, encKey, deviceKeyContext(d.id));
-      await db.query('update bl.devices set device_key_enc = $2, mqtt_username = $1::text where id = $1', [d.id, enc]);
-    }
-    await db.query('commit');
-  } catch (err) {
-    await db.query('rollback').catch(() => {});
-    throw err;
-  } finally {
-    await db.end();
-  }
-}
-
-function writeDevicesFile(file, content) {
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(content, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
 }
 
 /** Модуль соседа, если он уже есть (параллельная разработка). */
@@ -143,8 +107,7 @@ async function main() {
   const encKey = loadEncKey(env('SECRETS_ENC_KEY'));
   const devicesFile = repoPath(process.env.SIM_DEVICES_FILE || 'deploy/dev/devices.json');
 
-  const rows = await loadDevices(databaseUrl);
-  if (rows.length === 0) throw new Error('в bl.devices нет устройств: сначала npm run db:seed');
+  const rotate = process.argv.includes('--rotate');
 
   const client = await mqtt.connectAsync(mqttUrl, {
     clientId: `bl-provision-${randomBytes(4).toString('hex')}`,
@@ -157,53 +120,20 @@ async function main() {
     reconnectPeriod: 0,
     connectTimeout: 10_000,
   });
+  const db = new pg.Client({ connectionString: databaseUrl, application_name: 'bl-provision-dev' });
   try {
     const dynsec = await createDynsec(client);
 
     const serverClient = await ensureServerClient(dynsec, { username: serverUser, password: serverPassword });
     log.info('provision_server', { username: serverUser, clientid: SERVER_CLIENT_ID, client: serverClient });
 
-    const devices = rows.map((r) => ({
-      id: r.id,
-      clubId: r.club_id,
-      resourceId: r.resource_id,
-      tableNumber: r.table_number,
-      keyBytes: randomBytes(32),
-      password: randomBytes(24).toString('base64url'),
-    }));
-
-    // База первой: сервер подписывает новым ключом, как только он записан.
-    await saveKeys(databaseUrl, devices, encKey);
-
-    for (const d of devices) {
-      const rolename = deviceRoleName(d.id);
-      await dynsec.ensureRole(rolename, deviceRoleAcls(d.clubId, d.id), `Стол ${d.tableNumber ?? '—'}`);
-      const state = await dynsec.ensureClient({
-        username: d.id,
-        password: d.password,
-        clientid: d.id,
-        rolename,
-        textname: `Контроллер стола ${d.tableNumber ?? '—'}`,
-      });
-      log.info('provision_device', { device_id: d.id, table: d.tableNumber, client: state });
-    }
-
-    writeDevicesFile(devicesFile, {
-      mqtt_url: mqttUrl,
-      ca_file: caFileEnv,
-      devices: devices.map((d) => ({
-        device_id: d.id,
-        club_id: d.clubId,
-        resource_id: d.resourceId,
-        table_number: d.tableNumber,
-        mqtt_username: d.id,
-        mqtt_password: d.password,
-        device_key: d.keyBytes.toString('base64'),
-      })),
-    });
-    log.info('provision_done', { devices: devices.length, file: path.relative(REPO_ROOT, devicesFile) });
+    await db.connect();
+    const res = await provisionSeedDevices({ db, dynsec, encKey, devicesFile, mqttUrl, caFile: caFileEnv, rotate, log });
+    await db.end().catch(() => {});
+    log.info('provision_done', { ...res, rotate, file: path.relative(REPO_ROOT, devicesFile) });
     await provisionAfterDevices(databaseUrl, encKey);
   } finally {
+    await db.end().catch(() => {});
     await client.endAsync();
   }
 }

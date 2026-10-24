@@ -1,82 +1,20 @@
 // Провижининг Dynamic Security без брокера: поддельный клиент отвечает как плагин.
 
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
 import { loadServerConfig } from '../lib/config.mjs';
 import {
-  CONTROL_TOPIC,
   createDynsec,
   deviceRoleAcls,
   deviceRoleName,
   ensureServerClient,
-  RESPONSE_TOPIC,
   SERVER_CLIENT_ID,
   serverRoleAcls,
 } from '../lib/dynsec.mjs';
+import { FakeDynsecBroker } from './fake-dynsec.mjs';
 
 const CLUB = 'c1000000-0000-4000-8000-000000000001';
 const DEV = 'd1000000-0000-4000-8000-000000000001';
-
-class FakeDynsecBroker extends EventEmitter {
-  constructor() {
-    super();
-    this.roles = new Map();
-    this.clients = new Map();
-    this.log = [];
-  }
-
-  async subscribeAsync(topic) {
-    assert.equal(topic, RESPONSE_TOPIC);
-  }
-
-  publish(topic, payload, _opts, cb) {
-    assert.equal(topic, CONTROL_TOPIC);
-    const responses = JSON.parse(payload).commands.map((c) => ({ command: c.command, correlationData: c.correlationData, ...this.exec(c) }));
-    cb?.();
-    setImmediate(() => this.emit('message', RESPONSE_TOPIC, Buffer.from(JSON.stringify({ responses }))));
-  }
-
-  exec(c) {
-    this.log.push(c.command);
-    switch (c.command) {
-      case 'getRole':
-        return this.roles.has(c.rolename) ? { data: { role: { rolename: c.rolename, acls: this.roles.get(c.rolename) } } } : { error: 'Role not found' };
-      case 'createRole':
-        if (this.roles.has(c.rolename)) return { error: 'Role already exists' };
-        this.roles.set(c.rolename, [...c.acls]);
-        return {};
-      case 'removeRoleACL': {
-        const acls = this.roles.get(c.rolename);
-        const i = acls.findIndex((a) => a.acltype === c.acltype && a.topic === c.topic);
-        if (i < 0) return { error: 'ACL not found' };
-        acls.splice(i, 1);
-        return {};
-      }
-      case 'addRoleACL': {
-        const { command: _c, correlationData: _d, rolename, ...acl } = c;
-        this.roles.get(rolename).push(acl);
-        return {};
-      }
-      case 'getClient':
-        return this.clients.has(c.username) ? { data: { client: this.clients.get(c.username) } } : { error: 'Client not found' };
-      case 'createClient':
-        this.clients.set(c.username, { password: c.password, clientid: c.clientid, roles: c.roles, disabled: false });
-        return {};
-      case 'modifyClient':
-        Object.assign(this.clients.get(c.username), { clientid: c.clientid, roles: c.roles });
-        return {};
-      case 'setClientPassword':
-        this.clients.get(c.username).password = c.password;
-        return {};
-      case 'enableClient':
-        this.clients.get(c.username).disabled = false;
-        return {};
-      default:
-        return { error: 'Unknown command' };
-    }
-  }
-}
 
 describe('ACL ролей (protocol §2)', () => {
   it('устройство: читает только свой cmd, пишет только свои ack, state, event, status', () => {
