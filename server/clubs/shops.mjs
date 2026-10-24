@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
+import { isLiveClub } from '../lib/club-mode.mjs';
 import { clientFor, decryptShopSecret, encryptShopSecret, loadPaymentSettings, SHOP_MODES } from '../payments/settings.mjs';
 import { receiptPhone } from '../payments/receipt.mjs';
 import { amountKopecks, createYooKassaClient, YooKassaError } from '../payments/yookassa.mjs';
@@ -41,10 +42,8 @@ export function parseMode(mode) {
   return mode;
 }
 
-/** Клуб в боевом режиме для правил денег: live или приостановлен после live. */
-export function isLiveClub(mode, modeBeforeSuspend = null) {
-  return mode === 'live' || (mode === 'suspended' && modeBeforeSuspend === 'live');
-}
+/** Клуб в боевом режиме для правил денег: live или приостановлен после live (общая функция). */
+export { isLiveClub };
 
 async function settingsRow(db, clubId) {
   const { rows } = await db.query(

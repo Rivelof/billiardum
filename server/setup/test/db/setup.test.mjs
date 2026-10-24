@@ -204,6 +204,21 @@ describe('тарифы (№156)', { skip: SKIP }, () => {
     assert.deepEqual([zero.status, zero.json], [400, { error: 'bad_request' }]);
     assert.ok(t.log.lines.some((e) => JSON.stringify(e).includes('rules[0].price_per_hour_kopecks: must be > 0')), 'поле цены — в логе сервера');
     assert.equal((await t.admin.query('select count(*)::int as n from bl.tariff_rules where club_id = $1 and active', [CLUB_A])).rows[0].n, seedRules);
+    // П-1 (1054): и база не примет цену 0 — ни мимо API, ни от суперпользователя.
+    for (const price of [0, -1]) {
+      await assert.rejects(
+        t.admin.query(
+          `insert into bl.tariff_rules (club_id, resource_type, days, start_local, end_local, price_per_hour) values ($1, 'billiard_pool', '{1}', '10:00', '11:00', $2)`,
+          [CLUB_A, price],
+        ),
+        (err) => err.code === '23514' && err.constraint === 'tariff_rules_price_per_hour_check',
+        `price_per_hour = ${price}`,
+      );
+    }
+    await assert.rejects(
+      t.admin.query('update bl.tariff_rules set price_per_hour = 0 where club_id = $1', [CLUB_A]),
+      (err) => err.code === '23514',
+    );
   });
 
   it('режим test: шаблон «Будни и выходные» — журнал без причины, прежние правила гаснут, движок считает по новым', async () => {
@@ -246,6 +261,42 @@ describe('тарифы (№156)', { skip: SKIP }, () => {
     const alarm = (await t.admin.query("select id from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'action' = 'manual.tariff_change'", [CLUB_A])).rows;
     assert.equal(alarm.length, 1);
     await setMode('test');
+  });
+
+  it('приостановлен после live (П-2) — боевой: тип, вывод стола и тариф только с причиной; после test — без', async (ctx) => {
+    if (!(await setMode('live'))) return ctx.skip('нет clubs.mode (backend-A)');
+    const suspend = (before) =>
+      t.admin.query("update bl.clubs set mode = 'suspended', mode_before_suspend = $2, suspended_at = now() where id = $1", [CLUB_A, before]);
+    const RES1 = 'e1000000-0000-4000-8000-000000000001';
+    const rules = applyTemplate('single', { price: 70000 });
+    await suspend('live');
+    try {
+      const kind = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${RES1}`, owner.token, { kind: 'snooker' });
+      assert.deepEqual([kind.status, kind.json], [400, { error: 'reason_required' }]);
+      const off = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${RES1}`, owner.token, { active: false });
+      assert.deepEqual([off.status, off.json], [400, { error: 'reason_required' }]);
+      const add = await api('POST', `/api/clubs/${CLUB_A}/resources`, owner.token, { number: 14, kind: 'pool' });
+      assert.deepEqual([add.status, add.json], [400, { error: 'reason_required' }]);
+      assert.equal((await t.admin.query('select type, active from bl.resources where id = $1', [RES1])).rows[0].active, true);
+      assert.equal((await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules })).json.error, 'reason_required');
+      const n = (await audit('manual.tariff_change')).length;
+      const ok = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules, reason: 'Прайс на время приостановки' });
+      assert.equal(ok.status, 200, ok.text);
+      const all = await audit('manual.tariff_change');
+      assert.equal(all.length, n + 1);
+      assert.equal(all.at(-1).reason, 'Прайс на время приостановки');
+      assert.equal(all.at(-1).data.mode, 'suspended');
+      const alarm = (await t.admin.query("select 1 from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'reason' = $2", [CLUB_A, 'Прайс на время приостановки'])).rows;
+      assert.equal(alarm.length, 1, 'тревога владельцу');
+      // Приостановлен после test — не боевой: журнал tariff.update без причины.
+      await suspend('test');
+      const plain = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules });
+      assert.equal(plain.status, 200, plain.text);
+      assert.equal((await audit('manual.tariff_change')).length, n + 1);
+      assert.equal((await audit('tariff.update')).at(-1).data.mode, 'suspended');
+    } finally {
+      await t.admin.query("update bl.clubs set mode = 'test', mode_before_suspend = null, suspended_at = null where id = $1", [CLUB_A]);
+    }
   });
 });
 

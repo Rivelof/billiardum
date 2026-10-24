@@ -20,6 +20,8 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { parseEnv } from 'node:util';
 import mqtt from 'mqtt';
 import pg from 'pg';
 import { REPO_ROOT, repoPath } from '../lib/config.mjs';
@@ -27,21 +29,36 @@ import { createDynsec, ensureServerClient, SERVER_CLIENT_ID } from '../lib/dynse
 import { createLogger } from '../lib/log.mjs';
 import { loadEncKey } from '../lib/secrets.mjs';
 import { hashPin, PIN, pinPepper } from '../auth/pin.mjs';
-import { provisionSeedDevices, SEED_CLUB_ID } from '../devices/provision-dev.mjs';
+import { assertSeedClub, provisionSeedDevices, SEED_CLUB_ID } from '../devices/provision-dev.mjs';
 
 const DEV_CLUB_ID = SEED_CLUB_ID;
 const DEV_STAFF = ['a1000000-0000-4000-8000-000000000001', 'a1000000-0000-4000-8000-000000000003', 'a1000000-0000-4000-8000-000000000004'];
 
 const log = createLogger({ level: process.env.LOG_LEVEL || 'info' });
 
-function env(name, fallback) {
-  if (!process.env[name] && fallback === undefined) {
-    const envFile = path.join(REPO_ROOT, '.env');
-    if (existsSync(envFile)) process.loadEnvFile(envFile);
+/**
+ * .env из корня в окружение целиком, до любых проверок (pentester П-3): переменная окружения
+ * главнее файла, пустая считается незаданной (как раньше у env()).
+ */
+export function loadDotEnv(target = process.env, envFile = path.join(REPO_ROOT, '.env')) {
+  if (!existsSync(envFile)) return target;
+  for (const [k, v] of Object.entries(parseEnv(readFileSync(envFile, 'utf8')))) {
+    if (target[k] === undefined || target[k] === '') target[k] = v;
   }
-  const value = process.env[name] || fallback;
-  if (!value) throw new Error(`не задана переменная окружения ${name}`);
-  return value;
+  return target;
+}
+
+/** Только разработка: NODE_ENV=production — отказ (из окружения или из .env). */
+export function assertNotProduction(target = process.env) {
+  if (target.NODE_ENV === 'production') throw new Error('provision:dev запрещён при NODE_ENV=production');
+}
+
+function envOf(target) {
+  return (name) => {
+    const value = target[name];
+    if (!value) throw new Error(`не задана переменная окружения ${name}`);
+    return value;
+  };
 }
 
 /** Модуль соседа, если он уже есть (параллельная разработка). */
@@ -56,8 +73,8 @@ async function importOptional(spec) {
 }
 
 /** PIN персонала сида, у кого его ещё нет. */
-async function setDevPins(db, encKey) {
-  const pin = process.env.DEV_STAFF_PIN || '1234';
+async function setDevPins(db, encKey, target) {
+  const pin = target.DEV_STAFF_PIN || '1234';
   if (!PIN.test(pin)) throw new Error('DEV_STAFF_PIN — 4–6 цифр');
   const pepper = pinPepper(encKey);
   const { rows } = await db.query(
@@ -74,16 +91,15 @@ async function setDevPins(db, encKey) {
 }
 
 /** После устройств: PIN персонала и деньги (backend-money). */
-async function provisionAfterDevices(databaseUrl, encKey) {
-  const db = new pg.Client({ connectionString: databaseUrl, application_name: 'bl-provision-dev' });
+async function provisionAfterDevices(db, encKey, target) {
   await db.connect();
   try {
-    await setDevPins(db, encKey);
+    await setDevPins(db, encKey, target);
     const payments = await importOptional('../payments/provision-dev.mjs');
     if (typeof payments?.provisionPayments === 'function') {
       const res = await payments.provisionPayments({
         client: db,
-        env: process.env,
+        env: target,
         log: (level, msg, fields) => (log[level] ?? log.info)(msg, fields),
       });
       log.info('provision_payments', { status: res?.status ?? null });
@@ -95,9 +111,21 @@ async function provisionAfterDevices(databaseUrl, encKey) {
   }
 }
 
-async function main() {
+/**
+ * Порядок отказов (П-3): .env целиком → NODE_ENV=production → клуб сида в базе → только потом
+ * брокер. Зависимости подменяются в тестах (server/test/provision-dev-bin.test.mjs).
+ */
+export async function main({
+  target = process.env,
+  envFile = path.join(REPO_ROOT, '.env'),
+  argv = process.argv,
+  connectMqtt = (url, opts) => mqtt.connectAsync(url, opts),
+  makeDb = (connectionString) => new pg.Client({ connectionString, application_name: 'bl-provision-dev' }),
+} = {}) {
+  loadDotEnv(target, envFile);
+  assertNotProduction(target);
+  const env = envOf(target);
   const databaseUrl = env('DATABASE_ADMIN_URL');
-  if (process.env.NODE_ENV === 'production') throw new Error('provision:dev запрещён при NODE_ENV=production');
   const mqttUrl = env('MQTT_URL');
   const caFileEnv = env('MQTT_CA_FILE');
   const adminUser = env('MQTT_ADMIN_USER');
@@ -105,40 +133,54 @@ async function main() {
   const serverUser = env('MQTT_SERVER_USER');
   const serverPassword = env('MQTT_SERVER_PASSWORD');
   const encKey = loadEncKey(env('SECRETS_ENC_KEY'));
-  const devicesFile = repoPath(process.env.SIM_DEVICES_FILE || 'deploy/dev/devices.json');
+  const devicesFile = repoPath(target.SIM_DEVICES_FILE || 'deploy/dev/devices.json');
 
-  const rotate = process.argv.includes('--rotate');
+  const rotate = argv.includes('--rotate');
+  const ca = readFileSync(repoPath(caFileEnv));
 
-  const client = await mqtt.connectAsync(mqttUrl, {
+  // Клуб сида есть в базе — иначе отказ до подключения к брокеру.
+  const db = makeDb(databaseUrl);
+  await db.connect();
+  try {
+    await assertSeedClub(db);
+  } catch (err) {
+    await db.end().catch(() => {});
+    throw err;
+  }
+
+  const client = await connectMqtt(mqttUrl, {
     clientId: `bl-provision-${randomBytes(4).toString('hex')}`,
     username: adminUser,
     password: adminPassword,
-    ca: readFileSync(repoPath(caFileEnv)),
+    ca,
     rejectUnauthorized: true,
     protocolVersion: 4,
     clean: true,
     reconnectPeriod: 0,
     connectTimeout: 10_000,
+  }).catch(async (err) => {
+    await db.end().catch(() => {});
+    throw err;
   });
-  const db = new pg.Client({ connectionString: databaseUrl, application_name: 'bl-provision-dev' });
   try {
     const dynsec = await createDynsec(client);
 
     const serverClient = await ensureServerClient(dynsec, { username: serverUser, password: serverPassword });
     log.info('provision_server', { username: serverUser, clientid: SERVER_CLIENT_ID, client: serverClient });
 
-    await db.connect();
     const res = await provisionSeedDevices({ db, dynsec, encKey, devicesFile, mqttUrl, caFile: caFileEnv, rotate, log });
     await db.end().catch(() => {});
     log.info('provision_done', { ...res, rotate, file: path.relative(REPO_ROOT, devicesFile) });
-    await provisionAfterDevices(databaseUrl, encKey);
+    await provisionAfterDevices(makeDb(databaseUrl), encKey, target);
   } finally {
     await db.end().catch(() => {});
     await client.endAsync();
   }
 }
 
-main().catch((err) => {
-  log.error('provision_failed', { error: err.message });
-  process.exitCode = 1;
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  main().catch((err) => {
+    log.error('provision_failed', { error: err.message });
+    process.exitCode = 1;
+  });
+}

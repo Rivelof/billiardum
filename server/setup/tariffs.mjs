@@ -28,7 +28,7 @@ import { appendAudit } from '../lib/audit.mjs';
 import { clubTariffSettings } from '../tariffs/index.mjs';
 import { formatLocalTime, parseLocalTime } from '../tariffs/engine.mjs';
 import { KIND_OF_TYPE, KINDS } from './hall.mjs';
-import { cleanReason, clubMode, isLive, manualAction } from './mode.mjs';
+import { cleanReason, clubLive, manualAction } from './mode.mjs';
 
 const DAY = 1440;
 const WEEK = 7 * DAY;
@@ -364,8 +364,8 @@ export async function saveTariffs(db, { clubId, userId, body, now, ctx = null, l
     if (data.kind === null) delete data.kind;
     throw new HttpError(400, type === 'overlap' ? 'tariff_overlap' : 'tariff_gap', { detail: JSON.stringify(problem), data });
   }
-  const mode = await clubMode(db, clubId, ctx);
-  const reason = isLive(mode) ? cleanReason(body?.reason) : null;
+  const { mode, live } = await clubLive(db, clubId, ctx);
+  const reason = live ? cleanReason(body?.reason) : null;
   const before = await loadRules(db, clubId);
   await db.query('update bl.tariff_rules set active = false where club_id = $1 and active', [clubId]);
   for (const r of rules) {
@@ -379,7 +379,7 @@ export async function saveTariffs(db, { clubId, userId, body, now, ctx = null, l
   }
   const compact = (list) => list.map((r) => ({ kind: r.kind, days: r.days, from: r.from, to: r.to, price: r.price_per_hour_kopecks, min: r.min_minutes, step: r.step_minutes }));
   const data = { mode, before: compact(before.rules), before_resource_rules: before.resourceRules.length, after: compact(rules) };
-  if (isLive(mode)) {
+  if (live) {
     await manualAction(db, {
       clubId,
       userId,

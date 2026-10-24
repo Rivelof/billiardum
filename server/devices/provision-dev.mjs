@@ -23,6 +23,16 @@ export const SEED_CLUB_ID = 'c1000000-0000-4000-8000-000000000001';
 const PASSWORD = /^[A-Za-z0-9_-]{16,128}$/;
 
 /**
+ * Клуб сида есть в базе (pentester П-3): иначе отказ до брокера — провижининг не трогает
+ * Dynamic Security, если база не та (без сида).
+ * @param {import('pg').ClientBase} db — суперпользователь (DATABASE_ADMIN_URL)
+ */
+export async function assertSeedClub(db, clubId = SEED_CLUB_ID) {
+  const { rows } = await db.query('select 1 from bl.clubs where id = $1', [clubId]);
+  if (rows.length === 0) throw new Error(`provision:dev: в базе нет клуба сида ${clubId} — сначала npm run db:reset`);
+}
+
+/**
  * Устройства сида со столом, без заводской записи и без принятой привязки.
  * @param {import('pg').ClientBase} db — суперпользователь (DATABASE_ADMIN_URL)
  */

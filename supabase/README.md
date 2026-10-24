@@ -27,7 +27,7 @@ Postgres из образа `supabase/postgres` (decisions №11). Клиенты
 | `club_members` | `club_id`, `user_id`, `role` (`owner`, `manager`, `reception`, `installer`, `bar` — с 0107, №97), `pin_hash` (`scrypt$N$r$p$соль$хеш`), `pin_failed_count`, `pin_locked_until`, `pin_set_at`, `active` |
 | `resources` | стол: `type` (`billiard_pyramid`, `billiard_pool`, `billiard_snooker`), `number`, `title`, план зала `plan_x`, `plan_y` (центр стола в сантиметрах от левого верхнего угла зала), `plan_rotation` (градусы) |
 | `devices` | `id` = device_id = логин MQTT, `resource_id` (уникально), `device_key_enc` (AES-256-GCM в приложении), `last_seq`, `fw`, `caps`, `last_seen_at` |
-| `tariff_rules` | `resource_type` или `resource_id`, `days` (ISO 1–7), `start_local`–`end_local` (местное время клуба; конец ≤ начала — через полночь), `price_per_hour` (копейки), `step_minutes`, `min_minutes`, `priority` |
+| `tariff_rules` | `resource_type` или `resource_id`, `days` (ISO 1–7), `start_local`–`end_local` (местное время клуба; конец ≤ начала — через полночь), `price_per_hour` (копейки, строго > 0 — 1054, №163), `step_minutes`, `min_minutes`, `priority` |
 | `audit_log` | журнал, см. ниже |
 | `schema_migrations` | учёт миграций (у `app_api` прав нет) |
 | `consents` (0100) | согласие на обработку ПДн: `user_id`, `version`, `accepted_at` |

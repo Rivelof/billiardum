@@ -2,13 +2,15 @@
 //
 // Режим test | live делает backend-A (clubs.mode, ctx.clubMode, app.club_mode). Режим читается
 // так: ctx (clubMode или club.mode) → настройка транзакции app.club_mode →
-// столбец bl.clubs.mode → 'test'. В live изменения зала и тарифа — ручное действие (инвариант 8):
+// столбец bl.clubs.mode → 'test'. В боевом режиме (live или приостановлен после live —
+// isLiveClub, server/lib/club-mode.mjs) изменения зала и тарифа — ручное действие (инвариант 8):
 // причина обязательна, запись manual.* в журнал и тревога manual_action владельцу и
 // управляющему (уведомление при каждом действии, №66).
 
 import { HttpError } from '../http/errors.mjs';
 import { raise } from '../alarms/index.mjs';
 import { appendAudit } from '../lib/audit.mjs';
+import { isLiveClub } from '../lib/club-mode.mjs';
 
 export const MODES = ['test', 'live'];
 export const MAX_REASON_LEN = 500;
@@ -43,7 +45,26 @@ export async function clubMode(db, clubId, ctx = null) {
   return 'test';
 }
 
-export const isLive = (mode) => mode === 'live';
+/** Боевой ли режим: live или приостановлен после live (одна функция с правилами денег). */
+export const isLive = (mode, modeBeforeSuspend = null) => isLiveClub(mode, modeBeforeSuspend);
+
+/**
+ * Режим клуба и признак «боевой» для ручных действий мастера (П-2): приостановленный клуб
+ * боевой, если до приостановки был live. Режим до приостановки — из ctx.club (объект) или
+ * bl.clubs.mode_before_suspend; не прочитан — клуб считается боевым (причина и уведомление
+ * лишними не бывают; у suspended столбец всегда задан, clubs_suspend_check).
+ * @returns {Promise<{ mode: string, live: boolean }>}
+ */
+export async function clubLive(db, clubId, ctx = null) {
+  const mode = await clubMode(db, clubId, ctx);
+  if (mode !== 'suspended') return { mode, live: isLiveClub(mode) };
+  let before = ctx?.club && typeof ctx.club === 'object' ? ctx.club.mode_before_suspend : undefined;
+  if (typeof before !== 'string') {
+    const { rows } = await db.query('select mode_before_suspend from bl.clubs where id = $1', [clubId]);
+    before = rows[0]?.mode_before_suspend;
+  }
+  return { mode, live: isLiveClub(mode, before === 'test' ? 'test' : 'live') };
+}
 
 /** Причина ручного действия: 1–500 символов после обрезки пробелов; иначе 400 reason_required. */
 export function cleanReason(reason) {

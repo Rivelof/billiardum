@@ -16,7 +16,7 @@
 
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
-import { cleanReason, clubMode, isLive, manualAction } from './mode.mjs';
+import { cleanReason, clubLive, manualAction } from './mode.mjs';
 
 export const KINDS = Object.freeze({ pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker', mixed: 'billiard_mixed' });
 export const KIND_OF_TYPE = Object.freeze(Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [v, k])));
@@ -161,8 +161,8 @@ export async function activeCount(db, clubId) {
 export async function createResource(db, { clubId, userId, body, now, ctx = null, log }) {
   const f = readFields(body, { partial: false });
   if ((body ?? {}).active !== undefined) throw bad('active');
-  const mode = await clubMode(db, clubId, ctx);
-  const reason = isLive(mode) ? cleanReason(body?.reason) : null;
+  const { mode, live } = await clubLive(db, clubId, ctx);
+  const reason = live ? cleanReason(body?.reason) : null;
   const count = (await db.query('select count(*)::int as n from bl.resources where club_id = $1', [clubId])).rows[0].n;
   if (count >= MAX_TABLES) throw new HttpError(409, 'limit_exceeded', { detail: 'tables' });
   const row = await guarded(db, async () =>
@@ -176,7 +176,7 @@ export async function createResource(db, { clubId, userId, body, now, ctx = null
     ).rows[0],
   );
   const data = { resource_id: row.id, number: row.number, kind: KIND_OF_TYPE[row.type], plan_x: row.plan_x, plan_y: row.plan_y, plan_rotation: row.plan_rotation, mode };
-  if (isLive(mode)) {
+  if (live) {
     await manualAction(db, {
       clubId,
       userId,
@@ -208,8 +208,7 @@ export async function updateResource(db, { clubId, userId, resourceId, body, now
     )
   ).rows[0];
   if (!cur || cur.club_id !== clubId) throw new HttpError(404, 'not_found');
-  const mode = await clubMode(db, clubId, ctx);
-  const live = isLive(mode);
+  const { mode, live } = await clubLive(db, clubId, ctx);
   const activeChange = f.active !== undefined && f.active !== cur.active;
   // №164: смена типа стола в live меняет его тариф (правила по типам) — ручное действие.
   const kindChange = f.type !== undefined && f.type !== cur.type;

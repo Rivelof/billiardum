@@ -32,6 +32,10 @@
   Номер занят — `409 duplicate`. Не больше 200 столов — `409 limit_exceeded`.
 - Только владелец и управляющий. Журнал: `resource.create`, `resource.update` (с `changed: {поле: {from, to}}`),
   `resource.deactivate`, `resource.activate`, `hall.update`.
+- «Боевой режим» здесь и в тарифах — `live` или приостановленный после `live` (`suspended`,
+  `mode_before_suspend = 'live'`; pentester П-2): одна функция `isLiveClub` (`server/lib/club-mode.mjs`)
+  с правилами денег (`clubs/shops.mjs`) и чек-листом; в мастере — `clubLive` (`mode.mjs`). Приостановленный
+  после `test` — как `test`.
 - В `live` добавление, вывод и возврат стола — ручное действие `manual.resource_add` / `manual.resource_remove`:
   `reason` обязателен (`400 reason_required`), журнал и тревога `manual_action` владельцу (через `ctx.manual`
   backend-A, без него — свой путь в `mode.mjs`).
@@ -49,7 +53,7 @@
 - `GET /api/clubs/{club}/tariffs` → `{ timezone, day_start_local, rules, resource_rules, coverage }`; одинаковые правила всех четырёх типов — одно правило `kind: null`.
 - `PUT /api/clubs/{club}/tariffs {rules, reason?}` → как `GET`. Правило: `{kind?: тип|null (все типы), days: [1..7], from: 'HH:MM', to: 'HH:MM' (24:00; from = to — сутки), price_per_hour_kopecks, min_minutes (0…1440), step_minutes (1…60)}`, до 100 правил.
   Цена — целые копейки строго больше нуля (№163, pentester Н-1): 0 ₽/ч — `400 bad_request` (в логе сервера
-  `rules[i].price_per_hour_kopecks: must be > 0`). Бесплатная игра — только ручным действием с причиной.
+  `rules[i].price_per_hour_kopecks: must be > 0`); в базе — `check (price_per_hour > 0)` (миграция 1054, П-1). Бесплатная игра — только ручным действием с причиной.
 - Проверка — по рабочим суткам клуба в его поясе, как в движке: для каждого типа столов в работе и каждого типа из правил
   каждая минута недели — ровно одно правило. Пересечение — `400 tariff_overlap`, дыра — `400 tariff_gap`, оба с
   `{kind?, weekday, from, to}` (`weekday` — день рабочих суток: ночь пятницы до 06:00 — пятница; `from/to` — местное время).
@@ -70,6 +74,6 @@
 
 ## Тесты
 
-- `node --test "setup/test/*.test.mjs"` — шаблоны и неделя, BLD1, заводские коды и наклейки.
-- `setup/test/db/setup.test.mjs` (`npm run test:db` в корне) — столы, live/test, тарифы и движок, наклейки, приглашение, `.xlsx`.
+- `node --test "setup/test/*.test.mjs"` — шаблоны и неделя, BLD1, заводские коды и наклейки, боевой режим (`mode.test.mjs`, П-2).
+- `setup/test/db/setup.test.mjs` (`npm run test:db` в корне) — столы, live/test, приостановленный после live (П-2), тарифы и движок, цена 0 отвергается базой (1054, П-1), наклейки, приглашение, `.xlsx`.
 - `test/light/setup-bind.test.mjs` — привязка по QR, реестр (5 неверных → 30 минут), лимиты claim, №162: в проде (`NODE_ENV=production`) bind и claim — только устройства из `bl.device_factory` (миграция 1053), в разработке — и без реестра.

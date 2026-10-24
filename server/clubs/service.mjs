@@ -278,7 +278,7 @@ export async function onboarding(db, { clubId, now, neighbors, config = {}, publ
     devices: ok.devices,
     stickers: ok.stickers,
     test: await exists(db, 'select 1 from bl.sessions where club_id = $1 and is_test', [clubId]),
-    go_live: club.mode === 'live' || (club.mode === 'suspended' && club.mode_before_suspend === 'live'),
+    go_live: isLiveClub(club.mode, club.mode_before_suspend),
   };
   const plan = club.settings?.plan;
   return {
