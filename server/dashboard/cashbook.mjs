@@ -6,14 +6,17 @@
 // * Прочие доходы и расходы — вручную по статьям справочника клуба (статьи правит владелец).
 // * Записи не правятся и не удаляются (триггер базы): исправление — сторно (новая запись со знаком
 //   минус, ссылкой на исходную и причиной), датой сторно (прошлые остатки не меняются).
+// * Дата записи (№189) — не раньше чем 35 дней назад (иначе 400 bad_request, detail date) и не в
+//   будущем; запись задним числом (раньше вчерашних суток) — уведомление владельцу (не тревога).
 // * Остаток на начало периода = сумма записей до него; на конец = начало + доходы + инкассации − расходы.
 // Журнал: cashbook.entry, cashbook.storno, cashbook.collection, cashbook.category_create, cashbook.category_update.
 
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
 import { isUuid, safely } from '../lib/store.mjs';
-import { maskPhones } from '../notify/index.mjs';
-import { dayBounds, daysBetween, isDay, workingDayOf } from './time.mjs';
+import { formatMoney } from '@billiardum/shared/format';
+import { maskPhones, sendToClubStaff } from '../notify/index.mjs';
+import { addDays, dayBounds, daysBetween, isDay, ruDate, workingDayOf } from './time.mjs';
 
 export const DEFAULT_CATEGORIES = [
   ['expense', 'Аренда', 10],
@@ -26,6 +29,8 @@ export const DEFAULT_CATEGORIES = [
   ['income', 'Начальный остаток', 20],
 ];
 const MAX_AMOUNT = 100_000_000_000;
+/** Самая ранняя дата записи — столько суток назад (№189). */
+export const MAX_BACKDATE_DAYS = 35;
 const KINDS = ['income', 'expense'];
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 const sign = (kind, amount) => (kind === 'expense' ? -amount : amount);
@@ -197,14 +202,14 @@ export async function addEntry(db, { club, userId, body, now }) {
   if (!isUuid(b.category_id)) throw new HttpError(400, 'bad_request', { detail: 'category_id' });
   const today = workingDayOf(now, club.timezone, club.day_start_local);
   const day = b.date ?? today;
-  if (!isDay(day) || day > today) throw new HttpError(400, 'bad_request', { detail: 'date' });
+  if (!isDay(day) || day > today || day < addDays(today, -MAX_BACKDATE_DAYS)) throw new HttpError(400, 'bad_request', { detail: 'date' });
   let comment = null;
   if (b.comment !== undefined && b.comment !== null) {
     if (typeof b.comment !== 'string' || b.comment.trim().length > 500) throw new HttpError(400, 'bad_request', { detail: 'comment' });
     comment = b.comment.trim() || null;
   }
   await ensureCategories(db, club.id, now);
-  const cat = await db.query('select id, kind, name, active from bl.cashbook_categories where id = $1', [b.category_id]);
+  const cat = await db.query('select id, kind, name, active from bl.cashbook_categories where id = $1 and club_id = $2', [b.category_id, club.id]);
   const c = cat.rows[0];
   if (!c) throw new HttpError(404, 'not_found');
   if (c.kind !== b.kind || !c.active) throw new HttpError(400, 'bad_request', { detail: 'category' });
@@ -222,6 +227,17 @@ export async function addEntry(db, { club, userId, body, now }) {
     actorId: userId,
     data: { entry_id: e.id, kind: e.kind, amount_kopecks: amount, category_id: c.id, day },
   });
+  // Задним числом — раньше вчерашних суток (№189): меняет прошлые остатки и прибыль, владельцу — уведомление.
+  if (day < addDays(today, -1)) {
+    const who = (await db.query('select name from bl.users where id = $1', [userId])).rows[0]?.name ?? null;
+    const word = b.kind === 'expense' ? 'расход' : 'доход';
+    await sendToClubStaff(db, club.id, ['owner'], {
+      kind: 'cashbook.backdated',
+      level: 'important',
+      text: `Касса: запись задним числом — ${word} ${formatMoney(amount)}, статья «${c.name}», дата ${ruDate(day)}${who ? `, внёс ${who}` : ''}.`,
+      data: { club_id: club.id, entry_id: e.id, day, url: `/club/c/${encodeURIComponent(club.id)}/reports/cashbook` },
+    });
+  }
   return entryJson(e, new Map(), new Map([[c.id, c]]));
 }
 
@@ -230,11 +246,11 @@ export async function stornoEntry(db, { club, userId, entryId, reason, now }) {
   if (typeof reason !== 'string' || reason.trim() === '') throw new HttpError(400, 'reason_required');
   const why = reason.trim();
   if (why.length > 2000) throw new HttpError(400, 'bad_request', { detail: 'reason' });
-  const { rows } = await db.query('select * from bl.cashbook_entries where id = $1', [entryId]);
+  const { rows } = await db.query('select * from bl.cashbook_entries where id = $1 and club_id = $2', [entryId, club.id]);
   const o = rows[0];
   if (!o || o.club_id !== club.id) throw new HttpError(404, 'not_found');
   if (o.reverses_id) throw new HttpError(400, 'bad_request', { detail: 'storno of storno' });
-  const done = await db.query('select 1 from bl.cashbook_entries where reverses_id = $1', [o.id]);
+  const done = await db.query('select 1 from bl.cashbook_entries where reverses_id = $1 and club_id = $2', [o.id, club.id]);
   if (done.rowCount > 0) throw new HttpError(409, 'duplicate');
   const day = workingDayOf(now, club.timezone, club.day_start_local);
   // Параллельное второе сторно упирается в уникальный индекс reverses_id — тоже 409.
@@ -286,7 +302,7 @@ export async function createCategory(db, { clubId, userId, body, now }) {
 /** PATCH …/cashbook/categories/{id} {name?, sort?, active?} — владелец. */
 export async function updateCategory(db, { clubId, userId, categoryId, body, now }) {
   const b = body ?? {};
-  const cur = (await db.query('select * from bl.cashbook_categories where id = $1', [categoryId])).rows[0];
+  const cur = (await db.query('select * from bl.cashbook_categories where id = $1 and club_id = $2', [categoryId, clubId])).rows[0];
   if (!cur || cur.club_id !== clubId) throw new HttpError(404, 'not_found');
   const next = { name: cur.name, sort: cur.sort, active: cur.active };
   if (b.name !== undefined) {
@@ -302,7 +318,7 @@ export async function updateCategory(db, { clubId, userId, categoryId, body, now
     next.active = b.active;
   }
   try {
-    await safely(db, (x) => x.query('update bl.cashbook_categories set name = $2, sort = $3, active = $4, updated_at = $5 where id = $1', [categoryId, next.name, next.sort, next.active, now]));
+    await safely(db, (x) => x.query('update bl.cashbook_categories set name = $2, sort = $3, active = $4, updated_at = $5 where id = $1 and club_id = $6', [categoryId, next.name, next.sort, next.active, now, clubId]));
   } catch (err) {
     if (err.code === '23505') throw new HttpError(409, 'duplicate');
     throw err;

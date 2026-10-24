@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { addDays, dayBounds, openWindows, sliceByHour, workingDayOf, zonedTime, ruDate, daysBetween } from '../time.mjs';
-import { median, operationIntervals, sourceOf } from '../day.mjs';
+import { apportionMinutes, median, operationIntervals, sourceOf } from '../day.mjs';
 import { BOM, cell, rub, toCsv } from '../csv.mjs';
 import { parseQuery } from '../service.mjs';
 
@@ -73,6 +73,23 @@ describe('стол в работе (№170)', () => {
   it('без событий — по текущему признаку', () => {
     assert.deepEqual(operationIntervals({ created_at: created, active: false }, [], t('2026-10-20T00:00:00Z')), []);
     assert.equal(operationIntervals({ created_at: created, active: true }, [], t('2026-10-20T00:00:00Z')).length, 1);
+  });
+});
+
+describe('ёмкость по часам = итогу (Н1 M5.2)', () => {
+  it('сумма ячеек = округлению суммы, каждая ячейка — не дальше минуты от точной', () => {
+    const M = 60_000;
+    // Неполные сутки: 8 столов, у каждого первый и последний час — по 29,6 мин и 30,4 мин.
+    const cells = [];
+    for (let t = 0; t < 8; t += 1) cells.push(29.6 * M, 60 * M, 60 * M, 30.4 * M - 7_000);
+    const out = apportionMinutes(cells);
+    const total = cells.reduce((a, x) => a + x, 0);
+    assert.equal(out.reduce((a, x) => a + x, 0), Math.round(total / M));
+    // Поячеечное округление дало бы другое число (так и было: 1 360 против 1 358).
+    assert.notEqual(cells.reduce((a, x) => a + Math.round(x / M), 0), Math.round(total / M));
+    for (const [i, x] of out.entries()) assert.ok(Math.abs(x - cells[i] / M) < 1, `ячейка ${i}`);
+    assert.deepEqual(apportionMinutes([]), []);
+    assert.deepEqual(apportionMinutes([60 * M, 60 * M]), [60, 60]);
   });
 });
 

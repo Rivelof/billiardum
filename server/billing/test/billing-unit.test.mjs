@@ -101,6 +101,24 @@ describe('состояние подписки и плашка (§3, №184)', ()
     assert.equal(bannerFor(sub(), { now: at(DAY), live: false }), null);
   });
 
+  it('счёт выставлен, отказа ещё не было — invoice_due с датой списания; payment_failed — только после отказа', () => {
+    const auto = sub({ autopay: true, payment_method_enc: 'v1:x' });
+    // Счёт выставлен в конце пробного, попытка — в этот же проход (идёт): списание «сейчас».
+    const issued = { period_start_at: trialUntil, attempts: 0, next_attempt_at: trialUntil, last_error: null };
+    const due = bannerFor(auto, { now: at(60_000), openInvoice: issued });
+    assert.deepEqual([due.kind, due.days_overdue, due.last_error, due.next_attempt_at], ['invoice_due', 0, null, at(60_000).toISOString()]);
+    // Попытка назначена на будущее — её срок.
+    const later = bannerFor(auto, { now: at(0), openInvoice: { ...issued, next_attempt_at: at(DAY) } });
+    assert.deepEqual([later.kind, later.next_attempt_at], ['invoice_due', at(DAY).toISOString()]);
+    // Период кончился, счёта ещё нет — тоже не отказ.
+    assert.equal(bannerFor(auto, { now: at(1000) }).kind, 'invoice_due');
+    // Первая попытка отказала — payment_failed с причиной, без next_attempt_at.
+    const failed = bannerFor(auto, { now: at(DAY), openInvoice: { ...issued, attempts: 1, next_attempt_at: at(2 * DAY), last_error: 'insufficient_funds' } });
+    assert.deepEqual([failed.kind, failed.last_error, failed.next_attempt_at], ['payment_failed', 'insufficient_funds', undefined]);
+    // Карты нет — тоже отказ (оплатить нечем).
+    assert.equal(bannerFor(sub(), { now: at(0), openInvoice: { ...issued, next_attempt_at: null, last_error: 'card_required' } }).kind, 'payment_failed');
+  });
+
   it('дней до конца — вверх', () => {
     assert.equal(daysLeft(at(0), at(-0.2 * DAY)), 1);
     assert.equal(daysLeft(at(0), at(-7 * DAY)), 7);

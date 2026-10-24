@@ -130,10 +130,13 @@ export function daysLeft(until, now) {
 
 /**
  * Плашка в программе клуба (№184) владельцу и управляющему:
- *   payment_failed — период кончился, оплата не прошла (или нет карты): {days_overdue};
+ *   invoice_due — счёт выставлен (или период кончился), списание ещё не отказывало: {next_attempt_at} — когда
+ *   спишется (срок попытки; идёт попытка — сейчас), days_overdue;
+ *   payment_failed — после реального отказа: попытка списания не прошла или карты нет (last_error
+ *   счёта): {days_overdue, last_error};
  *   trial_ending / period_ending — до конца пробного или оплаченного периода ≤ 7 дней, а автоплатёж
  *   не настроен: {days_left}. Автоплатёж настроен и оплата идёт по плану — плашки нет.
- * @returns {{ kind: string, days_left: number, days_overdue: number, until: string } | null}
+ * @returns {{ kind: string, days_left: number, days_overdue: number, until: string, next_attempt_at?: string, last_error: string | null } | null}
  */
 export function bannerFor(sub, { now, live = true, openInvoice = null } = {}) {
   if (!sub || !live) return null;
@@ -141,7 +144,15 @@ export function bannerFor(sub, { now, live = true, openInvoice = null } = {}) {
   const t = new Date(now).getTime();
   if (openInvoice || t >= end.getTime()) {
     const since = openInvoice ? new Date(openInvoice.period_start_at) : end;
-    return { kind: 'payment_failed', days_left: 0, days_overdue: Math.max(0, Math.floor((t - since.getTime()) / DAY_MS)), until: since.toISOString(), last_error: openInvoice?.last_error ?? null };
+    const overdue = Math.max(0, Math.floor((t - since.getTime()) / DAY_MS));
+    const failed = Boolean(openInvoice?.last_error) || (openInvoice?.attempts ?? 0) > 0;
+    if (!failed) {
+      // До первой неудачной попытки (счёт только выставлен, списание впереди или идёт) — не «оплата не прошла».
+      const at = openInvoice?.next_attempt_at ? new Date(openInvoice.next_attempt_at) : since;
+      const chargeAt = new Date(Math.max(at.getTime(), t));
+      return { kind: 'invoice_due', days_left: 0, days_overdue: overdue, until: since.toISOString(), next_attempt_at: chargeAt.toISOString(), last_error: null };
+    }
+    return { kind: 'payment_failed', days_left: 0, days_overdue: overdue, until: since.toISOString(), last_error: openInvoice?.last_error ?? null };
   }
   const left = daysLeft(end, now);
   if (left <= REMIND_DAYS && !autopayReady(sub)) {

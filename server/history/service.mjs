@@ -123,7 +123,7 @@ async function clubRows(db, club, p, { take }) {
       [...args, take],
     );
     const items = rows.length
-      ? (await db.query('select order_id, position, name, qty, unit_price_kopecks, amount_kopecks, modifiers from bl.order_items where order_id = any($1::uuid[]) order by order_id, position', [rows.map((r) => r.id)])).rows
+      ? (await db.query('select order_id, position, name, qty, unit_price_kopecks, amount_kopecks, modifiers from bl.order_items where club_id = $2 and order_id = any($1::uuid[]) order by order_id, position', [rows.map((r) => r.id), club.id])).rows
       : [];
     const guests = await guestLabels(db, rows.map((r) => r.user_id));
     const names = await staffNames(db, rows.flatMap((r) => [r.created_by, r.canceled_by]));

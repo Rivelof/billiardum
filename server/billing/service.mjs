@@ -300,6 +300,7 @@ export async function platformList(db, { now, config }) {
       club_id: c.club_id,
       name: c.name,
       city: c.city,
+      timezone: c.timezone,
       mode: c.mode,
       state,
       plan: plan ? { id: plan.id, code: plan.code, title: plan.title } : null,

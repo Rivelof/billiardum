@@ -98,7 +98,8 @@
 - `state`: `trial` — пробный период; `active` — оплачено; `past_due` — есть неоплаченный счёт (или период кончился); `unpaid` — старейшему неоплаченному счёту 14 дней и больше; `canceled` — клуб вернулся в `test`. Клуб ещё в `test`: `mode: 'test'`, `state: 'trial'`, `trial_until: null`, `next_invoice: null` — «Пробный период 60 дней начнётся после перехода в боевой режим».
 - `banner` (или `null`) — плашка «Оплаченный период истекает через N дней»:
   - `trial_ending` и `period_ending` — до конца пробного или оплаченного периода `days_left` ≤ 7, а автоплатёж не настроен;
-  - `payment_failed` — период кончился, оплаты нет: `days_overdue`, `last_error` (`insufficient_funds`, `card_required` …).
+  - `invoice_due` — счёт выставлен (или период кончился), а списание ещё ни разу не отказало (не пробовали или попытка идёт): `next_attempt_at` — когда спишется (срок попытки, не раньше «сейчас»), `until` — начало периода счёта; дату показывать по поясу клуба;
+  - `payment_failed` — только после реального отказа: попытка списания не прошла или карты нет (`last_error`: `insufficient_funds`, `card_required` …), `days_overdue`.
 - `next_invoice` — открытый счёт (`invoice_id` задан) или ближайший будущий (сумма по текущим столам и цене).
 - `open_invoice` — `{id, period_start, period_end, amount_kopecks, attempts, next_attempt_at, last_error}` или `null`.
 - `autopay` — автоплатёж сработает сам (включён и карта сохранена); `card_pending` — владелец начал оплату или привязку на странице ЮKassa меньше часа назад, итога ещё нет (показать «Проверяем оплату…», опрашивать GET).
@@ -136,7 +137,7 @@
   ```json
   {
     "items": [ {
-      "club_id": "…", "name": "Тестовый клуб", "city": "Екатеринбург", "mode": "live", "state": "past_due",
+      "club_id": "…", "name": "Тестовый клуб", "city": "Екатеринбург", "timezone": "Asia/Yekaterinburg", "mode": "live", "state": "past_due",
       "plan": { "id": "…", "code": "club", "title": "Клуб" }, "price_per_table_kopecks": 79000,
       "personal_price": false, "personal_price_reason": null, "tables": 8, "monthly_kopecks": 632000,
       "went_live_at": "…", "trial_until": "…", "paid_until": "…", "debt_kopecks": 632000,

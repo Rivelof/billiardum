@@ -105,6 +105,23 @@ async function resourceEvents(db, clubId, nowMs) {
   return out;
 }
 
+/**
+ * Целые минуты по ячейкам так, чтобы сумма ячеек = округлению суммы (Н1 M5.2): округляется
+ * накопленная сумма, ячейка — разность соседних округлений. Каждая ячейка отличается от точного
+ * значения меньше чем на минуту. values — миллисекунды в фиксированном порядке.
+ */
+export function apportionMinutes(values) {
+  let acc = 0;
+  let prev = 0;
+  return values.map((ms) => {
+    acc += ms;
+    const cur = min(acc);
+    const out = cur - prev;
+    prev = cur;
+    return out;
+  });
+}
+
 /** Источник денег (§3 «Деньги»): QR гостя, касса ресепшена, онлайн-бронь, турнир. */
 export function sourceOf(p) {
   if (p.provider === 'reception') return 'reception';
@@ -156,7 +173,7 @@ export async function computeDay(db, { club, day, now }) {
   structure.tables = rev.tables.total_kopecks - structure.deposits;
 
   // Столы: в работе, ёмкость по часам.
-  const res = await db.query('select id, number, title, type, active, created_at from bl.resources order by number');
+  const res = await db.query('select id, number, title, type, active, created_at from bl.resources where club_id = $1 order by number', [clubId]);
   const ev = await resourceEvents(db, clubId, nowMs);
   const byResEvents = new Map();
   for (const e of ev.rows) {
@@ -469,6 +486,15 @@ export async function computeDay(db, { club, day, now }) {
   );
 
   // Итог.
+  // Ёмкость округляется один раз: по ячейкам стола и часа накопленной суммой (столы по номеру, часы
+  // по порядку); стол и итог — суммы своих ячеек. Сумма тепловой карты = кольцу (Н1 M5.2).
+  const hourList = [...hours.values()];
+  const capMinutes = apportionMinutes(hourList.map((h) => h.capacity_ms));
+  const capByResource = new Map();
+  hourList.forEach((h, i) => {
+    h.capacity_minutes = capMinutes[i];
+    capByResource.set(h.resource_id, (capByResource.get(h.resource_id) ?? 0) + capMinutes[i]);
+  });
   const resourcesOut = {};
   for (const [id, r] of Object.entries(resources)) {
     resourcesOut[id] = {
@@ -479,20 +505,20 @@ export async function computeDay(db, { club, day, now }) {
       play_minutes: min(r.play_ms),
       service_minutes: min(r.service_ms),
       booking_minutes: min(r.booking_ms),
-      capacity_minutes: min(r.capacity_ms),
+      capacity_minutes: capByResource.get(id) ?? 0,
       revenue_kopecks: r.revenue_kopecks,
       refunds_kopecks: r.refunds_kopecks,
     };
   }
-  const capacityMs = Object.values(resources).reduce((a, r) => a + r.capacity_ms, 0);
-  const hourly = [...hours.values()]
+  const capacityMinutes = capMinutes.reduce((a, x) => a + x, 0);
+  const hourly = hourList
     .map((h) => ({
       resource_id: h.resource_id,
       hour: h.hour,
       play_minutes: min(h.play_ms),
       service_minutes: min(h.service_ms),
       booking_minutes: min(h.booking_ms),
-      capacity_minutes: Math.min(120, min(h.capacity_ms)),
+      capacity_minutes: h.capacity_minutes,
       games: h.games,
     }))
     .filter((h) => h.play_minutes || h.service_minutes || h.booking_minutes || h.capacity_minutes || h.games)
@@ -510,7 +536,7 @@ export async function computeDay(db, { club, day, now }) {
       net_kopecks: rev.net_kopecks,
       games,
       play_minutes: min(playMs),
-      capacity_minutes: min(capacityMs),
+      capacity_minutes: capacityMinutes,
     },
     revenue: {
       total_kopecks: rev.total_kopecks,

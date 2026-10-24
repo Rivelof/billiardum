@@ -183,6 +183,10 @@ describe('T31. Подписка без участия людей', () => {
       const s = await sub(CLUB_A);
       const start = s.paid_until.getTime();
       h.setNow(start + MIN);
+      // Период кончился, списания ещё не было — не «оплата не прошла», а «спишем» с датой.
+      const due = await h.request('GET', `/api/clubs/${CLUB_A}/subscription`, { token: managerA.token });
+      assert.deepEqual([due.json.banner.kind, due.json.banner.last_error], ['invoice_due', null]);
+      assert.ok(Math.abs(new Date(due.json.banner.next_attempt_at).getTime() - (start + MIN)) < MIN, 'спишем сейчас');
       await h.tick();
       let inv = (await invoices(CLUB_A))[1];
       assert.deepEqual([inv.status, inv.attempts, inv.last_error], ['open', 1, 'insufficient_funds']);
@@ -338,6 +342,7 @@ describe('T31. Подписка без участия людей', () => {
     assert.equal(list.status, 200, list.text);
     const a1 = list.json.items.find((i) => i.club_id === CLUB_A);
     assert.deepEqual([a1.name, a1.state, a1.tables, a1.price_per_table_kopecks, a1.debt_kopecks, a1.autopay], ['Тестовый клуб', 'active', 8, 89000, 0, true]);
+    assert.equal(a1.timezone, 'Asia/Yekaterinburg', 'пояс клуба — для дат счёта');
     assert.ok(list.json.plans.some((p) => p.id === PLAN_CLUB && p.price_per_table_kopecks === 89000));
     assert.equal(typeof list.json.totals.mrr_kopecks, 'number');
     assert.ok(list.json.totals.mrr_kopecks >= 8 * 89000);

@@ -30,7 +30,7 @@ async function labels(db, ids) {
 
 async function sessionsOfResource(ctx, req) {
   const club = await loadClub(ctx.db, ctx.club);
-  const res = (await ctx.db.query('select id, number, title, type from bl.resources where id = $1', [req.params.id])).rows[0];
+  const res = (await ctx.db.query('select id, number, title, type from bl.resources where id = $1 and club_id = $2', [req.params.id, ctx.club])).rows[0];
   if (!res) throw new HttpError(404, 'not_found');
   const today = workingDayOf(ctx.clock.now(), club.timezone, club.day_start_local);
   const from = req.query.from ?? today;
@@ -55,10 +55,10 @@ async function sessionsOfResource(ctx, req) {
                   sum(case when p.capture then p.amount_kopecks else coalesce(p.captured_kopecks, 0) end)::bigint as amount
              from bl.payments p
              left join bl.sessions s on s.booking_id is not null and s.booking_id = p.booking_id and p.kind = 'booking'
-            where p.status = 'succeeded' and p.provider <> 'balance' and not p.is_test
+            where p.club_id = $2 and p.status = 'succeeded' and p.provider <> 'balance' and not p.is_test
               and (p.session_id = any($1::uuid[]) or s.id = any($1::uuid[]))
             group by 1, 2`,
-          [ids],
+          [ids, ctx.club],
         )
       ).rows
     : [];
@@ -90,7 +90,7 @@ async function sessionsOfResource(ctx, req) {
 async function guestPhone(ctx, req) {
   const reason = manualReason(req.body?.reason);
   const club = await loadClub(ctx.db, ctx.club);
-  const s = (await ctx.db.query('select s.id, s.resource_id, s.started_at, s.payer_user_id, r.number from bl.sessions s join bl.resources r on r.id = s.resource_id where s.id = $1', [req.params.id])).rows[0];
+  const s = (await ctx.db.query('select s.id, s.resource_id, s.started_at, s.payer_user_id, r.number from bl.sessions s join bl.resources r on r.id = s.resource_id where s.id = $1 and s.club_id = $2', [req.params.id, ctx.club])).rows[0];
   if (!s) throw new HttpError(404, 'not_found');
   const phone = s.payer_user_id ? (await ctx.db.query('select bl.guest_phone($1, $2) as phone', [s.id, s.payer_user_id])).rows[0].phone : null;
   if (!phone) throw new HttpError(404, 'not_found');

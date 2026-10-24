@@ -22,7 +22,7 @@ export function bucketOf(status) {
 async function hallOf(ctx, db, club) {
   const service = ctx.modules?.light?.light?.()?.service;
   if (typeof service?.hall === 'function') return service.hall(db, { clubId: club.id, userId: ctx.user.id });
-  const { rows } = await db.query('select id, number, type, title, plan_x, plan_y, plan_rotation from bl.resources where active order by number');
+  const { rows } = await db.query('select id, number, type, title, plan_x, plan_y, plan_rotation from bl.resources where club_id = $1 and active order by number', [club.id]);
   return rows.map((r) => ({ resource: r, status: 'unknown', busy_until: null, until: null }));
 }
 
