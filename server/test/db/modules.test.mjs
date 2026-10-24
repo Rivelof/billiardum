@@ -87,7 +87,7 @@ describe('сервер со всеми модулями M2', () => {
     const missing = log.lines.filter((l) => l.msg === 'module_missing').map((l) => l.module);
     // Модули M3 и M4 соседей появляются по ходу волны: их может ещё не быть.
     assert.ok(missing.every((m) => ['packages', 'bookings', 'waitlist', 'directory', 'plus', 'tournaments', 'billing'].includes(m)), `нет модулей: ${missing}`);
-    const order = ['setup', 'light', 'money', 'catalog', 'stock', 'pos', 'kkt', 'packages', 'bookings', 'waitlist', 'summaries', 'directory', 'plus', 'tournaments', 'clubs', 'dashboard', 'billing', 'clubapi'].filter(
+    const order = ['setup', 'light', 'money', 'catalog', 'stock', 'pos', 'kkt', 'packages', 'bookings', 'waitlist', 'summaries', 'directory', 'plus', 'tournaments', 'clubs', 'dashboard', 'billing', 'clubapi', 'maintenance'].filter(
       (m) => !missing.includes(m),
     );
     assert.deepEqual(started, order);

@@ -116,6 +116,7 @@ function entryJson(e, names, cats) {
     reverses_id: e.reverses_id ?? null,
     reversed_by: e.reversed_by ?? null,
     reason: e.reason ? maskPhones(e.reason) : null,
+    maintenance_event_id: e.maintenance_event_id ?? null,
     created_by: e.created_by ?? null,
     created_by_name: e.created_by ? names.get(e.created_by) ?? null : null,
     created_at: iso(e.created_at),
@@ -194,8 +195,12 @@ function parseAmount(v) {
   return v;
 }
 
-/** POST …/cashbook {kind, amount_kopecks, category_id, date?, comment?} — владелец и управляющий. */
-export async function addEntry(db, { club, userId, body, now }) {
+/**
+ * POST …/cashbook {kind, amount_kopecks, category_id, date?, comment?} — владелец и управляющий.
+ * maintenanceEventId (M5.6 №198) — расход по событию обслуживания стола: ссылка на событие; статью
+ * («Ремонт столов») выбрал сервер, поэтому выключенная статья не мешает.
+ */
+export async function addEntry(db, { club, userId, body, now, maintenanceEventId = null }) {
   const b = body ?? {};
   if (!KINDS.includes(b.kind)) throw new HttpError(400, 'bad_request', { detail: 'kind' });
   const amount = parseAmount(b.amount_kopecks);
@@ -212,11 +217,11 @@ export async function addEntry(db, { club, userId, body, now }) {
   const cat = await db.query('select id, kind, name, active from bl.cashbook_categories where id = $1 and club_id = $2', [b.category_id, club.id]);
   const c = cat.rows[0];
   if (!c) throw new HttpError(404, 'not_found');
-  if (c.kind !== b.kind || !c.active) throw new HttpError(400, 'bad_request', { detail: 'category' });
+  if (c.kind !== b.kind || (!c.active && !maintenanceEventId)) throw new HttpError(400, 'bad_request', { detail: 'category' });
   const { rows } = await db.query(
-    `insert into bl.cashbook_entries (club_id, kind, amount_kopecks, category_id, occurred_on, comment, created_by, created_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8) returning *, occurred_on::text as day`,
-    [club.id, b.kind, amount, c.id, day, comment, userId, now],
+    `insert into bl.cashbook_entries (club_id, kind, amount_kopecks, category_id, occurred_on, comment, created_by, created_at, maintenance_event_id)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning *, occurred_on::text as day`,
+    [club.id, b.kind, amount, c.id, day, comment, userId, now, maintenanceEventId],
   );
   const e = rows[0];
   await appendAudit(db, {
@@ -225,7 +230,7 @@ export async function addEntry(db, { club, userId, body, now }) {
     objectId: e.id,
     actorType: 'user',
     actorId: userId,
-    data: { entry_id: e.id, kind: e.kind, amount_kopecks: amount, category_id: c.id, day },
+    data: { entry_id: e.id, kind: e.kind, amount_kopecks: amount, category_id: c.id, day, ...(maintenanceEventId ? { maintenance_event_id: maintenanceEventId } : {}) },
   });
   // Задним числом — раньше вчерашних суток (№189): меняет прошлые остатки и прибыль, владельцу — уведомление.
   if (day < addDays(today, -1)) {
@@ -258,9 +263,9 @@ export async function stornoEntry(db, { club, userId, entryId, reason, now }) {
   try {
     ins = await safely(db, (x) =>
       x.query(
-        `insert into bl.cashbook_entries (club_id, kind, amount_kopecks, category_id, occurred_on, comment, reverses_id, reason, created_by, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning *, occurred_on::text as day`,
-        [club.id, o.kind, -Number(o.amount_kopecks), o.category_id, day, null, o.id, why, userId, now],
+        `insert into bl.cashbook_entries (club_id, kind, amount_kopecks, category_id, occurred_on, comment, reverses_id, reason, created_by, created_at, maintenance_event_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning *, occurred_on::text as day`,
+        [club.id, o.kind, -Number(o.amount_kopecks), o.category_id, day, null, o.id, why, userId, now, o.maintenance_event_id ?? null],
       ),
     );
   } catch (err) {

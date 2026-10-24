@@ -46,6 +46,8 @@ export const MODULES = [
   { name: 'billing', spec: '../billing/index.mjs' },
   // M5.7: публичный API клуба — очередь и воркер исходящих вебхуков (маршруты — api/routes/clubapi.mjs).
   { name: 'clubapi', spec: '../clubapi/index.mjs' },
+  // M5.6: обслуживание столов — проверка порогов часов игры, уведомления (маршруты — api/routes/maintenance.mjs).
+  { name: 'maintenance', spec: '../maintenance/index.mjs' },
 ];
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
 

@@ -184,6 +184,41 @@ describe('узкие функции SECURITY DEFINER', () => {
     assert.equal(await users(), before);
   });
 
+  it('обслуживание столов (M5.6): события, отметки порогов и ссылка кассы — только свой клуб, только добавление', async () => {
+    const RES_A = 'e1000000-0000-4000-8000-000000000001';
+    const RES_B = 'e2000000-0000-4000-8000-000000000001';
+    await db.pool.query(
+      `insert into bl.maintenance_events (id, club_id, resource_id, kind, occurred_on, cost_kopecks, created_by, created_at) values
+         ('ae000000-0000-4000-8000-00000000000a', $1, $3, 'cloth', current_date, 0, $5, now()),
+         ('ae000000-0000-4000-8000-00000000000b', $2, $4, 'cloth', current_date, 0, $6, now());
+       insert into bl.maintenance_alerts (club_id, resource_id, kind, event_id, threshold_hours, hours_at, created_at) values
+         ($1, $3, 'cloth', 'ae000000-0000-4000-8000-00000000000a', 10, 11, now()),
+         ($2, $4, 'cloth', 'ae000000-0000-4000-8000-00000000000b', 10, 11, now());`
+        .replaceAll('$1', `'${CLUB_A}'`).replaceAll('$2', `'${CLUB_B}'`).replaceAll('$3', `'${RES_A}'`).replaceAll('$4', `'${RES_B}'`)
+        .replaceAll('$5', `'${OWNER_A}'`).replaceAll('$6', `'${OWNER_B}'`),
+    );
+    await asRole(db.pool, 'app_api', { clubId: CLUB_A }, async (c) => {
+      for (const t of ['maintenance_events', 'maintenance_alerts']) {
+        const { rows } = await c.query(`select distinct club_id from bl.${t}`);
+        assert.deepEqual(rows.map((r) => r.club_id), [CLUB_A], t);
+      }
+      const ins = await tryQuery(c, "insert into bl.maintenance_events (club_id, resource_id, kind, occurred_on, created_at) values ($1, $2, 'balls', current_date, now())", [CLUB_B, RES_B]);
+      assert.match(ins?.message ?? '', /row-level security/);
+      // Исправление чужого события из своего клуба — внешний ключ (club_id, corrects_id) не пускает.
+      const cross = await tryQuery(c, "insert into bl.maintenance_events (club_id, resource_id, kind, occurred_on, corrects_id, reason, created_at) values ($1, $2, 'cloth', current_date, 'ae000000-0000-4000-8000-00000000000b', 'x', now())", [CLUB_A, RES_A]);
+      assert.ok(cross, 'чужое событие не исправить');
+      assert.equal((await tryQuery(c, 'update bl.maintenance_events set cost_kopecks = 1'))?.code, '42501');
+      assert.equal((await tryQuery(c, 'delete from bl.maintenance_alerts'))?.code, '42501');
+      // Расход кассы со ссылкой на событие другого клуба — нельзя.
+      const cat = await c.query("insert into bl.cashbook_categories (club_id, kind, name, created_at, updated_at) values ($1, 'expense', 'Ремонт столов', now(), now()) returning id", [CLUB_A]);
+      const link = await tryQuery(c, "insert into bl.cashbook_entries (club_id, kind, amount_kopecks, category_id, occurred_on, created_at, maintenance_event_id) values ($1, 'expense', 100, $2, current_date, now(), 'ae000000-0000-4000-8000-00000000000b')", [CLUB_A, cat.rows[0].id]);
+      assert.equal(link?.code, '23503');
+    });
+    await asRole(db.pool, 'app_api', { clubId: null, actorType: 'system' }, async (c) => {
+      for (const t of ['maintenance_events', 'maintenance_alerts']) assert.equal((await c.query(`select count(*)::int as n from bl.${t}`)).rows[0].n, 0, `${t} без контекста`);
+    });
+  });
+
   it('ключи API и вебхуки (M5.7): только свой клуб, хеш ключа app_api не читает, ключ ищет только bl.clubapi_key_auth', async () => {
     const hashA = 'a'.repeat(64);
     const hashB = 'b'.repeat(64);

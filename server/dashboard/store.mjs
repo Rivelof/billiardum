@@ -7,9 +7,9 @@ import { addDays, DEFAULT_DAY_START, eachDay, normalizeHhmm, workingDayOf } from
 /** Сколько закрытых суток без агрегата можно досчитать в одном запросе (остальное — missing_days). */
 export const MAX_LIVE_DAYS = 14;
 
-/** Клуб из контекста транзакции: { id, name, timezone, day_start_local, settings, created_at, mode }. */
+/** Клуб из контекста транзакции: { id, name, timezone, day_start_local, settings, created_at, mode, mode_before_suspend, went_live_at }. */
 export async function loadClub(db, clubId) {
-  const { rows } = await db.query('select id, name, timezone, settings, created_at, mode from bl.clubs where id = $1', [clubId]);
+  const { rows } = await db.query('select id, name, timezone, settings, created_at, mode, mode_before_suspend, went_live_at from bl.clubs where id = $1', [clubId]);
   const c = rows[0];
   if (!c) return null;
   return {
@@ -20,6 +20,9 @@ export async function loadClub(db, clubId) {
     day_start_local: normalizeHhmm(c.settings?.day_start_local, DEFAULT_DAY_START),
     created_at: c.created_at,
     mode: c.mode,
+    // M5.6: история прогноза — с перехода в live (до него записи тестовые).
+    mode_before_suspend: c.mode_before_suspend ?? null,
+    went_live_at: c.went_live_at ?? null,
   };
 }
 

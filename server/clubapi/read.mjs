@@ -5,6 +5,7 @@
 // интервалы — модуль брони (server/bookings/availability.mjs), цены — server/tariffs.
 
 import { HttpError } from '../http/errors.mjs';
+import { isUuid } from '../lib/store.mjs';
 import { availability as bookingAvailability } from '../bookings/availability.mjs';
 import { collect, dailyRows, parseQuery } from '../dashboard/service.mjs';
 import { bucketOf } from '../dashboard/now.mjs';
@@ -224,7 +225,7 @@ function decodeCursor(raw) {
   if (raw === undefined || raw === '') return null;
   try {
     const v = JSON.parse(Buffer.from(String(raw), 'base64url').toString('utf8'));
-    if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && !Number.isNaN(Date.parse(v[0])) && /^[0-9a-f-]{36}$/.test(v[1])) return v;
+    if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && !Number.isNaN(Date.parse(v[0])) && isUuid(v[1])) return v;
   } catch {
     // ниже — 400
   }

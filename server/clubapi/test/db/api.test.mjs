@@ -305,6 +305,12 @@ describe('T45: данные по ключу', () => {
     assert.deepEqual([...page1.json.items, ...page2.json.items].map((b) => b.booking_id), r.json.items.map((b) => b.booking_id));
     assert.equal((await t.api(key, `/api/v1/club/bookings?from=${data.D1}&to=${addDays(data.D1, 94)}`)).status, 400);
     assert.equal((await t.api(key, '/api/v1/club/bookings?cursor=zzz')).status, 400);
+    // Второй элемент курсора — UUID (как в роутере): 36 дефисов — 400, а не 500 на ::uuid.
+    for (const id of ['-'.repeat(36), '0123456789abcdef0123456789abcdef----', 'g'.repeat(36)]) {
+      const bad = Buffer.from(JSON.stringify([new Date().toISOString(), id])).toString('base64url');
+      const r = await t.api(key, `/api/v1/club/bookings?cursor=${bad}`);
+      assert.deepEqual([r.status, r.json], [400, { error: 'bad_request' }], id);
+    }
     // Ключ клуба Б броней клуба А не видит.
     const kb = await t.newKey(['bookings:read'], 'ownerB', CLUB_B);
     const b = await t.api(kb.key, `/api/v1/club/bookings?from=${data.D1}&to=${tomorrow}`);

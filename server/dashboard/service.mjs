@@ -10,6 +10,8 @@ import { median, METHODS, SOURCES, TYPES } from './day.mjs';
 import { liveHourlyRows, loadDays, storedHourly } from './store.mjs';
 import { addDays, dayBounds, daysBetween, isDay, isoDow, workingDayOf } from './time.mjs';
 import { cashbookTotals } from './cashbook.mjs';
+import { clubForecast } from './forecast.mjs';
+import { counters as maintenanceCounters } from '../maintenance/service.mjs';
 
 export const TABS = ['summary', 'money', 'hall', 'guests', 'control'];
 export const MAX_PERIOD_DAYS = 366;
@@ -560,6 +562,19 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
 
   if (tab === 'hall') {
     out.series.heatmap = heatmap(cur.hourlyRows);
+    // M5.6 (№196–198): прогноз 7 × 24 и подсказки по цене — по последним 8 неделям, не по периоду;
+    // у «всех клубов» прогноза нет (у каждого клуба свои сутки), подсказки — по каждому клубу.
+    // Часы с замены сукна — текущий счётчик стола (обслуживание).
+    out.series.forecast = null;
+    out.hints = [];
+    const cloth = new Map();
+    for (const c of clubs) {
+      await enter(c);
+      const f = await clubForecast(db, c, { now, kind });
+      if (!all) out.series.forecast = f.forecast;
+      out.hints.push(...f.hints.map((h) => (all ? { club_id: c.id, club_name: c.name, ...h } : h)));
+      for (const row of await maintenanceCounters(db, c, { now, kinds: ['cloth'] })) cloth.set(row.resource_id, row.kinds.cloth);
+    }
     out.series.ring = { capacity_minutes: m.capacity_minutes, played_minutes: m.play_minutes, service_minutes: m.service_minutes, unrealized_minutes: m.unrealized_minutes };
     const byDayType = new Map();
     for (const d of cur.agg.days) {
@@ -598,8 +613,11 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
         service_minutes: r.service_minutes,
         revenue_kopecks: r.revenue_kopecks - r.refunds_kopecks,
         utilization_pct: pct(r.play_minutes, r.capacity_minutes),
-        // Часы с последней замены сукна — M5.6 (пока не отмечается).
-        cloth_hours: null,
+        // Часы игры с последней замены сукна (M5.6 №198), сутки последней замены (null — с начала учёта).
+        cloth_hours: cloth.get(r.resource_id)?.hours ?? null,
+        cloth_since: cloth.get(r.resource_id)?.since ?? null,
+        cloth_threshold_hours: cloth.get(r.resource_id)?.threshold_hours ?? null,
+        cloth_due: cloth.get(r.resource_id)?.due ?? false,
       }));
   }
 
