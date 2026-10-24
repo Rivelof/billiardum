@@ -44,6 +44,9 @@
 .pbill__debt .small { white-space: normal; text-align: right; }
 .pbill__actions { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .pbill .rtable .badge { min-height: 28px; padding: 2px 12px 2px 8px; font-size: var(--fs-13); white-space: nowrap; }
+.pbill__plans { display: grid; gap: 6px; list-style: none; padding: 0; margin: 0; }
+.pbill__plan { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--ink-2); }
+.pbill__plan b { color: var(--ink); }
 .pbill__kind { display: grid; gap: 6px; border: 0; padding: 0; margin: 0; }
 .pbill .viewtog__btn .num { color: var(--ink-3); font-weight: 600; }
 .pbill .viewtog__btn[aria-pressed='true'] .num { color: inherit; }

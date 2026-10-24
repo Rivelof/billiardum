@@ -22,7 +22,7 @@ import {
   periodText,
   receiptView,
   safeConfirmationUrl,
-  subState,
+  subStateOf,
   summaryOf,
   tablesWord,
 } from '../../lib/billing.js';
@@ -99,7 +99,7 @@ export function Subscription({ ctx }) {
     return () => clearInterval(t);
   }, [pending, load]);
 
-  const st = sub ? subState(sub.state) : null;
+  const st = sub ? subStateOf(sub) : null;
   const sum = sub ? summaryOf(sub, { timeZone }) : null;
   const inv = owner && sub ? openInvoiceView(sub, { timeZone }) : null;
   const action = cardAction(sub);

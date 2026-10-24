@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { formatDate, formatTime } from '@billiardum/shared/format';
+import { formatDate, formatDateShort, formatTime } from '@billiardum/shared/format';
 import { Icon } from '../../components/Icon.jsx';
 import { useStore } from '../../lib/store.js';
 import { auth, can } from '../../lib/auth.js';
@@ -234,5 +234,23 @@ export function MoreButton({ paged }) {
     <button type="button" class="btn btn--quiet btn--sm no-print rmore" onClick={paged.more} disabled={paged.busy}>
       {paged.busy ? 'Загружаем…' : 'Показать ещё'}
     </button>
+  );
+}
+
+/**
+ * Момент в таблице отчёта: на экране «24 октября, 21:30», в печати — «24.10 21:30» одной строкой
+ * (styles/reports.css, .rwhen). Короткая форма скрыта от экранного диктора — он читает полную.
+ */
+export function When({ iso, timeZone }) {
+  if (!iso) return '—';
+  return (
+    <time class="rwhen" dateTime={iso}>
+      <span class="rwhen__full">
+        {formatDate(iso, timeZone)}, {formatTime(iso, timeZone)}
+      </span>
+      <span class="rwhen__short" aria-hidden="true">
+        {formatDateShort(iso, timeZone)} {formatTime(iso, timeZone)}
+      </span>
+    </time>
   );
 }

@@ -8,7 +8,7 @@ import { api, newIdempotencyKey } from '../../lib/api.js';
 import { can } from '../../lib/auth.js';
 import { parseRubles } from '../../lib/cash.js';
 import { csvName } from '../../lib/export.js';
-import { cashbookFormErrors, cashbookSummary, canStorno } from '../../lib/reports.js';
+import { CASHBOOK_MAX_BACK_DAYS, cashbookBackdated, cashbookFormErrors, cashbookMinDate, cashbookSummary, canStorno } from '../../lib/reports.js';
 import { dayLong, periodWords } from '../../lib/period.js';
 import { Shares } from '../dashboard/charts.jsx';
 import { downloadResponse, PrintHead, printNow, ReportFilters, ReportTools, useReportQuery } from './common.jsx';
@@ -276,12 +276,32 @@ function AddDialog({ kind, categories, today, clubId, onClose, onDone }) {
           <label class="field__label" for="cb-date">
             Дата
           </label>
-          <input id="cb-date" type="date" class="field__input" value={form.date} max={today} onChange={(e) => set({ date: e.currentTarget.value })} aria-invalid={errors.date ? 'true' : undefined} aria-describedby={errors.date ? 'cb-date-err' : undefined} />
+          <input
+            id="cb-date"
+            type="date"
+            class="field__input"
+            value={form.date}
+            min={cashbookMinDate(today)}
+            max={today}
+            onChange={(e) => set({ date: e.currentTarget.value })}
+            aria-invalid={errors.date ? 'true' : undefined}
+            aria-describedby={errors.date ? 'cb-date-err' : 'cb-date-hint'}
+          />
           {errors.date ? (
             <p class="field__error" id="cb-date-err">
               {errors.date}
             </p>
-          ) : null}
+          ) : (
+            <p class="field__hint" id="cb-date-hint" aria-live="polite">
+              {cashbookBackdated(form.date, today) ? (
+                <>
+                  <b>Запись задним числом:</b> владелец получит уведомление.
+                </>
+              ) : (
+                `Не раньше ${dayLong(cashbookMinDate(today))} — ${CASHBOOK_MAX_BACK_DAYS} дней назад.`
+              )}
+            </p>
+          )}
         </div>
         <div class="field">
           <label class="field__label" for="cb-comment">

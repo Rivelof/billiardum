@@ -1,4 +1,4 @@
-import { plural } from '@billiardum/shared/format';
+import { formatDateShort, plural } from '@billiardum/shared/format';
 import { api } from './api.js';
 import { createStore } from './store.js';
 
@@ -35,26 +35,47 @@ export function failureText(code) {
   return FAILURE[code] ?? 'банк отклонил списание';
 }
 
+/** Дата списания «24.10» по поясу клуба; нет даты или она кривая — null. */
+function chargeDay(banner, timeZone) {
+  const at = banner.next_attempt_at ?? banner.until;
+  if (!at || Number.isNaN(new Date(at).getTime())) return null;
+  return formatDateShort(at, timeZone || 'Europe/Moscow');
+}
+
 /**
- * Вид плашки: { kind, strong, text, short } или null.
- * strong — при неуспешной оплате (заметнее); short — для кассы и ресепшена (компактная строка).
- * @param {{ kind: string, days_left?: number, days_overdue?: number, last_error?: string | null } | null} banner
+ * Вид плашки: { kind, strong, text, short, link } или null.
+ * strong — при неуспешной оплате (заметнее); short — для кассы и ресепшена (компактная строка);
+ * link — подпись ссылки владельца на экран «Подписка» (полная и короткая).
+ *
+ * Виды (server/billing/period.mjs bannerFor):
+ *   trial_ending, period_ending — до конца периода ≤ 7 дней, автоплатёж не настроен;
+ *   invoice_due — счёт выставлен, списание ещё не пробовали или оно идёт (до первой неудачи): дата — next_attempt_at,
+ *     иначе until, по поясу клуба;
+ *   payment_failed — только после реального отказа списания (или карты нет).
+ * @param {{ kind: string, days_left?: number, days_overdue?: number, until?: string, next_attempt_at?: string, last_error?: string | null } | null} banner
+ * @param {string} [timeZone] пояс клуба (IANA) — для даты списания
  */
-export function bannerView(banner) {
+export function bannerView(banner, timeZone) {
   if (!banner || typeof banner !== 'object') return null;
+  const pay = { full: 'Перейти к оплате', short: 'Оплатить' };
+  if (banner.kind === 'invoice_due') {
+    const day = chargeDay(banner, timeZone);
+    const text = day ? `Счёт за подписку будет списан ${day}.` : 'Счёт за подписку скоро будет списан с карты.';
+    return { kind: banner.kind, strong: false, text, short: day ? `Подписка: списание ${day}` : 'Подписка: скоро списание', link: { full: 'Открыть подписку', short: 'Подписка' } };
+  }
   if (banner.kind === 'trial_ending' || banner.kind === 'period_ending') {
     const left = Math.max(0, Math.trunc(Number(banner.days_left) || 0));
     const when = left > 0 ? `через ${dayWord(left)}` : 'сегодня';
     const text = banner.kind === 'trial_ending' ? `Пробный период заканчивается ${when}.` : `Оплаченный период истекает ${when}.`;
     const short = left > 0 ? `Подписка: осталось ${dayWord(left)}` : 'Подписка: последний день';
-    return { kind: banner.kind, strong: false, text, short };
+    return { kind: banner.kind, strong: false, text, short, link: pay };
   }
   if (banner.kind === 'payment_failed') {
     const why = failureText(banner.last_error);
     const over = Math.max(0, Math.trunc(Number(banner.days_overdue) || 0));
     let text = why ? `Оплата подписки не прошла: ${why}.` : 'Счёт за подписку ещё не оплачен.';
     if (over > 0) text += ` Просрочка — ${dayWord(over)}.`;
-    return { kind: banner.kind, strong: true, text, short: 'Подписка не оплачена' };
+    return { kind: banner.kind, strong: true, text, short: 'Подписка не оплачена', link: pay };
   }
   return null;
 }

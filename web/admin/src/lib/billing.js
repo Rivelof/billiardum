@@ -27,6 +27,12 @@ export function subState(state) {
   return SUB_STATE[state] ?? { word: 'Нет данных', tone: 'reserved' };
 }
 
+/** Состояние для экрана «Подписка»: счёт выставлен, но списания ещё не было (плашка invoice_due) — «Ждёт списания», не «Просрочена». */
+export function subStateOf(sub) {
+  if (sub?.banner?.kind === 'invoice_due' && (sub.state === 'past_due' || sub.state === 'unpaid')) return { word: 'Ждёт списания', tone: 'reserved' };
+  return subState(sub?.state);
+}
+
 export const tablesWord = (n) => `${n} ${plural(n, TABLE_FORMS)}`;
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -97,6 +103,14 @@ export function summaryOf(sub, { timeZone, now = Date.now() } = {}) {
     }
     case 'past_due':
     case 'unpaid': {
+      // invoice_due: счёт выставлен, списания ещё не было (или оно идёт) — это не просрочка (сервер bannerFor)
+      if (sub.banner?.kind === 'invoice_due') {
+        const at = sub.banner.next_attempt_at ?? sub.banner.until;
+        const start = sub.open_invoice?.period_start ?? sub.banner.until;
+        const title = start ? `Счёт выставлен ${dateText(start, timeZone, now)}` : 'Счёт выставлен';
+        const pay = owner && !sub.card ? ' Привяжите карту — без неё списать не получится.' : at ? ` Спишем с карты автоматически ${dateText(at, timeZone, now)}.` : ' Спишем с карты автоматически.';
+        return { title, detail: `${pay.trim()} Свет, игры и оплаты гостей работают как обычно.` };
+      }
       const since = overdueSince(sub);
       const title = since ? `Не оплачено с ${dateText(since, timeZone, now)}` : 'Счёт не оплачен';
       const tail = sub.state === 'unpaid' ? ' Если вы платите по счёту от юрлица, напишите в поддержку Бильярдума — оплату отметят вручную.' : '';
@@ -116,12 +130,14 @@ export function summaryOf(sub, { timeZone, now = Date.now() } = {}) {
 export function openInvoiceView(sub, { timeZone, now = Date.now() } = {}) {
   const inv = sub?.open_invoice;
   if (!inv) return null;
-  const title = `Счёт на ${formatMoney(inv.amount_kopecks)} за ${periodText(inv.period_start, inv.period_end, timeZone, now)} не оплачен`;
+  const waiting = !(inv.attempts > 0) && !inv.last_error;
+  const title = `Счёт на ${formatMoney(inv.amount_kopecks)} за ${periodText(inv.period_start, inv.period_end, timeZone, now)}${waiting ? ' ждёт списания' : ' не оплачен'}`;
   const why = failureText(inv.last_error);
   const reason = why ? `${why[0].toUpperCase()}${why.slice(1)}.` : null;
   let next;
   if (!sub.card) next = 'Привяжите карту — счёт оплатится сразу, и дальше счета будут оплачиваться сами.';
   else if (inv.next_attempt_at && new Date(inv.next_attempt_at).getTime() - now < 10 * 60_000) next = 'Списываем с карты — это займёт несколько минут.';
+  else if (inv.next_attempt_at && !(inv.attempts > 0) && !inv.last_error) next = `Спишем с карты автоматически ${dateText(inv.next_attempt_at, timeZone, now)}. Можно не ждать и оплатить сейчас.`;
   else if (inv.next_attempt_at) next = `Следующая попытка списания — ${dateText(inv.next_attempt_at, timeZone, now)}. Можно не ждать и оплатить сейчас.`;
   else next = 'Автоматических попыток больше не будет — оплатите счёт картой.';
   return { title, reason, next };
@@ -200,9 +216,9 @@ export function filterClubs(items, filter) {
 }
 
 /**
- * Дата клуба для экрана платформы. В списке нет пояса клуба: граница периода — местная полночь клуба,
- * а в России это от 12:00 до 22:00 UTC предыдущих суток. Сдвиг на 13 часов даёт ту же дату в UTC
- * для всех поясов РФ (UTC+2 … UTC+12). Пояс пришёл — считаем по нему.
+ * Дата клуба для экрана платформы — по поясу клуба (поле timezone списка GET /api/platform/subscriptions).
+ * Запасной путь, если пояса нет (ответ старого сервера): граница периода — местная полночь клуба, в России это
+ * от 12:00 до 22:00 UTC предыдущих суток, и сдвиг на 13 часов даёт ту же дату для всех поясов РФ (UTC+2 … UTC+12).
  */
 export function clubDate(iso, timeZone, now = Date.now()) {
   if (!iso) return '—';
@@ -276,6 +292,47 @@ export function pricePreview(form, item, plan) {
   if (price === null || !Number.isSafeInteger(price)) return null;
   const tables = item?.tables ?? 0;
   return `${tablesWord(tables)} × ${formatMoney(price)} = ${formatMoney(tables * price)} в месяц, со следующего счёта.`;
+}
+
+// ---------- цена плана (PUT /api/platform/plans/{id}, только platform_admin) ----------
+
+/** Предупреждение в окне цены плана: кого коснётся и когда. */
+export const PLAN_PRICE_WARNING = 'Изменится со следующего счёта у всех клубов без персональной цены.';
+
+/** Ошибки формы цены плана: цена в рублях (0 — бесплатно), отличается от текущей; причина обязательна. */
+export function planPriceErrors(form, plan) {
+  const e = {};
+  const k = parseRubles(String(form?.rubles ?? ''));
+  if (k === null) e.rubles = 'Введите цену за стол в рублях, например 790.';
+  else if (k > MAX_PRICE) e.rubles = 'Слишком большая цена — проверьте цифры.';
+  else if (plan && k === plan.price_per_table_kopecks) e.rubles = 'Это текущая цена плана — введите новую.';
+  const r = reasonError(form?.reason);
+  if (r) e.reason = r;
+  return e;
+}
+
+export function planPriceBody(form) {
+  return { price_per_table_kopecks: parseRubles(String(form.rubles)), reason: String(form.reason).trim() };
+}
+
+/**
+ * Кого коснётся новая цена плана: клубы на этом плане без персональной цены (кроме отключённых).
+ * @returns {{ clubs: number, tables: number, before: number, after: number | null }} — суммы в копейках за месяц
+ */
+export function planImpact(items, plan, form) {
+  const list = (Array.isArray(items) ? items : []).filter((x) => x?.plan?.id === plan?.id && !x.personal_price && x.state !== 'canceled');
+  const tables = list.reduce((a, x) => a + (x.tables ?? 0), 0);
+  const price = parseRubles(String(form?.rubles ?? ''));
+  return { clubs: list.length, tables, before: tables * (plan?.price_per_table_kopecks ?? 0), after: price === null ? null : tables * price };
+}
+
+const CLUB_FORMS = ['клуб', 'клуба', 'клубов'];
+
+/** «Затронет 3 клуба, 18 столов: 14 220 ₽ → 16 020 ₽ в месяц.» или «Сейчас на плане нет клубов без персональной цены.» */
+export function planImpactText(impact) {
+  if (!impact?.clubs) return 'Сейчас на этом плане нет клубов без персональной цены — новая цена достанется новым клубам.';
+  const head = `Затронет ${impact.clubs} ${plural(impact.clubs, CLUB_FORMS)}, ${tablesWord(impact.tables)}`;
+  return impact.after === null ? `${head}.` : `${head}: ${formatMoney(impact.before)} → ${formatMoney(impact.after)} в месяц.`;
 }
 
 /**

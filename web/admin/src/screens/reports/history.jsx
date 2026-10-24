@@ -8,7 +8,7 @@ import { linkHandler } from '../../lib/router.js';
 import { csvName } from '../../lib/export.js';
 import { countWords, guestLabel, ORDER_SOURCE, ORDER_STATUS, PAY_LABEL, qtyWords, WRITEOFF_SOURCE } from '../../lib/reports.js';
 import { periodWords } from '../../lib/period.js';
-import { downloadResponse, MoreButton, PrintHead, printNow, ReportFilters, ReportTools, usePaged, useReportQuery } from './common.jsx';
+import { downloadResponse, MoreButton, PrintHead, printNow, ReportFilters, ReportTools, usePaged, useReportQuery, When } from './common.jsx';
 
 const money = (v) => (Number.isFinite(v) ? formatMoney(v) : '—');
 
@@ -19,7 +19,8 @@ const money = (v) => (Number.isFinite(v) ? formatMoney(v) : '—');
  */
 function config(kind, tz) {
   const when = (iso) => (iso ? `${formatDate(iso, tz)}, ${formatTime(iso, tz)}` : '—');
-  const date = { key: 'created_at', label: 'Дата', sortKey: 'created_at', render: (r) => when(r.created_at) };
+  const stamp = (iso) => <When iso={iso} timeZone={tz} />;
+  const date = { key: 'created_at', label: 'Дата', sortKey: 'created_at', cls: 'rnowrap', render: (r) => stamp(r.created_at) };
   if (kind === 'orders') {
     return {
       id: (r) => r.order_id,
@@ -28,14 +29,14 @@ function config(kind, tz) {
       statusLabel: 'Статус',
       statuses: ORDER_STATUS,
       columns: [
-        { key: 'number', label: 'Номер', head: true, sortKey: 'number', render: (r) => <span class="mono">№{r.number}</span> },
+        { key: 'number', label: 'Номер', head: true, sortKey: 'number', cls: 'rnowrap', render: (r) => <span class="mono">№{r.number}</span> },
         date,
-        { key: 'canceled_at', label: 'Отмена', sortKey: 'canceled_at', render: (r) => (r.canceled_at ? when(r.canceled_at) : '—') },
+        { key: 'canceled_at', label: 'Отмена', sortKey: 'canceled_at', cls: 'rnowrap', render: (r) => stamp(r.canceled_at) },
         { key: 'guest', label: 'Гость', render: (r) => guestLabel(r.guest, { pos: r.source === 'pos' }) },
-        { key: 'table', label: 'Стол', render: (r) => (r.resource_number ? `Стол ${r.resource_number}` : ORDER_SOURCE[r.source] ?? '—') },
+        { key: 'table', label: 'Стол', cls: 'rnowrap', render: (r) => (r.resource_number ? `Стол ${r.resource_number}` : ORDER_SOURCE[r.source] ?? '—') },
         { key: 'amount', label: 'Сумма', num: true, sortKey: 'amount', render: (r) => money(r.amount_kopecks) },
         { key: 'method', label: 'Способ', render: (r) => PAY_LABEL[r.method] ?? r.method ?? '—' },
-        { key: 'status', label: 'Статус', sortKey: 'status', render: (r) => <span class={`rstatus rstatus--${r.status}`}>{ORDER_STATUS[r.status] ?? r.status}</span> },
+        { key: 'status', label: 'Статус', sortKey: 'status', cls: 'rnowrap', render: (r) => <span class={`rstatus rstatus--${r.status}`}>{ORDER_STATUS[r.status] ?? r.status}</span> },
       ],
       expand: (r) => (
         <div class="rexp">

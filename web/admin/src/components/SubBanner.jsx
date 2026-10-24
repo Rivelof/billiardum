@@ -8,7 +8,7 @@ import { bannerHidden, bannerHideKey, bannerHideValue, bannerView, loadSubscript
 
 /**
  * Плашка подписки (M5.3, №184): одна строка под шапкой — «Пробный период заканчивается через 5 дней»,
- * «Оплата подписки не прошла…». Владельцу — «Перейти к оплате», крестик скрывает до завтра (по суткам клуба).
+ * «Счёт за подписку будет списан 24.10», «Оплата подписки не прошла…». Владельцу — «Перейти к оплате», крестик скрывает до завтра (по суткам клуба).
  * compact — касса и ресепшн: короткая строка, не мешает работе. На экране бара плашки нет.
  * Данные — поле banner сервера; без подписки (503 billing_unavailable), в тестовом режиме и у ресепшена плашки нет.
  */
@@ -23,7 +23,7 @@ export function SubBanner({ club, role, active, timeZone, compact = false }) {
   }, [allowed, clubId]);
   if (!allowed) return null;
   const banner = subs[clubId]?.data?.banner ?? null;
-  const view = bannerView(banner);
+  const view = bannerView(banner, timeZone);
   if (!view) return null;
   const today = localDay(Date.now(), timeZone);
   if (bannerHidden(hideSaved, banner, today)) return null;
@@ -38,7 +38,7 @@ export function SubBanner({ club, role, active, timeZone, compact = false }) {
       </span>
       {owner ? (
         <a class="subnote__link" href={href} onClick={linkHandler}>
-          {compact ? 'Оплатить' : 'Перейти к оплате'}
+          {compact ? view.link.short : view.link.full}
         </a>
       ) : null}
       <button

@@ -2,7 +2,8 @@
  * BL_MOCK_MARKER — заглушка M5.3 «Подписка клубов» (только VITE_MOCK=1). Формы ответов — server/billing/README.md.
  *
  * Сценарии ?mock=: billing — пробный период, осталось 5 дней, карты нет (плашка «Пробный период заканчивается…»);
- * billing-active — оплачено, карта и автоплатёж, история счетов; billing-overdue — списание не прошло
+ * billing-active — оплачено, карта и автоплатёж, история счетов; billing-due — счёт выставлен, автосписание
+ * через 2 часа (плашка «Счёт за подписку будет списан DD.MM»); billing-overdue — списание не прошло
  * (на карте не хватило денег), плашка заметнее; billing-manager — то же у управляющего (только состояние);
  * billing-off — ключей магазина платформы нет (503 billing_unavailable);
  * platform-billing — администратор платформы (он же владелец клуба разработки): «Клубы и подписки», клубы-заглушки;
@@ -75,6 +76,12 @@ function sub(t, kind, tables = 8) {
     const open = invoice(due, tables, price, { status: 'open', paid_at: null, paid_via: null, receipt: null, attempts: 2, next_attempt_at: t + 2 * DAY + 3 * 60 * MIN, last_error: 'insufficient_funds' });
     return { trial_until: prevStart, paid_until: due, card: { ...CARD }, autopay: true, receipt_email: 'owner@club.example', personal: null, invoices: [open, paid], pending: null };
   }
+  if (kind === 'due') {
+    // Пробный период кончился сегодня в полночь, счёт выставлен, автосписание через 2 часа — ещё не пробовали
+    const due = midnight(t, 0);
+    const open = invoice(due, tables, price, { status: 'open', paid_at: null, paid_via: null, receipt: null, attempts: 0, next_attempt_at: t + 2 * 60 * MIN, last_error: null });
+    return { trial_until: due, paid_until: null, card: { ...CARD }, autopay: true, receipt_email: 'owner@club.example', personal: null, invoices: [open], pending: null };
+  }
   if (kind === 'unpaid') {
     const due = midnight(t, -18);
     const open = invoice(due, tables, 59000, { status: 'open', paid_at: null, paid_via: null, receipt: null, attempts: 0, next_attempt_at: null, last_error: 'card_required' });
@@ -91,19 +98,21 @@ function sub(t, kind, tables = 8) {
 
 export function billingState(scenario, t) {
   const sc = String(scenario ?? '');
-  const kind = sc === 'billing' ? 'trial' : sc === 'billing-active' ? 'active' : ['billing-overdue', 'billing-manager', 'platform-billing', 'platform-billing-operator'].includes(sc) ? 'overdue' : 'trial-long';
+  const kind = sc === 'billing' ? 'trial' : sc === 'billing-active' ? 'active' : sc === 'billing-due' ? 'due' : ['billing-overdue', 'billing-manager', 'platform-billing', 'platform-billing-operator'].includes(sc) ? 'overdue' : 'trial-long';
   const platform = sc.startsWith('platform-billing');
   return {
     off: sc === 'billing-off',
+    // План — изменяемый (PUT /api/platform/plans/{id}); новая цена — со следующего счёта
+    plan: { ...PLAN },
     dev: sub(t, kind),
     // Клубы-заглушки только для экрана платформы (в проде — реальные клубы)
     others: platform
       ? [
-          { club_id: 'bc000000-0000-4000-8000-000000000002', name: 'Второй клуб (заглушка)', city: 'Пермь', mode: 'live', tables: 6, sub: sub(t, 'active', 6) },
-          { club_id: 'bc000000-0000-4000-8000-000000000003', name: 'Третий клуб (заглушка)', city: 'Екатеринбург', mode: 'live', tables: 4, sub: sub(t, 'trial-card', 4) },
-          { club_id: 'bc000000-0000-4000-8000-000000000004', name: 'Четвёртый клуб (заглушка)', city: 'Москва', mode: 'live', tables: 10, sub: sub(t, 'unpaid', 10) },
-          { club_id: 'bc000000-0000-4000-8000-000000000005', name: 'Пятый клуб (заглушка)', city: 'Пермь', mode: 'live', tables: 3, sub: sub(t, 'manual', 3) },
-          { club_id: 'bc000000-0000-4000-8000-000000000006', name: 'Шестой клуб (заглушка)', city: 'Екатеринбург', mode: 'test', tables: 5, sub: sub(t, 'canceled', 5) },
+          { club_id: 'bc000000-0000-4000-8000-000000000002', name: 'Второй клуб (заглушка)', city: 'Пермь', timezone: 'Asia/Yekaterinburg', mode: 'live', tables: 6, sub: sub(t, 'active', 6) },
+          { club_id: 'bc000000-0000-4000-8000-000000000003', name: 'Третий клуб (заглушка)', city: 'Екатеринбург', timezone: 'Asia/Yekaterinburg', mode: 'live', tables: 4, sub: sub(t, 'trial-card', 4) },
+          { club_id: 'bc000000-0000-4000-8000-000000000004', name: 'Четвёртый клуб (заглушка)', city: 'Челябинск', timezone: 'Asia/Yekaterinburg', mode: 'live', tables: 10, sub: sub(t, 'unpaid', 10) },
+          { club_id: 'bc000000-0000-4000-8000-000000000005', name: 'Пятый клуб (заглушка)', city: 'Пермь', timezone: 'Asia/Yekaterinburg', mode: 'live', tables: 3, sub: sub(t, 'manual', 3) },
+          { club_id: 'bc000000-0000-4000-8000-000000000006', name: 'Шестой клуб (заглушка)', city: 'Екатеринбург', timezone: 'Asia/Yekaterinburg', mode: 'test', tables: 5, sub: sub(t, 'canceled', 5) },
         ]
       : [],
   };
@@ -120,14 +129,25 @@ export function stateOf(s, { now, live, canceled = false }) {
   return now - due >= 14 * DAY ? 'unpaid' : 'past_due';
 }
 
-/** Плашка (№184, №188): ≤ 7 дней без автоплатежа; при неуспешной оплате — всегда. */
+/**
+ * Плашка (№184, №188) — как server/billing/period.mjs bannerFor:
+ *   период кончился или выставлен счёт: до первой неудачи (попыток не было, ошибки нет — в том числе счёта ещё нет) —
+ *   invoice_due с next_attempt_at (не раньше «сейчас») и посчитанным days_overdue; после отказа (card_required тоже) —
+ *   payment_failed; ≤ 7 дней до конца периода без автоплатежа — trial_ending / period_ending.
+ */
 export function bannerOf(s, { now, live }) {
   if (!live) return null;
   const open = s.invoices.find((i) => i.status === 'open') ?? null;
   const end = s.paid_until ?? s.trial_until;
   if (open || now >= end) {
     const since = open ? open.period_start_at : end;
-    return { kind: 'payment_failed', days_left: 0, days_overdue: Math.max(0, Math.floor((now - since) / DAY)), until: iso(since), last_error: open?.last_error ?? null };
+    const overdue = Math.max(0, Math.floor((now - since) / DAY));
+    const failed = Boolean(open?.last_error) || (open?.attempts ?? 0) > 0;
+    if (!failed) {
+      const at = open?.next_attempt_at ?? since;
+      return { kind: 'invoice_due', days_left: 0, days_overdue: overdue, until: iso(since), next_attempt_at: iso(Math.max(at, now)), last_error: null };
+    }
+    return { kind: 'payment_failed', days_left: 0, days_overdue: overdue, until: iso(since), last_error: open?.last_error ?? null };
   }
   const left = Math.ceil((end - now) / DAY);
   if (left <= 7 && !(s.autopay && s.card)) return { kind: s.paid_until ? 'period_ending' : 'trial_ending', days_left: left, days_overdue: 0, until: iso(end), last_error: null };
@@ -135,7 +155,6 @@ export function bannerOf(s, { now, live }) {
 }
 
 const brief = (i) => (i ? { id: i.id, period_start: i.period_start, period_end: i.period_end, amount_kopecks: i.amount_kopecks, attempts: i.attempts, next_attempt_at: iso(i.next_attempt_at), last_error: i.last_error } : null);
-const priceOf = (s) => s.personal?.price ?? PLAN.price_per_table_kopecks;
 
 export function billingRoutes(ctx) {
   const { now, me, err, ok } = ctx; // журнал платформы заглушка не ведёт
@@ -149,6 +168,12 @@ export function billingRoutes(ctx) {
   const devTables = () => ctx.state().hall.length;
   const devMode = () => ctx.mode();
   const unavailable = () => ({ status: 503, body: { error: 'billing_unavailable' } });
+  const plan = () => {
+    const b = B();
+    if (!b.plan) b.plan = { ...PLAN }; // состояние заглушки, сохранённое до правки плана
+    return b.plan;
+  };
+  const priceOf = (s) => s.personal?.price ?? plan().price_per_table_kopecks;
 
   /** Списание и чек через 5 с после «страницы ЮKassa». */
   function advance() {
@@ -180,11 +205,11 @@ export function billingRoutes(ctx) {
       trial_until: mode === 'test' ? null : iso(s.trial_until),
       paid_until: iso(s.paid_until),
       banner: bannerOf(s, { now: t, live }),
-      plan: { id: PLAN.id, code: PLAN.code, title: PLAN.title },
+      plan: { id: plan().id, code: plan().code, title: plan().title },
       price_per_table_kopecks: price,
       personal_price: Boolean(s.personal),
       tables,
-      trial_days: PLAN.trial_days,
+      trial_days: plan().trial_days,
       next_invoice: open ? { date: open.period_start, amount_kopecks: open.amount_kopecks, invoice_id: open.id } : live ? { date: dateOf(end), amount_kopecks: tables * price, invoice_id: null } : null,
       open_invoice: brief(open),
       card: s.card ? { ...s.card } : null,
@@ -226,7 +251,7 @@ export function billingRoutes(ctx) {
   function clubsList() {
     const b = B();
     const t = now();
-    const dev = { club_id: ctx.clubId, name: 'Клуб для разработки', city: 'Екатеринбург', mode: devMode(), tables: devTables(), sub: b.dev };
+    const dev = { club_id: ctx.clubId, name: 'Клуб для разработки', city: 'Екатеринбург', timezone: 'Asia/Yekaterinburg', mode: devMode(), tables: devTables(), sub: b.dev };
     return [dev, ...b.others].map((c) => {
       const s = c.sub;
       const live = c.mode === 'live' || c.mode === 'suspended';
@@ -238,9 +263,10 @@ export function billingRoutes(ctx) {
         club_id: c.club_id,
         name: c.name,
         city: c.city,
+        timezone: c.timezone,
         mode: c.mode,
         state,
-        plan: { id: PLAN.id, code: PLAN.code, title: PLAN.title },
+        plan: { id: plan().id, code: plan().code, title: plan().title },
         price_per_table_kopecks: price,
         personal_price: Boolean(s.personal),
         personal_price_reason: s.personal?.reason ?? null,
@@ -316,7 +342,7 @@ export function billingRoutes(ctx) {
       }
       return ok({
         items: items.map(({ __sub, ...x }) => x),
-        plans: [{ ...PLAN }],
+        plans: [{ ...plan() }],
         totals: { mrr_kopecks: mrr, paid_this_month_kopecks: paid, payments_this_month: n, debt_kopecks: items.reduce((a, c) => a + c.debt_kopecks, 0), clubs: counts },
       });
     })],
@@ -339,6 +365,29 @@ export function billingRoutes(ctx) {
       if (p !== null && (!Number.isSafeInteger(p) || p < 0)) return err(400, 'bad_request');
       c.__sub.personal = p === null ? null : { price: p, reason: String(body.reason).trim() };
       return ok({ club_id: c.club_id, price_per_table_kopecks: priceOf(c.__sub), personal_price: p !== null });
+    }, { admin: true })],
+    ['PUT', /^\/api\/platform\/plans\/([^/]+)$/, platformGuard((m, body) => {
+      const p = plan();
+      if (m[1] !== p.id) return err(404, 'not_found');
+      const next = {};
+      if (body?.title !== undefined) {
+        const tt = typeof body.title === 'string' ? body.title.trim() : '';
+        if (!tt || tt.length > 100) return err(400, 'bad_request');
+        next.title = tt;
+      }
+      if (body?.price_per_table_kopecks !== undefined) {
+        const v = body.price_per_table_kopecks;
+        if (!Number.isSafeInteger(v) || v < 0 || v > 100_000_000) return err(400, 'bad_request');
+        next.price_per_table_kopecks = v;
+      }
+      if (body?.active !== undefined) {
+        if (typeof body.active !== 'boolean') return err(400, 'bad_request');
+        next.active = body.active;
+      }
+      if (!Object.keys(next).length) return err(400, 'bad_request');
+      if (body?.reason !== undefined && body.reason !== null && (typeof body.reason !== 'string' || body.reason.length > 2000)) return err(400, 'bad_request');
+      Object.assign(p, next);
+      return ok({ ...p });
     }, { admin: true })],
   ];
   return { routes, advance };

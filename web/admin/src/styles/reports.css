@@ -64,6 +64,8 @@
 .rsheet__signs { display: grid; gap: 18px; margin-top: 18px; font-size: var(--fs-15); }
 
 .print-head { display: none; }
+.rnowrap { white-space: nowrap; }
+.rwhen__short { display: none; }
 
 @media (min-width: 640px) {
   .rfilters { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
@@ -106,12 +108,23 @@
   .rcash__sum { margin-bottom: 4mm; }
   .dsec { box-shadow: none; padding: 0; break-inside: avoid; }
   .is-busy { opacity: 1; }
-  /* Таблица — настоящей таблицей и на узкой бумаге; шапка повторяется на каждой странице */
-  .rtable { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  /*
+   * Таблица — настоящей таблицей и на узкой бумаге; шапка повторяется на каждой странице.
+   * Компактно (Н2 приёмки M5.2): строка таблицы — одна строка текста, около 30 строк на лист A4;
+   * дата — «24.10 21:30» одной строкой, короткие значения не переносятся, длинные (гость, способ) — переносятся.
+   */
+  .rtable { width: calc(100% - 1pt); border-collapse: collapse; font-size: 9pt; line-height: 1.25; }
   .rtable thead { display: table-header-group !important; position: static !important; width: auto !important; height: auto !important; overflow: visible !important; clip-path: none !important; }
   .rtable tr { display: table-row !important; break-inside: avoid; }
-  .rtable th, .rtable td { display: table-cell !important; padding: 1.6mm 2mm !important; border: 0.5pt solid #8A7761 !important; }
+  .rtable th, .rtable td { display: table-cell !important; padding: 1.5mm 1.8mm !important; border: 0.5pt solid #8A7761 !important; vertical-align: top; }
+  .rtable thead th { font-size: 8.5pt; font-weight: 700; color: #000; vertical-align: bottom; }
   .rtable td::before { content: none !important; }
+  .rtable .rstatus, .rtable .mono, .rtable .rkind { font-size: inherit; }
+  .rtable .small { font-size: 8pt; }
+  .rtable .dtable__x { display: none !important; }
+  .rtable .rnowrap { white-space: nowrap; }
+  .rwhen__full { display: none; }
+  .rwhen__short { display: inline; white-space: nowrap; }
   .rtable caption { display: none; }
   .dtable__sort .icon { display: none; }
   .dtable__more > td { background: #F2EEE8 !important; }

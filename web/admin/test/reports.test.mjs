@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   canStorno,
+  cashbookBackdated,
   cashbookFormErrors,
+  cashbookMinDate,
   cashbookSummary,
   countWords,
   gameMinutes,
@@ -100,6 +102,20 @@ test('касса: форма записи объясняет ошибки сло
   assert.match(bad.category, /статья доходов/);
   assert.match(bad.date, /позже сегодняшней/);
   assert.match(cashbookFormErrors({ kind: 'expense', amount: 100, categoryId: 'old', date: '2026-10-24' }, CATS, '2026-10-24').category, /Выберите статью/);
+});
+
+test('касса (№189): дата записи не раньше 35 дней назад; раньше вчера — задним числом', () => {
+  const T = '2026-10-24';
+  assert.equal(cashbookMinDate(T), '2026-09-19');
+  assert.equal(cashbookMinDate('2026-03-01'), '2026-01-25');
+  const at = (date) => cashbookFormErrors({ kind: 'expense', amount: 100, categoryId: 'rent', date }, CATS, T).date;
+  assert.equal(at('2026-09-19'), undefined, 'ровно 35 дней назад — можно');
+  assert.match(at('2026-09-18'), /не раньше 19 сентября — это 35 дней назад/);
+  assert.equal(cashbookBackdated('2026-10-24', T), false);
+  assert.equal(cashbookBackdated('2026-10-23', T), false, 'вчера — не задним числом');
+  assert.equal(cashbookBackdated('2026-10-22', T), true);
+  assert.equal(cashbookBackdated('2026-09-19', T), true);
+  assert.equal(cashbookBackdated('', T), false);
 });
 
 // ---------- ведомость ревизии (№174) и прочее ----------

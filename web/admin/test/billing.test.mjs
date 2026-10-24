@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBackend } from '../src/mock/backend.js';
+import { bannerOf } from '../src/mock/billing.js';
 import { bannerHidden, bannerHideValue, bannerView, dayWord, failureText, localDay } from '../src/lib/billingBanner.js';
 import {
   SUB_STATE,
@@ -20,6 +21,11 @@ import {
   outcomeText,
   paidUntilText,
   periodText,
+  PLAN_PRICE_WARNING,
+  planImpact,
+  planImpactText,
+  planPriceBody,
+  planPriceErrors,
   priceBody,
   priceErrors,
   pricePreview,
@@ -27,6 +33,7 @@ import {
   safeConfirmationUrl,
   stateCounts,
   subState,
+  subStateOf,
   summaryOf,
 } from '../src/lib/billing.js';
 import { navItems } from '../src/lib/nav.js';
@@ -66,6 +73,28 @@ test('плашка: «Пробный период заканчивается ч�
     const v = bannerView(b);
     assert.doesNotMatch(`${v.text} ${v.short}`, SCARY);
   }
+});
+
+test('плашка invoice_due: «Счёт за подписку будет списан DD.MM» до первой неудачи, по поясу клуба; не заметная', () => {
+  // 24.10 22:00 UTC — в Екатеринбурге уже 25.10
+  const due = bannerView({ kind: 'invoice_due', days_left: 0, days_overdue: 0, until: '2026-10-23T19:00:00.000Z', next_attempt_at: '2026-10-24T22:00:00.000Z', last_error: null }, TZ);
+  assert.equal(due.kind, 'invoice_due');
+  assert.equal(due.strong, false, 'до отказа — не тревога');
+  assert.equal(due.text, 'Счёт за подписку будет списан 25.10.');
+  assert.equal(due.short, 'Подписка: списание 25.10');
+  assert.deepEqual(due.link, { full: 'Открыть подписку', short: 'Подписка' });
+  assert.equal(bannerView({ kind: 'invoice_due', until: '2026-10-23T19:00:00.000Z' }, TZ).text, 'Счёт за подписку будет списан 24.10.', 'без next_attempt_at — дата until');
+  assert.equal(bannerView({ kind: 'invoice_due', until: '2026-10-23T19:00:00.000Z' }, 'UTC').text, 'Счёт за подписку будет списан 23.10.');
+  assert.equal(bannerView({ kind: 'invoice_due' }, TZ).text, 'Счёт за подписку скоро будет списан с карты.');
+  assert.equal(bannerView({ kind: 'invoice_due', until: 'нет' }, TZ).short, 'Подписка: скоро списание');
+  assert.doesNotMatch(`${due.text} ${due.short}`, SCARY);
+  assert.doesNotMatch(due.text, /не прошла|не оплачен/, 'до отказа не пишем о неудаче');
+  // Остальные виды — ссылка «Перейти к оплате»
+  assert.deepEqual(bannerView({ kind: 'payment_failed', days_overdue: 1, last_error: 'insufficient_funds' }).link, { full: 'Перейти к оплате', short: 'Оплатить' });
+  // Скрытая до завтра invoice_due снова видна, когда списание не прошло
+  const saved = bannerHideValue({ kind: 'invoice_due' }, '2026-10-24');
+  assert.equal(bannerHidden(saved, { kind: 'invoice_due' }, '2026-10-24'), true);
+  assert.equal(bannerHidden(saved, { kind: 'payment_failed' }, '2026-10-24'), false);
 });
 
 test('склонения и причины отказа', () => {
@@ -147,6 +176,18 @@ test('открытый счёт: причина, следующая попытк
   assert.match(openInvoiceView({ ...sub, open_invoice: { ...sub.open_invoice, next_attempt_at: null } }, { timeZone: TZ, now: NOW }).next, /больше не будет/);
   assert.match(openInvoiceView({ ...sub, card: null }, { timeZone: TZ, now: NOW }).next, /^Привяжите карту/);
   assert.equal(openInvoiceView({ open_invoice: null }), null);
+  // До первой попытки (invoice_due) — «ждёт списания», без «не оплачен» и «следующей попытки»
+  const fresh = openInvoiceView({ ...sub, open_invoice: { ...sub.open_invoice, attempts: 0, last_error: null } }, { timeZone: TZ, now: NOW });
+  assert.equal(plain(fresh.title), 'Счёт на 6 320 ₽ за 20 октября — 20 ноября ждёт списания');
+  assert.equal(fresh.reason, null);
+  assert.match(fresh.next, /^Спишем с карты автоматически 26 октября/);
+  const sum = summaryOf({ mode: 'live', state: 'past_due', autopay: true, card: { mask: '•• 1' }, banner: { kind: 'invoice_due', until: '2026-10-19T19:00:00Z', next_attempt_at: '2026-10-24T12:00:00Z' }, open_invoice: { period_start: '2026-10-20' } }, { timeZone: TZ, now: NOW });
+  assert.equal(sum.title, 'Счёт выставлен 20 октября');
+  assert.equal(subStateOf({ state: 'past_due', banner: { kind: 'invoice_due' } }).word, 'Ждёт списания');
+  assert.equal(subStateOf({ state: 'past_due', banner: { kind: 'payment_failed' } }).word, 'Просрочена');
+  assert.equal(subStateOf({ state: 'active', banner: null }).word, 'Активна');
+  assert.match(sum.detail, /^Спишем с карты автоматически 24 октября\. Свет, игры/);
+  assert.match(summaryOf({ mode: 'live', state: 'past_due', autopay: false, card: null, banner: { kind: 'invoice_due', until: '2026-10-19T19:00:00Z' }, open_invoice: null }, { timeZone: TZ, now: NOW }).detail, /^Привяжите карту/);
   assert.equal(plain(cardAction(sub).label), 'Оплатить 6 320 ₽ картой');
   assert.equal(cardAction(sub).purpose, 'invoice');
   assert.equal(cardAction({ card: { mask: '•• 1' } }).label, 'Сменить карту');
@@ -215,6 +256,31 @@ test('платформа: должники, фильтр, счётчики, фо
   assert.equal(pricePreview({ rubles: '' }, { tables: 1 }, null), null);
 });
 
+test('цена плана: форма с причиной, тело запроса, кого коснётся, предупреждение', () => {
+  const plan = { id: 'p1', title: 'Клуб', price_per_table_kopecks: 79000 };
+  assert.equal(PLAN_PRICE_WARNING, 'Изменится со следующего счёта у всех клубов без персональной цены.');
+  assert.deepEqual(planPriceErrors({ rubles: '890', reason: 'Индексация' }, plan), {});
+  const bad = planPriceErrors({ rubles: 'абв', reason: ' ' }, plan);
+  assert.match(bad.rubles, /в рублях/);
+  assert.match(bad.reason, /причину/);
+  assert.match(planPriceErrors({ rubles: '790', reason: 'x' }, plan).rubles, /текущая цена/);
+  assert.match(planPriceErrors({ rubles: '2000000', reason: 'x' }, plan).rubles, /Слишком большая/);
+  assert.deepEqual(planPriceErrors({ rubles: '0', reason: 'Акция' }, plan), {}, '0 — бесплатно');
+  assert.deepEqual(planPriceBody({ rubles: '890,50', reason: '  Индексация ' }), { price_per_table_kopecks: 89050, reason: 'Индексация' });
+  const items = [
+    { plan: { id: 'p1' }, personal_price: false, state: 'active', tables: 8 },
+    { plan: { id: 'p1' }, personal_price: false, state: 'trial', tables: 4 },
+    { plan: { id: 'p1' }, personal_price: true, state: 'active', tables: 10 },
+    { plan: { id: 'p1' }, personal_price: false, state: 'canceled', tables: 5 },
+    { plan: { id: 'p2' }, personal_price: false, state: 'active', tables: 6 },
+  ];
+  const impact = planImpact(items, plan, { rubles: '890' });
+  assert.deepEqual(impact, { clubs: 2, tables: 12, before: 12 * 79000, after: 12 * 89000 });
+  assert.equal(plain(planImpactText(impact)), 'Затронет 2 клуба, 12 столов: 9 480 ₽ → 10 680 ₽ в месяц.');
+  assert.equal(plain(planImpactText(planImpact(items, plan, { rubles: '' }))), 'Затронет 2 клуба, 12 столов.');
+  assert.match(planImpactText(planImpact([], plan, { rubles: '890' })), /нет клубов без персональной цены/);
+});
+
 test('права и разделы: «Подписка» — владельцу и управляющему, ресепшн и бар не видят', () => {
   assert.ok(navItems('owner', CLUB).some((i) => i.key === 'subscription'));
   assert.ok(navItems('manager', CLUB).some((i) => i.key === 'subscription'));
@@ -268,6 +334,38 @@ test('заглушка: просрочка — счёт, попытки, пла�
   assert.equal((await req(b, 'GET', `/api/clubs/${CLUB}/subscription`)).body.error, 'forbidden', 'ресепшн подписку не видит');
 });
 
+test('заглушка ?mock=billing-due: счёт выставлен, попыток не было — invoice_due; отказ — payment_failed', async () => {
+  const b = createBackend(memory());
+  b.scenario('billing-due');
+  const s = (await req(b, 'GET', `/api/clubs/${CLUB}/subscription`)).body;
+  assert.equal(s.banner.kind, 'invoice_due');
+  assert.equal(s.open_invoice.attempts, 0);
+  assert.equal(s.open_invoice.last_error, null);
+  assert.equal(s.banner.next_attempt_at, s.open_invoice.next_attempt_at);
+  assert.match(bannerView(s.banner, TZ).text, /^Счёт за подписку будет списан \d{2}\.\d{2}\.$/);
+  // Остальные сценарии с открытым счётом — после отказа (попытки были или карты нет)
+  b.scenario('billing-overdue');
+  assert.equal((await req(b, 'GET', `/api/clubs/${CLUB}/subscription`)).body.banner.kind, 'payment_failed');
+});
+
+test('заглушка = сервер (bannerFor): счёта ещё нет — invoice_due; card_required — отказ; days_overdue считается', () => {
+  const DAY = 86_400_000;
+  const T = NOW;
+  const ended = { trial_until: T - 2 * DAY, paid_until: null, card: { mask: '•• 1' }, autopay: true, invoices: [] };
+  const a = bannerOf(ended, { now: T, live: true });
+  assert.equal(a.kind, 'invoice_due', 'период кончился, счёта нет — ещё не отказ');
+  assert.equal(a.days_overdue, 2);
+  assert.equal(a.next_attempt_at, new Date(T).toISOString(), 'срок попытки в прошлом — «сейчас»');
+  const inv = (extra) => ({ status: 'open', period_start_at: T - DAY, attempts: 0, next_attempt_at: T + 3600_000, last_error: null, ...extra });
+  const due = bannerOf({ ...ended, invoices: [inv()] }, { now: T, live: true });
+  assert.equal(due.kind, 'invoice_due');
+  assert.equal(due.days_overdue, 1);
+  assert.equal(due.next_attempt_at, new Date(T + 3600_000).toISOString());
+  assert.equal(bannerOf({ ...ended, invoices: [inv({ last_error: 'card_required', next_attempt_at: null })] }, { now: T, live: true }).kind, 'payment_failed', 'card_required — отказ');
+  assert.equal(bannerOf({ ...ended, invoices: [inv({ attempts: 1 })] }, { now: T, live: true }).kind, 'payment_failed');
+  assert.equal(bannerOf(ended, { now: T, live: false }), null);
+});
+
 test('заглушка: активна — история счетов с чеками, отключение автоплатежа, card_required', async () => {
   const b = createBackend(memory());
   b.scenario('billing-active');
@@ -301,6 +399,7 @@ test('заглушка ?mock=platform-billing: MRR, долг, ручная оп�
   assert.equal(list.items.length, 6);
   for (const k of ['club_id', 'name', 'city', 'mode', 'state', 'plan', 'price_per_table_kopecks', 'personal_price', 'tables', 'monthly_kopecks', 'trial_until', 'paid_until', 'debt_kopecks', 'open_invoice', 'autopay', 'card']) assert.ok(k in list.items[0], k);
   assert.ok(!('__sub' in list.items[0]));
+  assert.ok(list.items.every((x) => typeof x.timezone === 'string' && x.timezone), 'у каждого клуба пояс');
   assert.ok(list.totals.mrr_kopecks > 0);
   assert.ok(list.totals.debt_kopecks > 0);
   assert.equal(Object.values(list.totals.clubs).reduce((a, n) => a + n, 0), 6);
@@ -318,8 +417,22 @@ test('заглушка ?mock=platform-billing: MRR, долг, ручная оп�
   const price = await req(b, 'PUT', `/api/platform/subscriptions/${CLUB}/price`, { price_per_table_kopecks: 59000, reason: 'Пилот' });
   assert.deepEqual(price.body, { club_id: CLUB, price_per_table_kopecks: 59000, personal_price: true });
   assert.equal((await req(b, 'PUT', `/api/platform/subscriptions/${CLUB}/price`, { price_per_table_kopecks: null })).body.error, 'reason_required');
+  // Цена плана (PUT /api/platform/plans/{id}) — со следующего счёта у клубов без персональной цены
+  const planId = list.plans[0].id;
+  assert.equal((await req(b, 'PUT', `/api/platform/plans/${planId}`, { price_per_table_kopecks: -1 })).body.error, 'bad_request');
+  assert.equal((await req(b, 'PUT', `/api/platform/plans/${planId}`, {})).body.error, 'bad_request');
+  assert.equal((await req(b, 'PUT', '/api/platform/plans/bf000000-0000-4000-8000-00000000ffff', { price_per_table_kopecks: 1 })).body.error, 'not_found');
+  const plan = (await req(b, 'PUT', `/api/platform/plans/${planId}`, { price_per_table_kopecks: 89000, reason: 'Индексация' })).body;
+  assert.equal(plan.price_per_table_kopecks, 89000);
+  for (const k of ['id', 'code', 'title', 'price_per_table_kopecks', 'trial_days', 'active']) assert.ok(k in plan, k);
+  const repriced = (await req(b, 'GET', '/api/platform/subscriptions')).body;
+  assert.equal(repriced.plans[0].price_per_table_kopecks, 89000);
+  assert.equal(repriced.items.find((x) => x.club_id === CLUB).price_per_table_kopecks, 59000, 'персональная цена не меняется');
+  const second = repriced.items.find((x) => x.club_id === 'bc000000-0000-4000-8000-000000000002');
+  assert.equal(second.price_per_table_kopecks, 89000, 'клуб без персональной цены — новая цена');
   b.scenario('platform-billing-operator');
   assert.equal((await req(b, 'GET', '/api/platform/subscriptions')).status, 200);
+  assert.equal((await req(b, 'PUT', `/api/platform/plans/${planId}`, { price_per_table_kopecks: 1, reason: 'r' })).body.error, 'forbidden', 'оператор цену плана не меняет');
   assert.equal((await req(b, 'POST', url, { invoice_id: 'x', reason: 'r', document: '1' })).body.error, 'forbidden', 'оператор — только чтение');
   b.scenario('owner');
   assert.equal((await req(b, 'GET', '/api/platform/subscriptions')).body.error, 'forbidden');

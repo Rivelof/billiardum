@@ -306,13 +306,17 @@ export function Pos({ ctx }) {
             <ul class="tiles">
               {packages.map((p) => (
                 <li key={p.id}>
-                  <button type="button" class="tile tile--pack" onClick={() => setPackFor(p)} aria-label={`Пакет «${p.title}», ${formatMoney(p.price_kopecks)}, ${p.valid_days} дней`}>
-                    <span class="tile__name">{p.title}</span>
+                  {/* Имя кнопки — видимый текст (axe label-content-name-mismatch); остальное — описанием */}
+                  <button type="button" class="tile tile--pack" onClick={() => setPackFor(p)} aria-describedby={`pos-pack-${p.id}`}>
+                    <span class="tile__name">{p.title}</span>{' '}
                     <span class="tile__foot">
-                      <span class="tile__price mono">{formatMoney(p.price_kopecks)}</span>
+                      <span class="tile__price mono">{formatMoney(p.price_kopecks)}</span>{' '}
                       <span class="tile__more">{formatMoney(packagePerHour(p))}/ч</span>
                     </span>
                   </button>
+                  <span class="visually-hidden" id={`pos-pack-${p.id}`}>
+                    Пакет часов, действует {p.valid_days} {plural(p.valid_days, ['день', 'дня', 'дней'])}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -322,19 +326,14 @@ export function Pos({ ctx }) {
                 const word = unavailableWord(p);
                 const n = qtyIn.get(p.id) ?? 0;
                 const low = !word && p.stock_qty !== null && p.stock_qty <= 5;
+                const extra = [n ? `В чеке ${n}` : '', p.modifier_groups.length ? 'с выбором' : '', p.is_alcohol ? 'проверьте возраст гостя' : ''].filter(Boolean).join(', ');
                 return (
                   <li key={p.id}>
-                    <button
-                      type="button"
-                      class={`tile${n ? ' tile--in' : ''}${word ? ' tile--off' : ''}`}
-                      disabled={Boolean(word)}
-                      onClick={() => add(p)}
-                      aria-label={`${p.name}, ${formatMoney(p.price_kopecks)}${word ? `, ${word.toLowerCase()}` : ''}${n ? `, в чеке ${n}` : ''}${p.modifier_groups.length ? ', с выбором' : ''}`}
-                    >
-                      <span class="tile__name">{p.name}</span>
+                    <button type="button" class={`tile${n ? ' tile--in' : ''}${word ? ' tile--off' : ''}`} disabled={Boolean(word)} onClick={() => add(p)} aria-describedby={extra ? `pos-p-${p.id}` : undefined}>
+                      <span class="tile__name">{p.name}</span>{' '}
                       <span class="tile__foot">
-                        <span class="tile__price mono">{formatMoney(p.price_kopecks)}</span>
-                        {word ? <span class="tile__state">{word}</span> : low ? <span class="tile__state tile__state--low">Осталось {p.stock_qty}</span> : null}
+                        <span class="tile__price mono">{formatMoney(p.price_kopecks)}</span>{' '}
+                        {word ? <span class="tile__state">{word}</span> : low ? <span class="tile__state tile__state--low">Осталось {p.stock_qty}</span> : null}{' '}
                         {p.is_alcohol ? <span class="tile__tag" title="Проверьте возраст гостя">18+</span> : null}
                       </span>
                       {n ? (
@@ -344,6 +343,11 @@ export function Pos({ ctx }) {
                       ) : null}
                       {p.modifier_groups.length ? <span class="tile__more" aria-hidden="true">выбор</span> : null}
                     </button>
+                    {extra ? (
+                      <span class="visually-hidden" id={`pos-p-${p.id}`}>
+                        {extra}
+                      </span>
+                    ) : null}
                   </li>
                 );
               })}
@@ -564,14 +568,20 @@ function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
               const added = inCart.has(line.key);
               return (
                 <li key={r.id}>
-                  <button type="button" class={`tile tile--table${added ? ' tile--in' : ''}`} disabled={added} onClick={() => onAdd(line)} aria-label={`Заявка: стол ${r.resource_number}, ${minutesShort(r.minutes)}, ${formatMoney(r.amount_kopecks)}${added ? ', уже в чеке' : ''}`}>
-                    <span class="tile__table display">Стол {r.resource_number}</span>
-                    <span class="tile__name">{r.kind === 'extend' ? 'Продление' : 'Игра'}, {minutesShort(r.minutes)}</span>
+                  {/* Имя кнопки — видимый текст «Стол 4 Игра, 1 ч 1 490 ₽ до 21:30» (axe label-content-name-mismatch); что это — описанием */}
+                  <button type="button" class={`tile tile--table${added ? ' tile--in' : ''}`} disabled={added} onClick={() => onAdd(line)} aria-describedby={`pos-req-${r.id}`}>
+                    <span class="tile__table display">Стол {r.resource_number}</span>{' '}
+                    <span class="tile__name">
+                      {r.kind === 'extend' ? 'Продление' : 'Игра'}, {minutesShort(r.minutes)}
+                    </span>{' '}
                     <span class="tile__foot">
-                      <span class="tile__price mono">{formatMoney(r.amount_kopecks)}</span>
+                      <span class="tile__price mono">{formatMoney(r.amount_kopecks)}</span>{' '}
                       <span class="tile__state">{added ? 'В чеке' : `до ${formatTime(expiresOf(r), timeZone)}`}</span>
                     </span>
                   </button>
+                  <span class="visually-hidden" id={`pos-req-${r.id}`}>
+                    {added ? 'Заявка гостя уже в чеке' : 'Заявка гостя: оплата на ресепшене, добавить в чек'}
+                  </span>
                 </li>
               );
             })}
@@ -589,14 +599,17 @@ function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
               const number = t.resource?.number ?? t.resource_number;
               return (
                 <li key={t.session_id}>
-                  <button type="button" class={`tile tile--table${added ? ' tile--in' : ''}${ended ? ' tile--ended' : ''}`} disabled={added} onClick={() => onAdd(line)} aria-label={`Счёт стола ${number}, ${line.sub}, ${formatMoney(t.total_kopecks)}${ended ? ', игра закончилась' : ''}${added ? ', уже в чеке' : ''}`}>
-                    <span class="tile__table display">Стол {number}</span>
-                    <span class="tile__name">{line.sub}</span>
+                  <button type="button" class={`tile tile--table${added ? ' tile--in' : ''}${ended ? ' tile--ended' : ''}`} disabled={added} onClick={() => onAdd(line)} aria-describedby={`pos-tab-${t.session_id}`}>
+                    <span class="tile__table display">Стол {number}</span>{' '}
+                    <span class="tile__name">{line.sub}</span>{' '}
                     <span class="tile__foot">
-                      <span class="tile__price mono">{formatMoney(t.total_kopecks)}</span>
+                      <span class="tile__price mono">{formatMoney(t.total_kopecks)}</span>{' '}
                       <span class={`tile__state${ended ? ' tile__state--low' : ''}`}>{added ? 'В чеке' : ended ? 'Игра закончилась' : 'Идёт игра'}</span>
                     </span>
                   </button>
+                  <span class="visually-hidden" id={`pos-tab-${t.session_id}`}>
+                    {added ? 'Счёт стола уже в чеке' : 'Открытый счёт стола, добавить в чек'}
+                  </span>
                 </li>
               );
             })}

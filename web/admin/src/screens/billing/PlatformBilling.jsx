@@ -15,6 +15,11 @@ import {
   paidUntilText,
   paymentsWord,
   periodText,
+  PLAN_PRICE_WARNING,
+  planImpact,
+  planImpactText,
+  planPriceBody,
+  planPriceErrors,
   priceBody,
   priceErrors,
   pricePreview,
@@ -30,8 +35,8 @@ const MODE_WORD = { test: 'тестовый режим', suspended: 'приос�
 /**
  * «Клубы и подписки» (M5.3, №186) в разделе платформы: сверху MRR и оплаты за месяц, таблица клубов
  * (состояние, цена за стол, столы, оплачено до, долг), фильтр «Должники». Администратор платформы —
- * «Отметить оплату» по выставленному счёту (причина и номер платёжки) и «Персональная цена» с причиной.
- * Оператор платформы — только чтение. Без ключей магазина платформы — «Подписка ещё не подключена».
+ * «Отметить оплату» по выставленному счёту (причина и номер платёжки), «Персональная цена» с причиной
+ * и «Изменить цену плана» (PUT /api/platform/plans/{id}, с причиной). Оператор платформы — только чтение. Без ключей магазина платформы — «Подписка ещё не подключена».
  */
 export function PlatformBilling({ role }) {
   const admin = role === 'platform_admin';
@@ -42,6 +47,7 @@ export function PlatformBilling({ role }) {
   const [notice, setNotice] = useState(null);
   const [paying, setPaying] = useState(null);
   const [pricing, setPricing] = useState(null);
+  const [planEdit, setPlanEdit] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -219,12 +225,23 @@ export function PlatformBilling({ role }) {
       ) : null}
       {data && !admin ? <p class="hint">Только чтение: отметить оплату и изменить цену может администратор платформы.</p> : null}
       {data?.plans?.length ? (
-        <p class="small muted">
+        <ul class="pbill__plans" aria-label="Планы подписки">
           {data.plans
             .filter((p) => p.active !== false)
-            .map((p) => `План «${p.title}» — ${formatMoney(p.price_per_table_kopecks)} за стол в месяц, пробный период ${p.trial_days} дней`)
-            .join(' · ')}
-        </p>
+            .map((p) => (
+              <li key={p.id} class="pbill__plan">
+                <span class="small">
+                  План «{p.title}» — <b class="num">{formatMoney(p.price_per_table_kopecks)}</b> за стол в месяц, пробный период {p.trial_days} {plural(p.trial_days, ['день', 'дня', 'дней'])}
+                </span>
+                {admin ? (
+                  <button type="button" class="btn btn--quiet btn--sm" onClick={() => setPlanEdit(p)}>
+                    Изменить цену плана
+                    <span class="visually-hidden"> «{p.title}»</span>
+                  </button>
+                ) : null}
+              </li>
+            ))}
+        </ul>
       ) : null}
       {data ? (
         <div class="viewtog" role="group" aria-label="Какие клубы показать">
@@ -266,7 +283,111 @@ export function PlatformBilling({ role }) {
           load();
         }}
       />
+      {admin ? (
+        <PlanPriceDialog
+          plan={planEdit}
+          items={items}
+          onClose={() => setPlanEdit(null)}
+          onDone={(res) => {
+            setNotice(`План «${res?.title ?? planEdit.title}»: ${formatMoney(res?.price_per_table_kopecks ?? 0)} за стол — со следующего счёта у клубов без персональной цены.`);
+            setPlanEdit(null);
+            load();
+          }}
+        />
+      ) : null}
     </section>
+  );
+}
+
+/** Цена плана (только platform_admin): новая цена, причина в журнал платформы, предупреждение и кого коснётся. */
+function PlanPriceDialog({ plan, items, onClose, onDone }) {
+  const [form, setForm] = useState({ rubles: '', reason: '' });
+  const [tried, setTried] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    setForm({ rubles: plan ? String((plan.price_per_table_kopecks ?? 0) / 100) : '', reason: '' });
+    setTried(false);
+    setError(null);
+  }, [plan?.id]);
+  if (!plan) return <Dialog open={false} onClose={onClose} title="" />;
+  const errs = planPriceErrors(form, plan);
+  const bad = (k) => (tried && errs[k] ? 'true' : undefined);
+  const impact = planImpactText(planImpact(items, plan, form));
+  const submit = async (e) => {
+    e.preventDefault();
+    setTried(true);
+    if (Object.keys(errs).length) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api.updatePlan(plan.id, planPriceBody(form)));
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open onClose={onClose} title={`Цена плана «${plan.title}»`} labelledBy="pb-plan-title">
+      <form class="form" onSubmit={submit} noValidate>
+        <p>
+          Сейчас: <b class="num">{formatMoney(plan.price_per_table_kopecks ?? 0)}</b> за стол в месяц.
+        </p>
+        <p class="note note--lamp" id="pb-plan-warn">
+          <Icon name="info" />
+          <span class="note__title">{PLAN_PRICE_WARNING}</span>
+        </p>
+        <div class="field">
+          <label class="field__label" for="pb-plan-rub">
+            Новая цена за стол в месяц, ₽
+          </label>
+          <input
+            id="pb-plan-rub"
+            class="field__input mono"
+            inputMode="decimal"
+            autoComplete="off"
+            maxLength={12}
+            value={form.rubles}
+            aria-invalid={bad('rubles')}
+            aria-describedby="pb-plan-rub-hint pb-plan-warn"
+            onInput={(e) => setForm((f) => ({ ...f, rubles: e.currentTarget.value.replace(/[^\d,.\s]/g, '') }))}
+          />
+          <p class={bad('rubles') ? 'field__error' : 'field__hint'} id="pb-plan-rub-hint">
+            {bad('rubles') ? errs.rubles : 'Уже выставленные счета не меняются. Клубы с персональной ценой платят по ней.'}
+          </p>
+        </div>
+        <p class="small" role="status">
+          {impact}
+        </p>
+        <div class="field">
+          <label class="field__label" for="pb-plan-reason">
+            Причина
+          </label>
+          <input
+            id="pb-plan-reason"
+            class="field__input"
+            maxLength={2000}
+            value={form.reason}
+            placeholder="Например: индексация цен с 1 января"
+            aria-invalid={bad('reason')}
+            aria-describedby={bad('reason') ? 'pb-plan-reason-err' : undefined}
+            onInput={(e) => setForm((f) => ({ ...f, reason: e.currentTarget.value }))}
+          />
+          {bad('reason') ? (
+            <p class="field__error" id="pb-plan-reason-err">
+              {errs.reason}
+            </p>
+          ) : null}
+        </div>
+        <ErrorNote error={error} />
+        <div class="dialog__actions">
+          <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
+            {busy ? 'Сохраняем…' : 'Сохранить цену плана'}
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -304,7 +425,7 @@ function MarkPaidDialog({ item, onClose, onDone, onStale }) {
     <Dialog open onClose={onClose} title="Отметить оплату по счёту" labelledBy="pb-pay-title">
       <form class="form" onSubmit={submit} noValidate>
         <p>
-          {item.name}: счёт на <b class="num">{formatMoney(inv.amount_kopecks)}</b> за {periodText(inv.period_start, inv.period_end, TZ)}.
+          {item.name}: счёт на <b class="num">{formatMoney(inv.amount_kopecks)}</b> за {periodText(inv.period_start, inv.period_end, item.timezone || TZ)}.
         </p>
         <p class="hint">Для юрлица, которое заплатило с расчётного счёта. Это ручное действие платформы: причина и номер платёжки попадут в журнал, владельцу уйдёт уведомление.</p>
         <div class="field">

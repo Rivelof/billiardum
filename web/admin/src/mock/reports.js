@@ -412,7 +412,7 @@ export function reportsRoutes({ state, now, me, err, ok, audit, dash, manageOnly
       const amount = b.amount_kopecks;
       const cat = cb().categories.find((c) => c.category_id === b.category_id && c.active);
       const date = b.date ?? today();
-      if (!['income', 'expense'].includes(b.kind) || !Number.isSafeInteger(amount) || amount <= 0 || !cat || cat.kind !== b.kind || !isYmd(date) || date > today()) return err(400, 'bad_request');
+      if (!['income', 'expense'].includes(b.kind) || !Number.isSafeInteger(amount) || amount <= 0 || !cat || cat.kind !== b.kind || !isYmd(date) || date > today() || date < addDays(today(), -35)) return err(400, 'bad_request'); // №189: не старше 35 дней
       const item = entry({ entry_id: globalThis.crypto.randomUUID(), date, kind: b.kind, category_id: cat.category_id, category: cat.name, amount_kopecks: amount, comment: typeof b.comment === 'string' ? b.comment.slice(0, 200) : null, created_at: new Date(now()).toISOString(), created_by: me().id, created_by_name: me().name });
       cb().manual.push(item);
       audit('cashbook.entry', { data: { kind: b.kind, amount_kopecks: amount, category: cat.name } });

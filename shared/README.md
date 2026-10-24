@@ -6,7 +6,7 @@
 |---|---|
 | `tokens.css` | цвета `docs/DESIGN.md` §2, редакция №127: тёмная тема по умолчанию (эспрессо, орех, слоновая кость, зелёное сукно, янтарь, латунь), светлая — только `data-theme="light"`; токены зала `--hall-*` (орех, паркет, латунь, сукно); шрифты и шкала §3, скругления §5, движение §6 (`--lamp-duration`, `--motion-screen`, `--cue-easing`) |
 | `fonts.css`, `fonts/` | Dela Gothic One, Geologica 300–700 (вариативный), JetBrains Mono 500 и 700; WOFF2, кириллица и латиница; лицензии `fonts/OFL-*.txt` |
-| `format.mjs` | `plural`, `formatMoney`, `formatTime`, `formatDate`, `formatDuration` |
+| `format.mjs` | `plural`, `formatMoney`, `formatTime`, `formatDate`, `formatDateShort`, `formatDuration` |
 | `ui.css` | базовые стили интерфейса: сброс, кнопки, поля, флажок, плитки выбора, бейджи, сообщения, диалог (лист снизу на телефоне), чек |
 | `hall.mjs`, `hall.css` | зал: `tableSvg` (стол сверху, пирамида и пул в настоящих пропорциях: ореховый борт с бликом, латунные накладки у луз, сукно с виньеткой, лампа и её конус через `--lit`), пол плана — паркет на CSS-градиентах, `planLayout` (расстановка на плане), `tableState` (статус словом), `tableKind`, `typeLabel` |
 | `api.mjs` | клиент API по контракту: `createClient` (JSON, cookie, `Bearer`, `Idempotency-Key`), `ApiError` с кодом, `openStream` (SSE с переподключением), `newIdempotencyKey` |
@@ -99,6 +99,7 @@ formatMoney(149050)                               // '1 490,50 ₽'
 formatMoney(149050n)                              // bigint тоже можно
 formatTime(new Date(), 'Asia/Yekaterinburg')      // '21:30', '09:05', '00:30'
 formatDate(new Date(), 'Asia/Yekaterinburg')      // '21 октября'
+formatDateShort(new Date(), 'Asia/Yekaterinburg') // '21.10' — плотные таблицы и печать
 formatDuration(3_900_000)                         // '1:05:00'; меньше часа — '5:00', '0:42'
 ```
 

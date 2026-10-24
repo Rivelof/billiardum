@@ -6,6 +6,7 @@
  *   formatMoney(149050)                          → '1 490,50 ₽'
  *   formatTime(date, 'Asia/Yekaterinburg')       → '21:30'
  *   formatDate(date, 'Asia/Yekaterinburg')       → '21 октября'
+ *   formatDateShort(date, 'Asia/Yekaterinburg')  → '21.10' (таблицы и печать)
  *   formatDuration(3_900_000)                    → '1:05:00'
  *
  * Пробелы в числах и перед ₽ неразрывные (U+00A0), как их ставит Intl ru-RU.
@@ -77,6 +78,7 @@ export function formatMoney(kopecks) {
 
 const timeFormats = new Map();
 const dateFormats = new Map();
+const shortDateFormats = new Map();
 
 function toDate(date, fn) {
   const d = date instanceof Date ? date : new Date(date);
@@ -121,6 +123,18 @@ export function formatDate(date, timeZone) {
   checkZone(timeZone, 'formatDate');
   const d = toDate(date, 'formatDate');
   return cached(dateFormats, timeZone, { day: 'numeric', month: 'long' }).format(d);
+}
+
+/**
+ * Короткая дата по поясу клуба без года: '21.10', '01.01' — для плотных таблиц и печати.
+ * @param {Date | number | string} date
+ * @param {string} timeZone IANA
+ * @returns {string}
+ */
+export function formatDateShort(date, timeZone) {
+  checkZone(timeZone, 'formatDateShort');
+  const d = toDate(date, 'formatDateShort');
+  return cached(shortDateFormats, timeZone, { day: '2-digit', month: '2-digit' }).format(d);
 }
 
 /**

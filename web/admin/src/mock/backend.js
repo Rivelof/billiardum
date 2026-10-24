@@ -4,7 +4,7 @@
  * M2 (mock/m2.js): pos | noshift (смены нет) | kktoff (касса ККТ не на связи) | bar (бармен);
  * M3 (mock/m3.js): брони, персонал, пакеты и депозит — в каждом сценарии (empty — без броней)
  * M5.1 (mock/m5.js): onboarding — новый пользователь без клуба; testmode, testmode-owner — клуб в тестовом режиме
- * M5.3 (mock/billing.js): billing, billing-active, billing-overdue, billing-manager, billing-off — подписка клуба;
+ * M5.3 (mock/billing.js): billing, billing-active, billing-due, billing-overdue, billing-manager, billing-off — подписка клуба;
  * platform-billing, platform-billing-operator — «Клубы и подписки» платформы
  */
 

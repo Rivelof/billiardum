@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { plural, formatMoney, formatTime, formatDate, formatDuration } from '../format.mjs';
+import { plural, formatMoney, formatTime, formatDate, formatDateShort, formatDuration } from '../format.mjs';
 
 const NBSP = ' ';
 const TZ = 'Asia/Yekaterinburg'; // UTC+5, без перехода на летнее время
@@ -94,6 +94,15 @@ test('formatDate: родительный падеж месяца и перехо
   assert.equal(formatDate(new Date('2026-03-08T10:00:00Z'), TZ), '8 марта');
   assert.equal(formatDate(new Date('2026-12-31T19:00:00Z'), TZ), '1 января');
   assert.equal(formatDate(new Date('2026-12-31T19:00:00Z'), 'UTC'), '31 декабря');
+});
+
+test('formatDateShort: «24.10» по поясу клуба, ведущие нули, переход через год', () => {
+  assert.equal(formatDateShort(new Date('2026-10-24T16:30:00Z'), TZ), '24.10');
+  assert.equal(formatDateShort('2026-03-08T10:00:00Z', TZ), '08.03');
+  assert.equal(formatDateShort(new Date('2026-12-31T19:00:00Z'), TZ), '01.01');
+  assert.equal(formatDateShort(new Date('2026-12-31T19:00:00Z'), 'UTC'), '31.12');
+  assert.throws(() => formatDateShort(new Date()), TypeError);
+  assert.throws(() => formatDateShort('нет', TZ), RangeError);
 });
 
 test('formatTime и formatDate: без часового пояса и с некорректной датой — ошибка', () => {

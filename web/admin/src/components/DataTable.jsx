@@ -5,12 +5,15 @@ import '../styles/tables.css';
 
 const ROWS = ['строку', 'строки', 'строк'];
 
+const cellClass = (c) => [c.num ? 'num' : '', c.cls ?? ''].filter(Boolean).join(' ');
+
 /**
  * Таблица программы клуба (M5.2): сортировка по столбцам (aria-sort), раскрытие строки, «Показать ещё».
  * На телефоне строки — карточки (стили .rtable в m2.css: подпись столбца из data-label), без прокрутки вбок.
  * При печати — обычная таблица, заголовок повторяется на каждой странице (styles/print.css).
  *
- * columns: [{ key, label, num?, head?, render?(row), sortKey? }]. sortKey — ключ сортировки (сервера или клиента).
+ * columns: [{ key, label, num?, head?, cls?, render?(row), sortKey? }]. sortKey — ключ сортировки (сервера или клиента);
+ * cls — класс ячеек столбца (например, rnowrap — короткие значения в одну строку, в том числе в печати).
  * sort: { key, desc } и onSort(key) — сортировка снаружи (сервер); без onSort и с sortValue — на клиенте.
  */
 export function DataTable({ columns, rows, rowKey, caption, captionVisible = false, sort, onSort, expand, expandLabel = 'Состав', limit = 0, foot, empty = 'Нет записей.', rowClass, rowLabel, id }) {
@@ -84,7 +87,7 @@ export function DataTable({ columns, rows, rowKey, caption, captionVisible = fal
               const can = Boolean(c.sortKey || c.sortValue);
               const on = activeSort?.key === (c.sortKey ?? c.key);
               return (
-                <th key={c.key} scope="col" class={c.num ? 'num' : ''} aria-sort={on ? (activeSort.desc ? 'descending' : 'ascending') : undefined}>
+                <th key={c.key} scope="col" class={cellClass(c)} aria-sort={on ? (activeSort.desc ? 'descending' : 'ascending') : undefined}>
                   {can ? (
                     <>
                       <button type="button" class="dtable__sort" onClick={() => toggleSort(c.sortKey ?? c.key)}>
@@ -121,11 +124,11 @@ export function DataTable({ columns, rows, rowKey, caption, captionVisible = fal
                 {columns.map((c) => {
                   const v = c.render ? c.render(r) : r[c.key];
                   return c.head ? (
-                    <th key={c.key} scope="row" class={c.num ? 'num' : ''}>
+                    <th key={c.key} scope="row" class={cellClass(c)}>
                       {v}
                     </th>
                   ) : (
-                    <td key={c.key} class={c.num ? 'num' : ''} data-label={c.label}>
+                    <td key={c.key} class={cellClass(c)} data-label={c.label}>
                       {v}
                     </td>
                   );

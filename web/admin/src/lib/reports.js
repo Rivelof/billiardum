@@ -5,6 +5,7 @@
 
 import { formatMoney, plural } from '@billiardum/shared/format';
 import { METHOD_LABEL } from './words.js';
+import { addDays, dayLong } from './period.js';
 
 export const REPORTS = [
   { key: 'shifts', label: 'Смены', title: 'Смены' },
@@ -117,6 +118,19 @@ export function cashbookSummary(data) {
 }
 
 /** Проверка формы записи кассы: сумма из строки рублей, статья нужного вида, дата не позже сегодня. */
+/** №189: запись в кассе управляющего — не раньше чем 35 дней назад; раньше вчерашнего дня — задним числом (уведомление владельцу). */
+export const CASHBOOK_MAX_BACK_DAYS = 35;
+
+/** Самая ранняя дата записи: '2026-10-24' → '2026-09-19'. */
+export function cashbookMinDate(today) {
+  return addDays(today, -CASHBOOK_MAX_BACK_DAYS);
+}
+
+/** Запись задним числом: дата раньше вчерашнего дня клуба. */
+export function cashbookBackdated(date, today) {
+  return Boolean(date && today && /^\d{4}-\d{2}-\d{2}$/.test(date) && date < addDays(today, -1));
+}
+
 export function cashbookFormErrors({ kind, amount, categoryId, date }, categories, today) {
   const e = {};
   if (!['income', 'expense'].includes(kind)) e.kind = 'Выберите: доход или расход.';
@@ -126,6 +140,7 @@ export function cashbookFormErrors({ kind, amount, categoryId, date }, categorie
   else if (cat.kind !== kind) e.category = kind === 'income' ? 'Это статья расходов — выберите статью доходов.' : 'Это статья доходов — выберите статью расходов.';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) e.date = 'Укажите дату.';
   else if (today && date > today) e.date = 'Дата не может быть позже сегодняшней.';
+  else if (today && date < cashbookMinDate(today)) e.date = `Запись можно датировать не раньше ${dayLong(cashbookMinDate(today))} — это ${CASHBOOK_MAX_BACK_DAYS} дней назад.`;
   return e;
 }
 

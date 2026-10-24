@@ -344,6 +344,8 @@ export const api = {
   markInvoicePaid: (club, body) => client.post(`/platform/subscriptions/${e(club)}/mark-paid`, body),
   /** Администратор: { price_per_table_kopecks | null, reason } → { club_id, price_per_table_kopecks, personal_price }. */
   setClubPrice: (club, body) => client.request('PUT', `/platform/subscriptions/${e(club)}/price`, { body }),
+  /** Администратор: { price_per_table_kopecks?, title?, active?, reason? } → план; новая цена — со следующих счетов клубов без персональной цены. */
+  updatePlan: (id, body) => client.request('PUT', `/platform/plans/${e(id)}`, { body }),
 
   /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
   deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),
