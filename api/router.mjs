@@ -5,7 +5,10 @@
 //   auth      — 'none' | 'guest' (любой вошедший пользователь) | 'staff' (роль в клубе из roles)
 //               | 'terminal' (токен терминала ресепшена) | 'any' (пользователь или терминал)
 //               | 'platform' (роль платформы, №134: только личный вход; ctx.platformRole,
-//                 в транзакции app.platform_role — политики через bl.ctx_platform_role());
+//                 в транзакции app.platform_role — политики через bl.ctx_platform_role())
+//               | 'api_key' (M5.7 №199: ключ API клуба blk_…, только GET /api/v1/club/…, scope —
+//                 право ключа, keyRateLimit — лимит маршрута на ключ; server/clubapi/auth.mjs:
+//                 контекст клуба ключа без пользователя, транзакция READ ONLY, cookie не читается);
 //   roles     — роли в клубе для 'staff': owner, manager, reception, installer, bar;
 //               для 'platform': platform_operator, platform_admin (администратор проходит и как оператор);
 //   cache     — секунды (1–3600) для GET без входа: ответ 200 общий для всех, Cache-Control
@@ -54,6 +57,8 @@ import { clientIp, ipInCidrs, originAllowed, parseCookies, readJsonBody, readRaw
 import { createRateLimiter, DEFAULT_LIMIT } from '../server/http/rate-limit.mjs';
 import { afterCommit, contextClubMode, isUuid, setContext, withContext } from '../server/lib/store.mjs';
 import { recordManual } from '../server/lib/manual.mjs';
+import { API_PREFIX, handleApiKeyRoute } from '../server/clubapi/auth.mjs';
+import { SCOPES as API_SCOPES } from '../server/clubapi/keys.mjs';
 
 export const ROUTES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'routes');
 export const ROLES = Object.freeze({
@@ -79,7 +84,7 @@ export const IDEMPOTENCY_TTL_MS = 24 * 3600_000;
 
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const AUTH = new Set(['none', 'guest', 'staff', 'terminal', 'any', 'platform']);
+const AUTH = new Set(['none', 'guest', 'staff', 'terminal', 'any', 'platform', 'api_key']);
 const UUID_PARAM = (name) => name === 'club' || name === 'id' || name.endsWith('_id') || name.endsWith('Id');
 
 /** Заголовки безопасности всех ответов API (Caddy добавляет HSTS и свои). */
@@ -116,7 +121,12 @@ function validateRoute(r, file) {
   if (!r || typeof r !== 'object') throw new Error(`${file}: маршрут не объект`);
   if (!METHODS.has(r.method)) throw new Error(`${where}: метод`);
   if (typeof r.handler !== 'function') throw new Error(`${where}: handler`);
-  if (!AUTH.has(r.auth)) throw new Error(`${where}: auth — none | guest | staff | terminal | any | platform`);
+  if (!AUTH.has(r.auth)) throw new Error(`${where}: auth — none | guest | staff | terminal | any | platform | api_key`);
+  // Ключ API клуба (M5.7): только чтение под /api/v1/club/, право из списка; и наоборот.
+  if ((r.auth === 'api_key') !== (typeof r.path === 'string' && r.path.startsWith(API_PREFIX))) throw new Error(`${where}: ${API_PREFIX}* — только auth 'api_key' и наоборот`);
+  if (r.auth === 'api_key' && (r.method !== 'GET' || !API_SCOPES.includes(r.scope) || r.idempotent || r.rawBody || r.cache !== undefined || r.db === false || r.stream)) {
+    throw new Error(`${where}: api_key — GET со scope из списка, без idempotent, rawBody, cache, db: false`);
+  }
   if (r.auth === 'platform' && (!Array.isArray(r.roles) || r.roles.length === 0 || !r.roles.every((x) => PLATFORM_ROLES.includes(x)))) {
     throw new Error(`${where}: roles платформы`);
   }
@@ -321,6 +331,20 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
       }
       const query = {};
       for (const [k, v] of url.searchParams) if (!(k in query)) query[k] = v;
+
+      // Ключ API клуба (M5.7): свой вход, контекст и лимиты; cookie и токены пользователей не читаются.
+      if (route.auth === 'api_key') {
+        const out = await handleApiKeyRoute(app, route, { method, path: url.pathname, params, query, headers: req.headers, ip, raw: req }, { rateLimiter });
+        principal = out.principal;
+        status = out.status;
+        if (out.json === undefined) {
+          res.writeHead(out.status, { ...SECURITY_HEADERS, ...out.headers });
+          res.end();
+        } else {
+          send(res, out.status, out.json, out.headers, []);
+        }
+        return true;
+      }
 
       // Публичные маршруты анонимны: токен не читается (ответ общий для всех и кэшируется).
       if (token && !route.public && !route.cache) principal = await resolve(token);
@@ -571,6 +595,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
         status,
         ms: Math.round(ms * 10) / 10,
         user_id: principal?.userId ?? null,
+        ...(principal?.kind === 'api_key' ? { api_key_id: principal.keyId, club_id: principal.clubId } : {}),
       });
     }
   }

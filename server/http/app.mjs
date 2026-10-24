@@ -44,6 +44,8 @@ export const MODULES = [
   { name: 'dashboard', spec: '../dashboard/index.mjs' },
   // M5.3: подписка клубов (backend-billing) — счета, автоплатежи, повторы, напоминания.
   { name: 'billing', spec: '../billing/index.mjs' },
+  // M5.7: публичный API клуба — очередь и воркер исходящих вебхуков (маршруты — api/routes/clubapi.mjs).
+  { name: 'clubapi', spec: '../clubapi/index.mjs' },
 ];
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
 

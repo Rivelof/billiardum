@@ -184,6 +184,81 @@ describe('узкие функции SECURITY DEFINER', () => {
     assert.equal(await users(), before);
   });
 
+  it('ключи API и вебхуки (M5.7): только свой клуб, хеш ключа app_api не читает, ключ ищет только bl.clubapi_key_auth', async () => {
+    const hashA = 'a'.repeat(64);
+    const hashB = 'b'.repeat(64);
+    const hashRevoked = 'c'.repeat(64);
+    await db.pool.query(
+      `insert into bl.api_keys (id, club_id, name, prefix, key_hash, scopes, created_by) values
+         ('ab000000-0000-4000-8000-00000000000a', $1, 'A', 'blk_AAAAAAAA', $3, '{tables:read}', $4),
+         ('ab000000-0000-4000-8000-00000000000b', $2, 'B', 'blk_BBBBBBBB', $5, '{sales:read}', $6)`,
+      [CLUB_A, CLUB_B, hashA, OWNER_A, hashB, OWNER_B],
+    );
+    await db.pool.query(
+      `insert into bl.api_keys (id, club_id, name, prefix, key_hash, scopes, created_by, revoked_at, revoked_by)
+       values ('ab000000-0000-4000-8000-00000000000c', $1, 'R', 'blk_CCCCCCCC', $2, '{tables:read}', $3, now(), $3)`,
+      [CLUB_A, hashRevoked, OWNER_A],
+    );
+    await db.pool.query(
+      `insert into bl.webhooks (id, club_id, url, events, secret_enc, created_by) values
+         ('ac000000-0000-4000-8000-00000000000a', $1, 'https://a.example.ru/h', '{shift.closed}', 'v1:AAAAAAAAAAAA', $3),
+         ('ac000000-0000-4000-8000-00000000000b', $2, 'https://b.example.ru/h', '{shift.closed}', 'v1:BBBBBBBBBBBB', $4);
+       insert into bl.webhook_deliveries (id, club_id, webhook_id, event_id, event, source, payload) values
+         ('ad000000-0000-4000-8000-00000000000a', $1, 'ac000000-0000-4000-8000-00000000000a', gen_random_uuid(), 'ping', 'outbox:1', '{}'),
+         ('ad000000-0000-4000-8000-00000000000b', $2, 'ac000000-0000-4000-8000-00000000000b', gen_random_uuid(), 'ping', 'outbox:2', '{}');
+       insert into bl.webhook_attempts (club_id, delivery_id, attempt, at, http_status) values
+         ($1, 'ad000000-0000-4000-8000-00000000000a', 1, now(), 500), ($2, 'ad000000-0000-4000-8000-00000000000b', 1, now(), 500);`
+        .replaceAll('$1', `'${CLUB_A}'`).replaceAll('$2', `'${CLUB_B}'`).replaceAll('$3', `'${OWNER_A}'`).replaceAll('$4', `'${OWNER_B}'`),
+    );
+    await asRole(db.pool, 'app_api', { clubId: CLUB_A }, async (c) => {
+      for (const t of ['webhooks', 'webhook_deliveries', 'webhook_attempts']) {
+        const { rows } = await c.query(`select distinct club_id from bl.${t}`);
+        assert.deepEqual(rows.map((r) => r.club_id), [CLUB_A], t);
+      }
+      const keys = await c.query('select id, club_id from bl.api_keys order by id');
+      assert.deepEqual(keys.rows.map((r) => r.club_id), [CLUB_A, CLUB_A]);
+      assert.equal((await tryQuery(c, 'select key_hash from bl.api_keys'))?.code, '42501', 'хеш ключа не читается');
+      assert.equal((await tryQuery(c, "update bl.api_keys set scopes = '{sales:read}'"))?.code, '42501', 'права ключа не меняются');
+      assert.equal((await tryQuery(c, "update bl.api_keys set revoked_at = null, revoked_by = null where id = 'ab000000-0000-4000-8000-00000000000c'"))?.code, '42501', 'отзыв необратим');
+      assert.equal((await tryQuery(c, "update bl.webhooks set url = 'https://x.example.ru/'"))?.code, '42501', 'адрес не меняется');
+      assert.equal((await tryQuery(c, 'delete from bl.api_keys'))?.code, '42501');
+      assert.equal((await tryQuery(c, 'delete from bl.webhooks'))?.code, '42501');
+      const upd = await c.query("update bl.webhooks set disabled_at = now(), disabled_by = $1 where club_id = $2", [OWNER_B, CLUB_B]);
+      assert.equal(upd.rowCount, 0);
+      const ins = await tryQuery(c, "insert into bl.webhook_deliveries (club_id, webhook_id, event_id, event, source, payload) values ($1, 'ac000000-0000-4000-8000-00000000000b', gen_random_uuid(), 'ping', 'outbox:3', '{}')", [CLUB_B]);
+      assert.match(ins?.message ?? '', /row-level security/);
+      // Ключ по хешу: клуб ключа, права и режим; отозванный и неизвестный — пусто. Из контекста A виден ключ B —
+      // это вход по ключу, клуб берётся из ключа (а не из контекста).
+      const a = await c.query('select * from bl.clubapi_key_auth($1)', [hashA]);
+      assert.deepEqual(a.rows.map((r) => [r.club_id, r.scopes]), [[CLUB_A, ['tables:read']]]);
+      const b = await c.query('select * from bl.clubapi_key_auth($1)', [hashB]);
+      assert.deepEqual(b.rows.map((r) => r.club_id), [CLUB_B]);
+      assert.equal((await c.query('select * from bl.clubapi_key_auth($1)', [hashRevoked])).rowCount, 0);
+      assert.equal((await c.query('select * from bl.clubapi_key_auth($1)', ['d'.repeat(64)])).rowCount, 0);
+      assert.equal((await c.query("select * from bl.clubapi_key_auth('blk_not_a_hash')")).rowCount, 0);
+    });
+    await asRole(db.pool, 'app_api', { clubId: null, actorType: 'user' }, async (c) => {
+      for (const t of ['api_keys', 'webhooks', 'webhook_deliveries', 'webhook_attempts']) {
+        assert.equal((await c.query(`select count(*)::int as n from bl.${t}`)).rows[0].n, 0, `${t} без контекста`);
+      }
+    });
+    // Контекст платформы (воркер доставки): адреса и очередь всех клубов, ключи и попытки — нет.
+    await asRole(db.pool, 'app_api', { clubId: null, actorType: 'system' }, async (c) => {
+      assert.equal((await c.query('select count(*)::int as n from bl.webhook_deliveries')).rows[0].n, 2);
+      assert.equal((await c.query('select count(*)::int as n from bl.webhooks')).rows[0].n, 2);
+      assert.equal((await c.query('select count(*)::int as n from bl.api_keys')).rows[0].n, 0);
+      assert.equal((await c.query('select count(*)::int as n from bl.webhook_attempts')).rows[0].n, 0);
+    });
+    // Шестой активный ключ клуба — отказ триггера (страховка проверки сервера).
+    for (let i = 0; i < 4; i += 1) {
+      await db.pool.query("insert into bl.api_keys (club_id, name, prefix, key_hash, scopes, created_by) values ($1, 'n', 'blk_DDDDDDDD', $2, '{tables:read}', $3)", [CLUB_A, String(i).repeat(64), OWNER_A]);
+    }
+    await assert.rejects(
+      db.pool.query("insert into bl.api_keys (club_id, name, prefix, key_hash, scopes, created_by) values ($1, 'n', 'blk_DDDDDDDD', $2, '{tables:read}', $3)", [CLUB_A, 'e'.repeat(64), OWNER_A]),
+      (err) => err.constraint === 'api_keys_active_limit',
+    );
+  });
+
   it('функции закреплены: SECURITY DEFINER только у перечисленных, у всех — search_path', async () => {
     const { rows } = await db.pool.query(`
       select p.proname, p.prosecdef, pg_get_userbyid(p.proowner) as owner, p.proconfig
@@ -213,6 +288,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['club_mode', 'bl_definer'],
         ['club_resume', 'bl_definer'],
         ['club_suspend', 'bl_definer'],
+        // M5.7 (1200): действующий ключ API клуба по HMAC — клуб, права, режим
+        ['clubapi_key_auth', 'bl_definer'],
         ['create_club', 'bl_definer'],
         // M4 core (0710): роль платформы из контекста, получатели уведомлений платформы
         ['ctx_platform_role', 'bl_definer'],

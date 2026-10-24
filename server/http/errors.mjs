@@ -90,6 +90,15 @@ export const ERROR_CODES = new Set([
   'card_required',
   'invoice_paid',
   'billing_unavailable',
+  // M5.7 (m5-5-8.md №199–201): у ключа API нет права маршрута (403), уже 5 активных ключей (409),
+  // уже 10 включённых вебхуков (409), адрес вебхука не https:443 или не разобран (400), ведёт во
+  // внутреннюю сеть или локальное имя (400), тестовое событие на выключенный адрес (409).
+  'scope_required',
+  'api_keys_limit',
+  'webhooks_limit',
+  'url_invalid',
+  'url_forbidden',
+  'webhook_disabled',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',
