@@ -23,8 +23,11 @@ as $$ select case when p_type = 'padel_court' then 'court' else 'table' end $$;
 comment on function bl.resource_family(text) is
   'Семья вида ресурса (M5.8 №203): court — падел-корт, table — столы бильярда; своя нумерация у каждой.';
 
+-- Владелец — bl_owner, как у таблиц: выражение уникального индекса на bl.resources вычисляется
+-- с правами владельца таблицы (на стенде мигратор — не суперпользователь).
+alter function bl.resource_family(text) owner to bl_owner;
 revoke all on function bl.resource_family(text) from public;
-grant execute on function bl.resource_family(text) to app_api;
+grant execute on function bl.resource_family(text) to app_api, bl_definer;
 
 -- Тип ресурса и правила тарифа ----------------------------------------------------------------
 
