@@ -125,3 +125,14 @@ test('M5.5: тексты кодов сети клубов; дыра шаблон
   assert.equal(errorMessage(gap, { audience: 'staff', clubName: 'Клуб Калининград' }).title, '«Клуб Калининград»: в среду с 02:00 до 06:00 нет цены.');
   assert.equal(errorMessage(gap, { audience: 'staff', clubName: ' ' }).title, 'В среду с 02:00 до 06:00 нет цены.');
 });
+
+test('M5.8: tariff_gap кортов (kind: padel_court) и смена вида стол ↔ корт', () => {
+  const m = errorMessage({ code: 'tariff_gap', data: { kind: 'padel_court', weekday: 3, from: '06:00', to: '18:00' } }, { audience: 'staff' });
+  assert.equal(m.title, 'Корты: в среду с 06:00 до 18:00 нет цены.');
+  assert.match(m.action, /цены кортов за слот/);
+  // Стол — прежний текст
+  assert.equal(errorMessage({ code: 'tariff_gap', data: { kind: 'pool', weekday: 3, from: '06:00', to: '18:00' } }, { audience: 'staff' }).title, 'В среду с 06:00 до 18:00 нет цены.');
+  const f = errorMessage({ code: 'family_change' }, { audience: 'staff' });
+  assert.equal(f.title, 'Стол не может стать кортом, а корт — столом.');
+  assert.match(f.action, /Выведите ресурс из работы/);
+});

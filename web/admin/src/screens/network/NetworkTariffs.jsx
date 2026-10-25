@@ -3,7 +3,7 @@ import { Icon } from '../../components/Icon.jsx';
 import { ErrorNote } from '../../components/ErrorNote.jsx';
 import { TariffWizard, TypedWeek } from '../../components/TariffEditor.jsx';
 import { api } from '../../lib/api.js';
-import { hallTypes, TYPE_WORD } from '../../lib/tariffs.js';
+import { COURT_KIND, hallHasCourts, hallTypes, rulesSlot, TYPE_WORD } from '../../lib/tariffs.js';
 import { clubTariffState, clubsWord, isLive, liveTouched, problemText, tariffTouched, withReason } from '../../lib/networks.js';
 import { ClubModeBadge, ConfirmDialog, ModeBlock } from './parts.jsx';
 
@@ -11,10 +11,13 @@ import { ClubModeBadge, ConfirmDialog, ModeBlock } from './parts.jsx';
  * Шаблон тарифов сети (№191): тот же редактор, что в мастере тарифов клуба (components/TariffEditor.jsx).
  * Правила — по местному времени: в каждом клубе шаблон действует по его поясу и рабочим суткам. Сервер проверяет неделю
  * каждого клуба: 400 tariff_gap | tariff_overlap { club_id, … } — ничего не записывается. Затронуты боевые клубы — причина.
+ * M5.8: корты хотя бы в одном клубе сети — блок корта обязателен (400 tariff_gap { kind: 'padel_court', club_id }),
+ * кортов нет — цены кортов можно задать впрок.
  */
 export function NetworkTariffs({ n, rights, onNetwork }) {
   const [t, setT] = useState(null);
   const [types, setTypes] = useState(null);
+  const [courts, setCourts] = useState(false);
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -36,6 +39,7 @@ export function NetworkTariffs({ n, rights, onNetwork }) {
     Promise.all((n.clubs ?? []).map((c) => api.resources(c.club_id).catch(() => null))).then((list) => {
       if (!alive) return;
       const all = list.flatMap((r) => (Array.isArray(r?.resources) ? r.resources : []));
+      setCourts(hallHasCourts(all));
       setTypes(hallTypes(all));
     });
     return () => {
@@ -70,6 +74,9 @@ export function NetworkTariffs({ n, rights, onNetwork }) {
         </p>
         <TariffWizard
           types={types}
+          courts={courts}
+          offerCourts
+          slot={rulesSlot(t.rules)}
           dayStart={dayStart}
           live={live.length > 0}
           canCancel
@@ -123,7 +130,7 @@ export function NetworkTariffs({ n, rights, onNetwork }) {
         {t.template && Array.isArray(t.rules) && t.rules.length ? (
           <>
             <p class="hint">Цены по дням и часам — местное время каждого клуба. Неделя показана от {dayStart}: ночь после полуночи считается по предыдущему дню.</p>
-            <TypedWeek rules={t.rules} types={types} dayStart={dayStart} />
+            <TypedWeek rules={t.rules} types={types} courts={courts} dayStart={dayStart} />
           </>
         ) : (
           <p class="hint">
@@ -162,7 +169,7 @@ export function NetworkTariffs({ n, rights, onNetwork }) {
                       <p class="nclub__problem">
                         <Icon name="alert" />
                         <span>
-                          {pr} Шаблон не покрывает неделю этого клуба — например, после добавления стола нового типа. {rights.owner ? 'Задайте цену на эти часы в шаблоне.' : 'Сообщите владельцу сети.'}
+                          {pr} {c.problem?.kind === COURT_KIND ? 'В клубе есть корты, а в шаблоне нет цены кортов на эти часы.' : 'Шаблон не покрывает неделю этого клуба — например, после добавления стола нового типа.'} {rights.owner ? 'Задайте цену на эти часы в шаблоне.' : 'Сообщите владельцу сети.'}
                         </span>
                       </p>
                     ) : null}
@@ -212,6 +219,7 @@ function TouchNote({ touched, live, skipped }) {
         {touched.filter((c) => !isLive(c)).length ? <p>В тестовом режиме: {touched.filter((c) => !isLive(c)).map((c) => c.name ?? 'Клуб').join(', ')} — только запись в журнал.</p> : null}
         {skipped.length ? <p>Не изменятся — свои тарифы клуба: {skipped.map((c) => c.name ?? 'Клуб').join(', ')}.</p> : null}
         {touched.some((c) => c.problem?.kind && TYPE_WORD[c.problem.kind]) ? <p>Проверьте цены на все типы столов в клубах сети.</p> : null}
+        {touched.some((c) => c.problem?.kind === COURT_KIND) ? <p>В клубах с кортами шаблон без цен кортов не сохранится: задайте цену слота.</p> : null}
       </div>
     </div>
   );

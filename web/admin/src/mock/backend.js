@@ -10,7 +10,10 @@
  * клубу 10 дней («Мало данных для прогноза»), maintenance — обслуживание столов (владелец), maintenance-manager — управляющий
  * M5.7 (mock/clubapi.js): api — «API и вебхуки» владельца, api-pin — тот же владелец вошёл по PIN на терминале
  * M5.5 (mock/networks.js): network — владелец сети из трёх клубов, network-hard — жёсткие шаблоны, network-empty — без сети,
- * network-manager — управляющий сети, network-pin — владелец по PIN на терминале
+ * network-manager — управляющий сети, network-pin — владелец по PIN на терминале, network-court — у третьего клуба сети корты
+ * M5.8 (падел-корт): court — ресепшн в клубе с 8 столами и 2 кортами (корт 1 в игре, 3 игрока из 4; заявка на корт 2),
+ * court-owner — владелец (зал, тарифы со слотом, дашборд «Столы / Корты», отчёт смены по видам), court-manager —
+ * управляющий (продление без оплаты слотами), court-owner-gap — владелец, у кортов нет цены (tariff_gap padel_court)
  */
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
@@ -49,10 +52,14 @@ const PLAN = Object.fromEntries(
   [[400, 300], [950, 300], [1500, 300], [400, 750], [950, 750], [350, 1150], [800, 1150], [1250, 1150]].map(([x, y], i) => [i + 1, { plan_x: x, plan_y: y, plan_rotation: 0 }]),
 );
 const TYPES = { pyramid: ['billiard_pyramid', 'Пирамида 12 футов'], pool: ['billiard_pool', 'Пул 9 футов'] };
+/** M5.8: корты клуба разработки в ?mock=court… — id как в mock/dashboard.js, своя нумерация «Корт 1, 2». */
+const COURT_IDS = ['c0000000-0000-4000-8000-0000000000c1', 'c0000000-0000-4000-8000-0000000000c2'];
+const COURT_CODES = ['C9KX2RT4MA', 'D3HW8QN5PZ'];
+export const isCourtScenario = (sc) => String(sc ?? '').startsWith('court');
 
 function freshState(scenario, t) {
   const table = (n, kind, status, extra = {}) => ({
-    resource: { id: rid(n), number: n, type: TYPES[kind][0], title: TYPES[kind][1], code: CODES[n], ...PLAN[n] },
+    resource: { id: rid(n), number: n, type: TYPES[kind][0], family: 'table', title: TYPES[kind][1], code: CODES[n], ...PLAN[n] },
     status,
     session: null,
     until: null,
@@ -68,6 +75,14 @@ function freshState(scenario, t) {
     ...over,
   });
   const empty = scenario === 'empty' || scenario === 'dashboard-empty';
+  const court = (n, status, extra = {}) => ({
+    resource: { id: COURT_IDS[n - 1], number: n, type: 'padel_court', family: 'court', title: `Корт ${n}`, code: COURT_CODES[n - 1], plan_x: 650 + (n - 1) * 1150, plan_y: 2600, plan_rotation: 0 },
+    status,
+    session: null,
+    until: null,
+    ...extra,
+    device: { id: `d2000000-0000-4000-8000-00000000000${n}`, online: true, rssi: -60, fw: '1.0.0', caps: ['relay', 'led', 'buzzer', 'current'] },
+  });
   const fresh = scenario === 'onboarding';
   // M5.2: dashboard, dashboard-empty, dashboard-year — владелец; dashboard-manager — управляющий
   const dash = isDashScenario(scenario);
@@ -83,12 +98,16 @@ function freshState(scenario, t) {
     table(6, 'pool', empty ? 'free' : 'pending', { device: { online: true, rssi: -67, fw: '1.0.0', caps: ['relay', 'led'] } }),
     table(7, 'pool', 'busy', { session: session(7, 35, null) }),
     table(8, 'pool', 'offline', { device: { online: false, rssi: null, fw: '1.0.0', caps: ['relay', 'led', 'buzzer', 'current'] } }),
+    // M5.8: падел-корты — в зале 24 × 37 м под столами; корт 1 в игре (слот 1,5 ч, 3 игрока), корт 2 свободен
+    ...(isCourtScenario(scenario) ? [court(1, 'busy', { session: session('c1', 50, 40) }), court(2, empty ? 'free' : 'pending')] : []),
   ];
   const requests = empty || fresh
     ? []
     : [
         { id: uuid(), status: 'waiting', kind: 'start', resource_number: 6, minutes: 60, amount_kopecks: 80000, created_at: new Date(t - 9 * MIN).toISOString(), expires_at: new Date(t + 6 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-71-08' },
         { id: uuid(), status: 'waiting', kind: 'start', resource_number: 4, minutes: 120, amount_kopecks: 160000, created_at: new Date(t - 2 * MIN).toISOString(), expires_at: new Date(t + 13 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-45-12' },
+        // M5.8: заявка на корт — resource_type и resource_family (server/reception staffView), один слот 1,5 ч
+        ...(isCourtScenario(scenario) ? [{ id: uuid(), status: 'waiting', kind: 'start', resource_id: COURT_IDS[1], resource_number: 2, resource_type: 'padel_court', resource_family: 'court', minutes: 90, amount_kopecks: 240000, created_at: new Date(t - 1 * MIN).toISOString(), expires_at: new Date(t + 14 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-18-40' }] : []),
       ];
   const alarms = fresh ? [] : [
     { id: uuid(), type: 'bypass_detected', level: 'critical', resource_number: 2, created_at: new Date(t - 6 * MIN).toISOString() },
@@ -108,7 +127,7 @@ function freshState(scenario, t) {
   const asRole = scenario?.split('-')[1];
   // M5.3: сценарии подписки — владелец (billing-manager — управляющий), platform-billing — владелец и администратор платформы
   const bill = String(scenario ?? '').startsWith('billing') || scenario === 'platform-billing';
-  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash || bill || String(scenario).startsWith('api') || isNetworkScenario(scenario) ? 'owner' : 'reception';
+  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : isCourtScenario(scenario) ? 'reception' : dash || bill || String(scenario).startsWith('api') || isNetworkScenario(scenario) ? 'owner' : 'reception';
   return {
     scenario,
     // M5.7: вид входа (GET /api/me → session.kind): api-pin — по PIN на терминале
@@ -194,7 +213,9 @@ export function createBackend(storage, now = () => Date.now()) {
   const ok = (body) => ({ status: 200, body });
   const me = () => state.user;
   const table = (id) => state.hall.find((x) => x.resource.id === id);
-  const byNumber = (n) => state.hall.find((x) => x.resource.number === n);
+  const byNumber = (n) => state.hall.find((x) => x.resource.number === n && x.resource.family !== 'court');
+  // M5.8: номера у столов и кортов свои — заявку ищем по resource_id, иначе по номеру внутри семьи
+  const requestTable = (r) => (r.resource_id && table(r.resource_id)) || state.hall.find((x) => x.resource.number === r.resource_number && (x.resource.family ?? 'table') === (r.resource_family ?? 'table'));
   const audit = (action, extra) => {
     const head = state.audit[0]?.seq ?? 0;
     state.audit.unshift({ id: uuid(), seq: head + 1, created_at: new Date(now()).toISOString(), action, actor_type: 'staff', actor_id: me()?.id, actor_name: me()?.name, hash: uuid().replace(/-/g, ''), data: {}, ...extra });
@@ -207,11 +228,11 @@ export function createBackend(storage, now = () => Date.now()) {
     m2Tick(m2ctx);
     if (state.scenario === 'empty' || !state.user) return;
     if (now() < state.nextRequestAt) return;
-    const free = state.hall.find((x) => x.status === 'free' && !x.session);
+    const free = state.hall.find((x) => x.status === 'free' && !x.session && x.resource.family !== 'court');
     state.nextRequestAt = now() + 60_000;
     if (!free || state.requests.length >= 4) return;
     free.status = 'pending';
-    state.requests.push({ id: uuid(), status: 'waiting', kind: 'start', resource_number: free.resource.number, minutes: 120, amount_kopecks: 160000, created_at: new Date(now()).toISOString(), expires_at: new Date(now() + 15 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-30-55' });
+    state.requests.push({ id: uuid(), status: 'waiting', kind: 'start', resource_id: free.resource.id, resource_number: free.resource.number, minutes: 120, amount_kopecks: 160000, created_at: new Date(now()).toISOString(), expires_at: new Date(now() + 15 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-30-55' });
     save();
     emit('hall', free);
     emit('reception_request', { state: 'new' });
@@ -272,7 +293,7 @@ export function createBackend(storage, now = () => Date.now()) {
       if (b.method === 'cash' && !state.m2.shift) return err(409, 'shift_closed');
       if (b.method === 'cash') state.m2.shift.cash_sales_kopecks += r.amount_kopecks;
       state.requests = state.requests.filter((x) => x !== r);
-      const t = byNumber(r.resource_number);
+      const t = requestTable(r);
       const s = { id: uuid(), status: 'active', started_at: new Date(now()).toISOString(), paid_until: new Date(now() + (r.minutes ?? 120) * MIN).toISOString(), unlimited: r.minutes === null };
       Object.assign(t, { status: 'busy', session: s });
       state.revenue[b.method] += r.amount_kopecks;
@@ -285,7 +306,7 @@ export function createBackend(storage, now = () => Date.now()) {
       if (!r) return err(404, 'not_found');
       if (!b.reason_code) return err(400, 'reason_required');
       state.requests = state.requests.filter((x) => x !== r);
-      const t = byNumber(r.resource_number);
+      const t = requestTable(r);
       Object.assign(t, { status: 'free', session: null });
       audit('reception.decline', { resource_number: r.resource_number, data: { reason_code: b.reason_code, amount_kopecks: r.amount_kopecks } });
       emit('hall', t);
@@ -321,6 +342,30 @@ export function createBackend(storage, now = () => Date.now()) {
       audit('manual.extend_free', { resource_number: t.resource.number, reason: b.reason_text, data: { minutes: b.minutes } });
       emit('hall', t);
       return ok(t.session);
+    }],
+    // Игра целиком (персонал тоже видит, server/sessions getSession): участники и вид ресурса (M5.8 — корт: слот, до 4 игроков)
+    ['GET', /^\/api\/sessions\/([^/]+)$/, (m) => {
+      if (!me()) return err(401, 'unauthorized');
+      const t = state.hall.find((x) => x.session?.id === m[1]);
+      if (!t) return err(404, 'not_found');
+      const court = t.resource.family === 'court';
+      const players = court ? 3 : 2;
+      return ok({
+        id: t.session.id,
+        club: { id: CLUB_ID, timezone: TZ },
+        resource: { id: t.resource.id, number: t.resource.number, type: t.resource.type, title: t.resource.title, kind: court ? 'padel_court' : t.resource.type.replace('billiard_', ''), family: court ? 'court' : 'table', max_players: court ? 4 : 20, billing: court ? 'slot' : 'hourly', slot_minutes: court ? 90 : null },
+        status: t.session.status,
+        started_at: t.session.started_at,
+        paid_until: t.session.paid_until,
+        grace_until: null,
+        remaining_ms: Math.max(0, Date.parse(t.session.paid_until) - now()),
+        unlimited: Boolean(t.session.unlimited),
+        is_payer: false,
+        participants: Array.from({ length: players }, (_, i) => ({ user_id: `u-g-${i + 1}`, nick: i === 0 ? 'Ракета' : null, label: `Игрок ${i + 1}` })),
+        extend_limit_until: null,
+        booking_id: null,
+        deposit_kopecks: t.session.deposit_kopecks ?? null,
+      });
     }],
     ['GET', /^\/api\/clubs\/([^/]+)\/now$/, () => ok({ hall: m3.withNextBooking(state.hall), revenue_today_kopecks: state.revenue, alarms_open: state.alarms.length })],
     ['GET', /^\/api\/clubs\/([^/]+)\/alarms$/, () => ok(state.alarms)],
@@ -425,7 +470,7 @@ export function createBackend(storage, now = () => Date.now()) {
   function withCloth(res, clubId) {
     const list = res?.body?.tables?.by_resource;
     if (clubId !== CLUB_ID || !Array.isArray(list)) return res;
-    for (const r of list) Object.assign(r, maint.cloth(r.resource_id) ?? {});
+    for (const r of list) if (r.family !== 'court') Object.assign(r, maint.cloth(r.resource_id) ?? {});
     return res;
   }
   routes.unshift(...maint.routes);

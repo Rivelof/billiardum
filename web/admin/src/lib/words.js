@@ -1,4 +1,5 @@
 import { plural, formatMoney } from '@billiardum/shared/format';
+import { familyOf, resourceName } from '@billiardum/shared/resource';
 
 const HOURS = ['час', 'часа', 'часов'];
 const MINUTES = ['минута', 'минуты', 'минут'];
@@ -24,9 +25,14 @@ export function minutesShort(minutes) {
   return `${m} мин`;
 }
 
-/** Заявка ресепшена по контракту: «Стол 4 · 2 ч · 1 600 ₽». */
+/** Ресурс заявки по виду (M5.8: resource_family | resource_type): «Стол 4», «Корт 1»; opts — падеж. */
+export function requestName(req, opts) {
+  return resourceName(familyOf({ family: req?.resource_family, type: req?.resource_type }), req?.resource_number, opts);
+}
+
+/** Заявка ресепшена по контракту: «Стол 4 · 2 ч · 1 600 ₽», у корта — «Корт 1 · 1 ч 30 мин · 2 400 ₽». */
 export function requestTitle(req) {
-  return `Стол ${req.resource_number} · ${minutesShort(req.minutes)} · ${formatMoney(req.amount_kopecks)}`;
+  return `${requestName(req)} · ${minutesShort(req.minutes)} · ${formatMoney(req.amount_kopecks)}`;
 }
 
 /** «2 минуты назад», «только что». */

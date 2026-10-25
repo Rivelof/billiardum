@@ -141,3 +141,22 @@ export function manualDetail(row, timeZone) {
   }
   return out;
 }
+
+/**
+ * Отчёт смены клуба со столами и кортами (M5.8 T47, server/reports playStats → play.by_family): одна строка
+ * «Столы — 12,5 ч, загрузка 41,3 %, 8 400 ₽; корты — 3 ч, загрузка 18,8 %, 4 800 ₽.» Выручка — за вычетом возвратов,
+ * как в тексте владельцу. Одна семья (только столы) — null: строка ничего не добавляет к итогу.
+ * @param {{ by_family?: { family: string, hours?: number, minutes?: number, utilization_percent?: number, revenue_kopecks?: number, refunds_kopecks?: number }[] } | null} play
+ * @returns {string | null}
+ */
+export function familyLine(play) {
+  const list = Array.isArray(play?.by_family) ? play.by_family.filter((f) => f && (f.family === 'table' || f.family === 'court')) : [];
+  if (list.length < 2) return null;
+  const word = { table: 'столы', court: 'корты' };
+  const num = (v) => String(Math.round((Number(v) || 0) * 10) / 10).replace('.', ',');
+  const hours = (f) => (Number.isFinite(f.hours) ? f.hours : (Number(f.minutes) || 0) / 60);
+  const ordered = [...list].sort((a, b) => Number(a.family === 'court') - Number(b.family === 'court'));
+  const parts = ordered.map((f) => `${word[f.family]} — ${num(hours(f))}\u00a0ч, загрузка ${num(f.utilization_percent)}\u00a0%, ${formatMoney((Number(f.revenue_kopecks) || 0) - (Number(f.refunds_kopecks) || 0))}`);
+  const text = parts.join('; ');
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
+}

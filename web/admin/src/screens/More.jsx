@@ -137,8 +137,8 @@ function Stickers({ clubId }) {
   };
   return (
     <section class="panel">
-      <h2 class="section-title">QR-наклейки на столы</h2>
-      <p class="hint">PDF на A4: по наклейке на каждый стол — QR-код, номер стола и короткий код. Распечатайте и наклейте у стола.</p>
+      <h2 class="section-title">QR-наклейки на столы и корты</h2>
+      <p class="hint">PDF на A4: по наклейке на каждый стол и корт — QR-код, «СТОЛ» или «КОРТ» с номером и короткий код. Распечатайте и наклейте у стола или у входа на корт.</p>
       <ErrorNote error={error} />
       <button type="button" class="btn btn--primary" disabled={busy} onClick={download}>
         <Icon name="download" />

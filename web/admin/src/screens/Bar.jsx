@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { formatTime, plural } from '@billiardum/shared/format';
 import { ORDER_ACTION, ORDER_NEXT, itemView, mergeOrder, normalizeMenu, orderPayWord, orderTable, orderWord, sortQueue, waitMinutes, waitTone } from '@billiardum/shared/bar';
+import { resourceName } from '@billiardum/shared/resource';
+
+/** Где заказ: «Стол 4», «Корт 1» (M5.8: resource.family, если сервер пришлёт), без ресурса — null. */
+const whereOf = (o, opts) => (orderTable(o) ? resourceName(o.resource ?? 'table', orderTable(o), opts) : null);
 import { Icon } from '../components/Icon.jsx';
 import { ModeNote } from '../components/Shell.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
@@ -65,7 +69,7 @@ export function BarScreen({ ctx }) {
     chime(ORDER_CHIME);
     setFresh((prev) => new Set([...prev, ...added.map((o) => o.id)]));
     const o = added[added.length - 1];
-    setAnnounce(`Новый заказ: ${orderTable(o) ? `стол ${orderTable(o)}` : 'касса'}, ${o.items.map((i) => `${itemView(i).name} ${i.qty}`).join(', ')}`);
+    setAnnounce(`Новый заказ: ${whereOf(o, { capital: false }) ?? 'касса'}, ${o.items.map((i) => `${itemView(i).name} ${i.qty}`).join(', ')}`);
     setTimeout(() => setFresh((prev) => new Set([...prev].filter((id) => !added.some((a) => a.id === id)))), HIGHLIGHT_MS);
     // Новый заказ — вверху колонки «Новые»; если экран прокручен, показываем его
     setTimeout(() => {
@@ -131,7 +135,7 @@ export function BarScreen({ ctx }) {
     setError(null);
     const before = order;
     setOrders((list) => mergeOrder(list, { ...order, status: next }));
-    setAnnounce(`${orderTable(order) ? `Стол ${orderTable(order)}` : 'Касса'}, заказ ${order.number}: ${orderWord(next, 'staff').toLowerCase()}`);
+    setAnnounce(`${whereOf(order) ?? 'Касса'}, заказ ${order.number}: ${orderWord(next, 'staff').toLowerCase()}`);
     try {
       const res = await api.setOrderStatus(order.id, next);
       if (res?.id) setOrders((list) => mergeOrder(list, res));
@@ -221,7 +225,7 @@ export function BarScreen({ ctx }) {
                   {list.map((o) => {
                     const min = waitMinutes(o, now);
                     const tone = waitTone(min);
-                    const where = orderTable(o) ? `Стол ${orderTable(o)}` : 'Касса';
+                    const where = whereOf(o) ?? 'Касса';
                     return (
                       <li key={o.id}>
                         <article class={`ticket ticket--${o.status}${fresh.has(o.id) ? ' ticket--fresh' : ''}`} aria-labelledby={`t-${o.id}`}>

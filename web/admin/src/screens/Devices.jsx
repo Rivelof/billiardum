@@ -8,6 +8,7 @@ import { can } from '../lib/auth.js';
 import { mergeHall } from '../lib/hall.js';
 import { capsWords, noCurrentSensor, signalWord } from '../lib/devices.js';
 import { DeviceBind } from '../components/DeviceBind.jsx';
+import { familyText, resourceName } from '@billiardum/shared/resource';
 
 const IDENTIFY_SECONDS = 30;
 
@@ -79,7 +80,7 @@ export function Devices({ ctx }) {
               <li key={t.resource.id} class={`dev${!d.online ? ' dev--off' : ''}`}>
                 <div class="dev__head">
                   <p class="dev__table">
-                    <span class="display">Стол {t.resource.number}</span>
+                    <span class="display">{resourceName(t.resource)}</span>
                     <span class="muted"> {typeLabel(t.resource.type, t.resource.title)}</span>
                   </p>
                   <p class={`badge ${d.online ? 'badge--free' : 'badge--alert'}`}>
@@ -107,19 +108,19 @@ export function Devices({ ctx }) {
                     </div>
                   </dl>
                 ) : (
-                  <p class="hint">К этому столу контроллер ещё не привязан.</p>
+                  <p class="hint">{familyText('К этому столу контроллер ещё не привязан.', t.resource)}</p>
                 )}
                 {noCurrentSensor(d) ? (
                   <p class="note note--lamp">
                     <Icon name="info" />
-                    <span class="note__title">Нет датчика тока: защита от света в обход системы на этом столе выключена.</span>
+                    <span class="note__title">{familyText('Нет датчика тока: защита от света в обход системы на этом столе выключена.', t.resource)}</span>
                   </p>
                 ) : null}
                 <div class="row">
                   {bound && d.online && can.identify(role) ? (
                     <button type="button" class="btn btn--secondary btn--sm" onClick={() => identify(t.resource.id)} disabled={lit[t.resource.id] > Date.now()}>
                       <Icon name="locate" />
-                      {lit[t.resource.id] > Date.now() ? `Стол мигает ${IDENTIFY_SECONDS} секунд` : 'Подсветить стол'}
+                      {familyText(lit[t.resource.id] > Date.now() ? `Стол мигает ${IDENTIFY_SECONDS} секунд` : 'Подсветить стол', t.resource)}
                     </button>
                   ) : null}
                   {can.bind(role) ? (

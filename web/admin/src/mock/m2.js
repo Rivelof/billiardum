@@ -131,6 +131,58 @@ const STAFF_NAMES = { reception: 'Анна К.', reception2: 'Игорь П.', m
 /** Доля часов игры по столам 1–8 в отчёте заглушки: один стол почти не играл. */
 const PLAY_SHARE = [0.19, 0.17, 0.16, 0.14, 0.13, 0.11, 0.08, 0.02];
 
+/** Корты клуба разработки в ?mock=court…: доля минут смены и выручка корта (слоты по 2 400 ₽). */
+const COURT_PLAY = [
+  { id: 'c0000000-0000-4000-8000-0000000000c1', number: 1, minutes: 270, sessions: 3, revenue: 720000 },
+  { id: 'c0000000-0000-4000-8000-0000000000c2', number: 2, minutes: 90, sessions: 1, revenue: 240000 },
+];
+const TABLE_TYPE = (n) => (n <= 5 ? 'billiard_pyramid' : 'billiard_pool');
+
+/**
+ * Игра смены как server/reports/queries.mjs playStats: по столам (и кортам — x.courts), by_type и by_family (M5.8 T47).
+ * Сумма видов = итог.
+ */
+function playOf(x, shiftMinutes, tablesRevenue) {
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const util = (minutes, n) => (n * shiftMinutes > 0 ? Math.round((minutes / (n * shiftMinutes)) * 1000) / 10 : 0);
+  const byResource = PLAY_SHARE.map((share, i) => {
+    const minutes = Math.round(x.playMinutes * share);
+    const sessions = Math.max(0, Math.round(x.sessions * share));
+    return { resource_id: id('00000000', i + 1), number: i + 1, title: null, type: TABLE_TYPE(i + 1), family: 'table', sessions, minutes, hours: r1(minutes / 60), revenue_kopecks: Math.round((tablesRevenue * share) / 100) * 100, refunds_kopecks: 0, utilization_percent: util(minutes, 1) };
+  });
+  if (x.courts) {
+    for (const c of COURT_PLAY) byResource.push({ resource_id: c.id, number: c.number, title: `Корт ${c.number}`, type: 'padel_court', family: 'court', sessions: c.sessions, minutes: c.minutes, hours: r1(c.minutes / 60), revenue_kopecks: c.revenue, refunds_kopecks: 0, utilization_percent: util(c.minutes, 1) });
+  }
+  const group = (keyOf) => {
+    const m = new Map();
+    for (const t of byResource) {
+      const k = keyOf(t);
+      const g = m.get(k) ?? { key: k, resources: 0, sessions: 0, minutes: 0, revenue_kopecks: 0, refunds_kopecks: 0 };
+      g.resources += 1;
+      g.sessions += t.sessions;
+      g.minutes += t.minutes;
+      g.revenue_kopecks += t.revenue_kopecks;
+      m.set(k, g);
+    }
+    return [...m.values()].map(({ key, ...g }) => ({ key, ...g, hours: r1(g.minutes / 60), utilization_percent: util(g.minutes, g.resources) }));
+  };
+  const courts = byResource.filter((t) => t.family === 'court');
+  const minutes = x.playMinutes + courts.reduce((a, t) => a + t.minutes, 0);
+  const sessions = x.sessions + courts.reduce((a, t) => a + t.sessions, 0);
+  return {
+    sessions,
+    minutes,
+    hours: r1(minutes / 60),
+    resources: byResource.length,
+    shift_minutes: shiftMinutes,
+    utilization_percent: util(minutes, byResource.length),
+    by_type: group((t) => t.type).map(({ key, ...g }) => ({ type: key, kind: key === 'padel_court' ? 'padel_court' : key.replace('billiard_', ''), family: key === 'padel_court' ? 'court' : 'table', ...g })),
+    by_family: group((t) => t.family).map(({ key, ...g }) => ({ family: key, ...g })),
+    // Как server/reports/queries.mjs: по столам — игры, минуты, выручка, загрузка от времени смены
+    by_resource: byResource,
+  };
+}
+
 /** Отчёт смены как buildShiftReport backend-kkt (server/reports/shift-report.mjs): числа сходятся до копейки. */
 export function reportSeed(shift, x) {
   const opened = Date.parse(shift.opened_at);
@@ -174,20 +226,7 @@ export function reportSeed(shift, x) {
       payments_count: x.sessions + 31,
       net_kopecks: total(byMethod),
     },
-    play: {
-      sessions: x.sessions,
-      minutes: x.playMinutes,
-      hours: Math.round((x.playMinutes / 60) * 10) / 10,
-      resources: 8,
-      shift_minutes: shiftMinutes,
-      utilization_percent: Math.round((x.playMinutes / (8 * shiftMinutes)) * 1000) / 10,
-      // Как server/reports/queries.mjs: по столам — игры, минуты, выручка, загрузка от времени смены
-      by_resource: PLAY_SHARE.map((share, i) => {
-        const minutes = Math.round(x.playMinutes * share);
-        const sessions = Math.max(0, Math.round(x.sessions * share));
-        return { resource_id: id('00000000', i + 1), number: i + 1, title: null, sessions, minutes, hours: Math.round((minutes / 60) * 10) / 10, revenue_kopecks: Math.round((total(tables) * share) / 100) * 100, refunds_kopecks: 0, utilization_percent: Math.round((minutes / shiftMinutes) * 1000) / 10 };
-      }),
-    },
+    play: playOf(x, shiftMinutes, total(tables)),
     service_light: {
       total_minutes: svcTotal,
       count: x.service.length,
@@ -290,7 +329,8 @@ export function m2State(scenario, t, hall) {
     { tablesCash: 790000, tablesTerminal: 600000, tablesSbp: 1510000, tablesCard: 380000, barCash: 530000, barTerminal: 160000, barSbp: 70000, barCard: 30000, playMinutes: 2890, sessions: 33, service: [{ who: 'reception2', table: 6, minutes: 15 }] },
   ];
   const reports = {};
-  history.forEach((s, i) => (reports[s.id] = reportSeed(s, seeds[i])));
+  // M5.8: ?mock=court… — в отчётах смен и корты (строка «Столы — …; корты — …»)
+  history.forEach((s, i) => (reports[s.id] = reportSeed(s, { ...seeds[i], courts: String(scenario ?? '').startsWith('court') })));
   return {
     catalog: cat,
     settings: { discount_limit_percent: 10, stop_at_zero: false, tab_limit_kopecks: null },
@@ -477,7 +517,7 @@ export function m2Routes(ctx) {
     const cash = s.cash_sales_kopecks;
     const tablesCash = Math.round((cash * 0.62) / 100) * 100;
     const pendingK = (S().receipts ?? []).filter((r) => r.status !== 'printed').reduce((a, r) => a + r.amount_kopecks, 0);
-    return reportSeed(s, { tablesCash, tablesTerminal: 480000, tablesSbp: 1248000, tablesCard: 486000, barCash: cash - tablesCash, barTerminal: 160000, barSbp: 52000, barCard: 31000, playMinutes: 1460, sessions: 17, service: [{ who: 'reception', table: 5, minutes: 30 }], kktPending: pendingK });
+    return reportSeed(s, { tablesCash, tablesTerminal: 480000, tablesSbp: 1248000, tablesCard: 486000, barCash: cash - tablesCash, barTerminal: 160000, barSbp: 52000, barCard: 31000, playMinutes: 1460, sessions: 17, service: [{ who: 'reception', table: 5, minutes: 30 }], kktPending: pendingK, courts: String(ctx.state().scenario ?? '').startsWith('court') });
   }
 
   const totalOf = (r) => r?.revenue?.total_kopecks ?? 0;

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { formatDuration, formatMoney, formatTime } from '@billiardum/shared/format';
 import { SERVICE_REASONS, reasonLabel } from '@billiardum/shared/reasons';
 import { tableState, typeLabel } from '@billiardum/shared/hall';
+import { familyOf, familyText, resourceName } from '@billiardum/shared/resource';
 import { Dialog } from '../components/Dialog.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
@@ -10,6 +11,7 @@ import { api, newIdempotencyKey } from '../lib/api.js';
 import { parseRubles } from '../lib/cash.js';
 import { can } from '../lib/auth.js';
 import { minutesWords } from '../lib/words.js';
+import { courtFreeOptions, courtPlayers, sessionSlot } from '../lib/court.js';
 
 const SERVICE_MINUTES = [15, 30, 60];
 const FREE_MINUTES = [10, 15, 30, 60];
@@ -17,16 +19,33 @@ const FREE_MINUTES = [10, 15, 30, 60];
 /**
  * Стол на плане: что происходит, контроллер, ручные действия с обязательной причиной (инвариант 8):
  * «Сервисный свет» (ресепшн и выше), «Продлить без оплаты» (управляющий и владелец).
+ * M5.8 (№204, №205): корт — «Корт 1», игроки «2 из 4» (GET /api/sessions/{id}), продление без оплаты — слотами;
+ * «Без лимита: депозит» у корта нет (сервер — 400 bad_request).
  */
 export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
   const [mode, setMode] = useState(null); // null | 'service' | 'free' | 'deposit' | 'release'
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [detail, setDetail] = useState(null); // игра корта целиком: участники и длина слота
+  const sessionId = item?.session?.id ?? null;
+  const court = familyOf(item?.resource) === 'court';
 
   useEffect(() => {
     setMode(null);
     setError(null);
   }, [item?.resource?.id]);
+  useEffect(() => {
+    setDetail(null);
+    if (!court || !sessionId) return undefined;
+    let alive = true;
+    api
+      .session(sessionId)
+      .then((d) => alive && setDetail(d ?? null))
+      .catch(() => alive && setDetail(null));
+    return () => {
+      alive = false;
+    };
+  }, [sessionId, court]);
 
   if (!item) return <Dialog open={false} onClose={onClose} title="" />;
 
@@ -34,7 +53,9 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
   const st = tableState(item, { formatTime: fmt });
   const s = item.session;
   const d = item.device ?? {};
-  const number = item.resource.number;
+  const name = resourceName(item.resource);
+  const family = court ? 'court' : 'table';
+  const players = court ? courtPlayers(detail) : null;
   // №122: предложение из очереди держит стол — ресепшн может снять удержание с причиной
   const offer = item.hold?.source === 'waitlist' && item.hold.kind !== 'pending' ? item.hold : null;
 
@@ -53,7 +74,7 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
   };
 
   return (
-    <Dialog open onClose={onClose} title={`Стол ${number}`} labelledBy="table-title">
+    <Dialog open onClose={onClose} title={name} labelledBy="table-title">
       <div class="form">
         <div class="tinfo">
           <p class={`badge badge--${badgeTone(st.tone)}`}>
@@ -75,6 +96,15 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
                 <dd class="mono">{formatDuration(Date.parse(s.paid_until) - Date.now())}</dd>
               </div>
             ) : null}
+            {players ? (
+              <div>
+                <dt>Игроки</dt>
+                <dd>
+                  {players.count} из {players.max}
+                  {players.full ? <span class="muted"> · мест нет</span> : null}
+                </dd>
+              </div>
+            ) : null}
           </dl>
         ) : null}
 
@@ -90,7 +120,7 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
           <p class="note note--lamp">
             <Icon name="hourglass" />
             <span class="note__title">Предложен из очереди{offer.until ? ` до ${fmt(offer.until)}` : ''}</span>
-            <span class="note__body">Гость из листа ожидания получил уведомление: стол держим за ним, пока не ответит. Гость у стойки этот стол занять не сможет.</span>
+            <span class="note__body">{familyText('Гость из листа ожидания получил уведомление: стол держим за ним, пока не ответит. Гость у стойки этот стол занять не сможет.', family)}</span>
           </p>
         ) : null}
 
@@ -134,11 +164,11 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
         <ErrorNote error={error} />
 
         {mode === 'service' ? (
-          <ServiceForm item={item} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
+          <ServiceForm item={item} court={court} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'free' ? (
-          <ExtendFreeForm session={s} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
+          <ExtendFreeForm session={s} court={court} slot={sessionSlot(detail)} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'release' ? (
-          <ReleaseForm offerId={offer?.offer_id} number={number} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
+          <ReleaseForm offerId={offer?.offer_id} name={name} family={family} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'deposit' ? (
           <DepositForm item={item} timeZone={timeZone} onCancel={() => setMode(null)} onDone={() => onChanged?.()} onClose={onClose} />
         ) : (
@@ -153,11 +183,14 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
                 Снять удержание
               </button>
             ) : null}
-            {['free', 'booked'].includes(st.tone) && can.reception(role) ? (
+            {['free', 'booked'].includes(st.tone) && can.reception(role) && !court ? (
               <button type="button" class="btn btn--primary btn--block btn--lg" onClick={() => setMode('deposit')}>
                 <Icon name="cash" />
                 Без лимита: депозит наличными
               </button>
+            ) : null}
+            {['free', 'booked'].includes(st.tone) && can.reception(role) && court ? (
+              <p class="hint">Корт гость занимает сам по QR — слотами от 1 до 4. «Без лимита» и пакетов часов у корта нет.</p>
             ) : null}
             {['free', 'booked'].includes(st.tone) && can.reception(role) ? (
               <button type="button" class="btn btn--secondary btn--block btn--lg" onClick={() => setMode('service')}>
@@ -197,7 +230,7 @@ function ManualWarning() {
   );
 }
 
-function ServiceForm({ item, onCancel, onDone }) {
+function ServiceForm({ item, court = false, onCancel, onDone }) {
   const [code, setCode] = useState(SERVICE_REASONS[0].code);
   const [minutes, setMinutes] = useState(15);
   const [text, setText] = useState('');
@@ -259,7 +292,7 @@ function ServiceForm({ item, onCancel, onDone }) {
           class="field__input"
           rows={2}
           maxLength={300}
-          placeholder="Например: протираем сукно после пролитого напитка"
+          placeholder={court ? 'Например: убираем покрытие после дождя через открытую крышу' : 'Например: протираем сукно после пролитого напитка'}
           value={text}
           aria-invalid={touched && !textOk ? 'true' : undefined}
           aria-describedby={touched && !textOk ? 'svc-text-err' : undefined}
@@ -286,8 +319,13 @@ function ServiceForm({ item, onCancel, onDone }) {
   );
 }
 
-function ExtendFreeForm({ session, onCancel, onDone }) {
-  const [minutes, setMinutes] = useState(15);
+/** Продление без оплаты: стол — минутами, корт — слотами (шаг продления корта — слот, №204). */
+function ExtendFreeForm({ session, court = false, slot = null, onCancel, onDone }) {
+  const options = court ? courtFreeOptions(slot) : FREE_MINUTES.map((m) => ({ minutes: m, label: minutesWords(m) }));
+  const [minutes, setMinutes] = useState(options[0].minutes);
+  useEffect(() => {
+    if (!options.some((o) => o.minutes === minutes)) setMinutes(options[0].minutes);
+  }, [slot]);
   const [text, setText] = useState('');
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -315,11 +353,11 @@ function ExtendFreeForm({ session, onCancel, onDone }) {
       <fieldset>
         <legend class="field__label">На сколько продлить</legend>
         <div class="choice choice--pills">
-          {FREE_MINUTES.map((m) => (
-            <label class="choice__item" key={m}>
-              <input type="radio" name="free-min" value={m} checked={minutes === m} onChange={() => setMinutes(m)} />
+          {options.map((o) => (
+            <label class="choice__item" key={o.minutes}>
+              <input type="radio" name="free-min" value={o.minutes} checked={minutes === o.minutes} onChange={() => setMinutes(o.minutes)} />
               <span class="choice__box">
-                <span class="choice__title">{minutesWords(m)}</span>
+                <span class="choice__title">{o.label}</span>
               </span>
             </label>
           ))}
@@ -436,7 +474,7 @@ function DepositForm({ item, timeZone, onCancel, onDone, onClose }) {
 }
 
 /** Снять удержание предложения из очереди (№122): ручное действие с причиной, гостю уходит уведомление. */
-function ReleaseForm({ offerId, number, onCancel, onDone }) {
+function ReleaseForm({ offerId, name, family = 'table', onCancel, onDone }) {
   const [text, setText] = useState('');
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -459,13 +497,13 @@ function ReleaseForm({ offerId, number, onCancel, onDone }) {
   return (
     <form class="form" onSubmit={submit} noValidate>
       <ManualWarning />
-      <p class="hint">Стол {number} станет свободным для гостя у стойки. Гость из очереди получит уведомление, что предложение снято.</p>
+      <p class="hint">{name} станет свободным для гостя у стойки. Гость из очереди получит уведомление, что предложение снято.</p>
       <div class="field">
         <label class="field__label" for="rel-reason">
           Причина
         </label>
         <input id="rel-reason" class="field__input" maxLength={300} value={text} aria-invalid={touched && !ok ? 'true' : undefined} onInput={(e) => setText(e.currentTarget.value)} />
-        {touched && !ok ? <p class="field__error">Напишите причину — её увидит владелец.</p> : <p class="field__hint">Например: «Гость из очереди не отвечает, за стол просится пара у стойки».</p>}
+        {touched && !ok ? <p class="field__error">Напишите причину — её увидит владелец.</p> : <p class="field__hint">{familyText('Например: «Гость из очереди не отвечает, за стол просится пара у стойки».', family)}</p>}
       </div>
       <ErrorNote error={error} />
       <div class="dialog__actions dialog__actions--row">

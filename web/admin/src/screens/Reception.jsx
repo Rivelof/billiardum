@@ -13,7 +13,7 @@ import { api, streamClub } from '../lib/api.js';
 import { mergeHall } from '../lib/hall.js';
 import { expiresOf, minutesLeft } from '../lib/reception.js';
 import { audioState, chime, unlockAudio } from '../lib/sound.js';
-import { agoWords, minutesShort, minutesWords } from '../lib/words.js';
+import { agoWords, minutesShort, minutesWords, requestName } from '../lib/words.js';
 import { currentOf } from '../lib/shift.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -59,7 +59,7 @@ export function Reception({ ctx }) {
           chime();
           setFresh((prev) => new Set([...prev, ...added.map((r) => r.id)]));
           const r = added[added.length - 1];
-          setAnnounce(`Новая заявка: стол ${r.resource_number}, ${r.minutes ? minutesWords(r.minutes) : 'без лимита'}, ${formatMoney(r.amount_kopecks)}`);
+          setAnnounce(`Новая заявка: ${requestName(r, { capital: false })}, ${r.minutes ? minutesWords(r.minutes) : 'без лимита'}, ${formatMoney(r.amount_kopecks)}`);
           setTimeout(() => setFresh((prev) => new Set([...prev].filter((id) => !added.some((a) => a.id === id)))), HIGHLIGHT_MS);
         }
       }
@@ -193,7 +193,7 @@ export function Reception({ ctx }) {
                 return (
                   <li key={r.id} class={`req${fresh.has(r.id) ? ' req--new' : ''}`}>
                     <p class="req__title">
-                      <span class="display req__table">Стол {r.resource_number}</span>
+                      <span class="display req__table">{requestName(r)}</span>
                       <span class="req__what">
                         <span class="req__sep" aria-hidden="true">·</span>
                         {minutesShort(r.minutes)}
@@ -237,7 +237,7 @@ export function Reception({ ctx }) {
             Зал
           </h2>
           {hall ? <HallPlan items={hall} timeZone={timeZone} onSelect={setTable} selected={table?.resource?.id} /> : <p class="muted loading">Загружаем зал…</p>}
-          <p class="hint hall-hint">Нажмите на стол, чтобы увидеть игру или включить сервисный свет.</p>
+          <p class="hint hall-hint">{hall?.some((h) => h.resource?.family === 'court') ? 'Нажмите на стол или корт, чтобы увидеть игру или включить сервисный свет.' : 'Нажмите на стол, чтобы увидеть игру или включить сервисный свет.'}</p>
         </section>
       </div>
 

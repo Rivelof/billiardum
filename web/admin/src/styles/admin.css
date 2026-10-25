@@ -308,6 +308,10 @@
 }
 .empty-queue__title { font-size: var(--fs-20); font-weight: 600; color: var(--ink); }
 .hall-hint { margin-top: 10px; }
+/* M5.8: падел-корты — своим рядом под столами */
+/* Лампа корта: прожекторы над кортом — свет внутри его стен, без широкого конуса стола (иначе выходит за план) */
+.tbl[data-kind='court'] .tbl__glow { inset: -6% -14%; }
+.hall__sub { padding: 4px 8px 10px; font-size: var(--fs-15); font-weight: 600; color: var(--hall-text); border-top: 1px solid var(--hall-line); margin-top: 4px; padding-top: 12px; }
 
 /* ---------- принять оплату ---------- */
 
@@ -444,7 +448,7 @@
 .log { display: grid; }
 .log__item {
   display: grid;
-  grid-template-columns: 3.4rem 1fr;
+  grid-template-columns: 3.4rem minmax(0, 1fr);
   gap: 12px;
   padding: 12px 0;
   border-bottom: 1px solid var(--line);
@@ -470,6 +474,7 @@
 .log__meta { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: var(--fs-13); color: var(--ink-3); }
 /* M4: было → стало у ручных действий турнира и переход к турниру */
 .log__change { font-size: var(--fs-15); color: var(--ink-2); overflow-wrap: anywhere; }
+.log__change .mono { white-space: normal; }
 .log__link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; font-size: var(--fs-15); font-weight: 600; color: var(--cloth); }
 .log__link:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; border-radius: 4px; }
 .log__link .icon { width: 18px; height: 18px; }

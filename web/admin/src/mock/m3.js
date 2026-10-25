@@ -199,15 +199,20 @@ export function m3Routes(ctx) {
           if (b.ends <= open || b.starts >= close) continue;
           busy.push({ from: iso(b.starts), to: iso(b.ends), kind: 'booking' });
         }
+        // M5.8 (server/bookings availability): у корта — kind, family, slot_minutes и цена слота в rates
+        const court = h.resource.family === 'court';
         return {
           id: h.resource.id,
           number: h.resource.number,
           type: h.resource.type,
+          kind: court ? 'padel_court' : String(h.resource.type).replace('billiard_', ''),
+          family: court ? 'court' : 'table',
+          slot_minutes: court ? 90 : null,
           title: h.resource.title,
           plan: { x: null, y: null, rotation: null },
           busy: busy.sort((a, b) => Date.parse(a.from) - Date.parse(b.from)),
           free: [],
-          rates: [{ from: iso(open), to: iso(close), per_hour_kopecks: 80000 }],
+          rates: [court ? { from: iso(open), to: iso(close), per_hour_kopecks: 160000, per_slot_kopecks: 240000, slot_minutes: 90 } : { from: iso(open), to: iso(close), per_hour_kopecks: 80000 }],
         };
       }),
     };
@@ -230,12 +235,14 @@ export function m3Routes(ctx) {
       if (!t) return err(400, 'bad_request');
       if (!String(b.name ?? '').trim() || !/^\+7\d{10}$/.test(b.phone ?? '')) return err(400, 'bad_request');
       const starts = Date.parse(b.starts_at);
-      if (!Number.isFinite(starts) || ![60, 90, 120, 180, 240].includes(b.minutes)) return err(400, 'bad_request');
+      const court = t.resource.family === 'court';
+      // Корт — кратно слоту 1,5 ч, не больше предела брони (240 → 180 мин), как server/bookings (№204)
+      if (!Number.isFinite(starts) || !(court ? [90, 180].includes(b.minutes) : [60, 90, 120, 180, 240].includes(b.minutes))) return err(400, 'bad_request');
       const ends = starts + b.minutes * MIN;
       const day = availability(localDate(starts - 6 * 60 * MIN));
       const clash = day.resources.find((r) => r.id === b.resource_id).busy.some((x) => Date.parse(x.from) < ends && starts < Date.parse(x.to));
       if (clash) return err(409, 'booking_conflict');
-      const nb = { id: uuid(), resource_id: b.resource_id, starts, ends, status: 'confirmed', source: b.source ?? 'phone', guest: { name: b.name.trim(), phone_masked: mask(b.phone), user: false }, amount: Math.round((b.minutes / 60) * 80000), prepay: 0, paid: 0, created: now() };
+      const nb = { id: uuid(), resource_id: b.resource_id, starts, ends, status: 'confirmed', source: b.source ?? 'phone', guest: { name: b.name.trim(), phone_masked: mask(b.phone), user: false }, amount: court ? (b.minutes / 90) * 240000 : Math.round((b.minutes / 60) * 80000), prepay: 0, paid: 0, created: now() };
       S().bookings.push(nb);
       ctx.audit('booking.create', { resource_number: t.resource.number, data: { source: nb.source } });
       bookingEvent(nb, 'booking.created');
@@ -396,6 +403,8 @@ export function m3Routes(ctx) {
     ['POST', /^\/api\/reception\/deposits$/, staffOnly((_m, b) => {
       const t = byRid(b.resource_id);
       if (!t) return err(404, 'not_found');
+      // M5.8 (№212): у корта нет «Без лимита» — только слоты
+      if (t.resource.family === 'court' || t.resource.type === 'padel_court') return err(400, 'bad_request');
       if (!Number.isSafeInteger(b.amount_kopecks) || b.amount_kopecks <= 0) return err(400, 'bad_request');
       if (!ctx.state().m2.shift) return err(409, 'shift_closed');
       if (t.status !== 'free' || t.session) return err(409, 'table_busy');

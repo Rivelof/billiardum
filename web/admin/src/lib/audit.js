@@ -1,5 +1,6 @@
 import { formatMoney, formatTime, formatDate } from '@billiardum/shared/format';
 import { DECLINE_REASONS, SERVICE_REASONS, lateRefundLabel, reasonLabel } from '@billiardum/shared/reasons';
+import { familyOf, resourceName } from '@billiardum/shared/resource';
 import { METHOD_LABEL, ROLE_LABEL, minutesWords } from './words.js';
 
 /** Действия журнала M1 (контракт §8) словами. */
@@ -206,7 +207,8 @@ export function actorLabel(raw) {
  * иначе стол — по data.resource_id или object_id через карту столов зала, исполнитель — роль и маска телефона.
  * @param {object} raw
  * @param {string} timeZone
- * @param {{ tables?: Map<string, number> }} [ctx] resource_id → номер стола
+ * @param {{ tables?: Map<string, number | { number: number, family?: string, type?: string }> }} [ctx] resource_id → номер стола
+ *   или ресурс зала (M5.8: «Корт 1» по family)
  */
 export function auditView(raw, timeZone, ctx = {}) {
   const data = raw.data && typeof raw.data === 'object' ? raw.data : {};
@@ -223,13 +225,10 @@ export function auditView(raw, timeZone, ctx = {}) {
 
   const actorName = actorLabel(raw);
   const tables = ctx.tables ?? new Map();
-  const number =
-    raw.resource_number ??
-    data.resource_number ??
-    tables.get(raw.resource_id) ??
-    tables.get(data.resource_id) ??
-    (raw.object_type === 'resource' ? tables.get(raw.object_id) : undefined) ??
-    null;
+  const hit = tables.get(raw.resource_id) ?? tables.get(data.resource_id) ?? (raw.object_type === 'resource' ? tables.get(raw.object_id) : undefined);
+  const res = hit && typeof hit === 'object' ? hit : null;
+  const number = raw.resource_number ?? data.resource_number ?? (res ? res.number : hit) ?? null;
+  const family = familyOf({ type: raw.resource_type ?? data.resource_type ?? res?.type, family: raw.resource_family ?? data.resource_family ?? res?.family });
   return {
     id: raw.id ?? `${raw.seq}`,
     seq: raw.seq ?? null,
@@ -239,7 +238,7 @@ export function auditView(raw, timeZone, ctx = {}) {
     action: raw.action,
     title: ACTION_LABEL[raw.action] ?? raw.action ?? 'Действие',
     actor: actorName,
-    table: number !== null && number !== undefined ? `Стол ${number}` : null,
+    table: number !== null && number !== undefined ? resourceName(family, number) : null,
     reason: raw.reason ?? null,
     details,
     manual: MANUAL_ACTIONS.has(raw.action),

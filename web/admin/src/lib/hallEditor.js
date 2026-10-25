@@ -1,4 +1,5 @@
 import { TABLE_SIZES } from '@billiardum/shared/hall';
+import { familyText, resourceName } from '@billiardum/shared/resource';
 
 /**
  * Редактор плана зала (M5.1, №155). Чистые функции без DOM.
@@ -6,15 +7,27 @@ import { TABLE_SIZES } from '@billiardum/shared/hall';
  * Координаты — как в bl.resources: центр стола в сантиметрах от левого верхнего угла зала, поворот в градусах
  * по часовой стрелке (0 — длинной стороной вверх). Размер зала — PUT /api/clubs/{club}/hall { width, height } в сантиметрах.
  * Вид стола в API M5.1 — kind: pyramid | pool | snooker | mixed; в старых ответах — type 'billiard_*'.
+ *
+ * M5.8 (№203, №213): вид 'padel_court' — падел-корт 10 × 20 м (на плане 10,6 × 20,6 м со стенами). Нумерация своя
+ * у каждой семьи («Стол 1…», «Корт 1…»), стол и корт друг в друга не превращаются (сервер — 400 bad_request).
  */
 
 export const KINDS = Object.freeze([
-  { id: 'pyramid', label: 'Русская пирамида, 12 футов', short: 'пирамида', type: 'billiard_pyramid' },
-  { id: 'pool', label: 'Пул, 9 футов', short: 'пул', type: 'billiard_pool' },
-  { id: 'snooker', label: 'Снукер, 12 футов', short: 'снукер', type: 'billiard_snooker' },
-  { id: 'mixed', label: 'Стол под пирамиду и пул', short: 'пирамида и пул', type: 'billiard_mixed' },
+  { id: 'pyramid', label: 'Русская пирамида, 12 футов', short: 'пирамида', type: 'billiard_pyramid', family: 'table' },
+  { id: 'pool', label: 'Пул, 9 футов', short: 'пул', type: 'billiard_pool', family: 'table' },
+  { id: 'snooker', label: 'Снукер, 12 футов', short: 'снукер', type: 'billiard_snooker', family: 'table' },
+  { id: 'mixed', label: 'Стол под пирамиду и пул', short: 'пирамида и пул', type: 'billiard_mixed', family: 'table' },
+  { id: 'padel_court', label: 'Падел-корт, 10 × 20 м', short: 'падел-корт', type: 'padel_court', family: 'court' },
 ]);
 const KIND = Object.fromEntries(KINDS.map((k) => [k.id, k]));
+export const COURT_KIND = 'padel_court';
+
+/** Семья вида мастера: 'table' | 'court'. */
+export const familyOfKind = (kind) => KIND[kind]?.family ?? 'table';
+/** Виды одной семьи — в выборе вида у существующего ресурса (стол не становится кортом). */
+export const kindsOfFamily = (family) => KINDS.filter((k) => k.family === family);
+/** Смена вида уводит в другую семью — сервер ответит 400 bad_request (№213). */
+export const familyChange = (before, after) => Boolean(before?.kind && after?.kind) && familyOfKind(before.kind) !== familyOfKind(after.kind);
 
 export const DEFAULT_HALL = Object.freeze({ width: 1800, height: 1200 });
 export const HALL_MIN_M = 3;
@@ -25,6 +38,7 @@ export const SNAP_CM = 10;
 export function kindOf(resource) {
   if (KIND[resource?.kind]) return resource.kind;
   const t = String(resource?.type ?? '');
+  if (/padel/i.test(t) || resource?.family === 'court') return COURT_KIND;
   if (/pool/i.test(t)) return 'pool';
   if (/snooker/i.test(t)) return 'snooker';
   if (/mixed/i.test(t)) return 'mixed';
@@ -32,8 +46,8 @@ export function kindOf(resource) {
 }
 
 export const kindLabel = (kind) => KIND[kind]?.label ?? KIND.pyramid.label;
-/** Рисунок стола: пул короче, остальные — 12 футов. */
-export const artKind = (kind) => (kind === 'pool' ? 'pool' : 'pyramid');
+/** Рисунок: пул короче, остальные столы — 12 футов, корт — свой рисунок 10,6 × 20,6 м. */
+export const artKind = (kind) => (kind === COURT_KIND ? 'court' : kind === 'pool' ? 'pool' : 'pyramid');
 
 /** Поворот к 0…359. */
 export const normRotation = (deg) => ((Math.round(Number(deg) || 0) % 360) + 360) % 360;
@@ -97,19 +111,19 @@ export function nextSpot(tables, hall, kind = 'pyramid', rotation = 0) {
   return clampCenter(hall.width / 2, hall.height / 2, kind, rotation, hall);
 }
 
-/** Следующий свободный номер стола. */
-export function nextNumber(tables) {
-  const used = new Set(tables.map((t) => t.number));
+/** Следующий свободный номер в семье (№213: «Стол 1…» и «Корт 1…» нумеруются отдельно). */
+export function nextNumber(tables, family = 'table') {
+  const used = new Set(tables.filter((t) => familyOfKind(t.kind) === family).map((t) => t.number));
   let n = 1;
   while (used.has(n)) n += 1;
   return n;
 }
 
-/** Номер стола: целое 1…999, не занятое другим столом. Ошибка словами или null. */
-export function numberError(value, tables, selfId = null) {
+/** Номер: целое 1…999, не занятое другим ресурсом той же семьи. Ошибка словами или null. */
+export function numberError(value, tables, selfId = null, family = 'table') {
   const n = Number(String(value ?? '').trim());
   if (!Number.isInteger(n) || n < 1 || n > 999) return 'Номер — целое число от 1 до 999.';
-  if (tables.some((t) => t.number === n && t.id !== selfId)) return `Стол ${n} уже есть. Выберите другой номер.`;
+  if (tables.some((t) => t.number === n && t.id !== selfId && familyOfKind(t.kind) === family)) return `${resourceName(family, n)} уже есть. Выберите другой номер.`;
   return null;
 }
 
@@ -128,6 +142,19 @@ export function hallFromMetres(widthM, heightM) {
   return { hall: Object.keys(errors).length ? null : { width: Math.round(w * 100), height: Math.round(h * 100) }, errors };
 }
 
+/** Ресурс вида не помещается в зал целиком (корт 10,6 × 20,6 м в зале 18 × 14 м) — ни так, ни повёрнутым. */
+export function fitsHall(kind, hall) {
+  const a = footprint(kind, 0);
+  const b = footprint(kind, 90);
+  return (a.w <= hall.width && a.h <= hall.height) || (b.w <= hall.width && b.h <= hall.height);
+}
+
+/** Поворот, при котором ресурс помещается в зал: корт в широком зале — поперёк. */
+export function fitRotation(kind, hall) {
+  const a = footprint(kind, 0);
+  return a.w <= hall.width && a.h <= hall.height ? 0 : fitsHall(kind, hall) ? 90 : 0;
+}
+
 /** Сантиметры → «4,5 м». */
 export function metres(cm) {
   const m = Math.round(Number(cm) / 10) / 10;
@@ -144,10 +171,12 @@ export function planTables(list, statuses = null) {
     .filter((r) => r.active !== false)
     .map((r) => {
       const status = statuses?.get(r.id) ?? r.status ?? null;
+      const kind = kindOf(r);
       return {
         id: r.id,
         number: r.number,
-        kind: kindOf(r),
+        kind,
+        family: familyOfKind(kind),
         type: r.type,
         code: r.code ?? null,
         plan_x: Number(r.plan_x ?? r.plan?.x ?? 0) || 0,
@@ -157,7 +186,8 @@ export function planTables(list, statuses = null) {
         lit: status === 'busy',
       };
     })
-    .sort((a, b) => a.number - b.number);
+    // Столы, затем корты (как у сервера), внутри — по номеру
+    .sort((a, b) => Number(a.family === 'court') - Number(b.family === 'court') || a.number - b.number);
 }
 
 /** Размер зала из ответа: { plan: { width_cm, height_cm } } (GET …/resources, PUT …/hall) или { width, height }. */
@@ -168,8 +198,12 @@ export function hallSize(res) {
   return w > 0 && h > 0 ? { width: Math.round(w), height: Math.round(h) } : null;
 }
 
-/** 409 table_busy { reason } при выводе стола из работы — что мешает словами. */
-export function retireBusyText(reason, number) {
+/** 409 table_busy { reason } при выводе стола (корта) из работы — что мешает словами. */
+export function retireBusyText(reason, number, family = 'table') {
+  return familyText(retireTableText(reason, number), family);
+}
+
+function retireTableText(reason, number) {
   const t = `Стол ${number}`;
   switch (reason) {
     case 'session':
@@ -205,10 +239,10 @@ export function placeUnset(tables, hall) {
   return out;
 }
 
-/** Подпись стола на плане для экранного диктора. */
+/** Подпись стола (корта) на плане для экранного диктора. */
 export function tableAria(t) {
   const turn = normRotation(t.plan_rotation);
-  return `Стол ${t.number}, ${KIND[t.kind]?.short ?? 'пирамида'}. ${metres(t.plan_x)} от левой стены, ${metres(t.plan_y)} от верхней${turn ? `, повёрнут на ${turn}°` : ''}.`;
+  return `${resourceName(familyOfKind(t.kind), t.number)}, ${KIND[t.kind]?.short ?? 'пирамида'}. ${metres(t.plan_x)} от левой стены, ${metres(t.plan_y)} от верхней${turn ? `, повёрнут на ${turn}°` : ''}.`;
 }
 
 /**

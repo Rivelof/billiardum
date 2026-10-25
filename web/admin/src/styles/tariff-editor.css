@@ -74,3 +74,8 @@
   .wk__grid { grid-template-columns: 3.4rem repeat(7, minmax(48px, 1fr)); }
   .wk__p { display: inline; }
 }
+
+/* M5.8: блок падел-корта — длина слота и цена слота по полосам шаблона */
+.tw__group { font-size: var(--fs-17); font-weight: 600; }
+.tw__court { display: grid; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.tw__court fieldset { display: grid; gap: 8px; }

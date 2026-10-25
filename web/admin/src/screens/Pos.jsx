@@ -9,8 +9,8 @@ import { ModifierDialog, DiscountDialog, PackageGuestDialog, PayDialog, StopList
 import { api, streamClub } from '../lib/api.js';
 import { can } from '../lib/auth.js';
 import { session } from '../lib/store.js';
-import { DEFAULT_DISCOUNT_LIMIT, discountPercent, kktState, requestLine, saleTotals, tabLine } from '../lib/pos.js';
-import { minutesShort } from '../lib/words.js';
+import { DEFAULT_DISCOUNT_LIMIT, discountPercent, kktState, requestLine, saleTotals, tabLine, tabName } from '../lib/pos.js';
+import { minutesShort, requestName } from '../lib/words.js';
 import { currentOf } from '../lib/shift.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -578,7 +578,7 @@ function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
                 <li key={r.id}>
                   {/* Имя кнопки — видимый текст «Стол 4 Игра, 1 ч 1 490 ₽ до 21:30» (axe label-content-name-mismatch); что это — описанием */}
                   <button type="button" class={`tile tile--table${added ? ' tile--in' : ''}`} disabled={added} onClick={() => onAdd(line)} aria-describedby={`pos-req-${r.id}`}>
-                    <span class="tile__table display">Стол {r.resource_number}</span>{' '}
+                    <span class="tile__table display">{requestName(r)}</span>{' '}
                     <span class="tile__name">
                       {r.kind === 'extend' ? 'Продление' : 'Игра'}, {minutesShort(r.minutes)}
                     </span>{' '}
@@ -604,11 +604,10 @@ function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
               const line = tabLine(t);
               const added = inCart.has(line.key);
               const ended = !['active', 'ending', 'grace'].includes(t.session_status ?? 'active');
-              const number = t.resource?.number ?? t.resource_number;
               return (
                 <li key={t.session_id}>
                   <button type="button" class={`tile tile--table${added ? ' tile--in' : ''}${ended ? ' tile--ended' : ''}`} disabled={added} onClick={() => onAdd(line)} aria-describedby={`pos-tab-${t.session_id}`}>
-                    <span class="tile__table display">Стол {number}</span>{' '}
+                    <span class="tile__table display">{tabName(t)}</span>{' '}
                     <span class="tile__name">{line.sub}</span>{' '}
                     <span class="tile__foot">
                       <span class="tile__price mono">{formatMoney(t.total_kopecks)}</span>{' '}

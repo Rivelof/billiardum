@@ -40,6 +40,9 @@ const CLUB_INFO = {
 };
 
 export const isNetworkScenario = (sc) => String(sc ?? '').startsWith('network');
+/** M5.8: ?mock=network-court — у третьего клуба сети два падел-корта: шаблону нужны правила корта (№213). */
+const courtsIn = (scenario, clubId) => (scenario === 'network-court' && clubId === NET_CLUBS.third ? 2 : 0);
+const SLOTS = [60, 90, 120];
 
 /** Шаблон тарифов сети: будни и выходные × день и вечер, разные цены для пирамиды и пула. */
 function templateRules() {
@@ -150,7 +153,7 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
   function problemOf(n, clubId) {
     if (!n.tariffs.template) return null;
     const c = info(clubId);
-    for (const kind of c.types) {
+    for (const kind of [...c.types, ...(courtsIn(state().scenario, clubId) ? ['padel_court'] : [])]) {
       const cov = weekCoverage(n.tariffs.rules, kind, c.day_start_local);
       if (cov.gaps.length) return { type: 'gap', kind, weekday: cov.gaps[0].weekday, from: cov.gaps[0].from, to: cov.gaps[0].to };
       if (cov.overlaps.length) return { type: 'overlap', kind, weekday: cov.overlaps[0].weekday, from: cov.overlaps[0].from, to: cov.overlaps[0].to };
@@ -418,7 +421,15 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
       if (a.res) return a.res;
       const rules = Array.isArray(b?.rules) ? b.rules : null;
       if (!rules?.length || rules.length > 100) return err(400, 'bad_request');
-      for (const r of rules) if (!Number.isInteger(r.price_per_hour_kopecks) || r.price_per_hour_kopecks <= 0) return err(400, 'bad_request');
+      // Правило корта — слотом (M5.8): slot_minutes 60/90/120 одна на вид, price_per_slot_kopecks > 0; столы — цена часа
+      const slots = new Set();
+      for (const r of rules) {
+        if (r.kind === 'padel_court') {
+          if (!SLOTS.includes(r.slot_minutes) || !Number.isInteger(r.price_per_slot_kopecks) || r.price_per_slot_kopecks <= 0 || r.price_per_hour_kopecks !== undefined) return err(400, 'bad_request');
+          slots.add(r.slot_minutes);
+        } else if (!Number.isInteger(r.price_per_hour_kopecks) || r.price_per_hour_kopecks <= 0 || r.slot_minutes !== undefined) return err(400, 'bad_request');
+      }
+      if (slots.size > 1) return err(400, 'bad_request');
       const draft = { ...a.n, tariffs: { template: true, version: a.n.tariffs.version + 1, rules } };
       for (const x of a.n.clubs) {
         const p = problemOf(draft, x.club_id);
@@ -590,8 +601,12 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
       const c = info(m[1]);
       const resources = Array.from({ length: c.tables }, (_, i) => {
         const kind = c.types[Math.min(c.types.length - 1, Math.floor((i * c.types.length) / c.tables))];
-        return { id: `${m[1].slice(0, 24)}${String(i + 1).padStart(12, '0')}`, number: i + 1, kind, type: `billiard_${kind}`, title: `Стол ${i + 1}`, code: null, plan_x: 0, plan_y: 0, plan_rotation: 0, active: true, sticker_printed_at: null };
+        return { id: `${m[1].slice(0, 24)}${String(i + 1).padStart(12, '0')}`, number: i + 1, kind, type: `billiard_${kind}`, family: 'table', title: `Стол ${i + 1}`, code: null, plan_x: 0, plan_y: 0, plan_rotation: 0, active: true, sticker_printed_at: null };
       });
+      // M5.8: корты клуба — своя нумерация «Корт 1…»
+      for (let i = 0; i < courtsIn(state().scenario, m[1]); i += 1) {
+        resources.push({ id: `${m[1].slice(0, 24)}${String(901 + i).padStart(12, '0')}`, number: i + 1, kind: 'padel_court', type: 'padel_court', family: 'court', title: `Корт ${i + 1}`, code: null, plan_x: 0, plan_y: 0, plan_rotation: 0, active: true, sticker_printed_at: null });
+      }
       return ok({ plan: { width_cm: 1800, height_cm: 1400 }, resources });
     }],
     // Управляющий сети: без «Денег» и выгрузок (как сервер — 403)

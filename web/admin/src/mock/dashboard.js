@@ -12,6 +12,7 @@
 import { addDays, eachDay, spanDays, weekday, workDate, comparePeriod } from '../lib/period.js';
 import { toCsv, csvMoney, csvDate } from '../lib/export.js';
 import { KIND_LABEL } from '../lib/dashboard.js';
+import { resourceName } from '@billiardum/shared/resource';
 import { ACTION_LABEL } from '../lib/audit.js';
 import { FORECAST_MIN_DAYS, FORECAST_WEEKS, median, medianForecast } from '../lib/forecast.js';
 
@@ -38,6 +39,25 @@ export const CLUBS = [
     scale: 0.8,
   },
 ];
+
+/**
+ * M5.8 (?mock=court…): в клубе разработки ещё два падел-корта — «Корт 1» и «Корт 2» (id как в зале заглушки).
+ * Вид ресурса в заглушке — kind мастера: pyramid | pool | snooker | padel_court; тип сервера — typeOf.
+ */
+export const COURT_IDS = ['c0000000-0000-4000-8000-0000000000c1', 'c0000000-0000-4000-8000-0000000000c2'];
+const COURT = 'padel_court';
+const typeOf = (kind) => (kind === COURT ? COURT : `billiard_${kind}`);
+/** Фильтр kind дашборда (тип ресурса или семья table | court, server/dashboard matchKind) → вид заглушки. */
+const normKind = (k) => (!k ? null : k === 'table' || k === 'court' || k === COURT ? k : String(k).replace(/^billiard_/, ''));
+const matchKind = (tk, kind) => !kind || tk === kind || (kind === 'table' && tk !== COURT) || (kind === 'court' && tk === COURT);
+const nameOf = (t) => resourceName(t.kind === COURT ? 'court' : 'table', t.number);
+export function clubsOf(scenario) {
+  if (!String(scenario ?? '').startsWith('court')) return CLUBS;
+  return [{ ...CLUBS[0], tables: [...CLUBS[0].tables, ...COURT_IDS.map((id, i) => ({ id, number: i + 1, kind: COURT }))] }, ...CLUBS.slice(1)];
+}
+
+/** Цена часа корта по тарифу заглушки: слот 1,5 ч — 2 400 ₽ днём, 3 000 ₽ вечером (1 600 и 2 000 ₽ в час). */
+const courtHourPrice = (dow, hour) => (hour >= 18 || hour < 6 ? 200000 : 160000);
 
 const STAFF = {
   owner: { id: 'u-owner-0001', name: 'Андрей', role: 'owner' },
@@ -74,6 +94,7 @@ function hourPrice(dow, hour) {
 
 export function createDashboardMock({ now, scenario }) {
   const empty = scenario === 'dashboard-empty';
+  const CLUBS = clubsOf(scenario);
   // M5.6: forecast-empty — клуб работает 10 дней, истории для прогноза мало
   const historyDays = scenario === 'dashboard-year' ? 400 : scenario === 'forecast-empty' ? 10 : 90;
   const tz = 'Asia/Yekaterinburg';
@@ -100,7 +121,8 @@ export function createDashboardMock({ now, scenario }) {
       const service = Array(24).fill(0);
       let revenue = 0;
       if (open) {
-        const factor = (t.kind === 'pyramid' ? 1 : t.kind === 'pool' ? 0.86 : 0.7) * club.scale;
+        const factor = (t.kind === 'pyramid' ? 1 : t.kind === 'pool' ? 0.86 : t.kind === COURT ? 0.55 : 0.7) * club.scale;
+        const price = t.kind === COURT ? courtHourPrice : hourPrice;
         for (const hour of OPEN_HOURS) {
           if (WORK_ORDER.indexOf(hour) >= limit) continue;
           let p = HOUR_BASE[hour] * DOW_MUL[dow] * growth * factor;
@@ -112,7 +134,7 @@ export function createDashboardMock({ now, scenario }) {
             minutes = Math.min(minutes, 40);
           }
           play[hour] = minutes;
-          revenue += Math.round(((minutes / 60) * hourPrice(dow, hour)) / 100) * 100;
+          revenue += Math.round(((minutes / 60) * price(dow, hour)) / 100) * 100;
         }
         // Перетяжка сукна: стол 5, 33 дня назад — 4 часа сервиса днём
         if (club.seed === 'dev' && t.number === 5 && age === 33) {
@@ -248,7 +270,7 @@ export function createDashboardMock({ now, scenario }) {
       const ds = clubs.map((c) => day(c, date));
       const row = { date, tables: 0, bar: 0, other: 0, refunds: 0, games: 0, barOrders: 0, play: 0, service: 0, capacity: 0, byKind: {}, deposits: 0, packages: 0, tournaments: 0 };
       for (const d of ds) {
-        const tbl = d.tables.filter((t) => !kind || t.kind === kind);
+        const tbl = d.tables.filter((t) => matchKind(t.kind, kind));
         const share = d.tablesRevenue ? tbl.reduce((s, t) => s + t.revenue, 0) / d.tablesRevenue : kind ? 0 : 1;
         const tr = tbl.reduce((s, t) => s + t.revenue, 0);
         row.tables += tr;
@@ -287,7 +309,7 @@ export function createDashboardMock({ now, scenario }) {
     const { per } = aggregate(clubs, from, to, kind);
     const s = (k) => per.reduce((acc, p) => acc + p.row[k], 0);
     const n = per.length;
-    const tablesInWork = clubs.reduce((acc, c) => acc + c.tables.filter((t) => !kind || t.kind === kind).length, 0);
+    const tablesInWork = clubs.reduce((acc, c) => acc + c.tables.filter((t) => matchKind(t.kind, kind)).length, 0);
     const games = s('games');
     const play = s('play');
     const capacity = s('capacity');
@@ -359,7 +381,7 @@ export function createDashboardMock({ now, scenario }) {
       for (const d of p.ds) {
         if (!d.open) continue;
         for (const t of d.tables) {
-          if (kind && t.kind !== kind) continue;
+          if (!matchKind(t.kind, kind)) continue;
           for (let h = 0; h < 24; h += 1) {
             const isOpen = OPEN_HOURS.includes(h) && (d.date !== today() || WORK_ORDER.indexOf(h) < elapsedHours());
             const k = d.dow * 100 + h;
@@ -377,7 +399,7 @@ export function createDashboardMock({ now, scenario }) {
   function resourcesOf(clubs, from, to, kind) {
     return clubs.flatMap((c) =>
       c.tables
-        .filter((t) => !kind || t.kind === kind)
+        .filter((t) => matchKind(t.kind, kind))
         .map((t) => {
           let play = 0;
           let revenue = 0;
@@ -391,7 +413,7 @@ export function createDashboardMock({ now, scenario }) {
             revenue += x.revenue;
             capacity += d.capacity ? d.capacity / d.tables.length : 0;
           }
-          return { resource_id: t.id, number: t.number, title: `Стол ${t.number}`, type: `billiard_${t.kind}`, club_name: clubs.length > 1 ? c.name : undefined, games: Math.round(play / 92), play_minutes: play, play_hours: r1(play / 60), service_minutes: service, revenue_kopecks: revenue, utilization_pct: capacity ? r1((play / capacity) * 100) : null, cloth_hours: null };
+          return { resource_id: t.id, number: t.number, title: nameOf(t), type: typeOf(t.kind), family: t.kind === COURT ? 'court' : 'table', club_name: clubs.length > 1 ? c.name : undefined, games: Math.round(play / 92), play_minutes: play, play_hours: r1(play / 60), service_minutes: service, revenue_kopecks: revenue, utilization_pct: capacity ? r1((play / capacity) * 100) : null, cloth_hours: null };
         }),
     );
   }
@@ -408,7 +430,7 @@ export function createDashboardMock({ now, scenario }) {
       const date = addDays(t, -i);
       const d = day(club, date);
       if (!d.open) continue;
-      const tbl = d.tables.filter((x) => !kind || x.kind === kind);
+      const tbl = d.tables.filter((x) => matchKind(x.kind, kind));
       const hours = [];
       for (let h = 0; h < 24; h += 1) {
         const open = OPEN_HOURS.includes(h) && tbl.length > 0;
@@ -480,7 +502,7 @@ export function createDashboardMock({ now, scenario }) {
     if (!clubs || clubId === 'all') return { status: clubs ? 400 : 404, body: { error: clubs ? 'bad_request' : 'not_found' } };
     const date = q.get('date') || today();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Math.abs(spanDays(date, today())) > 367) return { status: 400, body: { error: 'bad_request' } };
-    const { forecast: f } = forecastOf(clubs[0], q.get('kind') || null);
+    const { forecast: f } = forecastOf(clubs[0], normKind(q.get('kind')));
     const dow = weekday(date);
     const hours = WORK_ORDER.map((h) => ({ hour: h, pct: f.pct ? f.pct[dow - 1][h] : null, samples: f.samples ? f.samples[dow - 1][h] : 0 }));
     return { status: 200, body: { club_id: clubs[0].id, kind: q.get('kind') || null, date, iso_dow: dow, basis_dow: dow, holiday: null, label: 'прогноз', status: f.status, enough: f.enough, history_days: f.history_days, history_weeks: f.history_weeks, min_days: f.min_days, window: { from: f.from, to: f.to }, day_pct: f.days_pct ? f.days_pct[dow - 1] : null, hours, generated_at: new Date(now()).toISOString() } };
@@ -505,7 +527,7 @@ export function createDashboardMock({ now, scenario }) {
     if (!clubs) return { status: 404, body: { error: 'not_found' } };
     const from = q.get('from');
     const to = q.get('to');
-    const kind = q.get('kind') || null;
+    const kind = normKind(q.get('kind'));
     const tab = q.get('tab') || 'summary';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from ?? '') || !/^\d{4}-\d{2}-\d{2}$/.test(to ?? '') || from > to || spanDays(from, to) > 366) return { status: 400, body: { error: 'bad_request' } };
     if (!['summary', 'money', 'hall', 'guests', 'control'].includes(tab)) return { status: 400, body: { error: 'bad_request' } };
@@ -634,14 +656,14 @@ export function createDashboardMock({ now, scenario }) {
         base.hints = fc.hints;
       }
       base.series.ring = { capacity_minutes: cur.capacity, played_minutes: cur.play, service_minutes: cur.service, unrealized_minutes: Math.max(0, cur.capacity - cur.play - cur.service) };
-      const kk = kind ? [kind] : kinds;
-      base.series.utilization_daily = cur.per.map(({ row }) => ({ date: row.date, pct: row.capacity ? r1((row.play / row.capacity) * 100) : null, by_type: Object.fromEntries(kk.map((k) => [`billiard_${k}`, row.byKind[k]?.capacity ? r1((row.byKind[k].play / row.byKind[k].capacity) * 100) : null])) }));
+      const kk = kinds.filter((k) => matchKind(k, kind));
+      base.series.utilization_daily = cur.per.map(({ row }) => ({ date: row.date, pct: row.capacity ? r1((row.play / row.capacity) * 100) : null, by_type: Object.fromEntries(kk.map((k) => [typeOf(k), row.byKind[k]?.capacity ? r1((row.byKind[k].play / row.byKind[k].capacity) * 100) : null])) }));
       const res = resourcesOf(clubs, from, to, kind);
       base.tables.by_type = kk.map((k) => {
-        const list = res.filter((r) => r.type === `billiard_${k}`);
+        const list = res.filter((r) => r.type === typeOf(k));
         const play = list.reduce((a, r) => a + r.play_minutes, 0);
         const cap = cur.per.reduce((a, p) => a + (p.row.byKind[k]?.capacity ?? 0), 0);
-        return { type: `billiard_${k}`, tables: list.length, games: list.reduce((a, r) => a + r.games, 0), play_minutes: play, capacity_minutes: cap, service_minutes: list.reduce((a, r) => a + r.service_minutes, 0), utilization_pct: cap ? r1((play / cap) * 100) : null, revenue_kopecks: list.reduce((a, r) => a + r.revenue_kopecks, 0) };
+        return { type: typeOf(k), tables: list.length, games: list.reduce((a, r) => a + r.games, 0), play_minutes: play, capacity_minutes: cap, service_minutes: list.reduce((a, r) => a + r.service_minutes, 0), utilization_pct: cap ? r1((play / cap) * 100) : null, revenue_kopecks: list.reduce((a, r) => a + r.revenue_kopecks, 0) };
       });
       base.tables.by_resource = res;
     }
@@ -751,7 +773,7 @@ export function createDashboardMock({ now, scenario }) {
         by.set(type, e);
       }
       const d = day(c, td);
-      const list = [...by.values()].map((e) => ({ ...e, utilization_now_pct: pctOf(e.busy, e.total), utilization_day_pct: d.capacity ? pctOf(d.tables.filter((t) => `billiard_${t.kind}` === e.type).reduce((a, t) => a + t.playTotal, 0), (d.capacity / d.tables.length) * e.total) : 0 }));
+      const list = [...by.values()].map((e) => ({ ...e, utilization_now_pct: pctOf(e.busy, e.total), utilization_day_pct: d.capacity ? pctOf(d.tables.filter((t) => typeOf(t.kind) === e.type).reduce((a, t) => a + t.playTotal, 0), (d.capacity / d.tables.length) * e.total) : 0 }));
       const total = items.length;
       const busy = list.reduce((a, e) => a + e.busy, 0);
       return {
@@ -764,7 +786,7 @@ export function createDashboardMock({ now, scenario }) {
         revenue_today: { total_kopecks: d.revenue + d.refunds, net_kopecks: d.revenue, by_method: d.methods },
         games_today: d.games,
         shift: empty ? null : { shift_id: null, number: 214, opened_at: new Date(Date.parse(`${td}T12:00:00+05:00`)).toISOString(), opened_by_name: c.seed === 'dev' ? STAFF.reception.name : 'Мария Л.' },
-        tables: items.map((it) => ({ resource_id: it.resource.id, number: it.resource.number, title: `Стол ${it.resource.number}`, type: it.resource.type, plan_x: it.resource.plan_x ?? null, plan_y: it.resource.plan_y ?? null, plan_rotation: it.resource.plan_rotation ?? 0, status: statusOf(it), busy_until: it.session?.paid_until ?? null, until: it.until ?? null })),
+        tables: items.map((it) => ({ resource_id: it.resource.id, number: it.resource.number, title: resourceName(it.resource), type: it.resource.type, family: it.resource.family ?? (it.resource.type === COURT ? 'court' : 'table'), plan_x: it.resource.plan_x ?? null, plan_y: it.resource.plan_y ?? null, plan_rotation: it.resource.plan_rotation ?? 0, status: statusOf(it), busy_until: it.session?.paid_until ?? null, until: it.until ?? null })),
       };
     };
     if (clubs.length === 1) return { status: 200, body: one(clubs[0]) };
@@ -776,7 +798,7 @@ export function createDashboardMock({ now, scenario }) {
   function syntheticHall(club) {
     const r = rng(`${club.seed}:hall`);
     return club.tables.map((t, i) => ({
-      resource: { id: t.id, number: t.number, type: `billiard_${t.kind}`, title: KIND_LABEL[t.kind] },
+      resource: { id: t.id, number: t.number, type: typeOf(t.kind), family: t.kind === COURT ? 'court' : 'table', title: KIND_LABEL[t.kind] },
       status: empty ? 'free' : r() < 0.45 ? 'busy' : i === 2 ? 'service' : 'free',
       session: null,
       until: null,
@@ -789,7 +811,7 @@ export function createDashboardMock({ now, scenario }) {
     const table = q.get('table');
     const from = q.get('from');
     const to = q.get('to');
-    const kind = q.get('kind') || null;
+    const kind = normKind(q.get('kind'));
     const clubs = clubsFor(clubId, user);
     if (!clubs) return { status: 404, body: { error: 'not_found' } };
     if (!from || !to || from > to || spanDays(from, to) > 366) return { status: 400, body: { error: 'bad_request' } };
@@ -799,7 +821,7 @@ export function createDashboardMock({ now, scenario }) {
       csv = toCsv(['Дата', 'Выручка, ₽', 'Столы, ₽', 'Бар, ₽', 'Прочее, ₽', 'Возвраты, ₽', 'Игр', 'Средний чек игры, ₽', 'Средний чек бара, ₽'], cur.per.map(({ row }) => [csvDate(row.date), csvMoney(row.revenue), csvMoney(row.tables), csvMoney(row.bar), csvMoney(row.other), csvMoney(row.refunds), row.games, row.games ? csvMoney(Math.round(row.tables / row.games)) : '', row.barOrders ? csvMoney(Math.round(row.bar / row.barOrders)) : '']));
     } else if (table === 'tables') {
       const res = resourcesOf(clubs, from, to, kind);
-      csv = toCsv(['Стол', 'Тип', 'Часов игры', 'Выручка, ₽', 'Загрузка, %', 'Часов с замены сукна'], res.map((t) => [t.title, KIND_LABEL[t.type.replace('billiard_', '')], t.play_hours, csvMoney(t.revenue_kopecks), t.utilization_pct, '']));
+      csv = toCsv(['Стол', 'Тип', 'Часов игры', 'Выручка, ₽', 'Загрузка, %', 'Часов с замены сукна'], res.map((t) => [t.title, KIND_LABEL[t.type.replace('billiard_', '')] ?? 'Падел-корт', t.play_hours, csvMoney(t.revenue_kopecks), t.utilization_pct, '']));
     } else if (table === 'hourly') {
       const cells = [...cellsOf(cur, kind).values()];
       const DOW = ['', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];

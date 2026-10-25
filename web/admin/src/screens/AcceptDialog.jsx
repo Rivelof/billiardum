@@ -6,7 +6,9 @@ import { Keypad } from '../components/Keypad.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { changeFor, keypad, parseRubles, quickSums, groupDigits } from '../lib/cash.js';
-import { minutesShort } from '../lib/words.js';
+import { minutesShort, requestName } from '../lib/words.js';
+import { familyText } from '@billiardum/shared/resource';
+import { requestFamily, requestHallItem } from '../lib/court.js';
 
 /**
  * «Принять оплату» по заявке гостя (контракт §5): наличные — ввод полученной суммы и сдача крупно;
@@ -23,7 +25,7 @@ export function AcceptDialog({ request, onClose, onDone, hall, refreshHall }) {
   const inputRef = useRef(null);
 
   // Сессию сервер создаёт асинхронно (accept отвечает session_id: null) — ждём стол в зале по SSE и опросу
-  const table = request && Array.isArray(hall) ? hall.find((h) => h.resource.id === request.resource_id || h.resource.number === request.resource_number) : null;
+  const table = requestHallItem(request, hall);
   const lit = Boolean(result && (result.session_id || table?.session));
   useEffect(() => {
     if (!result || lit) return undefined;
@@ -51,7 +53,8 @@ export function AcceptDialog({ request, onClose, onDone, hall, refreshHall }) {
   const receivedK = parseRubles(received);
   const calc = changeFor(amount, receivedK);
   const tooMuch = receivedK !== null && receivedK - amount > 1_000_000; // сдача больше 10 000 ₽ — почти наверняка опечатка
-  const what = `Стол ${request.resource_number} · ${minutesShort(request.minutes)}`;
+  const what = `${requestName(request)} · ${minutesShort(request.minutes)}`;
+  const onWhat = requestName(request, { case: 'pre', capital: false });
 
   const submit = async (e) => {
     e?.preventDefault();
@@ -86,8 +89,8 @@ export function AcceptDialog({ request, onClose, onDone, hall, refreshHall }) {
           <p class="lead accept-done__light" aria-live="polite">
             <Icon name="lamp" />
             {lit
-              ? `Свет на столе ${request.resource_number} включён. Чек ставим в очередь кассы.`
-              : `Включаем свет на столе ${request.resource_number}… Чек ставим в очередь кассы.`}
+              ? `Свет на ${onWhat} включён. Чек ставим в очередь кассы.`
+              : `Включаем свет на ${onWhat}… Чек ставим в очередь кассы.`}
           </p>
           <button type="button" class="btn btn--primary btn--block btn--lg" onClick={onClose}>
             Готово
@@ -169,7 +172,7 @@ export function AcceptDialog({ request, onClose, onDone, hall, refreshHall }) {
                 <span>Дождитесь, когда терминал напечатает чек об оплате.</span>
               </li>
               <li>
-                <span>Нажмите кнопку ниже — свет на столе включится.</span>
+                <span>{familyText('Нажмите кнопку ниже — свет на столе включится.', requestFamily(request))}</span>
               </li>
             </ol>
           </div>

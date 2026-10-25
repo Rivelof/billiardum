@@ -12,14 +12,18 @@
  * Контроллер после привязки по QR выходит на связь через 5 с. QR для проверки: BLD1:{uuid}:{код от 6 знаков}.
  */
 
-import { buildRules, defaultTariffForm, hallTypes, ruleKind, weekCoverage } from '../lib/tariffs.js';
+import { buildRules, defaultTariffForm, hallHasCourts, hallTypes, isCourtRule, ruleKind, weekCoverage } from '../lib/tariffs.js';
 import { parseBld1 } from '../lib/onboarding.js';
 import { menuFromCsv } from '../lib/csv.js';
 
 const MIN = 60_000;
 const uuid = () => globalThis.crypto.randomUUID();
 const iso = (t) => new Date(t).toISOString();
-const KIND_TYPE = { pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker', mixed: 'billiard_mixed' };
+const KIND_TYPE = { pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker', mixed: 'billiard_mixed', padel_court: 'padel_court' };
+/** M5.8: семья вида мастера — у столов и кортов своя нумерация, стол ↔ корт — 400 bad_request (как server/setup/hall.mjs). */
+const familyOfKind = (kind) => (kind === 'padel_court' ? 'court' : 'table');
+const familyOfRes = (r) => (r?.family === 'court' || r?.type === 'padel_court' ? 'court' : 'table');
+const SLOT_MINUTES = [60, 90, 120];
 const BUSY_REASON = { busy: 'session', pending: 'pending', reserved: 'reserved', service: 'service' };
 const CODE_ABC = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const tableCode = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(10)), (b) => CODE_ABC[b % 32]).join('');
@@ -33,21 +37,32 @@ const CITIES = [
   { id: 'c0000000-0000-4000-8000-0000000000e3', slug: 'moskva', name: 'Москва', name_in: 'в Москве', region: null, timezone: 'Europe/Moscow', clubs: 0, free_now: 0 },
 ];
 
-/** Тарифы клуба разработки: шаблон «Будни и выходные × день и вечер», как в сиде. */
-function devRules() {
-  const form = { ...defaultTariffForm('weekend_day_evening'), weekend: [5, 6, 7], prices: { wd_day: '500', wd_eve: '800', we_day: '600', we_eve: '1000' } };
-  return buildRules(form, ['pyramid', 'pool']);
+/**
+ * Тарифы клуба разработки: шаблон «Будни и выходные × день и вечер», как в сиде. courts — и правила корта:
+ * слот 1,5 ч — 2 400 ₽ днём, 3 000 ₽ вечером (M5.8); в ответе у правила корта min и шаг — слот, цена часа — справочная.
+ */
+function devRules(courts = false) {
+  const form = { ...defaultTariffForm('weekend_day_evening'), weekend: [5, 6, 7], prices: { wd_day: '500', wd_eve: '800', we_day: '600', we_eve: '1000', 'wd_day:padel_court': '2400', 'wd_eve:padel_court': '3000', 'we_day:padel_court': '2700', 'we_eve:padel_court': '3300' } };
+  return buildRules(form, ['pyramid', 'pool'], '06:00', courts).map(courtView);
+}
+
+/** Правило корта, как его отдаёт сервер: min_minutes = step_minutes = слот, price_per_hour_kopecks — справочно. */
+function courtView(r) {
+  if (!isCourtRule(r)) return r;
+  return { ...r, min_minutes: r.slot_minutes, step_minutes: r.slot_minutes, price_per_hour_kopecks: Math.max(1, Math.floor((r.price_per_slot_kopecks * 120 + r.slot_minutes) / (2 * r.slot_minutes))) };
 }
 
 export function m5State(scenario, t) {
   const fresh = scenario === 'onboarding';
   const testDev = String(scenario ?? '').startsWith('testmode');
+  const courts = String(scenario ?? '').startsWith('court');
   return {
     // Клубы, созданные в заглушке; пусто — у вошедшего клуб разработки (его режим — devMode)
     clubs: [],
     devMode: testDev ? 'test' : 'live',
-    hallSize: fresh ? null : { width: 1800, height: 1400 },
-    tariffs: fresh ? [] : devRules(),
+    // M5.8: в ?mock=court… зал больше — под столами два корта 10,6 × 20,6 м; court-owner-gap — у кортов нет цены
+    hallSize: fresh ? null : courts ? { width: 2400, height: 3700 } : { width: 1800, height: 1400 },
+    tariffs: fresh ? [] : devRules(courts && scenario !== 'court-owner-gap'),
     shops: {
       test: fresh ? null : { shop_id: '506751', secret_mask: { last4: '9f2c', length: 48 }, verified_at: iso(t - 3 * 24 * 60 * MIN), test: true, fiscalization: true },
       live: null,
@@ -65,6 +80,9 @@ export function m5State(scenario, t) {
     bridgeOk: !fresh,
   };
 }
+
+/** Зал как у сервера: столы, затем корты, внутри — по номеру. */
+const hallOrder = (a, c) => Number(familyOfRes(a.resource) === 'court') - Number(familyOfRes(c.resource) === 'court') || a.resource.number - c.resource.number;
 
 export function m5Routes(ctx) {
   const { now, me, err, ok, emit, audit } = ctx;
@@ -102,8 +120,8 @@ export function m5Routes(ctx) {
   const staff = () => st().m3?.staff ?? [];
   const invites = () => st().m3?.invites ?? [];
 
-  /** Типы столов для проверки недели: в работе и упомянутые в правилах (как server/setup/tariffs.mjs). */
-  const weekKinds = (rules) => [...new Set([...hallTypes(st().hall), ...rules.map(ruleKind).filter(Boolean)])];
+  /** Типы столов для проверки недели: в работе и упомянутые в правилах (как server/setup/tariffs.mjs); корты — свои правила. */
+  const weekKinds = (rules) => [...new Set([...hallTypes(st().hall), ...(hallHasCourts(st().hall) ? ['padel_court'] : []), ...rules.map(ruleKind).filter(Boolean)])];
   function weekProblem(rules) {
     for (const kind of weekKinds(rules)) {
       const cov = weekCoverage(rules, kind);
@@ -232,14 +250,23 @@ export function m5Routes(ctx) {
     const rules = Array.isArray(b?.rules) ? b.rules : null;
     if (!rules?.length) return err(400, 'bad_request');
     if (rules.length > 100) return err(400, 'bad_request');
+    const slots = new Set();
     for (const r of rules) {
+      if (r.kind !== undefined && r.kind !== null && !KIND_TYPE[r.kind]) return err(400, 'bad_request');
+      if (r.kind === 'padel_court') {
+        // M5.8 (№212): цена за слот, слот 60/90/120 — один на вид; цена часа у корта не принимается
+        if (!SLOT_MINUTES.includes(r.slot_minutes) || !Number.isInteger(r.price_per_slot_kopecks) || r.price_per_slot_kopecks <= 0 || r.price_per_hour_kopecks !== undefined) return err(400, 'bad_request');
+        slots.add(r.slot_minutes);
+        continue;
+      }
+      if (r.slot_minutes !== undefined || r.price_per_slot_kopecks !== undefined) return err(400, 'bad_request');
       if (!Number.isInteger(r.min_minutes) || !Number.isInteger(r.step_minutes) || !Number.isInteger(r.price_per_hour_kopecks)) return err(400, 'bad_request');
       if (r.price_per_hour_kopecks <= 0) return err(400, 'bad_request'); // №163: тариф 0 ₽ не бывает
-      if (r.kind !== undefined && r.kind !== null && !KIND_TYPE[r.kind]) return err(400, 'bad_request');
     }
+    if (slots.size > 1) return err(400, 'bad_request');
     const problem = weekProblem(rules);
     if (problem) return fail(400, problem.code, { kind: problem.kind, weekday: problem.weekday, from: problem.from, to: problem.to });
-    S().tariffs = rules.map((r) => ({ ...r }));
+    S().tariffs = rules.map((r) => courtView({ ...r }));
     audit(live() ? 'manual.tariff_change' : 'tariff.update', { reason: b?.reason ?? null, data: { rules: rules.length } });
     return ok(tariffsView());
   }
@@ -247,11 +274,12 @@ export function m5Routes(ctx) {
   /** GET …/tariffs → { timezone, day_start_local, rules, resource_rules, coverage }. */
   function tariffsView() {
     const problem = weekProblem(S().tariffs);
-    return { timezone: S().clubs[0]?.timezone ?? 'Asia/Yekaterinburg', day_start_local: '06:00', rules: S().tariffs, resource_rules: [], coverage: { ok: S().tariffs.length > 0 && !problem, problem } };
+    const slot = S().tariffs.find((r) => r.kind === 'padel_court')?.slot_minutes;
+    return { timezone: S().clubs[0]?.timezone ?? 'Asia/Yekaterinburg', day_start_local: '06:00', rules: S().tariffs, resource_rules: [], coverage: { ok: S().tariffs.length > 0 && !problem, problem }, slots: slot ? { padel_court: slot } : {} };
   }
 
   /** Стол в форме server/setup/hall.mjs. */
-  const resourceView = (r, active = true) => ({ id: r.id, number: r.number, kind: r.kind ?? (/pool/.test(r.type) ? 'pool' : 'pyramid'), type: r.type, title: r.title, code: r.code ?? null, plan_x: r.plan_x ?? 0, plan_y: r.plan_y ?? 0, plan_rotation: r.plan_rotation ?? 0, active, sticker_printed_at: S().stickersAt ? iso(S().stickersAt) : null });
+  const resourceView = (r, active = true) => ({ id: r.id, number: r.number, kind: r.kind ?? (r.type === 'padel_court' ? 'padel_court' : /pool/.test(r.type) ? 'pool' : 'pyramid'), type: r.type, family: familyOfRes(r), title: r.title, code: r.code ?? null, plan_x: r.plan_x ?? 0, plan_y: r.plan_y ?? 0, plan_rotation: r.plan_rotation ?? 0, active, sticker_printed_at: S().stickersAt ? iso(S().stickersAt) : null });
   const planView = () => ({ width_cm: (S().hallSize ?? { width: 1800 }).width, height_cm: (S().hallSize ?? { height: 1200 }).height });
 
   function createTable(b) {
@@ -259,17 +287,18 @@ export function m5Routes(ctx) {
     const n = Number(b?.number);
     if (!Number.isInteger(n) || n < 1 || n > 999) return err(400, 'bad_request');
     if (!KIND_TYPE[b?.kind]) return err(400, 'bad_request');
-    if (st().hall.some((x) => x.resource.number === n)) return err(409, 'duplicate');
+    const fam = familyOfKind(b.kind);
+    if (st().hall.some((x) => x.resource.number === n && familyOfRes(x.resource) === fam)) return err(409, 'duplicate');
     for (const k of ['plan_x', 'plan_y']) if (!Number.isInteger(b[k]) || b[k] < 0) return err(400, 'bad_request');
     const tbl = {
-      resource: { id: uuid(), number: n, type: KIND_TYPE[b.kind], kind: b.kind, title: `Стол ${n}`, code: tableCode(), plan_x: b.plan_x, plan_y: b.plan_y, plan_rotation: b.plan_rotation ?? 0 },
+      resource: { id: uuid(), number: n, type: KIND_TYPE[b.kind], kind: b.kind, family: fam, title: `${fam === 'court' ? 'Корт' : 'Стол'} ${n}`, code: tableCode(), plan_x: b.plan_x, plan_y: b.plan_y, plan_rotation: b.plan_rotation ?? 0 },
       status: 'offline',
       session: null,
       until: null,
       device: null,
     };
     st().hall.push(tbl);
-    st().hall.sort((a, c) => a.resource.number - c.resource.number);
+    st().hall.sort(hallOrder);
     audit('resource.create', { resource_number: n });
     emit('hall', tbl);
     return { status: 201, body: resourceView(tbl.resource) };
@@ -287,14 +316,16 @@ export function m5Routes(ctx) {
       return ok(resourceView(tbl.resource, false));
     }
     // №164: смена типа стола в боевом режиме — ручное действие с причиной
-    const kindChange = b?.kind !== undefined && b.kind !== (tbl.resource.kind ?? (/pool/.test(tbl.resource.type) ? 'pool' : 'pyramid'));
+    const kindChange = b?.kind !== undefined && b.kind !== resourceView(tbl.resource).kind;
+    // M5.8 (№213): стол не становится кортом и наоборот
+    if (kindChange && KIND_TYPE[b.kind] && familyOfKind(b.kind) !== familyOfRes(tbl.resource)) return err(400, 'bad_request');
     if (kindChange && live() && !String(b.reason ?? '').trim()) return err(400, 'reason_required');
     if (b?.number !== undefined) {
       const n = Number(b.number);
       if (!Number.isInteger(n) || n < 1 || n > 999) return err(400, 'bad_request');
-      if (st().hall.some((x) => x !== tbl && x.resource.number === n)) return err(409, 'duplicate');
+      if (st().hall.some((x) => x !== tbl && x.resource.number === n && familyOfRes(x.resource) === familyOfRes(tbl.resource))) return err(409, 'duplicate');
       tbl.resource.number = n;
-      tbl.resource.title = `Стол ${n}`;
+      tbl.resource.title = `${familyOfRes(tbl.resource) === 'court' ? 'Корт' : 'Стол'} ${n}`;
     }
     if (b?.kind !== undefined) {
       if (!KIND_TYPE[b.kind]) return err(400, 'bad_request');
@@ -309,7 +340,7 @@ export function m5Routes(ctx) {
       if (!Number.isInteger(b.plan_rotation) || b.plan_rotation < 0 || b.plan_rotation > 359) return err(400, 'bad_request');
       tbl.resource.plan_rotation = b.plan_rotation;
     }
-    st().hall.sort((a, c) => a.resource.number - c.resource.number);
+    st().hall.sort(hallOrder);
     audit(kindChange && live() ? 'manual.resource_kind' : 'resource.update', { resource_number: tbl.resource.number, reason: kindChange && live() ? String(b.reason).trim() : null });
     emit('hall', tbl);
     return ok(resourceView(tbl.resource));

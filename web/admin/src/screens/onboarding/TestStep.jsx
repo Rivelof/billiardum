@@ -4,6 +4,7 @@ import { ErrorNote } from '../../components/ErrorNote.jsx';
 import { QrCode } from '../../components/QrCode.jsx';
 import { api } from '../../lib/api.js';
 import { guestTableUrl } from '../../lib/onboarding.js';
+import { familyOf, familyText, resourceName } from '@billiardum/shared/resource';
 
 /**
  * Шаг «Тестовый режим» (№153): что работает по-настоящему, что тестовое, и проверка глазами гостя —
@@ -86,26 +87,28 @@ export function TestStep({ ctx, live }) {
             </ol>
             <div class="field">
               <label class="field__label" for="tm-table">
-                Стол
+                {hall.some((t) => familyOf(t.resource) === 'court') ? 'Стол или корт' : 'Стол'}
               </label>
               <select id="tm-table" class="field__input" value={tableId} onChange={(e) => setTableId(e.currentTarget.value)}>
                 {hall.map((t) => (
                   <option key={t.resource.id} value={t.resource.id}>
-                    Стол {t.resource.number}
+                    {resourceName(t.resource)}
                     {t.device?.online ? '' : ' — контроллер не на связи'}
                   </option>
                 ))}
               </select>
             </div>
-            {table && !table.device?.online ? <p class="small field__error">Контроллер этого стола не на связи: оплату примет, а свет не включится. Проверьте шаг «Контроллеры».</p> : null}
+            {table && !table.device?.online ? <p class="small field__error">{familyText('Контроллер этого стола не на связи: оплату примет, а свет не включится. Проверьте шаг «Контроллеры».', table.resource)}</p> : null}
             {url ? (
               <div class="tm__qr">
-                <QrCode data={url} label={`QR-код стола ${table.resource.number}`} />
+                <QrCode data={url} label={`QR-код ${resourceName(table.resource, undefined, { case: 'gen', capital: false })}`} />
                 <a class="btn btn--secondary" href={url} target="_blank" rel="noopener">
                   <Icon name="external" />
-                  Открыть стол {table.resource.number} как гость
+                  Открыть {resourceName(table.resource, undefined, { capital: false })} как гость
                 </a>
-                <p class="small muted mono tm__code">Код стола: {table.resource.code}</p>
+                <p class="small muted mono tm__code">
+                  Код {resourceName(table.resource, null, { case: 'gen', capital: false })}: {table.resource.code}
+                </p>
               </div>
             ) : null}
           </>

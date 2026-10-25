@@ -502,6 +502,8 @@
 
 /* Загрузка по столам: стол, часы и игры, полоса, процент */
 .ptables { display: grid; margin: 4px 0 0; padding: 0; list-style: none; }
+/* M5.8: строка «Столы — …; корты — …» отчёта смены */
+.rfamily { margin: 8px 0 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--card-2); font-size: var(--fs-15); font-variant-numeric: tabular-nums; }
 .ptable {
   display: grid;
   grid-template-columns: 5.5rem minmax(0, 1fr) minmax(80px, 30%) 4.2rem;

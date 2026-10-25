@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
+import { familyOf, resourceName } from '@billiardum/shared/resource';
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { ACTION_LABEL } from '../lib/audit.js';
-import { manualDetail, reconcile, revenueTable, staffName } from '../lib/shift.js';
+import { familyLine, manualDetail, reconcile, revenueTable, staffName } from '../lib/shift.js';
 import { METHOD_LABEL, minutesWords } from '../lib/words.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -328,6 +329,9 @@ function Play({ play }) {
   if (!play) return null;
   // Сначала самые загруженные: владелец ищет простаивающие и перегруженные столы
   const tables = [...(play.by_resource ?? [])].sort((a, b) => (b.utilization_percent ?? 0) - (a.utilization_percent ?? 0) || (a.number ?? 0) - (b.number ?? 0));
+  // M5.8: клуб со столами и кортами — строка по семьям из play.by_family
+  const families = familyLine(play);
+  const courts = tables.some((t) => familyOf(t) === 'court');
   return (
     <section class="rcard" aria-labelledby="r-play">
       <h3 class="rcard__title" id="r-play">
@@ -353,14 +357,15 @@ function Play({ play }) {
       </p>
       {play.shift_minutes ? (
         <p class="small">
-          Загрузка — доля времени смены ({hoursShort(play.shift_minutes)}), когда на {play.resources ?? 'всех'} {plural(play.resources ?? 0, ['столе', 'столах', 'столах'])} шла игра: {play.sessions ?? 0} {plural(play.sessions ?? 0, GAMES)}.
+          Загрузка — доля времени смены ({hoursShort(play.shift_minutes)}), когда на {play.resources ?? 'всех'} {courts ? plural(play.resources ?? 0, ['столе или корте', 'столах и кортах', 'столах и кортах']) : plural(play.resources ?? 0, ['столе', 'столах', 'столах'])} шла игра: {play.sessions ?? 0} {plural(play.sessions ?? 0, GAMES)}.
         </p>
       ) : null}
+      {families ? <p class="rfamily">{families}</p> : null}
       {tables.length ? (
-        <ul class="ptables" aria-label="Загрузка по столам">
+        <ul class="ptables" aria-label={courts ? 'Загрузка по столам и кортам' : 'Загрузка по столам'}>
           {tables.map((t) => (
             <li class="ptable" key={t.resource_id ?? t.number}>
-              <span class="ptable__name">Стол {t.number ?? t.resource_number}</span>
+              <span class="ptable__name">{resourceName(t, t.number ?? t.resource_number)}</span>
               <span class="ptable__meta">
                 {t.sessions ? `${hoursShort(t.minutes ?? 0)} · ${t.sessions} ${plural(t.sessions, GAMES)}` : 'Не играли'}
                 {t.revenue_kopecks ? ` · ${formatMoney(t.revenue_kopecks)}` : ''}
@@ -410,7 +415,7 @@ function Service({ light }) {
             <dl class="receipt" aria-label="По столам">
               {tables.map((x, i) => (
                 <div class="receipt__row" key={x.resource_id ?? x.number ?? i}>
-                  <dt>Стол {x.number ?? x.resource_number}</dt>
+                  <dt>{resourceName(x, x.number ?? x.resource_number)}</dt>
                   <dd class="receipt__sum">{x.minutes} мин</dd>
                 </div>
               ))}
@@ -484,7 +489,7 @@ function LogItem({ a, timeZone, clubId }) {
       <span class="log__time mono">{formatTime(a.at, timeZone)}</span>
       <div class="log__body">
         <p class="log__title">
-          {a.resource_number ? <span class="log__table">Стол {a.resource_number} · </span> : null}
+          {a.resource_number ? <span class="log__table">{resourceName({ type: a.resource_type, family: a.resource_family }, a.resource_number)} · </span> : null}
           {ACTION_LABEL[a.action] ?? a.action}
           {Number.isFinite(a.minutes) ? `, ${minutesWords(a.minutes)}` : ''}
           {Number.isSafeInteger(a.amount_kopecks) ? `, ${formatMoney(a.amount_kopecks)}` : ''}

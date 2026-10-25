@@ -248,3 +248,6 @@
 .ob__content > .panel > .btn, .ob__content > .panel > .row { justify-self: start; }
 .rcp-state { white-space: normal; max-width: 100%; }
 .shop__flags .badge { white-space: normal; }
+
+/* M5.8: вид корта словом вместо выбора (корт не становится столом) */
+.pe-kind { min-height: 44px; display: flex; align-items: center; font-weight: 600; }

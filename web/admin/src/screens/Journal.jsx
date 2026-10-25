@@ -8,6 +8,7 @@ import { api } from '../lib/api.js';
 import { can } from '../lib/auth.js';
 import { ACTION_GROUPS, actorLabel, auditView, groupByDate, journalLink, legacyActionParam, matchesAction } from '../lib/audit.js';
 import { periodRange } from '../lib/zone.js';
+import { resourceName } from '@billiardum/shared/resource';
 
 const PERIODS = [
   { value: 'today', label: 'Сегодня' },
@@ -41,7 +42,7 @@ export function Journal({ ctx }) {
   useEffect(() => {
     api
       .hall(clubId)
-      .then((h) => setTables((Array.isArray(h) ? h : []).map((x) => x.resource).sort((a, b) => a.number - b.number)))
+      .then((h) => setTables((Array.isArray(h) ? h : []).map((x) => x.resource).sort((a, b) => Number(a.family === 'court') - Number(b.family === 'court') || a.number - b.number)))
       .catch(() => {});
   }, [clubId]);
 
@@ -105,7 +106,7 @@ export function Journal({ ctx }) {
     }
   };
 
-  const tableMap = useMemo(() => new Map(tables.map((t) => [t.id, t.number])), [tables]);
+  const tableMap = useMemo(() => new Map(tables.map((t) => [t.id, { number: t.number, family: t.family, type: t.type }])), [tables]);
   const views = (items ?? []).map((it) => auditView(it, timeZone, { tables: tableMap }));
   const groups = groupByDate(views);
 
@@ -149,13 +150,13 @@ export function Journal({ ctx }) {
             </div>
             <div class="field">
               <label class="field__label" for="f-table">
-                Стол
+                {tables.some((t) => t.family === 'court') ? 'Стол или корт' : 'Стол'}
               </label>
               <select id="f-table" class="field__input" value={resource} onChange={(e) => setResource(e.currentTarget.value)}>
-                <option value="">Все столы</option>
+                <option value="">{tables.some((t) => t.family === 'court') ? 'Все столы и корты' : 'Все столы'}</option>
                 {tables.map((t) => (
                   <option key={t.id} value={t.id}>
-                    Стол {t.number}
+                    {resourceName(t)}
                   </option>
                 ))}
               </select>

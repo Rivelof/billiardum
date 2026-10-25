@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 import { formatMoney, formatTime, formatDate, plural } from '@billiardum/shared/format';
+import { countText, resourceName } from '@billiardum/shared/resource';
 import { Icon } from '../../components/Icon.jsx';
 import { HallPlan } from '../../components/HallPlan.jsx';
 import { useMedia } from '../../components/hooks.js';
@@ -22,6 +23,8 @@ import {
   formatPct,
   formatSeconds,
   hallTotals,
+  familyTotals,
+  kindFamily,
   heatmapMatrix,
   isEmptyPeriod,
   kindCards,
@@ -103,7 +106,7 @@ export function Tile({ t }) {
 }
 
 function Tiles({ view, tab, ctx, busy }) {
-  const tiles = tileViews(view.tiles, TAB_TILES[tab], { compare: ctx.filters.compare });
+  const tiles = tileViews(view.tiles, TAB_TILES[tab], { compare: ctx.filters.compare, family: kindFamily(ctx.filters.kind) });
   if (!tiles.length) return null;
   return (
     <div class={`dtiles${busy ? ' is-busy' : ''}`} aria-busy={busy ? 'true' : undefined}>
@@ -153,6 +156,8 @@ function busyRing(busy, total) {
 function KindCards({ now }) {
   const cards = kindCards(now?.byKind);
   const totals = hallTotals(now?.byKind);
+  // M5.8: клуб со столами и кортами — «Столы: занято 5 из 8 · Корты: занято 1 из 2» под итогом зала
+  const fams = familyTotals(now?.byKind);
   if (!cards.length) return <p class="muted">Столов в работе пока нет. Добавьте их в разделе «Подключение» → «План зала».</p>;
   return (
     <div class="dkinds">
@@ -168,6 +173,7 @@ function KindCards({ now }) {
             {Number.isFinite(now.loadDay) ? ` · за сутки ${formatPct(now.loadDay)}` : null}
           </p>
           {Number.isFinite(now.revenueToday) ? <p class="small">Сегодня {money(now.revenueToday)}</p> : null}
+          {fams.length ? <p class="small">{fams.map((x) => `${x.label}: ${x.words}`).join(' · ')}</p> : null}
         </div>
       </div>
       {cards.map((c) => (
@@ -592,7 +598,7 @@ export function HallTab({ view, now, busy, ctx }) {
       <section class={`dsec dsec--wide${busy ? ' is-busy' : ''}`} aria-labelledby="h-tables">
         <div class="dsec__head">
           <h2 class="section-title" id="h-tables">
-            По столам
+            {h.resources.some((r) => r.family === 'court') ? (h.resources.every((r) => r.family === 'court') ? 'По кортам' : 'По столам и кортам') : 'По столам'}
           </h2>
           {ctx.exportTable && h.resources.length ? (
             <button type="button" class="btn btn--quiet btn--sm" onClick={() => ctx.exportTable('tables')} disabled={ctx.exporting === 'tables'}>
@@ -605,23 +611,24 @@ export function HallTab({ view, now, busy, ctx }) {
           <ul class="dkindsum">
             {h.byKind.map((k) => (
               <li key={k.kind}>
-                <b>{KIND_LABEL[k.kind] ?? k.kind}</b> · {k.tables} {plural(k.tables, ['стол', 'стола', 'столов'])} · {formatHours(k.play_minutes)} · {pctText(k.load)} · {money(k.revenue)}
+                <b>{KIND_LABEL[k.kind] ?? k.kind}</b> · {countText(k.tables, k.kind === 'padel_court' ? 'court' : 'table')} · {formatHours(k.play_minutes)} · {pctText(k.load)} · {money(k.revenue)}
               </li>
             ))}
           </ul>
         ) : null}
         {h.resources.length ? (
           <DataTable
-            caption="По столам"
+            caption={h.resources.some((r) => r.family === 'court') ? 'По столам и кортам' : 'По столам'}
             columns={[
-              { key: 'number', label: 'Стол', head: true, sortValue: (r) => r.number, render: (r) => `${r.title ?? `Стол ${r.number}`} · ${KIND_LABEL[r.kind] ?? r.kind}${r.club ? ` · ${r.club}` : ''}` },
+              // Столы, затем корты; «Корт 1» и «Стол 1» — разные ресурсы (№213)
+              { key: 'number', label: h.resources.some((r) => r.family === 'court') ? 'Стол или корт' : 'Стол', head: true, sortValue: (r) => (r.family === 'court' ? 10_000 : 0) + r.number, render: (r) => `${r.title ?? resourceName(r.family, r.number)} · ${KIND_LABEL[r.kind] ?? r.kind}${r.club ? ` · ${r.club}` : ''}` },
               { key: 'games', label: 'Игр', num: true, sortValue: (r) => r.games ?? 0, render: (r) => (Number.isFinite(r.games) ? formatNumber(r.games) : '—') },
               { key: 'play', label: 'Часы игры', num: true, sortValue: (r) => r.play_minutes, render: (r) => formatHours(r.play_minutes) },
               { key: 'revenue', label: 'Выручка', num: true, sortValue: (r) => r.revenue ?? 0, render: (r) => money(r.revenue) },
               { key: 'load', label: 'Загрузка', num: true, sortValue: (r) => r.load ?? -1, render: (r) => pctText(r.load) },
               // M5.6 (№198): часы игры с последней замены сукна; порог достигнут — словом, не только цветом
               { key: 'cloth', label: 'С замены сукна, ч', num: true, sortValue: (r) => r.cloth_hours ?? -1, render: (r) => <ClothCell r={r} /> },
-            ]}
+            ].filter((col) => col.key !== 'cloth' || h.resources.some((r) => r.family !== 'court'))}
             rows={h.resources}
             rowKey={(r) => r.id}
           />
@@ -643,6 +650,8 @@ export function HallTab({ view, now, busy, ctx }) {
 
 /** Часы с замены сукна (текущий счётчик, не за период): «1 629» и «порог 1 500» словом, если достигнут. */
 function ClothCell({ r }) {
+  // Сукна у корта нет: обслуживание и износ — только у столов (№211)
+  if (r.family === 'court') return <span class="muted">нет сукна</span>;
   const c = clothView(r);
   if (!c) return <span class="muted">не отмечено</span>;
   return (

@@ -9,6 +9,7 @@ import { api, streamClub } from '../../lib/api.js';
 import { mergeHall } from '../../lib/hall.js';
 import { ELECTRICIAN_TEXT, canWebShare, kitLeadBody } from '../../lib/onboarding.js';
 import { signalWord } from '../../lib/devices.js';
+import { resourceName } from '@billiardum/shared/resource';
 
 const CONTROLLERS = ['контроллер', 'контроллера', 'контроллеров'];
 
@@ -74,7 +75,7 @@ export function DevicesStep({ ctx, reload }) {
               const state = !d.id ? 'none' : d.online ? 'on' : 'off';
               return (
                 <li key={t.resource.id} class={`dvs__item dvs__item--${state}`}>
-                  <span class="display dvs__num">Стол {t.resource.number}</span>
+                  <span class="display dvs__num">{resourceName(t.resource)}</span>
                   <span class={`badge ${state === 'on' ? 'badge--free' : state === 'off' ? 'badge--alert' : 'badge--off'}`}>
                     <Icon name={state === 'on' ? 'check' : state === 'off' ? 'alert' : 'minus'} />
                     {state === 'on' ? 'На связи' : state === 'off' ? 'Нет связи' : 'Не привязан'}

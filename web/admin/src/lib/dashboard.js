@@ -7,6 +7,7 @@
  */
 
 import { formatMoney, plural } from '@billiardum/shared/format';
+import { familyText } from '@billiardum/shared/resource';
 import { dayStartMinutes, isYmd, periodError, PRESETS, presetRange, WEEKDAY_SHORT, WEEKDAY_LONG } from './period.js';
 
 export const TABS = [
@@ -17,13 +18,43 @@ export const TABS = [
   { value: 'control', label: 'Контроль' },
 ];
 
+/** Типы столов в фильтре вида (значение в адресе экрана — коротко, на сервер — тип ресурса, KIND_QUERY). */
 export const KINDS = [
   { value: 'pyramid', label: 'Пирамида' },
   { value: 'pool', label: 'Пул' },
   { value: 'snooker', label: 'Снукер' },
   { value: 'mixed', label: 'Смешанный' },
 ];
-export const KIND_LABEL = Object.fromEntries(KINDS.map((k) => [k.value, k.label]));
+/** M5.8: семьи в фильтре вида — «Столы» (все столы) и «Корты» (падел-корты). */
+export const FAMILY_KINDS = [
+  { value: 'table', label: 'Столы' },
+  { value: 'court', label: 'Корты' },
+];
+/** Вид падел-корта в разрезах дашборда (by_type: type 'padel_court'). */
+export const COURT_TYPE = 'padel_court';
+export const KIND_LABEL = Object.freeze({ ...Object.fromEntries([...KINDS, ...FAMILY_KINDS].map((k) => [k.value, k.label])), [COURT_TYPE]: 'Падел-корт' });
+/**
+ * Фильтр kind сервера (server/dashboard: тип ресурса или семья table | court). До M5.8 экран слал 'pool' — сервер
+ * такой код не принимает (400), поэтому тип столов уходит полным типом ресурса.
+ */
+export const KIND_QUERY = Object.freeze({ pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker', mixed: 'billiard_mixed', table: 'table', court: 'court' });
+export const kindQuery = (kind) => KIND_QUERY[kind] ?? null;
+/** Семья фильтра: 'court' — только корты, иначе 'table' (столы, тип стола или весь клуб). */
+export const kindFamily = (kind) => (kind === 'court' ? 'court' : 'table');
+
+/**
+ * Варианты фильтра вида: «Все» (пусто), при кортах — «Столы» и «Корты», затем типы столов, если их больше одного
+ * (или выбран сейчас).
+ * @param {string[]} kinds виды в данных: 'pyramid' | 'pool' | … | 'padel_court'
+ * @param {string} current
+ * @returns {{ label: string, all: string, options: { value: string, label: string }[] }}
+ */
+export function kindOptions(kinds, current = '') {
+  const courts = kinds.includes(COURT_TYPE) || ['court', 'table'].includes(current);
+  const types = KINDS.filter((k) => kinds.includes(k.value) || k.value === current);
+  const options = [...(courts ? FAMILY_KINDS : []), ...(types.length > 1 || !courts ? types : types.filter((k) => k.value === current))];
+  return { label: courts ? 'Вид' : 'Тип стола', all: courts ? 'Все: столы и корты' : 'Все столы', options };
+}
 
 const GAMES = ['игра', 'игры', 'игр'];
 const TABLES = ['стол', 'стола', 'столов'];
@@ -201,7 +232,7 @@ export function share(part, total) {
  * @param {string[]} order
  * @param {{ compare: boolean }} opts
  */
-export function tileViews(tiles, order, { compare = true } = {}) {
+export function tileViews(tiles, order, { compare = true, family = 'table' } = {}) {
   const byId = new Map((Array.isArray(tiles) ? tiles : []).filter((t) => t && TILES[t.id]).map((t) => [t.id, t]));
   return order
     .filter((id) => byId.has(id))
@@ -211,8 +242,9 @@ export function tileViews(tiles, order, { compare = true } = {}) {
       const unit = def.unit;
       return {
         id,
-        label: def.label,
-        formula: def.formula,
+        // M5.8: фильтр «Корты» — те же плитки со словом «корт» («Выручка с корта в день»)
+        label: family === 'court' ? familyText(def.label, 'court') : def.label,
+        formula: family === 'court' ? familyText(def.formula, 'court') : def.formula,
         unit,
         value: num(t.value),
         text: formatValue(unit, t.value, def),
@@ -443,6 +475,7 @@ export function kindCards(byKind) {
     .map((k) => ({
       kind: k.kind,
       label: KIND_LABEL[k.kind] ?? 'Другие столы',
+      family: k.kind === COURT_TYPE ? 'court' : 'table',
       total: k.total,
       busy: Math.max(0, num(k.busy) ?? 0),
       booked: Math.max(0, num(k.booked) ?? 0),
@@ -451,6 +484,23 @@ export function kindCards(byKind) {
       revenue: num(k.revenue_today_kopecks ?? k.revenue),
       words: `занято ${num(k.busy) ?? 0} из ${k.total}`,
     }));
+}
+
+/**
+ * «Сейчас» у клуба со столами и кортами: итог отдельно по семьям — «Столы: занято 5 из 8», «Корты: занято 1 из 2».
+ * @returns {{ family: 'table' | 'court', label: string, total: number, busy: number, pct: number | null, words: string }[]}
+ */
+export function familyTotals(byKind) {
+  const cards = kindCards(byKind);
+  if (!cards.some((c) => c.family === 'court')) return [];
+  return ['table', 'court']
+    .map((family) => {
+      const list = cards.filter((c) => c.family === family);
+      const total = list.reduce((s, c) => s + c.total, 0);
+      const busy = list.reduce((s, c) => s + c.busy, 0);
+      return { family, label: family === 'court' ? 'Корты' : 'Столы', total, busy, pct: share(busy, total), words: `занято ${busy} из ${total}` };
+    })
+    .filter((f) => f.total > 0);
 }
 
 /** Итог по всем типам: «занято 7 / 32». */
@@ -560,7 +610,7 @@ export function isEmptyPeriod(data) {
  */
 export function dashboardQuery(s) {
   const q = { from: s.from, to: s.to, tab: s.tab };
-  if (s.kind) q.kind = s.kind;
+  if (kindQuery(s.kind)) q.kind = kindQuery(s.kind);
   q.compare = s.compare === false ? 0 : 1;
   return q;
 }
@@ -581,7 +631,7 @@ export function readFilters(search, today, tabs = TABS) {
     else preset = '7d';
   }
   if (preset !== 'custom') range = presetRange(preset, today);
-  const kind = KINDS.some((k) => k.value === q.get('kind')) ? q.get('kind') : '';
+  const kind = KIND_QUERY[q.get('kind')] ? q.get('kind') : '';
   return { tab, preset, ...range, kind, compare: q.get('cmp') !== '0', all: q.get('all') === '1' };
 }
 
@@ -706,7 +756,7 @@ export function dashboardView(res) {
         return o;
       }),
       byKind: byType.map((x) => ({ kind: kindOfType(x.type), tables: num(x.tables) ?? 0, games: num(x.games), play_minutes: num(x.play_minutes) ?? 0, revenue: num(x.revenue_kopecks), load: num(x.utilization_pct) })),
-      resources: arr(t.by_resource).map((r) => ({ id: r.resource_id, number: r.number, title: r.title ?? null, kind: kindOfType(r.type), club: r.club_name ?? null, games: num(r.games), play_minutes: num(r.play_minutes) ?? (num(r.play_hours) ?? 0) * 60, revenue: num(r.revenue_kopecks), load: num(r.utilization_pct), cloth_hours: num(r.cloth_hours), cloth_since: r.cloth_since ?? null, cloth_threshold_hours: num(r.cloth_threshold_hours), cloth_due: r.cloth_due === true })),
+      resources: arr(t.by_resource).map((r) => ({ id: r.resource_id, number: r.number, title: r.title ?? null, kind: kindOfType(r.type), family: r.family === 'court' || r.type === COURT_TYPE ? 'court' : 'table', club: r.club_name ?? null, games: num(r.games), play_minutes: num(r.play_minutes) ?? (num(r.play_hours) ?? 0) * 60, revenue: num(r.revenue_kopecks), load: num(r.utilization_pct), cloth_hours: num(r.cloth_hours), cloth_since: r.cloth_since ?? null, cloth_threshold_hours: num(r.cloth_threshold_hours), cloth_due: r.cloth_due === true })),
       // M5.6 (server/maintenance/README.md): прогноз 7 × 24 рядом с тепловой картой и подсказки по цене;
       // у «всех клубов» forecast: null, подсказки — с club_id и club_name
       forecast: s.forecast && typeof s.forecast === 'object' ? s.forecast : null,

@@ -6,6 +6,7 @@ import { api } from '../lib/api.js';
 import { parseClaimCode, parseDeviceId } from '../lib/devices.js';
 import { parseBld1 } from '../lib/onboarding.js';
 import { cameraErrorText, startScanner } from '../lib/qrscan.js';
+import { resourceName } from '@billiardum/shared/resource';
 
 /**
  * «Добавить контроллер» (№67, M5.1 №159): QR на корпусе BLD1:{device_id}:{claim_code} — камерой
@@ -69,7 +70,7 @@ export function DeviceBind({ clubId, tables, preset, timeZone, headingLevel = 2 
           <span>Отсканируйте QR-код на корпусе контроллера или перепишите номер и код с наклейки.</span>
         </li>
         <li>
-          <span>Выберите стол — откроется привязка на 30 минут.</span>
+          <span>{tables.some((t) => t.resource?.family === 'court') ? 'Выберите стол или корт — откроется привязка на 30 минут.' : 'Выберите стол — откроется привязка на 30 минут.'}</span>
         </li>
         <li>
           <span>Включите контроллер и введите Wi-Fi клуба на его странице — он подключится к серверу сам.</span>
@@ -81,8 +82,8 @@ export function DeviceBind({ clubId, tables, preset, timeZone, headingLevel = 2 
           <Icon name={joined ? 'check' : 'clock'} />
           <p class="note__title">
             {joined
-              ? `Контроллер на связи и привязан к столу ${bound.resource.number}.`
-              : `Привязка к столу ${bound?.resource.number ?? ''} открыта${opened.until ? ` до ${formatTime(opened.until, timeZone)}` : ''}. Включите контроллер — покажем, когда он выйдет на связь.`}
+              ? `Контроллер на связи и привязан к ${resourceName(bound.resource, undefined, { case: 'dat', capital: false })}.`
+              : `Привязка к ${bound ? resourceName(bound.resource, undefined, { case: 'dat', capital: false }) : 'столу'} открыта${opened.until ? ` до ${formatTime(opened.until, timeZone)}` : ''}. Включите контроллер — покажем, когда он выйдет на связь.`}
           </p>
         </div>
       ) : null}
@@ -165,12 +166,12 @@ export function DeviceBind({ clubId, tables, preset, timeZone, headingLevel = 2 
         {touched && mode === 'scan' && !found ? <p class="field__error">Сначала отсканируйте QR-код контроллера или введите номер вручную.</p> : null}
         <div class="field">
           <label class="field__label" for="dev-table">
-            Стол
+            {tables.some((t) => t.resource?.family === 'court') ? 'Стол или корт' : 'Стол'}
           </label>
           <select id="dev-table" class="field__input" value={resourceId} onChange={(e) => setResourceId(e.currentTarget.value)}>
             {tables.map((t) => (
               <option key={t.resource.id} value={t.resource.id}>
-                Стол {t.resource.number}
+                {resourceName(t.resource)}
                 {t.device?.id ? ' — заменить контроллер' : ''}
               </option>
             ))}
@@ -178,7 +179,7 @@ export function DeviceBind({ clubId, tables, preset, timeZone, headingLevel = 2 
         </div>
         <ErrorNote error={error} />
         <button type="submit" class="btn btn--primary" disabled={busy || !tables.length}>
-          {busy ? 'Открываем…' : target ? `Привязать к столу ${target.resource.number}` : 'Привязать к столу'}
+          {busy ? 'Открываем…' : target ? `Привязать к ${resourceName(target.resource, undefined, { case: 'dat', capital: false })}` : 'Привязать к столу'}
         </button>
       </form>
     </section>

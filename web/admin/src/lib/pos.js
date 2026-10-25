@@ -1,6 +1,7 @@
 import { plural } from '@billiardum/shared/format';
 import { cartTotals, orderItems } from '@billiardum/shared/bar';
-import { minutesShort } from './words.js';
+import { familyOf, resourceName } from '@billiardum/shared/resource';
+import { minutesShort, requestName } from './words.js';
 import { packageItems } from './packages.js';
 
 /**
@@ -144,20 +145,23 @@ export function kktState(s) {
   };
 }
 
-/** Заявка ресепшена в корзину: «Стол 4 · 2 ч». */
+/** Заявка ресепшена в корзину: «Стол 4 · 2 ч», «Корт 1 · 1 ч 30 мин» (M5.8: resource_family). */
 export function requestLine(r) {
-  return { key: `request:${r.id}`, kind: 'request', request_id: r.id, name: `Стол ${r.resource_number} · ${minutesShort(r.minutes)}`, sub: r.kind === 'extend' ? 'Продление игры' : 'Время стола', amount_kopecks: r.amount_kopecks };
+  const court = familyOf({ family: r.resource_family, type: r.resource_type }) === 'court';
+  return { key: `request:${r.id}`, kind: 'request', request_id: r.id, name: `${requestName(r)} · ${minutesShort(r.minutes)}`, sub: r.kind === 'extend' ? 'Продление игры' : court ? 'Время корта' : 'Время стола', amount_kopecks: r.amount_kopecks };
 }
 
-/** Счёт стола в корзину: «Счёт стола 3 · 2 заказа бара». Сервер: { session_id, resource: { number }, orders: N, total_kopecks }. */
+/** Название открытого счёта: «Стол 3», «Корт 1» (M5.8: resource.family). */
+export const tabName = (t, opts) => resourceName(t.resource ?? 'table', t.resource?.number ?? t.resource_number, opts);
+
+/** Счёт стола в корзину: «Счёт стола 3 · 2 заказа бара». Сервер: { session_id, resource: { number, type, family }, orders: N, total_kopecks }. */
 export function tabLine(t) {
   const n = typeof t.orders === 'number' ? t.orders : Array.isArray(t.orders) ? t.orders.length : (t.orders_count ?? 0);
-  const number = t.resource?.number ?? t.resource_number;
   return {
     key: `tab:${t.session_id}`,
     kind: 'tab',
     session_id: t.session_id,
-    name: `Счёт стола ${number}`,
+    name: `Счёт ${tabName(t, { case: 'gen', capital: false })}`,
     sub: n ? `${n} ${plural(n, ['заказ', 'заказа', 'заказов'])} бара` : 'Заказы бара',
     amount_kopecks: t.total_kopecks,
   };

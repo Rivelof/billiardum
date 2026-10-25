@@ -322,7 +322,7 @@ test('фильтры в адресе: чтение, запись, свой пе�
   // 367 дней или мусор — назад к 7 дням
   assert.equal(readFilters('?p=custom&from=2025-10-22&to=2026-10-24', today).preset, '7d');
   assert.equal(readFilters('?tab=hack&kind=darts', today).tab, 'summary');
-  assert.deepEqual(dashboardQuery({ ...f, tab: 'hall' }), { from: '2026-09-25', to: today, tab: 'hall', kind: 'pool', compare: 0 });
+  assert.deepEqual(dashboardQuery({ ...f, tab: 'hall' }), { from: '2026-09-25', to: today, tab: 'hall', kind: 'billiard_pool', compare: 0 }); // M5.8: сервер принимает тип ресурса или семью, не 'pool'
 });
 
 test('ссылка из «Контроля» в журнал: ручные действия, период, сотрудник', () => {

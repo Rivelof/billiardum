@@ -94,6 +94,8 @@ export function problemText(problem) {
   // Весь день (from = to): «В понедельник нет цены ни на один час»
   const whole = problem.from && problem.from === problem.to;
   const base = whole ? `${spanText(problem, problem.type === 'overlap' ? 'overlap' : 'gap').split(' с ')[0]} ${problem.type === 'overlap' ? 'весь день задано две цены' : 'нет цены ни на один час'}.` : spanText(problem, problem.type === 'overlap' ? 'overlap' : 'gap');
+  // M5.8: корты — свои правила слота (kind: 'padel_court')
+  if (problem.kind === 'padel_court') return `${base.slice(0, -1)} · корты.`;
   return TYPE_WORD[problem.kind] ? `${base.slice(0, -1)} · ${TYPE_WORD[problem.kind].toLowerCase()}.` : base;
 }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { Ill } from '../components/Ill.jsx';
 import { formatDate, formatMoney, formatTime } from '@billiardum/shared/format';
-import { addDays, durationsFor, localDate, normalizePhone } from '@billiardum/shared/booking';
+import { addDays, durationsFor, localDate, normalizePhone, slotDurations } from '@billiardum/shared/booking';
 import { Shell } from '../components/Shell.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { Dialog } from '../components/Dialog.jsx';
@@ -10,6 +10,7 @@ import { useNow } from '../components/hooks.js';
 import { api, streamClub } from '../lib/api.js';
 import { BOOKING_STAFF_WORD, SOURCE_LABEL, canArrive, lanes, place, startOptions, timelineWindow } from '../lib/bookings.js';
 import { minutesShort } from '../lib/words.js';
+import { familyOf, familyText, resourceName, slotLabel, slotMinutesOf, slotOptions, slotsText } from '@billiardum/shared/resource';
 
 const MIN = 60_000;
 const BUSY_WORD = { session: 'Игра', service: 'Сервис', pending: 'Оплата', closed: 'Закрыто' };
@@ -132,7 +133,7 @@ export function Bookings({ ctx }) {
               {rows.map((row) => (
                 <div class="tl__row" key={row.resource.id}>
                   <div class="tl__table">
-                    <span class="tl__num">Стол {row.resource.number}</span>
+                    <span class="tl__num">{resourceName(row.resource)}</span>
                   </div>
                   <div class="tl__lane">
                     {row.busy.map((x, i) => {
@@ -154,7 +155,7 @@ export function Bookings({ ctx }) {
                           onClick={() => setOpen(b)}
                         >
                           {/* Имя кнопки — из содержимого: видимое время и гость плюс скрытые стол и статус (axe label-content-name-mismatch, WCAG 2.5.3) */}
-                          <span class="visually-hidden">Стол {row.resource.number}, </span>
+                          <span class="visually-hidden">{resourceName(row.resource)}, </span>
                           <span class="tl__bk-time mono">
                             {fmtT(b.starts_at)}–{fmtT(b.ends_at)}
                           </span>
@@ -185,7 +186,7 @@ export function Bookings({ ctx }) {
                       <span class="bkrow__time mono">
                         {fmtT(b.starts_at)}–{fmtT(b.ends_at)}
                       </span>
-                      <span class="bkrow__table">Стол {b.resource?.number}</span>
+                      <span class="bkrow__table">{resourceName(b.resource ?? 'table', b.resource?.number)}</span>
                       <span class="bkrow__who">
                         {b.guest?.name ?? 'Гость приложения'}
                         {b.guest?.phone_masked ? <span class="bkrow__phone mono">{b.guest.phone_masked}</span> : null}
@@ -243,7 +244,7 @@ function BookingDialog({ booking: b, role, timeZone, onClose, onChanged }) {
   };
 
   return (
-    <Dialog open onClose={onClose} title={`Стол ${b.resource?.number}, ${fmtT(b.starts_at)}–${fmtT(b.ends_at)}`} labelledBy="bk-dlg">
+    <Dialog open onClose={onClose} title={`${resourceName(b.resource ?? 'table', b.resource?.number)}, ${fmtT(b.starts_at)}–${fmtT(b.ends_at)}`} labelledBy="bk-dlg">
       <div class="form">
         <dl class="receipt">
           <div class="receipt__row">
@@ -363,7 +364,14 @@ function PhoneBookingDialog({ open, day, clubId, timeZone, onClose, onDone }) {
   if (!open || !day) return <Dialog open={false} onClose={onClose} title="" />;
   const starts = startOptions(day);
   const at = start ? Number(start) : null;
-  const allowed = at && resourceId ? durationsFor(day, resourceId, at, DURATIONS) : [];
+  // M5.8 (№204): корт бронируется слотами — 1, 2, 3… слота до предела брони клуба; без тарифа корта слота нет
+  const res = day.resources.find((r) => r.id === resourceId) ?? null;
+  const court = familyOf(res) === 'court';
+  const slot = court ? slotMinutesOf(res) : null;
+  const lengths = court ? (slot ? slotOptions(slot, Math.max(1, Math.floor((day.max_minutes ?? 240) / slot))) : []) : DURATIONS;
+  const durationsAt = (t) => (court ? slotDurations(day, res, t) : durationsFor(day, resourceId, t, DURATIONS));
+  const lengthLabel = (m) => (court && slot ? `${slotsText(m / slot)} · ${slotLabel(m)}` : minutesShort(m));
+  const allowed = at && resourceId ? durationsAt(at) : [];
   const phoneOk = normalizePhone(phone);
   const valid = resourceId && at && allowed.includes(minutes) && name.trim() && phoneOk;
 
@@ -389,13 +397,25 @@ function PhoneBookingDialog({ open, day, clubId, timeZone, onClose, onDone }) {
         <div class="pbook__grid">
           <div class="field">
             <label class="field__label" for="pb-table">
-              Стол
+              {day.resources.some((r) => familyOf(r) === 'court') ? 'Стол или корт' : 'Стол'}
             </label>
-            <select id="pb-table" class="field__input" value={resourceId} onChange={(e) => setResourceId(e.currentTarget.value)}>
+            <select
+              id="pb-table"
+              class="field__input"
+              value={resourceId}
+              onChange={(e) => {
+                const next = day.resources.find((r) => r.id === e.currentTarget.value);
+                setResourceId(e.currentTarget.value);
+                // Корт — длительность слотами: при смене стола на корт и обратно берём первую подходящую длину
+                const s = familyOf(next) === 'court' ? slotMinutesOf(next) : null;
+                if (s) setMinutes(s);
+                else if (familyOf(next) !== 'court' && !DURATIONS.includes(minutes)) setMinutes(120);
+              }}
+            >
               {day.resources.map((r) => (
                 <option key={r.id} value={r.id}>
-                  Стол {r.number}
-                  {r.title ? ` — ${r.title}` : ''}
+                  {resourceName(r)}
+                  {r.title && !/^(стол|корт)\s*\d+$/i.test(r.title.trim()) ? ` — ${r.title}` : ''}
                 </option>
               ))}
             </select>
@@ -407,7 +427,7 @@ function PhoneBookingDialog({ open, day, clubId, timeZone, onClose, onDone }) {
             <select id="pb-start" class="field__input" value={start} aria-invalid={tried && !at ? 'true' : undefined} onChange={(e) => setStart(e.currentTarget.value)}>
               <option value="">Выберите время</option>
               {starts.map((t) => {
-                const free = durationsFor(day, resourceId, t, DURATIONS).length > 0;
+                const free = durationsAt(t).length > 0;
                 return (
                   <option key={t} value={String(t)} disabled={!free}>
                     {formatTime(t, timeZone)}
@@ -422,14 +442,15 @@ function PhoneBookingDialog({ open, day, clubId, timeZone, onClose, onDone }) {
         <fieldset>
           <legend class="field__label">Сколько</legend>
           <div class="pills">
-            {DURATIONS.map((m) => (
+            {lengths.map((m) => (
               <label class="pill" key={m}>
                 <input type="radio" name="pb-len" checked={minutes === m} disabled={at !== null && !allowed.includes(m)} onChange={() => setMinutes(m)} />
-                <span>{minutesShort(m)}</span>
+                <span>{lengthLabel(m)}</span>
               </label>
             ))}
           </div>
-          {at && !allowed.includes(minutes) ? <p class="field__error">С {formatTime(at, timeZone)} стол свободен меньше — выберите длительность короче или другой стол.</p> : null}
+          {court && !slot ? <p class="field__error">У корта нет цены слота: задайте цены кортов в мастере тарифов, тогда корт можно будет забронировать.</p> : null}
+          {at && lengths.length && !allowed.includes(minutes) ? <p class="field__error">{familyText(`С ${formatTime(at, timeZone)} стол свободен меньше — выберите длительность короче или другой стол.`, res)}</p> : null}
         </fieldset>
         <div class="pbook__grid">
           <div class="field">

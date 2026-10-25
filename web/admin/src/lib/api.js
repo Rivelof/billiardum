@@ -81,6 +81,8 @@ export const api = {
   serviceStart: (resourceId, body) => client.post(`/resources/${e(resourceId)}/service`, body),
   serviceStop: (resourceId) => client.post(`/resources/${e(resourceId)}/service/stop`),
   extendFree: (sessionId, body) => client.post(`/sessions/${e(sessionId)}/extend-free`, body),
+  /** Игра целиком (персонал клуба тоже видит): участники, resource.max_players, slot_minutes корта (M5.8). */
+  session: (sessionId) => client.get(`/sessions/${e(sessionId)}`),
 
   /** Контроллеры: окно привязки 30 минут по коду с наклейки (№67), «Подсветить стол». */
   bindDevice: (club, body) => client.post(`/clubs/${e(club)}/devices/bind`, body),

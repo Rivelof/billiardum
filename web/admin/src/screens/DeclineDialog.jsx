@@ -4,6 +4,8 @@ import { Dialog } from '../components/Dialog.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { requestTitle } from '../lib/words.js';
+import { familyText } from '@billiardum/shared/resource';
+import { requestFamily } from '../lib/court.js';
 
 /** «Отклонить» заявку с причиной: гость увидит отказ, стол освободится. */
 export function DeclineDialog({ request, onClose, onDone }) {
@@ -49,7 +51,7 @@ export function DeclineDialog({ request, onClose, onDone }) {
               ))}
             </div>
           </fieldset>
-          <p class="hint">Гость увидит, что заявка отклонена, а стол снова станет свободным.</p>
+          <p class="hint">{familyText('Гость увидит, что заявка отклонена, а стол снова станет свободным.', requestFamily(request))}</p>
           <ErrorNote error={error} />
           <div class="dialog__actions">
             <button type="submit" class="btn btn--danger btn--block btn--lg" disabled={busy}>

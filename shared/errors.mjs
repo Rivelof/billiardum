@@ -232,7 +232,12 @@ const TEXTS = {
   network_manager_duplicate: ['Этот номер уже у управляющего сети или это ваш номер.', 'Проверьте номер. Повторное приглашение на тот же номер продлевает прежнее.'],
   network_menu_duplicate: ['Товар шаблона совпал с другим товаром в меню клуба.', 'Проверьте артикулы и названия в шаблоне и в меню этого клуба.'],
   network_template: ['Товар задан шаблоном меню сети.', 'Поля шаблона меняет владелец сети в разделе «Сеть»; стоп-лист и склад клуб ведёт сам.'],
+  // M5.8 (№213): клиентское уточнение 400 bad_request при смене вида — стол не становится кортом и наоборот
+  family_change: ['Стол не может стать кортом, а корт — столом.', 'У столов и кортов своя нумерация, тариф и оборудование. Выведите ресурс из работы и добавьте новый нужного вида.'],
 };
+
+/** tariff_gap { kind: 'padel_court' }: в клубе есть корты, а правил корта на эти часы нет (№213). */
+const COURT_GAP_ACTION = 'Задайте цены кортов за слот в мастере тарифов: у кортов свои правила, цены столов к ним не относятся.';
 
 /** День недели (1 — понедельник) с предлогом: «в среду», «во вторник». */
 const ON_WEEKDAY = ['', 'в понедельник', 'во вторник', 'в среду', 'в четверг', 'в пятницу', 'в субботу', 'в воскресенье'];
@@ -281,7 +286,11 @@ export function errorMessage(err, ctx = {}) {
     const day = ON_WEEKDAY[d.weekday];
     title = `${day[0].toUpperCase()}${day.slice(1)}${span} ${code === 'tariff_gap' ? 'нет цены' : 'задано две цены'}.`;
     // M5.5: шаблон тарифов сети проверяется по неделе каждого клуба — { club_id, … }; имя клуба подставляет экран
+    // M5.8 (№213): у кортов свои правила тарифа — { kind: 'padel_court' }: цена столов к кортам не относится
+    const court = d.kind === 'padel_court' || d.resource_type === 'padel_court';
+    if (court) title = `Корты: ${title[0].toLowerCase()}${title.slice(1)}`;
     if (typeof ctx.clubName === 'string' && ctx.clubName.trim()) title = `«${ctx.clubName.trim()}»: ${title[0].toLowerCase()}${title.slice(1)}`;
+    if (court && code === 'tariff_gap') return { code, title, action: COURT_GAP_ACTION, text: `${title} ${COURT_GAP_ACTION}` };
   }
   if (code === 'booking_conflict' && ctx.limitUntil) title = `Стол забронирован — можно продлить до ${ctx.limitUntil}.`;
   // Продление турнира (№147): 409 limit_exceeded { extend_limit_until } — предел в формате времени клуба

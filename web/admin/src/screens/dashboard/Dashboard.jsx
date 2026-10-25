@@ -8,7 +8,7 @@ import { BASE } from '../../lib/env.js';
 import { navigate } from '../../lib/router.js';
 import { csvName, fileNameFrom, saveFile } from '../../lib/export.js';
 import { comparePeriod, periodError, periodWords, PRESETS, presetRange, workDate, DEFAULT_DAY_START, addDays, MAX_DAYS } from '../../lib/period.js';
-import { allClubsScope, dashboardQuery, dashboardView, KINDS, KIND_LABEL, nowView, readFilters, TABS, writeFilters } from '../../lib/dashboard.js';
+import { allClubsScope, dashboardQuery, dashboardView, KINDS, KIND_LABEL, kindOptions, kindQuery, nowView, readFilters, TABS, writeFilters } from '../../lib/dashboard.js';
 import { SummaryTab, MoneyTab, HallTab, GuestsTab, ControlTab } from './tabs.jsx';
 import { NetworkTab } from './NetworkTab.jsx';
 import { isNetworkManager, moneyHiddenForAll } from '../../lib/networkBase.js';
@@ -104,7 +104,7 @@ export function Dashboard({ ctx }) {
     setExporting(table);
     setExportError(null);
     try {
-      const query = { from: f.from, to: f.to, table, ...(f.kind ? { kind: f.kind } : {}) };
+      const query = { from: f.from, to: f.to, table, ...(kindQuery(f.kind) ? { kind: kindQuery(f.kind) } : {}) };
       const res = await api.dashboardExport(scope, query);
       const blob = await res.blob();
       saveFile(fileNameFrom(res, csvName('dashboard', table, f.from, f.to)), blob);
@@ -190,6 +190,8 @@ export function Dashboard({ ctx }) {
 }
 
 function Filters({ f, update, today, clubs, club, canAll, scope, kinds, networkTab = false }) {
+  // M5.8: вид — «Все / Столы / Корты» и типы столов (server/dashboard: kind — тип ресурса или семья)
+  const ko = kindOptions(kinds, f.kind);
   const [from, setFrom] = useState(f.from);
   const [to, setTo] = useState(f.to);
   const [custom, setCustom] = useState(f.preset === 'custom');
@@ -245,10 +247,10 @@ function Filters({ f, update, today, clubs, club, canAll, scope, kinds, networkT
         ) : null}
 {networkTab ? null : (
         <label class="dfield">
-          <span class="dfield__label">Тип стола</span>
+          <span class="dfield__label">{ko.label}</span>
           <select class="field__input" value={f.kind} onChange={(e) => update({ kind: e.currentTarget.value })}>
-            <option value="">Все столы</option>
-            {KINDS.filter((k) => kinds.includes(k.value) || k.value === f.kind).map((k) => (
+            <option value="">{ko.all}</option>
+            {ko.options.map((k) => (
               <option key={k.value} value={k.value}>
                 {k.label}
               </option>

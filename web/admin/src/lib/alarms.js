@@ -1,6 +1,7 @@
 /** Тревоги владельцу (PRODUCT §8, контракт §6–§7) словами. Неизвестный тип — общий текст, код — мелко. */
 
 import { formatMoney, formatTime, plural } from '@billiardum/shared/format';
+import { familyOf, familyText, resourceName } from '@billiardum/shared/resource';
 import { lateRefundLabel } from '@billiardum/shared/reasons';
 import { BASE } from './env.js';
 
@@ -165,7 +166,9 @@ export function alarmView(alarm, { timeZone, now = Date.now() } = {}) {
   const level = LEVEL_WORD[alarm.level] ? alarm.level : 'important';
   const number = alarm.resource_number ?? alarm.data?.resource_number;
   const repeats = Number.isInteger(alarm.count) && alarm.count > 1 ? alarm.count : 0;
-  return { title, text, level, levelWord: LEVEL_WORD[level], table: number ? `Стол ${number}` : null, repeats };
+  // M5.8: вид ресурса тревоги (resource_type) — «Корт 1»; слово «стол» в тексте — «корт» (те же тексты, №203)
+  const family = familyOf({ type: alarm.resource_type ?? alarm.data?.resource_type, family: alarm.resource_family });
+  return { title: familyText(title, family), text: familyText(text, family), level, levelWord: LEVEL_WORD[level], table: number ? resourceName(family, number) : null, repeats };
 }
 
 /** Сначала критичные, затем новые. */
