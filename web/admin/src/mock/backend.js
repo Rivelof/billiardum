@@ -15,7 +15,7 @@
  * товара шаблона занято в меню клуба (409 duplicate { field, value })
  * M5.8 (падел-корт): court — ресепшн в клубе с 8 столами и 2 кортами (корт 1 в игре, 3 игрока из 4; заявка на корт 2),
  * court-owner — владелец (зал, тарифы со слотом, дашборд «Столы / Корты», отчёт смены по видам), court-manager —
- * управляющий (продление без оплаты слотами), court-owner-gap — владелец, у кортов нет цены (tariff_gap padel_court)
+ * управляющий (продление без оплаты слотами), court-owner-small — владелец, зал 16 × 10 м и корты не по центру (Н3), court-owner-gap — владелец, у кортов нет цены (tariff_gap padel_court)
  */
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
@@ -83,7 +83,7 @@ function freshState(scenario, t) {
   });
   const empty = scenario === 'empty' || scenario === 'dashboard-empty';
   const court = (n, status, extra = {}) => ({
-    resource: { id: COURT_IDS[n - 1], number: n, type: 'padel_court', family: 'court', title: `Корт ${n}`, code: COURT_CODES[n - 1], plan_x: 650 + (n - 1) * 1150, plan_y: 2600, plan_rotation: 0 },
+    resource: { id: COURT_IDS[n - 1], number: n, type: 'padel_court', family: 'court', title: `Корт ${n}`, code: COURT_CODES[n - 1], ...(scenario === 'court-owner-small' ? { plan_x: 300, plan_y: 700 + (n - 1) * 100 } : { plan_x: 650 + (n - 1) * 1150, plan_y: 2600 }), plan_rotation: 0 },
     status,
     session: null,
     until: null,

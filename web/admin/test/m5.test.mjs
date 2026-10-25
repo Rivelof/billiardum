@@ -175,8 +175,8 @@ test('план зала: габарит с поворотом, стены, ша�
   assert.deepEqual(footprint('pool', 0), { w: 157, h: 284 });
   const hall = { width: 1000, height: 800 };
   assert.deepEqual(clampCenter(0, 0, 'pyramid', 0, hall), { x: 106, y: 195 });
-  assert.deepEqual(clampCenter(5000, 5000, 'pyramid', 90, hall), { x: 806, y: 694 });
-  assert.deepEqual(clampCenter(10, 10, 'pyramid', 0, { width: 150, height: 300 }), { x: 75, y: 150 }, 'зал меньше стола — по центру');
+  assert.deepEqual(clampCenter(5000, 5000, 'pyramid', 90, hall), { x: 805, y: 694 });
+  assert.deepEqual(clampCenter(10, 10, 'pyramid', 0, { width: 150, height: 300 }), { x: 75, y: 138 }, 'зал меньше стола — стол уменьшен до стен: по ширине по центру, по высоте внутри поля');
   const t = { id: 'a', number: 1, kind: 'pyramid', plan_x: 500, plan_y: 400, plan_rotation: 0 };
   assert.deepEqual(moveTable(t, 13, -4, hall), { ...t, plan_x: 510, plan_y: 400 });
   const r = rotateTable({ ...t, plan_x: 120 }, 90, hall);

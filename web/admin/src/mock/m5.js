@@ -61,7 +61,7 @@ export function m5State(scenario, t) {
     clubs: [],
     devMode: testDev ? 'test' : 'live',
     // M5.8: в ?mock=court… зал больше — под столами два корта 10,6 × 20,6 м; court-owner-gap — у кортов нет цены
-    hallSize: fresh ? null : courts ? { width: 2400, height: 3700 } : { width: 1800, height: 1400 },
+    hallSize: fresh ? null : scenario === 'court-owner-small' ? { width: 1600, height: 1000 } : courts ? { width: 2400, height: 3700 } : { width: 1800, height: 1400 },
     tariffs: fresh ? [] : devRules(courts && scenario !== 'court-owner-gap'),
     shops: {
       test: fresh ? null : { shop_id: '506751', secret_mask: { last4: '9f2c', length: 48 }, verified_at: iso(t - 3 * 24 * 60 * MIN), test: true, fiscalization: true },

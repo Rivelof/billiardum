@@ -54,6 +54,8 @@ const fmtM = (cm) => String(Math.round(cm / 10) / 10).replace('.', ',');
 /** Слово ресурса плана: «Стол 4», «Корт 1»; case — падеж, capital: false — со строчной. */
 const nameOf = (t, opts) => resourceName(t.family ?? familyOfKind(t.kind), t.number, opts);
 
+const pos = (p) => ({ plan_x: p.x, plan_y: p.y });
+
 /** «8 столов и 2 корта в работе». */
 function hallCount(tables) {
   const courts = tables.filter((t) => t.family === 'court').length;
@@ -100,7 +102,9 @@ export function HallStep({ ctx, ob, reload, live }) {
       if (size) setHall(size);
       const list = planTables(res?.resources, statuses);
       server.current = new Map(list.map((t) => [t.id, t]));
-      setTables(placeUnset(list, size ?? hallRef.current));
+      const h = size ?? hallRef.current;
+      // Сохранённый вне поля (зал уменьшили, координаты от руки) рисуем внутри стен; на сервер уйдёт при первом сдвиге
+      setTables(placeUnset(list, h).map((t) => ({ ...t, ...pos(clampCenter(t.plan_x, t.plan_y, t.kind, t.plan_rotation, h)) })));
       setError(null);
     } catch (err) {
       setError(err);

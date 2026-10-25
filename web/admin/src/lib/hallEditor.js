@@ -65,11 +65,24 @@ export function footprint(kind, rotation = 0) {
 
 const snap = (v, step = SNAP_CM) => Math.round(v / step) * step;
 
-/** Центр стола внутри зала: стол целиком в стенах; зал меньше стола — по середине. */
-export function clampCenter(x, y, kind, rotation, hall) {
+/**
+ * Габарит ресурса на плане с учётом уменьшения fitScale (корт больше зала рисуется уменьшенным): ровно то, что видно
+ * на плане. Вверх до целого сантиметра — чтобы нарисованное не выступало за стену.
+ */
+export function drawnFootprint(kind, rotation, hall) {
   const f = footprint(kind, rotation);
-  const fit = (v, size, total) => (size >= total ? Math.round(total / 2) : Math.min(total - size / 2, Math.max(size / 2, v)));
-  return { x: Math.round(fit(x, f.w, hall.width)), y: Math.round(fit(y, f.h, hall.height)) };
+  const k = fitScale(kind, rotation, hall);
+  return k < 1 ? { w: Math.ceil(f.w * k), h: Math.ceil(f.h * k) } : f;
+}
+
+/**
+ * Центр ресурса внутри зала: объект целиком в стенах (с поворотом и с уменьшением, если не влезает — корт 10,6 × 20,6 м
+ * в зале 16 × 10 м). По оси, где объект занимает весь зал, — середина.
+ */
+export function clampCenter(x, y, kind, rotation, hall) {
+  const f = drawnFootprint(kind, rotation, hall);
+  const fit = (v, size, total) => (size >= total ? Math.round(total / 2) : Math.min(Math.floor(total - size / 2), Math.max(Math.ceil(size / 2), Math.round(v)))); // целые см внутрь стен
+  return { x: fit(x, f.w, hall.width), y: fit(y, f.h, hall.height) };
 }
 
 /** Сдвиг стола (клавиши-стрелки, перетаскивание): шаг 10 см и стены зала. */

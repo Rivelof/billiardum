@@ -19,7 +19,7 @@ import {
   weekCoverage,
   weekSummary,
 } from '../src/lib/tariffs.js';
-import { familyChange, fitRotation, fitScale, fitsHall, oversizeHint, footprint, kindOf, kindsOfFamily, nextNumber, numberError, planTables, retireBusyText, tableAria } from '../src/lib/hallEditor.js';
+import { clampCenter, drawnFootprint, moveTable, rotateTable, familyChange, fitRotation, fitScale, fitsHall, oversizeHint, footprint, kindOf, kindsOfFamily, nextNumber, numberError, planTables, retireBusyText, tableAria } from '../src/lib/hallEditor.js';
 import { courtFreeOptions, courtPlayers, needsSessionDetail, requestFamily, requestHallItem, requestLength, requestLine, requestSlot, sessionSlot } from '../src/lib/court.js';
 import { dashboardQuery, familyTotals, kindCards, kindFamily, kindOptions, readFilters, tileViews } from '../src/lib/dashboard.js';
 import { familyLine } from '../src/lib/shift.js';
@@ -403,4 +403,31 @@ test('план зала: корт больше зала уменьшается �
     oversizeHint([{ kind: 'padel_court', number: 2, plan_rotation: 0 }], hall),
     'Корт 2 не помещается в зал 18 м на 14 м, поэтому на плане уменьшен. Увеличьте зал: нужно не меньше 10,6 м на 20,6 м.',
   );
+});
+
+test('план зала (Н3): корт, сохранённый не по центру зала меньше корта, лежит в поле целиком', () => {
+  const hall = { width: 1600, height: 1000 };
+  const inside = (kind, rot, p) => {
+    const f = drawnFootprint(kind, rot, hall);
+    return p.x - f.w / 2 >= 0 && p.x + f.w / 2 <= hall.width && p.y - f.h / 2 >= 0 && p.y + f.h / 2 <= hall.height;
+  };
+  // корт 10,6 × 20,6 м в зале 16 × 10 м: уменьшен по высоте (1000 / 2060), центр по высоте — середина
+  const p = clampCenter(300, 700, 'padel_court', 0, hall);
+  assert.ok(inside('padel_court', 0, p), JSON.stringify(p));
+  assert.equal(p.y, 500, 'по высоте корт занимает весь зал — центр посередине, а не 700');
+  assert.equal(p.x, 300, 'по ширине корт (5,15 м) внутри стен — центр не трогаем');
+  // для любых точек и поворотов
+  for (const rot of [0, 90, 180, 270]) {
+    for (const [x, y] of [[0, 0], [300, 700], [1600, 1000], [5000, -5], [800, 500]]) {
+      assert.ok(inside('padel_court', rot, clampCenter(x, y, 'padel_court', rot, hall)), `rot ${rot} (${x}, ${y})`);
+    }
+  }
+  // сдвиг и поворот возвращают корт в стены
+  const court = { id: 'c', number: 1, kind: 'padel_court', plan_x: 300, plan_y: 700, plan_rotation: 0 };
+  const moved = moveTable(court, 0, 0, hall);
+  assert.ok(inside('padel_court', 0, { x: moved.plan_x, y: moved.plan_y }));
+  const turned = rotateTable(court, 90, hall);
+  assert.ok(inside('padel_court', 90, { x: turned.plan_x, y: turned.plan_y }));
+  // помещающийся ресурс не меняется
+  assert.deepEqual(clampCenter(500, 400, 'pyramid', 0, hall), { x: 500, y: 400 });
 });
