@@ -117,3 +117,35 @@ describe('п. 10: resource_type у ручных действий в отчёте
     assert.deepEqual([item.resource_id, item.resource_number, item.resource_type], [COURT_1, 1, 'padel_court']);
   });
 });
+
+describe('Н2 перепроверки M5.8: сводка по видам = таблица «Столы»', { skip: SKIP }, () => {
+  it('клуб без игр (3 стола и корт): by_type и by_resource за вчера, сегодня и завтра совпадают, с нулями', async () => {
+    const CLUB_N = 'c5800000-0000-4000-8000-000000000001';
+    const old = zonedTime(addDays(TODAY, -10), '12:00', TZ);
+    await t.admin.query("insert into bl.clubs (id, name, city, timezone, created_at) values ($1, 'Клуб без игр', 'Пермь', $2, $3)", [CLUB_N, TZ, old]);
+    await t.admin.query("insert into bl.club_members (club_id, user_id, role) values ($1, $2, 'owner')", [CLUB_N, OWNER]);
+    await t.admin.query(
+      `insert into bl.resources (id, club_id, type, number, title, created_at) values
+         (gen_random_uuid(), $1, 'billiard_pyramid', 1, 'Стол 1', $2), (gen_random_uuid(), $1, 'billiard_pyramid', 2, 'Стол 2', $2),
+         (gen_random_uuid(), $1, 'billiard_pool', 3, 'Стол 3', $2), (gen_random_uuid(), $1, 'padel_court', 1, 'Корт 1', $2)`,
+      [CLUB_N, old],
+    );
+    for (const day of [addDays(TODAY, -1), TODAY, addDays(TODAY, 1)]) {
+      cache.clear();
+      const r = await t.request('GET', `/api/clubs/${CLUB_N}/dashboard?from=${day}&to=${day}&tab=hall&compare=0`, { token: owner, club: CLUB_N });
+      assert.equal(r.status, 200, r.text);
+      const types = Object.fromEntries(r.json.tables.by_type.map((x) => [x.type, x.resources]));
+      assert.deepEqual(types, { billiard_pyramid: 2, billiard_pool: 1, padel_court: 1 }, day);
+      const rows = {};
+      for (const x of r.json.tables.by_resource) rows[x.type] = (rows[x.type] ?? 0) + 1;
+      assert.deepEqual(types, rows, `${day}: число ресурсов вида = число строк таблицы`);
+      assert.ok(r.json.tables.by_type.every((x) => x.tables === x.resources));
+    }
+    // С фильтром kind сводка по видам остаётся полной, таблица сужается.
+    cache.clear();
+    const only = await t.request('GET', `/api/clubs/${CLUB_N}/dashboard?from=${TODAY}&to=${TODAY}&tab=hall&compare=0&kind=court`, { token: owner, club: CLUB_N });
+    assert.deepEqual(only.json.tables.by_resource.map((x) => x.type), ['padel_court']);
+    assert.equal(only.json.tables.by_type.find((x) => x.type === 'billiard_pyramid').resources, 2);
+  });
+});
+

@@ -630,9 +630,15 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
         return [t, x ? pct(x.play, x.cap) : null];
       })),
     }));
-    out.tables.by_type = TYPES.filter((t) => cur.agg.types.has(t)).map((t) => {
-      const x = cur.agg.types.get(t);
-      return { type: t, family: familyOf(t), resources: x.resources.size, tables: x.resources.size, games: x.games, play_minutes: x.play_minutes, capacity_minutes: x.capacity_minutes, service_minutes: x.service_minutes, utilization_pct: pct(x.play_minutes, x.capacity_minutes), revenue_kopecks: x.revenue_kopecks - x.refunds_kopecks };
+    // Сводка по видам и таблица «Столы» — один источник (tableRows): число ресурсов вида = число строк by_resource этого
+    // вида, с нулями — даже в клубе без игр за период и в сутки до открытия (Н2 перепроверки M5.8).
+    const rowsOfType = new Map();
+    // Сводка по видам — по всем видам клуба (фильтр kind сужает только таблицу «Столы»).
+    for (const r of kind ? await tableRows(db, { clubs, enter, agg: cur.agg, kind: null }) : resourceRows) rowsOfType.set(r.type, (rowsOfType.get(r.type) ?? 0) + 1);
+    out.tables.by_type = TYPES.filter((t) => cur.agg.types.has(t) || rowsOfType.has(t)).map((t) => {
+      const x = cur.agg.types.get(t) ?? { games: 0, play_minutes: 0, capacity_minutes: 0, service_minutes: 0, revenue_kopecks: 0, refunds_kopecks: 0 };
+      const n = rowsOfType.get(t) ?? 0;
+      return { type: t, family: familyOf(t), resources: n, tables: n, games: x.games, play_minutes: x.play_minutes, capacity_minutes: x.capacity_minutes, service_minutes: x.service_minutes, utilization_pct: pct(x.play_minutes, x.capacity_minutes), revenue_kopecks: x.revenue_kopecks - x.refunds_kopecks };
     });
     out.tables.by_resource = resourceRows
       .map((r) => ({
