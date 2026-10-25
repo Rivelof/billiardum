@@ -371,6 +371,42 @@ export const api = {
   /** Администратор: { price_per_table_kopecks?, title?, active?, reason? } → план; новая цена — со следующих счетов клубов без персональной цены. */
   updatePlan: (id, body) => client.request('PUT', `/platform/plans/${e(id)}`, { body }),
 
+  // ---------- M5.5: сети клубов (server/networks/README.md, №190–194). Сеть — только личный вход, у PIN — 403 ----------
+  /** { items: [{ network_id, name, role: 'owner'|'manager', clubs, tariffs_mode, menu_mode }] } */
+  networks: () => client.get('/networks'),
+  /** { name } → 201 сеть; 409 networks_limit. */
+  createNetwork: (name) => client.post('/networks', { name }),
+  /** Сеть: { id, name, role, tariffs_mode, menu_mode, tariffs, menu, clubs: [...], plan } — 404, если нет доступа. */
+  network: (id) => client.get(`/networks/${e(id)}`),
+  /** { name?, tariffs_mode?, menu_mode?, reason? } → сеть (владелец; «жёсткий» в боевых клубах — с причиной). */
+  updateNetwork: (id, body) => client.request('PATCH', `/networks/${e(id)}`, { body }),
+  /** Архив сети: { ok, clubs_removed }. */
+  deleteNetwork: (id) => client.request('DELETE', `/networks/${e(id)}`),
+  /** { club_id } → 201 сеть; 403 не свой клуб; 409 club_in_network | networks_limit. */
+  addNetworkClub: (id, clubId) => client.post(`/networks/${e(id)}/clubs`, { club_id: clubId }),
+  removeNetworkClub: (id, clubId) => client.request('DELETE', `/networks/${e(id)}/clubs/${e(clubId)}`),
+  /** Владелец: { items: [{ id, status: 'invited'|'active', user_id, name, phone_masked, created_at, expires_at, accepted_at }] } */
+  networkManagers: (id) => client.get(`/networks/${e(id)}/managers`),
+  /** { phone } (E.164) → 201 { id, status, phone_masked, expires_at, invite_url, invite_text }; 409 duplicate. */
+  inviteNetworkManager: (id, phone) => client.post(`/networks/${e(id)}/managers`, { phone }),
+  revokeNetworkManager: (id, memberId) => client.request('DELETE', `/networks/${e(id)}/managers/${e(memberId)}`),
+  /** Шаблон тарифов: { network_id, role, mode, template, version, rules, clubs: [{ …, live, override, problem }] } */
+  networkTariffs: (id) => client.get(`/networks/${e(id)}/tariffs`),
+  /** { rules, reason? } → шаблон; 400 tariff_gap | tariff_overlap { club_id, … }, reason_required. */
+  saveNetworkTariffs: (id, body) => client.request('PUT', `/networks/${e(id)}/tariffs`, { body }),
+  deleteNetworkTariffs: (id) => client.request('DELETE', `/networks/${e(id)}/tariffs`),
+  /** Шаблон меню: { network_id, role, mode, template, version, products, clubs: [{ club_id, name, mode, applied_version, overrides }] } */
+  networkMenu: (id) => client.get(`/networks/${e(id)}/menu`),
+  /** { products, reason? } — шаблон целиком (до 300 товаров). */
+  saveNetworkMenu: (id, body) => client.request('PUT', `/networks/${e(id)}/menu`, { body }),
+  deleteNetworkMenu: (id) => client.request('DELETE', `/networks/${e(id)}/menu`),
+  /** Вкладка «Сеть» дашборда: { network, role, period, compare_period, clubs, totals, ranking, missing_days } */
+  networkDashboard: (id, query) => client.get(`/networks/${e(id)}/dashboard`, { query }),
+  /** Сеть клуба: { network: null | { id, name, tariffs: { template, mode, locked, override, … }, menu: { …, overrides } } } */
+  clubNetwork: (club) => client.get(`/clubs/${e(club)}/network`),
+  /** Вернуть клуб к шаблону сети: { scope: 'tariffs'|'menu', reason? }. */
+  resetClubNetwork: (club, scope, reason) => client.post(`/clubs/${e(club)}/network/reset`, reason ? { scope, reason } : { scope }),
+
   /** Депозит наличными для «Без лимита» (№87, №112): { resource_id, amount_kopecks, received_kopecks? } → { session_id, change_kopecks, paid_until }. */
   deposit: (body, idempotencyKey) => client.post('/reception/deposits', body, { idempotencyKey }),
 };

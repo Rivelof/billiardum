@@ -16,6 +16,8 @@ const CHUNKS = {
   // M5.6: обслуживание столов (внутри «Отчётов»); M5.7: «API и вебхуки» владельца
   maintenance: () => import('../screens/maintenance/Maintenance.jsx'),
   clubapi: () => import('../screens/clubapi/ClubApi.jsx'),
+  // M5.5: «Сеть» — сеть клубов, шаблоны тарифов и меню, управляющие сети
+  network: () => import('../screens/network/Network.jsx'),
 };
 const loaded = {};
 

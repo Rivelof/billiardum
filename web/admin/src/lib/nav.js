@@ -1,8 +1,11 @@
 import { BASE } from './env.js';
 import { can } from './auth.js';
 
-/** Разделы программы клуба по роли (снизу на телефоне, слева на планшете). wideOnly — только в боковой панели и в «Ещё». */
-export function navItems(role, club) {
+/**
+ * Разделы программы клуба по роли (снизу на телефоне, слева на планшете). wideOnly — только в боковой панели и в «Ещё».
+ * opts.network — пункт «Сеть» (M5.5): по умолчанию у владельца клуба (может создать сеть); управляющему сети — передать true.
+ */
+export function navItems(role, club, opts = {}) {
   const c = `${BASE}c/${encodeURIComponent(club)}/`;
   const manage = can.manage(role);
   const items = [];
@@ -34,6 +37,8 @@ export function navItems(role, club) {
   if (can.subscription(role)) add('subscription', 'card', 'Подписка', true);
   // M5.7: ключи API и вебхуки — владелец
   if (can.clubApi(role)) add('api', 'key', 'API', true);
+  // M5.5: сеть клубов — владелец (создать, состав, шаблоны, управляющие) и управляющий сети (читает шаблоны)
+  if (can.network(role) && (opts.network ?? can.owner(role))) add('network', 'chain', 'Сеть', true);
   if (can.devices(role)) add('devices', 'chip', 'Контроллеры', manage);
   // M5.1: мастер подключения — в боковой панели планшета (на телефоне — в плашке и в «Ещё»);
   // управляющему — его шаги: зал, тарифы, меню, наклейки (№155–156)

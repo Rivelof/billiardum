@@ -128,11 +128,13 @@ function People({ ctx }) {
                         {self ? <span class="person__tag">это вы</span> : null}
                       </span>
                       <span class="person__sub">
-                        <span class="mono">{s.phone_masked ?? '—'}</span> · {ROLE_LABEL[s.role] ?? s.role}
+                        <span class="mono">{s.phone_masked ?? '—'}</span> · {s.network_id ? 'Управляющий сети' : (ROLE_LABEL[s.role] ?? s.role)}
                         {s.pin_set ? ' · PIN задан' : ' · без PIN'}
                       </span>
+                      {/* M5.5 (№192): доступ выдан сетью — роль и отзыв меняет владелец сети в разделе «Сеть» (иначе 409 network_locked) */}
+                      {s.network_id ? <span class="person__sub">Доступ выдан сетью клубов: роль и отзыв — в разделе «Сеть».</span> : null}
                     </span>
-                    {s.role !== 'owner' && !self ? (
+                    {s.role !== 'owner' && !self && !s.network_id ? (
                       <span class="person__tools">
                         <button type="button" class="btn btn--secondary btn--sm" onClick={() => setEditing(s)}>
                           Сменить роль

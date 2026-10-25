@@ -9,6 +9,8 @@
  * M5.6 (mock/dashboard.js, mock/maintenance.js): forecast — прогноз и подсказки по цене (90 дней истории), forecast-empty —
  * клубу 10 дней («Мало данных для прогноза»), maintenance — обслуживание столов (владелец), maintenance-manager — управляющий
  * M5.7 (mock/clubapi.js): api — «API и вебхуки» владельца, api-pin — тот же владелец вошёл по PIN на терминале
+ * M5.5 (mock/networks.js): network — владелец сети из трёх клубов, network-hard — жёсткие шаблоны, network-empty — без сети,
+ * network-manager — управляющий сети, network-pin — владелец по PIN на терминале
  */
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
@@ -20,9 +22,10 @@ import { reportsRoutes, patchDashboardShifts } from './reports.js';
 import { billingRoutes, billingState } from './billing.js';
 import { maintenanceRoutes } from './maintenance.js';
 import { clubapiRoutes } from './clubapi.js';
+import { isNetworkScenario, networkRoutes, networksState, patchNetworkCatalog } from './networks.js';
 
 /** M5.6: сценарии прогноза и обслуживания живут на данных дашборда (второй клуб, смены с расхождением). */
-const isDashScenario = (sc) => /^(dashboard|forecast|maintenance)/.test(String(sc ?? ''));
+const isDashScenario = (sc) => /^(dashboard|forecast|maintenance|network)/.test(String(sc ?? ''));
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -105,11 +108,11 @@ function freshState(scenario, t) {
   const asRole = scenario?.split('-')[1];
   // M5.3: сценарии подписки — владелец (billing-manager — управляющий), platform-billing — владелец и администратор платформы
   const bill = String(scenario ?? '').startsWith('billing') || scenario === 'platform-billing';
-  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash || bill || String(scenario).startsWith('api') ? 'owner' : 'reception';
+  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash || bill || String(scenario).startsWith('api') || isNetworkScenario(scenario) ? 'owner' : 'reception';
   return {
     scenario,
     // M5.7: вид входа (GET /api/me → session.kind): api-pin — по PIN на терминале
-    sessionKind: scenario === 'api-pin' ? 'pin' : 'session',
+    sessionKind: scenario === 'api-pin' || scenario === 'network-pin' ? 'pin' : 'session',
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа
     user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : scenario === 'operator' || scenario === 'platform-billing-operator' ? { ...STAFF.operator } : scenario === 'platform' || scenario === 'platform-billing' ? { ...STAFF.owner, platform_role: 'platform_admin' } : fresh ? { ...NEWCOMER } : { ...STAFF[role] },
     hall,
@@ -123,12 +126,15 @@ function freshState(scenario, t) {
     m4: m4State(scenario, t),
     m5: m5State(scenario, t),
     billing: billingState(scenario, t),
+    // M5.5: сети клубов (null — сценарий без сетей)
+    networks: networksState(scenario, t),
   };
 }
 
 /** M5.2: в сценариях дашборда расхождение кассы — 100 ₽ три дня назад (смена 211), остальные смены сошлись. */
 function withDashboard(state) {
   if (isDashScenario(state.scenario)) patchDashboardShifts(state.m2, state.scenario === 'dashboard-empty');
+  patchNetworkCatalog(state);
   return state;
 }
 
@@ -425,6 +431,8 @@ export function createBackend(storage, now = () => Date.now()) {
   routes.unshift(...maint.routes);
   // M5.7: «API и вебхуки» владельца
   routes.unshift(...clubapiRoutes({ state: () => state, me, err, ok, audit, now }).routes);
+  // M5.5: сети клубов — первыми: /api/me, тарифы и товары клуба сети, выгрузки управляющего сети
+  routes.unshift(...networkRoutes({ state: () => state, me, err, ok, now, dash: dashFor, catalog: () => state.m2?.catalog }).routes);
 
   async function handle(method, url) {
     tick();

@@ -6,18 +6,26 @@ import { createStore, session } from './store.js';
  * Сессия — cookie bl_session (§14), токены из ответов не храним.
  * status: 'loading' | 'anon' | 'user'; user: { id, phone_masked, name? }; clubs: [{ club_id, role, name?, timezone? }];
  * principal: 'session' | 'pin' | 'terminal' (GET /api/me → session.kind)
+ * M5.5: networks — сети клубов пользователя [{ network_id, name, role, clubs, tariffs_mode, menu_mode }] (у PIN — пусто);
+ * у членства, выданного сетью (управляющий сети), — clubs[].network_id
  */
-export const auth = createStore({ status: 'loading', user: null, clubs: [], principal: null });
+export const auth = createStore({ status: 'loading', user: null, clubs: [], networks: [], principal: null });
 
 const NONCE_KEY = 'bl-staff-bot-link';
 
 export async function loadMe() {
   try {
     const me = await api.me();
-    auth.set({ status: 'user', user: me?.user ?? null, clubs: Array.isArray(me?.clubs) ? me.clubs : [], principal: me?.session?.kind ?? null });
+    auth.set({
+      status: 'user',
+      user: me?.user ?? null,
+      clubs: Array.isArray(me?.clubs) ? me.clubs : [],
+      networks: Array.isArray(me?.networks) ? me.networks.filter((n) => n && typeof n.network_id === 'string') : [],
+      principal: me?.session?.kind ?? null,
+    });
     return me;
   } catch (err) {
-    auth.set({ status: 'anon', user: null, clubs: [] });
+    auth.set({ status: 'anon', user: null, clubs: [], networks: [] });
     if (err?.code !== 'unauthorized') throw err;
     return null;
   }
@@ -79,7 +87,7 @@ export async function logout() {
   try {
     await api.logout();
   } finally {
-    auth.set({ status: 'anon', user: null, clubs: [], principal: null });
+    auth.set({ status: 'anon', user: null, clubs: [], networks: [], principal: null });
   }
 }
 
@@ -141,7 +149,18 @@ export const can = {
   subscriptionManage: (role) => role === 'owner',
   // M5.7 (№199–201): «API и вебхуки» — только владелец; выпуск ключа и адреса — ещё и только личным входом (не PIN)
   clubApi: (role) => role === 'owner',
+  // M5.5 (№190–192): «Сеть» — владелец клуба (создать сеть, добавить свои клубы) и управляющий сети (читает шаблоны);
+  // состав, шаблоны и управляющих меняет только владелец сети и только личным входом. См. networkAccess в lib/networks.js
+  network: (role) => ['owner', 'manager'].includes(role),
 };
+
+/**
+ * Управляющий сети (№192): членство в клубе выдано сетью (GET /api/me → clubs[].network_id). Работает как управляющий клуба,
+ * но без денег по способам оплаты и без выгрузок CSV.
+ */
+export function isNetworkManager(membership) {
+  return typeof membership?.network_id === 'string' && membership.network_id.length > 0;
+}
 
 /**
  * Режим клуба (№153): test | live | suspended. Берём из членства (GET /api/me → clubs[].mode, допущение M5.1);

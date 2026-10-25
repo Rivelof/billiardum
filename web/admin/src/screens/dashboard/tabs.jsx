@@ -57,7 +57,7 @@ const periodDays = (view, ctx) => eachDay(view.period.from ?? ctx.filters.from, 
 
 // ---------- плитки ----------
 
-function Tile({ t }) {
+export function Tile({ t }) {
   const [open, setOpen] = useState(false);
   const id = `tile-${t.id}`;
   return (

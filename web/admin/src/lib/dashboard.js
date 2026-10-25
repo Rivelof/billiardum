@@ -50,6 +50,8 @@ export const TILES = {
   avg_check_game: { round: true, label: 'Средний чек игры', unit: 'kopecks', good: 'up', formula: 'Выручка столов, делённая на число игр. Продления входят в чек своей игры.' },
   avg_check_bar: { round: true, label: 'Средний чек бара', unit: 'kopecks', good: 'up', formula: 'Выручка бара, делённая на число продаж бара — через QR и на кассе.' },
   revenue_per_table_day: { round: true, label: 'Выручка со стола в день', unit: 'kopecks', good: 'up', formula: 'Вся выручка, делённая на столо-дни в работе: число столов × дни периода.' },
+  // M5.5 (вкладка «Сеть», server/networks/README.md): выручка за период на средний стол в работе
+  revenue_per_table: { round: true, label: 'Выручка со стола', unit: 'kopecks', good: 'up', formula: 'Вся выручка за период, делённая на среднее число столов в работе. Сравнивает клубы разного размера.' },
   avg_hour_price: { round: true, label: 'Средняя цена часа', unit: 'kopecks', good: 'up', formula: 'Выручка столов, делённая на часы игры. Показывает, сколько в среднем стоит час с учётом скидок, пакетов и вечерних цен.' },
   guests: { label: 'Гостей', unit: 'count', good: 'up', formula: 'Гости, которые играли или бронировали за период. Новый — первая игра или бронь в этом клубе за всё время, повторный — играл здесь раньше. Только количества, без имён и телефонов.' },
   guests_new: { label: 'Новых гостей', unit: 'count', good: 'up', formula: 'Первая игра или бронь в этом клубе за всё время пришлась на этот период.' },
@@ -563,10 +565,13 @@ export function dashboardQuery(s) {
   return q;
 }
 
-/** Состояние фильтров из адреса (?tab=money&p=30d&kind=pool&cmp=0&all=1, свой период — &from=&to=). */
-export function readFilters(search, today) {
+/**
+ * Состояние фильтров из адреса (?tab=money&p=30d&kind=pool&cmp=0&all=1, свой период — &from=&to=).
+ * tabs — вкладки, доступные человеку (M5.5: без «Денег» у управляющего сети, с «Сетью» у участника сети).
+ */
+export function readFilters(search, today, tabs = TABS) {
   const q = new URLSearchParams(search);
-  const tab = TABS.some((t) => t.value === q.get('tab')) ? q.get('tab') : 'summary';
+  const tab = tabs.some((t) => t.value === q.get('tab')) ? q.get('tab') : 'summary';
   let preset = PRESETS.some((p) => p.value === q.get('p')) ? q.get('p') : '7d';
   let range = presetRange(preset, today);
   if (preset === 'custom') {

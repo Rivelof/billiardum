@@ -1,0 +1,126 @@
+/*
+ * M5.5 «Сеть» (чанк network) и вкладка «Сеть» дашборда: клубы сети, режимы шаблонов, управляющие, шаблоны меню,
+ * сравнение клубов и рейтинг. Статус — словом и значком; цвета — только токены. Стиль — как у дашборда и мастера тарифов.
+ */
+
+.net { display: grid; gap: 16px; }
+.net__stack { display: grid; gap: 16px; min-width: 0; }
+.net .panel { display: grid; gap: 10px; min-width: 0; justify-items: stretch; }
+.net .panel > .btn, .net .panel > .nbadge { justify-self: start; }
+.net__row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.net__row .section-title { margin: 0; }
+.net__head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 10px 16px; }
+.net__title { display: grid; gap: 6px; min-width: 0; }
+.net__name { font-size: var(--fs-24); line-height: 1.15; overflow-wrap: anywhere; }
+.net__sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--ink-2); font-size: var(--fs-15); }
+.net__pick { display: grid; gap: 2px; max-width: 320px; }
+.net .dfield { display: grid; gap: 2px; min-width: 0; }
+.net .dfield__label { font-size: var(--fs-13); color: var(--ink-2); font-weight: 600; }
+.net__panel { min-width: 0; outline: none; }
+.net__intro { max-width: 720px; }
+.net__points { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.net__points li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; }
+.net__points .icon { color: var(--brass); margin-top: 2px; }
+.net__create { justify-items: stretch; max-width: 480px; }
+.net__create > .btn { justify-self: start; }
+.net__facts { display: grid; gap: 6px; margin: 0; }
+.net__facts div { display: grid; grid-template-columns: 9.5rem 1fr; gap: 10px; }
+.net__facts dt { color: var(--ink-2); font-weight: 600; }
+.net__facts dd { margin: 0; }
+.net__add { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.net__add .dfield { flex: 1 1 220px; max-width: 360px; }
+.net__danger { box-shadow: inset 0 0 0 1px var(--line); background: transparent; }
+.net__danger .btn { justify-self: start; }
+.net__plan .nbadge { justify-self: start; }
+
+/* Разделы сети: 2 × 2 на телефоне, строка на широком */
+.ntabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.ntabs--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ntabs .ntabs__tab { grid-column: auto; }
+
+/* Клубы сети списком */
+.nclubs { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.nclub { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--card-2); min-width: 0; }
+.nclub--problem { box-shadow: inset 3px 0 0 var(--ball-red); }
+.nclub__main { display: grid; gap: 4px; min-width: 0; flex: 1 1 240px; }
+.nclub__name { font-weight: 600; font-size: var(--fs-17); overflow-wrap: anywhere; }
+.nclub__name a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--brass); text-underline-offset: 3px; }
+.nclub__sub { font-size: var(--fs-13); color: var(--ink-2); overflow-wrap: anywhere; }
+.nclub__tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.nclub__problem { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font-size: var(--fs-15); }
+.nclub__problem .icon { width: 18px; height: 18px; color: var(--ball-red); margin-top: 2px; }
+.nclub__act { min-height: 44px; }
+
+/* Режим шаблона */
+.nmode { display: grid; gap: 10px; }
+.nmode__set { display: grid; gap: 10px; border: 0; margin: 0; padding: 0; min-width: 0; }
+.nmode__set .section-title { margin: 0 0 4px; padding: 0; }
+.nmode__opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.nmode__set:disabled .tw__tplbox { cursor: default; }
+.nmode .tw__tpltitle { display: inline-flex; align-items: center; gap: 6px; }
+.nmode .tw__tpltitle .icon { width: 18px; height: 18px; }
+
+/* Шаблон меню */
+.nmenu__group { display: grid; gap: 6px; }
+.nmenu__cat { font-size: var(--fs-15); font-weight: 600; color: var(--ink-2); margin-top: 6px; }
+.nmenu { display: grid; list-style: none; margin: 0; padding: 0; }
+.nmenu__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.nmenu__main { display: grid; gap: 2px; min-width: 0; }
+.nmenu__name { font-weight: 500; overflow-wrap: anywhere; }
+.nmenu__meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--fs-13); color: var(--ink-2); }
+.nmenu__price { font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.nmenu__acts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.nmenu__acts .btn { min-height: 44px; }
+
+/* ---------- вкладка «Сеть» дашборда ---------- */
+
+.ncmp__head { gap: 8px; }
+.ncmp__head .dfield { max-width: 320px; }
+.ncmp__count { font-family: var(--font-text); font-size: var(--fs-13); font-weight: 400; }
+.ncmp__scroll { position: relative; min-width: 0; max-width: 100%; overflow-x: auto; }
+.ncmp__scroll:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; border-radius: var(--radius-sm); }
+.ncmp__club { display: grid; gap: 2px; min-width: 9rem; }
+.ncmp__club a { color: var(--ink); font-weight: 600; text-decoration: underline; text-decoration-color: var(--brass); text-underline-offset: 3px; }
+.ncmp__cell { display: inline-grid; gap: 0; justify-items: end; }
+.ncmp__delta { font-size: var(--fs-13); font-weight: 600; }
+.ncmp__places { display: inline-flex; gap: 10px; align-items: center; }
+.ncmp__place { display: inline-grid; justify-items: center; gap: 2px; }
+.ncmp__noplace { color: var(--ink-3); }
+
+/* Шар с номером — места 1–3 (DESIGN §1: шары из слоновой кости), дальше — число без шара */
+.nball {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: var(--fs-13);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  font-variant-numeric: tabular-nums;
+}
+.nball--top {
+  background: var(--hall-ivory-hi);
+  color: var(--on-lamp);
+  box-shadow: inset 0 0 0 1.5px var(--brass);
+}
+.nrank { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.nrank__item { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
+.nrank__item:first-child { border-top: 0; }
+.nrank__name { overflow-wrap: anywhere; }
+.nrank__value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+@media (min-width: 640px) {
+  .nmenu__item { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .nmenu__acts { grid-column: auto; }
+  .ntabs, .ntabs--3 { display: flex; flex-wrap: wrap; }
+  .ntabs .ntabs__tab { padding: 6px 18px; }
+  .net__name { font-size: var(--fs-32); }
+}
+@media (max-width: 639px) {
+  .ncmp__scroll { overflow-x: visible; }
+  .ncmp__club { min-width: 0; }
+  .ncmp__cell { justify-items: end; }
+}

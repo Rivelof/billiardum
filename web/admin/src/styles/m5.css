@@ -145,78 +145,7 @@
 .pe-row .btn { justify-self: start; }
 .pe-row__wide { grid-column: 1 / -1; }
 
-/* ---------- тарифы ---------- */
-.tw__phases { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: var(--fs-15); color: var(--ink-2); }
-.tw__phase { display: inline-flex; align-items: center; gap: 6px; }
-.tw__phase .mono { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--card-2); font-weight: 700; font-size: var(--fs-13); }
-.tw__phase--on { color: var(--ink); font-weight: 600; }
-.tw__phase--on .mono { background: var(--cloth); color: var(--on-cloth); }
-.tw__templates { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
-.tw__tpl { position: relative; }
-.tw__tpl input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-.tw__tplbox { display: grid; gap: 4px; height: 100%; padding: 14px 16px; border-radius: var(--radius-md); background: var(--card); box-shadow: inset 0 0 0 1px var(--line-strong); }
-.tw__tpltitle { font-weight: 600; }
-.tw__tplsub { font-size: var(--fs-15); color: var(--ink-2); }
-.tw__tpl input:checked + .tw__tplbox { background: var(--cloth-tint); box-shadow: inset 0 0 0 2.5px var(--cloth); }
-.tw__tpl input:focus-visible + .tw__tplbox { outline: 2px solid var(--cloth); outline-offset: 2px; }
-.tw__times { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 220px)); gap: 12px 16px; }
-.tw__weekend { display: grid; gap: 8px; }
-.tw__day span { min-width: 52px; justify-content: center; }
-.tw__prices { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-.tw__band { display: grid; gap: 10px; padding: 14px 16px; border-radius: var(--radius-md); background: var(--card); box-shadow: inset 0 0 0 1px var(--line); }
-.tw__bandtitle { font-weight: 600; padding: 0; }
-.tw__bandtitle .muted { font-weight: 400; font-size: var(--fs-15); }
-.tw__bandfields { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
-
-/* Неделя по часам: дни — столбцы, часы суток клуба — строки */
-.wk { display: grid; gap: 12px; min-width: 0; }
-.wk__scroll { max-width: 100%; overflow-x: auto; }
-.wk__grid {
-  display: grid;
-  grid-template-columns: 3.1rem repeat(7, minmax(36px, 1fr));
-  gap: 2px;
-  min-width: 300px;
-  font-size: var(--fs-13);
-  font-variant-numeric: tabular-nums;
-}
-.wk__day { text-align: center; font-weight: 600; padding: 4px 0; border-radius: 4px; }
-.wk__day--mark { background: var(--ball-red); color: var(--card); }
-.wk__hour { color: var(--ink-2); padding-right: 4px; text-align: right; line-height: 22px; font-size: 12.5px; }
-.wk__c {
-  display: grid;
-  place-items: center;
-  min-height: 22px;
-  border-radius: 3px;
-  background: var(--card-2);
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1;
-  overflow: hidden;
-}
-.wk__p { display: none; }
-.wk__c--l0 { background: var(--cloth-tint); }
-.wk__c--l1 { background: color-mix(in oklab, var(--cloth) 42%, var(--card)); }
-.wk__c--l2 { background: color-mix(in oklab, var(--brass) 42%, var(--card)); }
-.wk__c--l3 { background: color-mix(in oklab, var(--lamp) 42%, var(--card)); }
-.wk__c--l4 { background: color-mix(in oklab, var(--lamp) 64%, var(--card)); }
-.wk__c--l5 { background: color-mix(in oklab, var(--lamp) 84%, var(--card)); }
-.wk__c--split { box-shadow: inset 0 -3px 0 var(--brass); }
-.wk__c--gap { background: var(--card); box-shadow: inset 0 0 0 1.5px var(--ball-red); color: var(--ball-red); font-weight: 700; }
-.wk__c--overlap { background: color-mix(in oklab, var(--ball-red) 22%, var(--card)); box-shadow: inset 0 0 0 1.5px var(--ball-red); font-weight: 700; }
-.wk__c--mark { outline: 2px solid var(--ball-red); outline-offset: -1px; }
-.wk__legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: var(--fs-15); }
-.wk__legend li { display: inline-flex; align-items: center; gap: 8px; }
-.wk__sw { display: inline-grid; place-items: center; width: 22px; height: 18px; border-radius: 3px; font-size: 11px; font-family: var(--font-mono); }
-.wk__sumtitle { font-size: var(--fs-17); font-weight: 600; }
-.wk__sum { display: grid; font-size: var(--fs-15); }
-.wk__sum > div { display: grid; grid-template-columns: 4.5rem 1fr; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
-.wk__sum dt { font-weight: 600; }
-
-@media (min-width: 640px) {
-  .wk__grid { grid-template-columns: 3.4rem repeat(7, minmax(48px, 1fr)); }
-  .wk__p { display: inline; }
-}
+/* ---------- тарифы — styles/tariff-editor.css (общий редактор, M5.5) ---------- */
 
 /* ---------- меню ---------- */
 .mi { justify-items: stretch; }

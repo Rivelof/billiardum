@@ -270,7 +270,8 @@ export function m3Routes(ctx) {
     ['GET', /^\/api\/clubs\/([^/]+)\/staff$/, ownerOnly(() => {
       const t = now();
       return ok({
-        staff: S().staff.map((s) => ({ user_id: s.user_id, name: s.name, phone_masked: mask(s.phone), role: s.role, active: s.active, pin_set: s.pin_set })),
+        // M5.5: network_id — управляющий сети (доступ выдан сетью)
+        staff: S().staff.map((s) => ({ user_id: s.user_id, name: s.name, phone_masked: mask(s.phone), role: s.role, active: s.active, pin_set: s.pin_set, network_id: s.network_id ?? null })),
         invites: S().invites.filter((i) => i.expires_at > t && !i.revoked).map((i) => ({ id: i.id, phone_masked: mask(i.phone), role: i.role, created_at: iso(i.created_at), expires_at: iso(i.expires_at) })),
       });
     })],

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'preact/hooks';
+import { exportAllowed } from '../../lib/networkBase.js';
 import { formatMoney, formatDate, formatTime } from '@billiardum/shared/format';
 import { DataTable } from '../../components/DataTable.jsx';
 import { ErrorNote } from '../../components/ErrorNote.jsx';
@@ -85,7 +86,7 @@ export function ShiftsScreen({ ctx, today, title }) {
         <h2 class="section-title" id="r-title">
           {title}
         </h2>
-        <ReportTools onExport={exportCsv} exporting={exporting} onPrint={print} printing={printing} />
+        <ReportTools onExport={exportAllowed({ club }) ? exportCsv : null} exporting={exporting} onPrint={print} printing={printing} />
       </div>
       <ReportFilters state={state} update={update} today={today} club={club}>
         <label class="dfield">

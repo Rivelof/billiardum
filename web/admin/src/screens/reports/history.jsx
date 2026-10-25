@@ -1,4 +1,6 @@
 import { useState } from 'preact/hooks';
+import { auth } from '../../lib/auth.js';
+import { exportAllowed } from '../../lib/networkBase.js';
 import { formatMoney, formatDate, formatTime } from '@billiardum/shared/format';
 import { DataTable } from '../../components/DataTable.jsx';
 import { ErrorNote } from '../../components/ErrorNote.jsx';
@@ -192,7 +194,7 @@ export function HistoryScreen({ kind, ctx, today, base, title }) {
         <h2 class="section-title" id="r-title">
           {title}
         </h2>
-        <ReportTools onExport={exportCsv} exporting={exporting} onPrint={print} printing={printing}>
+        <ReportTools onExport={exportAllowed({ all: scope === 'all', club, clubs: auth.get().clubs }) ? exportCsv : null} exporting={exporting} onPrint={print} printing={printing}>
           {kind === 'audits' ? (
             <a class="btn btn--quiet btn--sm" href={`${base}/audit-sheet`} onClick={linkHandler}>
               <Icon name="list" />

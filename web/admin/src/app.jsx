@@ -112,6 +112,12 @@ const SCREENS = {
     render: (ctx) => <Lazy key="clubapi" chunk="clubapi" label="Открываем API и вебхуки…" fallback={<LazyShell ctx={ctx} active="api" title="API" />} render={(m) => <m.ClubApi ctx={ctx} webhookId={ctx.webhookId ?? null} />} />,
     title: 'API и вебхуки',
   },
+  // M5.5: «Сеть» — владелец (состав, шаблоны, управляющие) и управляющий сети (читает); отдельный чанк; сеть — в пути (/network/{id})
+  network: {
+    allow: can.network,
+    render: (ctx) => <Lazy key="network" chunk="network" label="Открываем сеть…" fallback={<LazyShell ctx={ctx} active="network" title="Сеть" />} render={(m) => <m.Network ctx={ctx} />} />,
+    title: 'Сеть',
+  },
   onboarding: {
     allow: can.setup,
     render: (ctx) => <Lazy key="onboarding" chunk="onboarding" label="Открываем мастер подключения…" render={(m) => <m.Onboarding ctx={ctx} />} />,
@@ -212,7 +218,7 @@ export function App() {
     setClub(membership.club_id); // X-Club-Id для маршрутов без {club} (§14)
     // Вложенные пути: отчёт смены (/shift/{id}) — управляющему и владельцу; терминалы (/staff/terminals) — владельцу
     const nested =
-      (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments' || params.screen === 'onboarding' || params.screen === 'reports';
+      (params.screen === 'shift' && can.reports(membership.role)) || (params.screen === 'staff' && params.id === 'terminals') || params.screen === 'tournaments' || params.screen === 'onboarding' || params.screen === 'reports' || params.screen === 'network';
     if (params.id && !nested && name !== 'clubhook') return <Redirect to={homeFor(membership)} />;
     const ctx = {
       club: membership,
@@ -277,7 +283,7 @@ function ClubPick({ clubs }) {
                 <span>
                   <span class="staff__name">{c.name ?? 'Клуб'}</span>
                   <span class="staff__role">
-                    {ROLE_LABEL[c.role] ?? c.role}
+                    {c.network_id ? 'Управляющий сети' : (ROLE_LABEL[c.role] ?? c.role)}
                     {clubMode(c) === 'test' ? ' · тестовый режим' : clubMode(c) === 'suspended' ? ' · приостановлен' : ''}
                   </span>
                 </span>

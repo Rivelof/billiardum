@@ -9,6 +9,7 @@ import { navigate, linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { ROLE_LABEL } from '../lib/words.js';
 import { pinMinLength, pinValid } from '../lib/terminals.js';
+import { showNetworkNav } from '../lib/networkBase.js';
 
 /** «Ещё»: QR-наклейки (PDF), терминал ресепшена, выход. */
 export function More({ ctx }) {
@@ -50,7 +51,7 @@ export function More({ ctx }) {
             </a>
           </section>
         ) : null}
-        <Sections role={role} clubId={club.club_id} />
+        <Sections role={role} club={club} />
         {can.manage(role) ? <Stickers clubId={club.club_id} /> : null}
         {can.setPin(role) && principal === 'session' ? <SetPin clubId={club.club_id} role={role} /> : null}
         {can.terminal(role) ? <Terminal clubId={club.club_id} /> : null}
@@ -76,6 +77,7 @@ const SECTION_HINT = {
   onboarding: 'Мастер подключения: зал, тарифы, ЮKassa, контроллеры, запуск.',
   subscription: 'План, счета и карта для оплаты программы Бильярдума.',
   api: 'Ключи API для CRM и сайта, вебхуки о играх, бронях и сменах.',
+  network: 'Сеть клубов: общие тарифы и меню, управляющие сети, сравнение клубов.',
 };
 
 const SUBSCRIPTION_STATE_HINT = 'Состояние подписки клуба на Бильярдум.';
@@ -83,8 +85,9 @@ const SUBSCRIPTION_STATE_HINT = 'Состояние подписки клуба 
 const SETUP_HINT = 'План зала, тарифы, меню из Excel, QR-наклейки.';
 
 /** Разделы, которых нет в нижней панели телефона (у владельца и управляющего). */
-function Sections({ role, clubId }) {
-  const items = navItems(role, clubId).filter((it) => it.wideOnly);
+function Sections({ role, club }) {
+  const { networks } = useStore(auth);
+  const items = navItems(role, club.club_id, { network: showNetworkNav(club, networks) }).filter((it) => it.wideOnly);
   if (!items.length) return null;
   return (
     <section class="panel panel--sections" aria-labelledby="sections-title">

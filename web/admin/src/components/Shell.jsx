@@ -2,9 +2,11 @@ import { useState } from 'preact/hooks';
 import { formatTime } from '@billiardum/shared/format';
 import { Icon } from './Icon.jsx';
 import { useNow } from './hooks.js';
-import { linkHandler } from '../lib/router.js';
+import { linkHandler, navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
-import { can, clubMode } from '../lib/auth.js';
+import { auth, can, clubMode } from '../lib/auth.js';
+import { useStore } from '../lib/store.js';
+import { networkSiblings, showNetworkNav } from '../lib/networkBase.js';
 import { navItems } from '../lib/nav.js';
 import { getTheme, setTheme, THEME_NEXT, THEME_LABEL } from '../lib/theme.js';
 import { SubBanner } from './SubBanner.jsx';
@@ -53,7 +55,10 @@ export function ModeNote({ club, role, active }) {
 export function Shell({ club, role, active, title, user, timeZone, alarmsCount = 0, tools, children, wide = false }) {
   const now = useNow(0, true);
   const [theme, setThemeState] = useState(getTheme);
-  const items = navItems(role, club.club_id);
+  const { clubs, networks } = useStore(auth);
+  const items = navItems(role, club.club_id, { network: showNetworkNav(club, networks) });
+  // M5.5 (№192): управляющий сети переключается между клубами сети прямо из шапки, на том же экране
+  const siblings = networkSiblings(clubs, club);
   return (
     <div class={`shell${wide ? ' shell--wide' : ''}`}>
       <a class="skip" href="#main">
@@ -62,9 +67,31 @@ export function Shell({ club, role, active, title, user, timeZone, alarmsCount =
       <header class="bar">
         <div class="bar__club">
           <span class="bar__brand display">Бильярдум</span>
-          <span class="bar__name" title={club.name ?? 'Клуб'}>
-            {club.name ?? 'Клуб'}
-          </span>
+          {siblings.length > 1 ? (
+            <label class="bar__switch">
+              <span class="visually-hidden">Клуб сети</span>
+              <select
+                class="bar__select"
+                value={club.club_id}
+                onChange={(e) => {
+                  const next = e.currentTarget.value;
+                  const from = `/c/${encodeURIComponent(club.club_id)}/`;
+                  const path = location.pathname.includes(from) ? location.pathname.replace(from, `/c/${encodeURIComponent(next)}/`) : `${BASE}c/${encodeURIComponent(next)}/${active ?? 'now'}`;
+                  navigate(`${path}${location.search}`);
+                }}
+              >
+                {siblings.map((c) => (
+                  <option key={c.club_id} value={c.club_id}>
+                    {c.name ?? 'Клуб'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <span class="bar__name" title={club.name ?? 'Клуб'}>
+              {club.name ?? 'Клуб'}
+            </span>
+          )}
         </div>
         <h1 class="bar__title">{title}</h1>
         <div class="bar__tools">

@@ -148,3 +148,52 @@
 }
 
 .icon--flip { transform: scaleX(-1); }
+
+/* ---------- M5.5 «Сети»: то, что видно в основной сборке (шапка, меню, тарифы клуба) ---------- */
+
+/* Бейдж — всегда со словом и значком (DESIGN §2), цвет только дублирует */
+.nbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 12px 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--ink);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.nbadge .icon { width: 16px; height: 16px; flex: none; }
+.nbadge--net { box-shadow: inset 0 0 0 1.5px var(--brass); }
+.nbadge--net .icon { color: var(--brass); }
+.nbadge--own, .nbadge--lamp { background: var(--lamp-tint); box-shadow: inset 0 0 0 1.5px var(--lamp); }
+.nbadge--live .icon, .nbadge--free .icon { color: var(--free); }
+.nbadge--test .icon, .nbadge--pending .icon { color: var(--lamp); }
+.nbadge--alert { box-shadow: inset 0 0 0 1.5px var(--ball-red); }
+.nbadge--alert .icon { color: var(--ball-red); }
+.netnote__title { display: flex; flex-wrap: wrap; gap: 6px; }
+.netnote > .icon { color: var(--brass); }
+.tag--net { box-shadow: inset 0 0 0 1.5px var(--brass); color: var(--ink); }
+.tag--own { box-shadow: inset 0 0 0 1.5px var(--lamp); color: var(--ink); }
+.pform__net { grid-column: 1 / -1; }
+
+/* Переключатель клубов сети в шапке (управляющий сети) */
+.bar__switch { display: block; min-width: 0; max-width: 100%; }
+.bar__select {
+  max-width: 100%;
+  min-height: 36px;
+  padding: 2px 28px 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-13);
+  text-overflow: ellipsis;
+}
+.bar__select:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
+.pform .field__input:disabled { background: var(--card-2); color: var(--ink-2); border-style: dashed; cursor: not-allowed; }

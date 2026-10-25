@@ -83,6 +83,8 @@ path.viz-rest { stroke: none; }
   cursor: pointer;
 }
 .dtabs__tab:nth-child(4), .dtabs__tab:nth-child(5) { grid-column: span 3; }
+/* M5.5: шесть вкладок (с «Сетью») — две строки по три */
+.dtabs--6 .dtabs__tab:nth-child(n) { grid-column: span 2; }
 .dtabs__tab[aria-selected='true'] { background: var(--cloth-tint); color: var(--ink); box-shadow: inset 0 0 0 2.5px var(--cloth); }
 .dtabs__tab:focus-visible { outline: 2px solid var(--cloth); outline-offset: 2px; }
 .dash__panel { min-width: 0; outline: none; }

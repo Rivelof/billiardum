@@ -10,6 +10,8 @@ import { parseRubles } from '../lib/cash.js';
 import { CSV_SAMPLE, menuFromCsv, serverCsvError } from '../lib/csv.js';
 import { unitWord } from '../lib/stock.js';
 import { SUBJECT_OPTIONS, UNIT_OPTIONS, VAT_OPTIONS } from '../lib/words.js';
+import { clubMode } from '../lib/auth.js';
+import { NetworkNote, useClubNetwork } from '../components/NetworkNote.jsx';
 
 const ALL = '__all';
 const PRODUCTS = ['товар', 'товара', 'товаров'];
@@ -17,6 +19,8 @@ const PRODUCTS = ['товар', 'товара', 'товаров'];
 /**
  * Меню бара (управляющий): товары по категориям, цены, модификаторы, стоп-лист одним касанием, импорт из CSV.
  * Алкоголь отмечается флагом: в QR-меню гостя его скрывает сервер (решение №76), на кассе продаётся как обычно.
+ * M5.5 (№191): товары шаблона меню сети — отметка «Шаблон сети», переопределённые — «Изменено в клубе»; жёсткий шаблон —
+ * поля шаблона в карточке товара недоступны; алкоголь сети клуб не снимает ни в каком режиме.
  */
 export function MenuAdmin({ ctx }) {
   const { club, role, user, timeZone } = ctx;
@@ -29,6 +33,8 @@ export function MenuAdmin({ ctx }) {
   const [importing, setImporting] = useState(false);
   const [busy, setBusy] = useState(null);
   const [notice, setNotice] = useState('');
+  const [net, reloadNet] = useClubNetwork(clubId);
+  const live = clubMode(club) !== 'test';
 
   const load = useCallback(async () => {
     try {
@@ -88,6 +94,18 @@ export function MenuAdmin({ ctx }) {
             </button>
           </div>
         </div>
+        <NetworkNote
+          clubId={clubId}
+          network={net}
+          scope="menu"
+          live={live}
+          id="menu-net-note"
+          onReset={(res) => {
+            setNotice(`Меню снова по шаблону сети: обновлено ${res?.updated ?? 0}, добавлено ${res?.created ?? 0}.`);
+            reloadNet();
+            load();
+          }}
+        />
         <p class="visually-hidden" role="status">
           {notice}
         </p>
@@ -119,6 +137,8 @@ export function MenuAdmin({ ctx }) {
                       <p class="prow__name">
                         {p.name}
                         {p.is_alcohol ? <span class="tag">Алкоголь — только касса</span> : null}
+                        {p.network_product_id ? <span class="tag tag--net">Шаблон сети</span> : null}
+                        {p.network_product_id && p.network_override ? <span class="tag tag--own">Изменено в клубе</span> : null}
                       </p>
                       <p class="prow__meta">
                         {p.modifier_groups.length ? <span>{p.modifier_groups.map((g) => g.name).join(', ')}</span> : null}
@@ -132,7 +152,7 @@ export function MenuAdmin({ ctx }) {
                       </p>
                     </div>
                     <p class="prow__price mono">{formatMoney(p.price_kopecks)}</p>
-                    <button type="button" class={`switch${p.stop_list ? '' : ' switch--on'}`} aria-pressed={p.stop_list ? 'false' : 'true'} disabled={busy === p.id} onClick={() => toggleStop(p)} aria-label={`${p.name}: ${p.stop_list ? 'в стоп-листе, вернуть в продажу' : 'в продаже, поставить в стоп-лист'}`}>
+                    <button type="button" class={`switch${p.stop_list ? '' : ' switch--on'}`} aria-pressed={p.stop_list ? 'false' : 'true'} disabled={busy === p.id} onClick={() => toggleStop(p)} aria-label={`${p.stop_list ? 'Стоп-лист' : 'В продаже'}: ${p.name}. ${p.stop_list ? 'Вернуть в продажу' : 'Поставить в стоп-лист'}`}>
                       <span class="switch__track" aria-hidden="true">
                         <span class="switch__knob" />
                       </span>
@@ -185,6 +205,7 @@ export function MenuAdmin({ ctx }) {
         categories={(menu?.categories ?? []).filter((c) => c.id !== null)}
         groups={menu?.groups ?? []}
         clubId={clubId}
+        net={net}
         onClose={() => setEditing(null)}
         onSaved={(p) => {
           setEditing(null);
@@ -215,8 +236,12 @@ export function MenuAdmin({ ctx }) {
   );
 }
 
-function ProductDialog({ product, categories, groups, clubId, onClose, onSaved }) {
+function ProductDialog({ product, categories, groups, clubId, net, onClose, onSaved }) {
   const isNew = product && !product.id;
+  // M5.5: товар шаблона сети — жёсткий шаблон закрывает его поля, алкоголь сети клуб не снимает
+  const fromNet = Boolean(product?.network_product_id && net?.menu?.template);
+  const locked = fromNet && Boolean(net?.menu?.locked);
+  const alcoholLocked = fromNet && Boolean(product?.is_alcohol);
   const [f, setF] = useState({});
   const [tried, setTried] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -248,21 +273,23 @@ function ProductDialog({ product, categories, groups, clubId, onClose, onSaved }
   const submit = async (e) => {
     e.preventDefault();
     setTried(true);
-    if (!nameOk || !price || !f.category_id) return;
+    if (!locked && (!nameOk || !price || !f.category_id)) return;
     setBusy(true);
     setError(null);
-    const body = {
-      name: f.name.trim(),
-      category_id: f.category_id,
-      price_kopecks: price,
-      unit: f.unit,
-      vat_code: f.vat_code ? Number(f.vat_code) : null,
-      payment_subject: f.payment_subject,
-      is_alcohol: f.is_alcohol,
-      track_stock: f.track_stock,
-      stop_list: f.stop_list,
-      modifier_group_ids: f.groups,
-    };
+    // Жёсткий шаблон сети: поля шаблона не шлём — только то, что клуб ведёт сам (стоп-лист, склад, модификаторы)
+    const own = { track_stock: f.track_stock, stop_list: f.stop_list, modifier_group_ids: f.groups };
+    const body = locked
+      ? own
+      : {
+          name: f.name.trim(),
+          category_id: f.category_id,
+          price_kopecks: price,
+          unit: f.unit,
+          vat_code: f.vat_code ? Number(f.vat_code) : null,
+          payment_subject: f.payment_subject,
+          is_alcohol: alcoholLocked ? true : f.is_alcohol,
+          ...own,
+        };
     try {
       const saved = isNew ? await api.createProduct(clubId, body) : await api.updateProduct(product.id, body);
       onSaved(saved ?? body);
@@ -276,18 +303,32 @@ function ProductDialog({ product, categories, groups, clubId, onClose, onSaved }
   return (
     <Dialog open onClose={onClose} title={isNew ? 'Новый товар' : product.name} labelledBy="prod-title" wide>
       <form class="form pform" onSubmit={submit} noValidate>
+        {fromNet ? (
+          <div class={`note pform__net${locked ? ' note--lamp' : ''}`} id="p-net">
+            <Icon name={locked ? 'lock' : 'chain'} />
+            <p class="note__title">{locked ? 'Товар задаёт сеть: шаблон жёсткий' : product.network_override ? 'Товар сети изменён в клубе' : 'Товар из шаблона сети'}</p>
+            <p class="note__body">
+              {locked
+                ? 'Название, цену, категорию, НДС и алкоголь меняет владелец сети в разделе «Сеть». Стоп-лист, склад и модификаторы вы ведёте сами.'
+                : product.network_override
+                  ? 'Шаблон сети этот товар больше не меняет. Вернуть его к шаблону можно кнопкой «Вернуть к шаблону сети» над меню.'
+                  : 'Поменяете название, цену или категорию — товар станет «изменён в клубе», и шаблон сети его больше не тронет.'}
+              {alcoholLocked ? ' Признак алкоголя задан сетью — клуб его не снимает.' : ''}
+            </p>
+          </div>
+        ) : null}
         <div class="field pform__name">
           <label class="field__label" for="p-name">
             Название
           </label>
-          <input id="p-name" class="field__input" maxLength={80} value={f.name} aria-invalid={tried && !nameOk ? 'true' : undefined} onInput={(e) => set({ name: e.currentTarget.value })} />
+          <input id="p-name" class="field__input" maxLength={80} value={f.name} disabled={locked} aria-describedby={locked ? 'p-net' : undefined} aria-invalid={tried && !nameOk ? 'true' : undefined} onInput={(e) => set({ name: e.currentTarget.value })} />
           {tried && !nameOk ? <p class="field__error">Напишите название, до 80 символов.</p> : <p class="field__hint">Так товар увидят гость и кассир. Объём лучше писать в названии: «Кола, 0,33 л».</p>}
         </div>
         <div class="field">
           <label class="field__label" for="p-cat">
             Категория
           </label>
-          <select id="p-cat" class="field__input" value={f.category_id} onChange={(e) => set({ category_id: e.currentTarget.value })}>
+          <select id="p-cat" class="field__input" value={f.category_id} disabled={locked} aria-describedby={locked ? 'p-net' : undefined} onChange={(e) => set({ category_id: e.currentTarget.value })}>
             {categories.map((c) => (
               <option value={c.id} key={c.id}>
                 {c.name}
@@ -299,14 +340,14 @@ function ProductDialog({ product, categories, groups, clubId, onClose, onSaved }
           <label class="field__label" for="p-price">
             Цена, ₽
           </label>
-          <input id="p-price" class="field__input mono" inputMode="decimal" value={f.price} aria-invalid={tried && !price ? 'true' : undefined} onInput={(e) => set({ price: e.currentTarget.value.replace(/[^\d,.]/g, '') })} />
+          <input id="p-price" class="field__input mono" inputMode="decimal" value={f.price} disabled={locked} aria-describedby={locked ? 'p-net' : undefined} aria-invalid={tried && !price ? 'true' : undefined} onInput={(e) => set({ price: e.currentTarget.value.replace(/[^\d,.]/g, '') })} />
           {tried && !price ? <p class="field__error">Укажите цену больше нуля.</p> : null}
         </div>
         <div class="field">
           <label class="field__label" for="p-unit">
             Единица
           </label>
-          <select id="p-unit" class="field__input" value={f.unit} onChange={(e) => set({ unit: e.currentTarget.value })}>
+          <select id="p-unit" class="field__input" value={f.unit} disabled={locked} onChange={(e) => set({ unit: e.currentTarget.value })}>
             {UNIT_OPTIONS.map((o) => (
               <option value={o.value} key={o.value}>
                 {o.label}
@@ -318,7 +359,7 @@ function ProductDialog({ product, categories, groups, clubId, onClose, onSaved }
           <label class="field__label" for="p-vat">
             НДС в чеке
           </label>
-          <select id="p-vat" class="field__input" value={f.vat_code} onChange={(e) => set({ vat_code: e.currentTarget.value })}>
+          <select id="p-vat" class="field__input" value={f.vat_code} disabled={locked} onChange={(e) => set({ vat_code: e.currentTarget.value })}>
             {VAT_OPTIONS.map((o) => (
               <option value={o.value} key={o.value}>
                 {o.label}
@@ -330,7 +371,7 @@ function ProductDialog({ product, categories, groups, clubId, onClose, onSaved }
           <label class="field__label" for="p-subj">
             Предмет расчёта
           </label>
-          <select id="p-subj" class="field__input" value={f.payment_subject} onChange={(e) => set({ payment_subject: e.currentTarget.value })}>
+          <select id="p-subj" class="field__input" value={f.payment_subject} disabled={locked || alcoholLocked} onChange={(e) => set({ payment_subject: e.currentTarget.value })}>
             {SUBJECT_OPTIONS.map((o) => (
               <option value={o.value} key={o.value}>
                 {o.label}
@@ -341,7 +382,7 @@ function ProductDialog({ product, categories, groups, clubId, onClose, onSaved }
         <fieldset class="pform__flags">
           <legend class="field__label">Особенности</legend>
           <label class="check">
-            <input type="checkbox" checked={f.is_alcohol} onChange={(e) => set({ is_alcohol: e.currentTarget.checked, payment_subject: e.currentTarget.checked ? 'excise' : f.payment_subject === 'excise' ? 'commodity' : f.payment_subject })} />
+            <input type="checkbox" checked={f.is_alcohol} disabled={locked || alcoholLocked} aria-describedby={locked || alcoholLocked ? 'p-net' : undefined} onChange={(e) => set({ is_alcohol: e.currentTarget.checked, payment_subject: e.currentTarget.checked ? 'excise' : f.payment_subject === 'excise' ? 'commodity' : f.payment_subject })} />
             <span>
               Алкоголь
               <span class="field__hint">Гости не увидят его в приложении. Продаётся только на кассе ресепшена.</span>

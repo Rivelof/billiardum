@@ -9,6 +9,7 @@ import { TableDialog } from './TableDialog.jsx';
 import { mergeHall } from '../lib/hall.js';
 import { api, streamClub } from '../lib/api.js';
 import { METHOD_LABEL } from '../lib/words.js';
+import { isNetworkManager } from '../lib/auth.js';
 
 const METHODS = ['sbp', 'card', 'cash', 'card_terminal'];
 
@@ -99,14 +100,19 @@ export function Now({ ctx }) {
           {data ? (
             <div class="money">
               <p class="money__total display">{formatMoney(total)}</p>
-              <dl class="receipt money__list">
-                {METHODS.map((m) => (
-                  <div class="receipt__row" key={m}>
-                    <dt>{METHOD_LABEL[m]}</dt>
-                    <dd class="receipt__sum">{formatMoney(Number.isSafeInteger(revenue[m]) ? revenue[m] : 0)}</dd>
-                  </div>
-                ))}
-              </dl>
+              {/* M5.5 (№192): управляющему сети — выручка без разбивки по способам оплаты */}
+              {isNetworkManager(club) ? (
+                <p class="small">Разбивку по способам оплаты видит владелец клуба.</p>
+              ) : (
+                <dl class="receipt money__list">
+                  {METHODS.map((m) => (
+                    <div class="receipt__row" key={m}>
+                      <dt>{METHOD_LABEL[m]}</dt>
+                      <dd class="receipt__sum">{formatMoney(Number.isSafeInteger(revenue[m]) ? revenue[m] : 0)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
               {updatedAt ? (
                 <p class="small">
                   {data.day_started_at ? `С ${formatTime(data.day_started_at, timeZone)} — начала рабочих суток клуба. ` : ''}Обновлено в {formatTime(updatedAt, timeZone)}.

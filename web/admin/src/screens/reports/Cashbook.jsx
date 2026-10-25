@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { exportAllowed } from '../../lib/networkBase.js';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
 import { DataTable } from '../../components/DataTable.jsx';
 import { Dialog } from '../../components/Dialog.jsx';
@@ -112,7 +113,7 @@ export function CashbookScreen({ ctx, today, title }) {
         <h2 class="section-title" id="r-title">
           {title}
         </h2>
-        <ReportTools onExport={exportCsv} exporting={exporting} onPrint={printNow}>
+        <ReportTools onExport={exportAllowed({ club }) ? exportCsv : null} exporting={exporting} onPrint={printNow}>
           <button type="button" class="btn btn--primary btn--sm" onClick={() => setAdding('expense')}>
             <Icon name="plus" />
             Добавить расход
