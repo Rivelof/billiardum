@@ -116,6 +116,25 @@ async function networkModifiersLock(db, cur) {
   if (tpl.rowCount > 0) throw new PosError('network_locked', 'menu modifier_group_ids', 409);
 }
 
+/**
+ * «Жёсткое» меню сети: группа модификаторов, привязанная к товару шаблона (в том числе до включения жёсткого
+ * режима), и её модификаторы клубом не меняются — надбавка вверх поднимает цену товара шаблона, а выключение
+ * «по умолчанию» снижает (M5.5, находка pentester Н-4). 409 network_locked. Группы без товаров шаблона и
+ * «мягкий» режим не блокируются; стоп-лист товара ведёт клуб сам.
+ */
+async function networkGroupLock(db, clubId, groupId) {
+  const linked = await db.query(
+    `select p.network_product_id from bl.product_modifier_groups l join bl.products p on p.id = l.product_id
+      where l.group_id = $1 and l.active and p.network_product_id is not null`,
+    [groupId],
+  );
+  if (linked.rowCount === 0) return;
+  const net = await clubNetwork(db, clubId);
+  if (!net?.menu_template || net.menu_mode !== 'hard') return;
+  const tpl = await db.query('select 1 from bl.network_products where network_id = $1 and id = any($2::uuid[])', [net.network_id, linked.rows.map((r) => r.network_product_id)]);
+  if (tpl.rowCount > 0) throw new PosError('network_locked', 'menu modifier group', 409);
+}
+
 export function groupView(g) {
   return { id: g.id, name: g.name, min_select: g.min_select, max_select: g.max_select, sort: g.sort, active: g.active };
 }
@@ -448,6 +467,7 @@ export async function updateGroup(db, deps, info) {
   const { rows } = await db.query('select * from bl.modifier_groups where id = $1 for update', [id]);
   const cur = rows[0];
   if (!cur) throw new PosError('not_found', 'modifier_group');
+  await networkGroupLock(db, cur.club_id, id);
   const next = { ...cur };
   if ('name' in b) {
     if (!str(b.name, 100)) throw bad('name');
@@ -485,8 +505,9 @@ export async function updateGroup(db, deps, info) {
 
 export async function createModifier(db, deps, info) {
   const groupId = info.params.id;
-  const { rows } = await db.query('select id from bl.modifier_groups where id = $1', [groupId]);
+  const { rows } = await db.query('select id, club_id from bl.modifier_groups where id = $1', [groupId]);
   if (!rows[0]) throw new PosError('not_found', 'modifier_group');
+  await networkGroupLock(db, rows[0].club_id, groupId);
   const m = modifierFields(info.body ?? {}, { partial: false });
   const row = await insertModifier(db, info.clubId, groupId, m, now(deps));
   await audit(db, deps, info, 'catalog.modifier_create', 'modifier', row.id, {
@@ -501,6 +522,9 @@ export async function updateModifier(db, deps, info) {
   const { rows } = await db.query('select *, stock_factor::text as stock_factor from bl.modifiers where id = $1 for update', [id]);
   const cur = rows[0];
   if (!cur) throw new PosError('not_found', 'modifier');
+  // Исправить старую отрицательную надбавку (обнулить или выключить) можно и в жёстком меню: иначе товар не продать.
+  const fixesLegacy = Number(cur.price_delta_kopecks) < 0 && (f.price_delta_kopecks === 0 || f.active === false);
+  if (!fixesLegacy) await networkGroupLock(db, cur.club_id, cur.group_id);
   const next = { ...cur, ...f };
   const changes = diff({ ...cur, stock_factor: Number(cur.stock_factor) }, { ...next, stock_factor: Number(next.stock_factor) },
     ['name', 'price_delta_kopecks', 'stock_factor', 'is_default', 'sort', 'active']);

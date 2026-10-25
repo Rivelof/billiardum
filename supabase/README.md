@@ -307,6 +307,8 @@ alter event trigger bl_audit_guard_drop enable always;
 
 ## Сети клубов (M5.5, 1350–1352)
 
+Миграция `1353` (M5.8 Н-5) данные не меняет: пишет в лог выкладки (`NOTICE`) действующие тарифы клубов и шаблонов сетей ниже порога 1 ₽ после округления; полная проверка — `node scripts/db-check-tariffs.mjs [--strict]`.
+
 Подробно — `server/networks/README.md`, решения №190–194. Все таблицы — ENABLE и FORCE RLS, владелец `bl_owner`; кто видит — через `bl.network_access(network)`: `owner` / `manager` в личном контексте (`app.club_id` пуст), `club` — в контексте клуба этой сети, иначе `NULL` (без контекста — ничего).
 
 | Таблица | Суть | `app_api` |

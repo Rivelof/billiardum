@@ -105,6 +105,40 @@ describe('Н-1. Модификатор не снижает цену мимо м�
   });
 });
 
+describe('Н-4 (заход 2). Группа модификаторов, привязанная к товару шаблона до жёсткого режима', { skip: SKIP }, () => {
+  it('в жёстком меню правка группы и её модификаторов — 409 network_locked; в мягком — можно; цена товара шаблона не растёт', async () => {
+    // Мягкий режим: привязать новую группу к товару шаблона (вода) и завести в ней модификатор по умолчанию.
+    await h.q("update bl.networks set menu_template = true, menu_mode = 'soft' where id = $1", [net]);
+    const grp = await req('POST', `/api/clubs/${CLUB_A}/catalog/modifier-groups`, manager, { name: 'Размер', min_select: 1, max_select: 1, modifiers: [{ name: 'Обычный', price_delta_kopecks: 0, is_default: true }] });
+    assert.equal(grp.status, 201, JSON.stringify(grp.json));
+    assert.equal((await req('PATCH', `/api/catalog/products/${P.water}`, manager, { modifier_group_ids: [grp.json.id] })).status, 200);
+    const mod = grp.json.modifiers[0].id;
+    await h.q("update bl.networks set menu_mode = 'hard' where id = $1", [net]);
+    const add = await req('POST', `/api/catalog/modifier-groups/${grp.json.id}/modifiers`, manager, { name: 'Большой', price_delta_kopecks: 50000 });
+    const raise = await req('PATCH', `/api/catalog/modifiers/${mod}`, manager, { price_delta_kopecks: 40000 });
+    const group = await req('PATCH', `/api/catalog/modifier-groups/${grp.json.id}`, manager, { name: 'Объём' });
+    assert.deepEqual([add.status, raise.status, group.status], [409, 409, 409]);
+    assert.deepEqual([add.json.error, raise.json.error, group.json.error], ['network_locked', 'network_locked', 'network_locked']);
+    const sold = await sale(reception, { items: [{ product_id: P.water, qty: 1 }], method: 'cash', received_kopecks: 100000 });
+    assert.equal(sold.status, 201, JSON.stringify(sold.json));
+    assert.equal(sold.json.total_kopecks, 9000, 'цена воды из шаблона не изменилась');
+    // Группа, не привязанная к товару шаблона, в жёстком режиме правится.
+    const own = await req('POST', `/api/clubs/${CLUB_A}/catalog/modifier-groups`, manager, { name: 'Свои', modifiers: [{ name: 'А', price_delta_kopecks: 100 }] });
+    assert.equal((await req('PATCH', `/api/catalog/modifiers/${own.json.modifiers[0].id}`, manager, { price_delta_kopecks: 200 })).status, 200);
+    // Старая отрицательная надбавка в такой группе: исправить (обнулить) можно, поднять — нельзя.
+    await h.q('update bl.modifiers set price_delta_kopecks = -500 where id = $1', [mod]);
+    assert.equal((await req('PATCH', `/api/catalog/modifiers/${mod}`, manager, { price_delta_kopecks: 700 })).status, 409);
+    assert.equal((await req('PATCH', `/api/catalog/modifiers/${mod}`, manager, { price_delta_kopecks: 0 })).status, 200);
+    // Мягкий режим — правки разрешены.
+    await h.q("update bl.networks set menu_mode = 'soft' where id = $1", [net]);
+    assert.equal((await req('PATCH', `/api/catalog/modifiers/${mod}`, manager, { price_delta_kopecks: 100 })).status, 200);
+    assert.equal((await req('POST', `/api/catalog/modifier-groups/${grp.json.id}/modifiers`, manager, { name: 'Большой', price_delta_kopecks: 500 })).status, 201);
+    await h.q('update bl.networks set menu_template = false where id = $1', [net]);
+    // Вернуть воду без привязанной группы (другие тесты файла продают её).
+    await h.q('update bl.product_modifier_groups set active = false where product_id = $1', [P.water]);
+  });
+});
+
 describe('Н-3. Управляющий сети без денег по способам оплаты', { skip: SKIP }, () => {
   const METHOD_VALUES = new Set(['cash', 'card_terminal', 'sbp', 'card']);
   const HIDDEN_KEYS = new Set(['method', 'methods', 'payment_method', 'by_method', 'cash_sales_kopecks', 'cash_refunds_kopecks', 'received_kopecks', 'change_kopecks']);

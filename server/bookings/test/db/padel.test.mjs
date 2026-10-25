@@ -177,3 +177,43 @@ describe('опоздание по брони корта с предоплато�
     assert.equal(r.json.amount_kopecks, 163300);
   });
 });
+
+describe('Н-5 pentester M5.8: бронь на 0 ₽', { skip }, () => {
+  let h;
+  let guest;
+
+  before(async () => {
+    h = await setup({ settings: { booking_prepayment: 'none' } });
+    guest = await h.login('+79996000031');
+  });
+  after(async () => {
+    await h?.close();
+  });
+
+  it('тариф даёт 0 ₽ (копеечный, записанный до №220): бронь гостем и ресепшном — 400, брони нет', async () => {
+    await h.q("update bl.tariff_rules set price_per_slot = 49, price_per_hour = 33 where resource_type = 'padel_court' and active");
+    h.clock.set(T0);
+    const r = await h.request('POST', '/api/bookings', { token: guest.token, body: { resource_id: COURT_1, starts_at: h.at(120), minutes: 90 } });
+    assert.deepEqual([r.status, r.json], [400, { error: 'bad_request' }]);
+    const staff = await h.login('+70000000004');
+    const byStaff = await h.request('POST', `/api/clubs/${CLUB_A}/bookings`, { token: staff.token, club: CLUB_A, body: { resource_id: COURT_1, starts_at: h.at(120), minutes: 90, name: 'Иван', phone: '+79996000099' } });
+    assert.deepEqual([byStaff.status, byStaff.json], [400, { error: 'bad_request' }]);
+    assert.equal((await h.q('select count(*)::int as n from bl.bookings'))[0].n, 0);
+  });
+
+  it('бронь на 0 ₽, созданная раньше: старт — 400, сессии и света нет; обычная бронь стартует', async () => {
+    await h.q("update bl.tariff_rules set price_per_slot = 240000, price_per_hour = 160000 where resource_type = 'padel_court' and active");
+    h.clock.set(T0);
+    const ok = await h.request('POST', '/api/bookings', { token: guest.token, body: { resource_id: COURT_1, starts_at: h.at(120), minutes: 90 } });
+    assert.equal(ok.status, 201, ok.text);
+    await h.q('update bl.bookings set amount_kopecks = 0 where id = $1', [ok.json.id]);
+    h.clock.set(T0 + 120 * MIN);
+    const start = await h.request('POST', `/api/bookings/${ok.json.id}/start`, { token: guest.token, body: { code: await h.code(COURT_1) } });
+    assert.deepEqual([start.status, start.json], [400, { error: 'bad_request' }]);
+    assert.equal((await h.q('select count(*)::int as n from bl.sessions where resource_id = $1', [COURT_1]))[0].n, 0);
+    // Норма: сумма брони больше нуля — старт без доплаты, когда предоплата покрывает (см. тест оплаты и старта выше).
+    await h.q('update bl.bookings set amount_kopecks = 240000 where id = $1', [ok.json.id]);
+    const again = await h.request('POST', `/api/bookings/${ok.json.id}/start`, { token: guest.token, body: { code: await h.code(COURT_1) } });
+    assert.equal(again.status, 200, again.text);
+  });
+});

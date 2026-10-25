@@ -395,6 +395,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const endsAt = new Date(ms(startsAt) + minutes * MIN);
     await checkTable(db, resourceId, startsAt, endsAt, t, { userId });
     const amount = await priceOf(db, resourceId, startsAt, minutes);
+    // Бронь на 0 ₽ — не бронь: тариф даёт 0 ₽ после округления (№163, №220); бесплатная игра — ручным действием.
+    if (!(amount > 0)) fail('bad_request', 'сумма брони 0');
     const prepayment = prepaymentFor(settings, amount);
     const status = prepayment > 0 ? 'pending_payment' : 'confirmed';
     const payUntil = prepayment > 0 ? new Date(Math.min(ms(t) + settings.payMinutes * MIN, ms(startsAt))) : null;
@@ -443,6 +445,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const endsAt = new Date(ms(startsAt) + body.minutes * MIN);
     await checkTable(db, resourceId, startsAt, endsAt, t);
     const amount = await priceOf(db, resourceId, startsAt, body.minutes);
+    if (!(amount > 0)) fail('bad_request', 'сумма брони 0');
     const id = await insertBooking(db, {
       clubId, resourceId, userId: null, guestName: name, guestPhone: phone, source, createdBy: staffId, startsAt, endsAt,
       status: 'confirmed', mode: 'none', amount, prepayment: 0, payUntil: null, hold: Math.min(settings.holdMinutes, body.minutes), t,
@@ -709,6 +712,9 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     const settings = bookingSettings(club.settings);
     const startMs = ms(b.starts_at);
     if (ms(t) >= startMs + b.hold_minutes * MIN || ms(t) >= ms(b.ends_at)) fail('booking_expired');
+    // Бронь на 0 ₽ (создана до проверки суммы, при копеечном тарифе) не стартует без оплаты. due = 0 допустим только
+    // когда сумма брони больше нуля и покрыта предоплатой.
+    if (!(Number(b.amount_kopecks) > 0)) fail('bad_request', 'сумма брони 0');
     if (ms(t) < startMs - settings.earlyMaxMinutes * MIN) fail('too_early');
     // Стол: чужая игра, сервис, чужой pending; при раннем приходе — чужая бронь до нашей.
     if (await openSession(db, b.resource_id)) fail('table_busy');

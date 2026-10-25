@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { compileRules, createCalendar, ruleAt } from '../../tariffs/engine.mjs';
-import { applyTemplate, checkWeek, normalizeRules, TEMPLATES, templatesJson, weekProblem } from '../tariffs.mjs';
+import { applyTemplate, assertPayable, checkWeek, normalizeRules, TEMPLATES, templatesJson, weekProblem } from '../tariffs.mjs';
 import { KINDS } from '../hall.mjs';
 
 const rule = (days, from, to, price = 50000, kind = null) => ({ kind, days, from, to, price_per_hour_kopecks: price >= 1 && price <= 9 ? price * 50000 : price, min_minutes: 30, step_minutes: 1 });
@@ -86,6 +86,17 @@ describe('разбор правил', () => {
       );
     }
     assert.equal(normalizeRules([rule([1], '06:00', '07:00', 3000)])[0].price_per_hour_kopecks, 3000);
+  });
+
+  it('Н-5 pentester M5.8: порог от округления клуба — при округлении 10 ₽ цена 4 ₽ за слот округляется в 0 и отклоняется', () => {
+    const slotRule = (price) => normalizeRules([{ kind: 'padel_court', days: [1, 2, 3, 4, 5, 6, 7], from: '06:00', to: '06:00', slot_minutes: 90, price_per_slot_kopecks: price }]);
+    const hourly = (price, step = 60) => normalizeRules([{ kind: null, days: [1, 2, 3, 4, 5, 6, 7], from: '06:00', to: '06:00', price_per_hour_kopecks: price, min_minutes: 60, step_minutes: step }]);
+    assert.doesNotThrow(() => assertPayable(slotRule(400), 100), 'округление рубль: 4 ₽ — можно');
+    assert.throws(() => assertPayable(slotRule(400), 1000), (e) => e.status === 400 && e.message.includes('rules[0].price_per_slot_kopecks'));
+    assert.throws(() => assertPayable(slotRule(499), 1000), (e) => e.status === 400);
+    assert.doesNotThrow(() => assertPayable(slotRule(500), 1000), '5 ₽ → 10 ₽ после округления');
+    assert.throws(() => assertPayable(hourly(499), 1000), (e) => e.status === 400, 'час за шаг 60: 4,99 ₽ → 0');
+    assert.doesNotThrow(() => assertPayable(hourly(500), 1000));
   });
 
   it('Н-2 pentester M5.8: цена, дающая 0 ₽ после округления для наименьшей единицы, — 400 с полем цены', () => {

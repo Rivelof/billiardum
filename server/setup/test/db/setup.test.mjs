@@ -205,6 +205,19 @@ describe('тарифы (№156)', { skip: SKIP }, () => {
     // M5.8 Н-2: 1 копейка в час даёт 0 ₽ после округления — 400, как и 0.
     const penny = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: applyTemplate('single', { price: 1 }), reason: 'Копейка' });
     assert.deepEqual([penny.status, penny.json], [400, { error: 'bad_request' }]);
+    // M5.8 Н-5: порог — от округления цен клуба. При округлении 10 ₽ цена 299,99 ₽/ч (шаг 1 минута) даёт 4 ₽ → 0 ₽.
+    await t.admin.query(`update bl.clubs set settings = settings || '{"price_rounding_kopecks": 1000}'::jsonb where id = $1`, [CLUB_A]);
+    const coarse = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: applyTemplate('single', { price: 29999 }), reason: 'Округление' });
+    assert.deepEqual([coarse.status, coarse.json], [400, { error: 'bad_request' }]);
+    assert.ok(t.log.lines.some((e) => JSON.stringify(e).includes('below 1 RUB after rounding')));
+    await t.admin.query(`update bl.clubs set settings = settings - 'price_rounding_kopecks' where id = $1`, [CLUB_A]);
+    // Проверка при выкладке находит остаточный копеечный тариф и ничего не меняет.
+    const { findLowTariffs } = await import('../../../../scripts/db-check-tariffs.mjs');
+    assert.deepEqual(await findLowTariffs(t.admin), []);
+    await t.admin.query("update bl.tariff_rules set price_per_hour = 49, step_minutes = 60 where club_id = $1 and resource_type = 'billiard_pool' and active", [CLUB_A]);
+    const low = await findLowTariffs(t.admin);
+    assert.ok(low.length >= 1 && low.every((x) => x.kind === 'club_rule' && x.club_id === CLUB_A && x.smallest_unit_kopecks === 0), JSON.stringify(low));
+    await t.admin.query("update bl.tariff_rules set price_per_hour = 50000, step_minutes = 1 where club_id = $1 and resource_type = 'billiard_pool' and active", [CLUB_A]);
     // №163 (pentester Н-1): тариф 0 ₽/ч — 400 bad_request; бесплатная игра — только ручным действием.
     const zero = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: applyTemplate('single', { price: 0 }), reason: 'Бесплатно' });
     assert.deepEqual([zero.status, zero.json], [400, { error: 'bad_request' }]);

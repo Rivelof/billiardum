@@ -163,15 +163,28 @@ export function hourlyOfSlot(pricePerSlot, slotMinutes) {
 /** Минута 'HH:MM' (24:00 → 0). */
 const minuteOf = (hhmm) => parseLocalTime(hhmm);
 
-/** Наименьшая оплачиваемая сумма: 1 ₽ (округление цен клуба — до рубля и крупнее, price_rounding_kopecks). */
+/** Наименьшая оплачиваемая сумма: 1 ₽ (и не меньше шага округления цен клуба, price_rounding_kopecks). */
 export const MIN_PAYABLE_KOPECKS = 100;
 
 /**
- * Цена должна давать сумму не меньше 1 ₽ после округления «половина вверх» (№44) для наименьшей
- * оплачиваемой единицы: слот — целиком, час — на шаг (продление). Иначе копеечная цена даёт игру за 0 ₽.
+ * Цена должна давать сумму не меньше 1 ₽ (и не меньше шага округления клуба) после округления «половина
+ * вверх» (№44) для наименьшей оплачиваемой единицы: слот — целиком, час — на шаг (продление). Иначе
+ * копеечная цена даёт игру за 0 ₽. rounding — округление клуба (по умолчанию рубль).
  */
-function payableUnit(where, field, numerator, denominator) {
-  if (roundAmount(numerator, MIN_PAYABLE_KOPECKS, denominator) < MIN_PAYABLE_KOPECKS) throw bad(`${where}.${field}: below 1 RUB after rounding`);
+function payableUnit(where, field, numerator, denominator, rounding = MIN_PAYABLE_KOPECKS) {
+  if (roundAmount(numerator, rounding, denominator) < Math.max(MIN_PAYABLE_KOPECKS, rounding)) throw bad(`${where}.${field}: below 1 RUB after rounding`);
+}
+
+/**
+ * Проверка нормализованных правил с округлением клуба (M5.8, Н-5): при округлении крупнее рубля цена,
+ * дающая 0 ₽ после него, тоже отклоняется. normalizeRules проверяет только порог в рубль.
+ */
+export function assertPayable(rules, rounding) {
+  rules.forEach((r, i) => {
+    const where = `rules[${i}]`;
+    if (r.slot_minutes) payableUnit(where, 'price_per_slot_kopecks', r.price_per_slot_kopecks * r.slot_minutes, r.slot_minutes, rounding);
+    else payableUnit(where, 'price_per_hour_kopecks', r.price_per_hour_kopecks * r.step_minutes, 60, rounding);
+  });
 }
 
 /** Разбор правил из тела запроса → нормализованные правила; ошибка формы — 400 bad_request. */
@@ -420,7 +433,16 @@ export const compactRules = (list) =>
  */
 export async function checkClubRules(db, clubId, rules, extra = {}) {
   const club = await clubRow(db, clubId);
-  const { dayStart } = clubTariffSettings(club.settings);
+  const { dayStart, rounding } = clubTariffSettings(club.settings);
+  // Округление цен клуба крупнее рубля: цена не должна округляться в 0 ₽ (M5.8, Н-5); в ошибке — club_id шаблона сети.
+  if (rounding > MIN_PAYABLE_KOPECKS) {
+    try {
+      assertPayable(rules, rounding);
+    } catch (err) {
+      if (err instanceof HttpError && extra.club_id) throw new HttpError(err.status, err.code, { detail: err.message, data: { club_id: extra.club_id } });
+      throw err;
+    }
+  }
   // Правила клуба меняет один запрос за раз.
   await db.query("select pg_advisory_xact_lock(hashtextextended('bl.setup.tariffs:' || $1, 0))", [clubId]);
   const problem = checkWeek(rules, { dayStart, activeKinds: await activeKindsOf(db, clubId) });
