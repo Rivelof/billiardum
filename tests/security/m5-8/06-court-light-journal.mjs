@@ -8,7 +8,7 @@
 //
 // Запуск: node tests/security/m5-8/06-court-light-journal.mjs     (≈ 4–5 минут)
 
-import { COURT_CODES, api, emuSucceed, login, ok, providerId, pay, quote, runner, sim, sleep, startGame, stopGame, tableByCode, waitFor, waitFree } from './lib.mjs';
+import { COURT_CODES, api, emuSucceed, login, ok, providerId, pay, quote, runner, sim, sleep, stopGame, tableByCode, waitFor, waitFree } from './lib.mjs';
 
 const r = runner('M5.8 / 6: корт 102 — свет, журнал, команды');
 const CODE = COURT_CODES[102];

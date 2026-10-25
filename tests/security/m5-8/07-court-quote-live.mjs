@@ -10,7 +10,7 @@
 //
 // Запуск: node tests/security/m5-8/07-court-quote-live.mjs
 
-import { COURT_CODES, api, login, ok, pay, quote, runner, tableByCode, waitFree } from './lib.mjs';
+import { COURT_CODES, login, ok, pay, quote, runner, tableByCode, waitFree } from './lib.mjs';
 
 const r = runner('M5.8 / 7: котировка корта на стенде');
 const CODE = COURT_CODES[101];
@@ -35,7 +35,7 @@ try {
   await must400('minutes: 89.5', { minutes: 89.5 });
   await must400('minutes строкой', { minutes: '90' });
   await must400('minutes: 99999999', { minutes: 99_999_999 });
-  await must400('minutes: 1e309', { minutes: 1e309 });
+  await must400('minutes: Number.POSITIVE_INFINITY', { minutes: Number.POSITIVE_INFINITY });
   await must400('minutes не задано', {});
 
   // Допустимые слоты: сумма = k × цена слота окна.

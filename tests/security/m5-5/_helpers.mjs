@@ -58,17 +58,14 @@ export async function addClub(token, networkId, clubId) {
 export function check(results, name, condition, detail = '') {
   const passed = Boolean(condition);
   results.push({ name, passed, detail });
-  // eslint-disable-next-line no-console
   console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? `  — ${detail}` : ''}`);
   return passed;
 }
 
 export function summary(results) {
   const failed = results.filter((r) => !r.passed);
-  // eslint-disable-next-line no-console
   console.log(`\n== ${results.length - failed.length}/${results.length} PASS ==`);
   if (failed.length) {
-    // eslint-disable-next-line no-console
     console.log('FAILED:', failed.map((r) => r.name).join('; '));
   }
   return failed;

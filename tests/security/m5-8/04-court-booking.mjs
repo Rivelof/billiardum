@@ -49,7 +49,7 @@ try {
     return rate?.per_slot_kopecks ?? null;
   };
   let g = await guest();
-  let b1 = keep(await book(g, at(9, 0), SLOT), g);
+  const b1 = keep(await book(g, at(9, 0), SLOT), g);
   r.check('бронь 1 слот (90 мин) создана', b1.status === 201, `${b1.status} ${b1.json?.error ?? ''}`);
   const p1 = perSlotAt(at(9, 0));
   r.check('цена брони 1 слот = цена слота из расписания', b1.json?.amount_kopecks === p1 && p1 > 0, `${b1.json?.amount_kopecks} vs ${p1}`);
