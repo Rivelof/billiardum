@@ -11,6 +11,7 @@
 import { BookingError } from './errors.mjs';
 import { LIVE, loadClub, safely, SESSION_OPEN, workdayAt, workdayWindow } from './queries.mjs';
 import { bookingSettings } from './settings.mjs';
+import { familyOf, isSlotType, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
 
 const MIN = 60_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -44,7 +45,9 @@ export function freeIntervals(from, to, busy) {
 }
 
 /**
- * Цены стола по минутам окна: [{ from, to, per_hour_kopecks }] (мс); минуты без правила — пропуск.
+ * Цены стола по минутам окна: [{ from, to, per_hour_kopecks, per_slot_kopecks?, slot_minutes? }] (мс);
+ * минуты без правила — пропуск. Корт (M5.8 №204): цена слота и длина слота; per_hour_kopecks у него —
+ * справочная цена часа правила (точная сумма — по цене слота: price_per_slot / slot_minutes за минуту).
  * tariffs — server/tariffs (tariffContext) и engine (ruleAt) money.
  */
 async function ratesFor(db, deps, resourceId, fromMs, toMs) {
@@ -54,8 +57,10 @@ async function ratesFor(db, deps, resourceId, fromMs, toMs) {
     const rule = deps.engine.ruleAt(t.rules, t.calendar, m);
     const last = out[out.length - 1];
     if (!rule) continue;
-    if (last && last.to === m && last.per_hour_kopecks === rule.price) last.to = m + MIN;
-    else out.push({ from: m, to: m + MIN, per_hour_kopecks: rule.price });
+    const perHour = rule.hourly ?? rule.price;
+    const perSlot = rule.slot ? rule.price : null;
+    if (last && last.to === m && last.per_hour_kopecks === perHour && (last.per_slot_kopecks ?? null) === perSlot) last.to = m + MIN;
+    else out.push({ from: m, to: m + MIN, per_hour_kopecks: perHour, ...(perSlot === null ? {} : { per_slot_kopecks: perSlot, slot_minutes: rule.slot }) });
   }
   return out;
 }
@@ -80,7 +85,7 @@ export async function availability(db, { deps, clock, log }, { clubId, date }) {
   const nowMs = now.getTime();
 
   const { rows: resources } = await db.query(
-    'select id, number, type, title, plan_x, plan_y, plan_rotation from bl.resources where active order by number',
+    'select id, number, type, title, plan_x, plan_y, plan_rotation from bl.resources where active order by bl.resource_family(type) desc, number',
   );
   const { rows: sessions } = await db.query(
     `select resource_id, started_at, paid_until, grace_ms from bl.sessions where status = any($1::text[])`,
@@ -141,7 +146,15 @@ export async function availability(db, { deps, clock, log }, { clubId, date }) {
       plan: { x: r.plan_x, y: r.plan_y, rotation: r.plan_rotation },
       busy: clipped.map((b) => ({ from: iso(b.from), to: iso(b.to), kind: b.kind })),
       free: free.map((f) => ({ from: iso(f.from), to: iso(f.to) })),
-      rates: rates.map((x) => ({ from: iso(x.from), to: iso(x.to), per_hour_kopecks: x.per_hour_kopecks })),
+      rates: rates.map((x) => ({
+        from: iso(x.from), to: iso(x.to), per_hour_kopecks: x.per_hour_kopecks,
+        ...(x.slot_minutes ? { per_slot_kopecks: x.per_slot_kopecks, slot_minutes: x.slot_minutes } : {}),
+      })),
+      // Вид ресурса (M5.8): семья — слово «стол»/«корт»; у корта бронь блоками слота (slot_minutes,
+      // длительность — кратная слоту, от слота до max_minutes), у стола slot_minutes — null.
+      kind: TYPE_TO_KIND[r.type] ?? null,
+      family: familyOf(r.type),
+      slot_minutes: isSlotType(r.type) ? (rates.find((x) => x.slot_minutes)?.slot_minutes ?? null) : null,
     });
   }
   return {

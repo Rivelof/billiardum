@@ -11,6 +11,7 @@
 //         100 %) с чеком зачёта на удержанное, остальное вернуть с чеком возврата предоплаты.
 // db — транзакция вызывающего (booking) с контекстом клуба.
 
+import { resourceName } from '../lib/resource-kinds.mjs';
 import { enterClub } from './context.mjs';
 import { MoneyError } from './errors.mjs';
 import { formatValue } from './yookassa.mjs';
@@ -36,9 +37,12 @@ function item(description, amountKopecks, vatCode, paymentMode) {
   };
 }
 
-async function tableNumber(db, resourceId) {
-  const { rows } = await db.query('select number from bl.resources where id = $1', [resourceId]);
-  return rows[0]?.number ?? null;
+/** Название ресурса для чека: { nom: «стол 3» | «корт 1», gen: «стола 3» | «корта 1» } (M5.8) или null. */
+async function tableLabel(db, resourceId) {
+  const { rows } = await db.query('select number, type from bl.resources where id = $1', [resourceId]);
+  if (!rows[0]) return null;
+  const { number, type } = rows[0];
+  return { nom: resourceName(type, number, { capital: false }), gen: resourceName(type, number, { case: 'gen', capital: false }) };
 }
 
 export async function createPrepayment(db, deps, config, args) {
@@ -57,8 +61,8 @@ export async function createPrepayment(db, deps, config, args) {
   const { rows } = await db.query('select phone from bl.users where id = $1', [userId]);
   const phone = rows[0]?.phone ?? null;
   if (!receiptPhone(phone)) throw new MoneyError('phone_required');
-  const number = await tableNumber(db, resourceId);
-  if (number === null) throw new MoneyError('not_found', 'стол');
+  const label = await tableLabel(db, resourceId);
+  if (label === null) throw new MoneyError('not_found', 'стол');
   // Попытки оплаты брони (№116): оплаченная и не зачтённая — already_paid; брошенная (pending) с той же
   // суммой и способом — та же; иначе — новая попытка (старая истечёт в ЮKassa сама; если гость всё же
   // оплатит обе, бронь вернёт лишнюю: forfeitPrepayment с percent 0).
@@ -73,7 +77,7 @@ export async function createPrepayment(db, deps, config, args) {
   const n = tries.length;
   const paymentId = same ? same.id : n === 0 ? bookingPaymentId(bookingId) : stableUuid(`bl.payment/booking/${bookingId}/${n}`);
   const idempotenceKey = same ? same.idempotence_key : n === 0 ? `bk-${bookingId}` : `bk-${bookingId}-${n}`;
-  const items = [item(args.description ?? `Предоплата брони, стол ${number}`, amountKopecks, settings.vat_code, 'full_prepayment')];
+  const items = [item(args.description ?? `Предоплата брони, ${label.nom}`, amountKopecks, settings.vat_code, 'full_prepayment')];
   const receipt = { customer: { phone: receiptPhone(phone) }, items, ...(settings.tax_system_code != null ? { tax_system_code: settings.tax_system_code } : {}) };
   return createYooKassaPayment(db, deps, config, {
     settings,
@@ -87,7 +91,7 @@ export async function createPrepayment(db, deps, config, args) {
     capture: true,
     receipt,
     confirmation: { type: 'redirect', returnUrl: ownUrl ?? returnUrl(config, paymentId) },
-    description: `Бронь стола ${number}`,
+    description: `Бронь ${label.gen}`,
     metadata: { booking_id: bookingId },
     bookingId,
     resourceId,
@@ -128,11 +132,11 @@ export async function settlePrepayment(db, deps, { paymentId, sessionId = null }
     [p.id, amount, now, sessionId],
   );
   const settings = await loadPaymentSettings(db, p.club_id);
-  const number = await tableNumber(db, p.resource_id);
+  const label = (await tableLabel(db, p.resource_id)) ?? { nom: 'стол', gen: 'стола' };
   const receiptId = await queueSettlementReceipt(db, deps, {
     source: p,
     forPaymentId: p.id,
-    items: [item(`Игра, стол ${number} (бронь)`, amount, settings.vat_code, 'full_payment')],
+    items: [item(`Игра, ${label.nom} (бронь)`, amount, settings.vat_code, 'full_payment')],
     amountKopecks: amount,
     now,
   });
@@ -163,7 +167,7 @@ export async function forfeitPrepayment(db, deps, config, { paymentId, percent =
   const amount = Number(p.amount_kopecks);
   const kept = Math.floor((amount * pct * 2 + 100) / 200); // «половина вверх»
   const back = amount - kept;
-  const number = await tableNumber(db, p.resource_id);
+  const label = (await tableLabel(db, p.resource_id)) ?? { nom: 'стол', gen: 'стола' };
   let refundId = null;
   if (back > 0) {
     const r = await refund(
@@ -173,8 +177,8 @@ export async function forfeitPrepayment(db, deps, config, { paymentId, percent =
         amountKopecks: back,
         reason,
         key: `bkf-${p.id}`,
-        items: [item(`Предоплата брони, стол ${number}`, back, settings.vat_code, 'full_prepayment')],
-        description: `Возврат предоплаты брони, стол ${number}`,
+        items: [item(`Предоплата брони, ${label.nom}`, back, settings.vat_code, 'full_prepayment')],
+        description: `Возврат предоплаты брони, ${label.nom}`,
       },
       { deps, config },
     );
@@ -188,7 +192,7 @@ export async function forfeitPrepayment(db, deps, config, { paymentId, percent =
     await queueSettlementReceipt(db, deps, {
       source: p,
       forPaymentId: p.id,
-      items: [item(`Бронь стола ${number}: удержание по правилам клуба`, kept, settings.vat_code, 'full_payment')],
+      items: [item(`Бронь ${label.gen}: удержание по правилам клуба`, kept, settings.vat_code, 'full_payment')],
       amountKopecks: kept,
       now,
     });

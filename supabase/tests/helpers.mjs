@@ -149,3 +149,12 @@ export async function existingRoles(pool) {
   const { rows } = await pool.query('select rolname, rolsuper, rolcanlogin, rolbypassrls from pg_roles order by rolname');
   return rows;
 }
+
+/**
+ * Корты сида (M5.8, seed.d/1300_padel.sql) — вне работы. Для тестов сценариев столов, которые
+ * считают столы, ёмкость и тарифы клуба сида на его 8 столах; корты проверяют свои тесты (*padel*).
+ * @param {{ query: Function }} pool суперпользователь
+ */
+export async function deactivateSeedCourts(pool) {
+  await pool.query("update bl.resources set active = false where club_id = 'c1000000-0000-4000-8000-000000000001' and type = 'padel_court'");
+}

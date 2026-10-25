@@ -2,6 +2,7 @@
 // (RLS отсекает чужое). Время — только из ctx.clock (параметром), не now() базы.
 
 import { randomUUID } from 'node:crypto';
+import { maxPlayers } from '../lib/resource-kinds.mjs';
 import { LightError } from './errors.mjs';
 
 export const OPEN_STATUSES = Object.freeze(['active', 'ending', 'grace']);
@@ -159,13 +160,20 @@ export async function participants(db, sessionId) {
   return rows;
 }
 
+/**
+ * Добавить участника игры. Игрок (не плательщик) — только пока игроков меньше предела вида ресурса
+ * (корт — 4, M5.8 №205; стол — 20): сверх предела оплата продления проходит, но игрок не добавляется.
+ * Вызывающий держит строку сессии (FOR UPDATE), поэтому подсчёт не гоняется с другим «Я играю».
+ */
 export async function addParticipant(db, { session, userId, role, now }) {
+  const max = role === 'payer' ? null : maxPlayers(session.resource_type);
   const { rows } = await db.query(
     `insert into bl.session_participants (session_id, club_id, user_id, role, ordinal, joined_at)
      select $1, $2, $3, $4, coalesce(max(ordinal), 0) + 1, $5 from bl.session_participants where session_id = $1
+     having $6::int is null or count(*) < $6::int
      on conflict (session_id, user_id) do nothing
      returning ordinal`,
-    [session.id, session.club_id, userId, role, now],
+    [session.id, session.club_id, userId, role, now, max],
   );
   return rows.length > 0;
 }

@@ -11,6 +11,7 @@ import { CLUB_A, MANAGER_A, OWNER_A, startTestApp } from '../../../test/db/helpe
 import { makeXlsx, makeZip } from '../../../catalog/test/zip-fixture.mjs';
 import { applyTemplate } from '../../tariffs.mjs';
 import { activeCount, coversWeek, printedAt, printStatus, weekCoverage } from '../../index.mjs';
+import { deactivateSeedCourts } from '../../../../supabase/tests/helpers.mjs';
 
 const SKIP = !process.env.DATABASE_ADMIN_URL;
 const CLUB_X = 'c7000000-0000-4000-8000-000000000007';
@@ -28,6 +29,8 @@ before(async () => {
   const config = { publicHost: 'bl.test' };
   const routes = await loadRoutes({ config, only: ['auth.mjs', 'setup.mjs', 'owner.mjs', 'staff.mjs', 'catalog.mjs'] });
   t = await startTestApp({ routes, notifyWorker: false });
+  // Мастер M5.1 — на столах сида; корты сида (M5.8) — в setup/test/db/padel.test.mjs.
+  await deactivateSeedCourts(t.admin);
   // Второй клуб — для изоляции.
   await t.admin.query(`
     insert into bl.users (id, phone) values ('${OWNER_X}', '+70000000777');

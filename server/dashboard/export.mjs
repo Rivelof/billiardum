@@ -3,7 +3,7 @@
 
 import { HttpError } from '../http/errors.mjs';
 import { ACTION_LABELS, dec, rub, ruDateTime, toCsv, TYPE_LABELS } from './csv.mjs';
-import { METHODS } from './day.mjs';
+import { matchKind, METHODS } from './day.mjs';
 import { bookingsDaily, collect, dailyRows, namesFor, shiftRow } from './service.mjs';
 import { ruDate } from './time.mjs';
 
@@ -40,7 +40,7 @@ export async function buildExport(db, { clubs, enter, q, table, now, all }) {
   } else if (table === 'tables') {
     headers = head(['Стол', 'Название', 'Тип', 'Игр', 'Часов игры', 'Часов сервиса', 'Выручка, ₽', 'Загрузка, %']);
     rows = [...a.resources.values()]
-      .filter((r) => (q.kind === null || r.type === q.kind) && (r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0))
+      .filter((r) => matchKind(r.type, q.kind) && (r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0))
       .sort((x, y) => (x.club_id === y.club_id ? x.number - y.number : x.club_id < y.club_id ? -1 : 1))
       .map((r) => row(r.club_id, [r.number, r.title ?? '', TYPE_LABELS[r.type] ?? r.type, r.games, dec(Math.round((r.play_minutes / 60) * 10) / 10), dec(Math.round((r.service_minutes / 60) * 10) / 10), rub(r.revenue_kopecks - r.refunds_kopecks), dec(pctOf(r.play_minutes, r.capacity_minutes))]));
   } else if (table === 'hourly') {

@@ -7,7 +7,7 @@ import { slugify, uniqueSlug } from './slug.mjs';
 
 const URL_RE = /^https:\/\/[^\s<>"]{3,300}$/;
 const TG_RE = /^https:\/\/t\.me\/[A-Za-z0-9_]{3,64}$/;
-const DISC = ['pyramid', 'pool', 'snooker'];
+const DISC = ['pyramid', 'pool', 'snooker', 'padel'];
 
 /** Описательные поля карточки из тела запроса (клуб, оператор, «Добавить клуб»). */
 export function cardFields(body = {}, { partial = true } = {}) {
@@ -48,7 +48,7 @@ export function cardFields(body = {}, { partial = true } = {}) {
     out.around_the_clock = body.around_the_clock;
   }
   if (body.disciplines !== undefined) {
-    if (!Array.isArray(body.disciplines) || body.disciplines.length > 3 || !body.disciplines.every((d) => DISC.includes(d))) fail('bad_request', 'disciplines');
+    if (!Array.isArray(body.disciplines) || body.disciplines.length > DISC.length || !body.disciplines.every((d) => DISC.includes(d))) fail('bad_request', 'disciplines');
     out.disciplines = [...new Set(body.disciplines)];
   }
   if (body.tables_count !== undefined) {

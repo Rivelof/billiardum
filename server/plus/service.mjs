@@ -8,6 +8,7 @@
 //   * чужие профили, таблицы, кандидаты и «друзья в клубе» — только функции bl.plus_* (0850).
 // Время — только из clock (параметром в базу), не now() базы.
 
+import { isCourt } from '../lib/resource-kinds.mjs';
 import { setContext, afterCommit } from '../lib/store.mjs';
 import { formatDate, formatTime } from '@billiardum/shared/format';
 import {
@@ -379,6 +380,8 @@ export function createPlusService({ deps, log, clock }) {
     const { rows: res } = await db.query('select type from bl.resources where id = $1', [s.resource_id]);
     const tableDiscipline = DISCIPLINE_OF_TYPE[res[0]?.type];
     if (tableDiscipline && tableDiscipline !== discipline) fail('bad_request', 'discipline of table');
+    // Падел-корт (M5.8 №205): рейтинг падела — в бэклоге; партия бильярда с игры на корте не считается.
+    if (isCourt(res[0]?.type)) fail('bad_request', 'discipline of court');
     const b = await briefs(db, [userId, opponentId]);
     if (!b.get(userId)?.nick) fail('no_profile', 'own');
     if (!b.get(opponentId)?.nick) fail('no_profile', 'opponent');

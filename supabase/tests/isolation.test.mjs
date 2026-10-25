@@ -151,7 +151,8 @@ describe('узкие функции SECURITY DEFINER', () => {
       assert.equal(a.rows[0].club, CLUB_A);
       assert.equal(b.rows[0].club, CLUB_B);
       assert.equal(none.rows[0].club, null);
-      assert.equal(total.rows[0].n, 9);
+      // Сид: 8 столов и 2 корта (M5.8) в клубе A, 1 стол в клубе B.
+      assert.equal(total.rows[0].n, 11);
     });
   });
 

@@ -10,6 +10,13 @@
 //   price_per_hour_kopecks, min_minutes (0–1440), step_minutes (1–60) }. Неделя — все 24 часа.
 //   В ответе правило несёт оба набора полей: kind и resource_type, from/to и start_local/end_local.
 //
+// Корт (M5.8 №204): правило вида со слотами (kind 'padel_court') — { kind: 'padel_court', days, from, to,
+//   slot_minutes: 60|90|120, price_per_slot_kopecks }: цена за слот, минимум и шаг — слот (min_minutes и
+//   step_minutes ответа равны слоту, в теле не нужны). Длина слота — одна на вид в клубе (настройка клуба
+//   в мастере тарифов; разные — 400 bad_request `slot_minutes`). price_per_hour_kopecks правила слота —
+//   справочно (цена слота за час, округлённая), считает движок по цене слота. kind: null — только столы;
+//   у корта — свои правила. Ответ GET/PUT несёт slots: { padel_court: 90 }.
+//
 // Неделя проверяется так же, как её считает движок (server/tariffs/engine.mjs, №43): по рабочим
 // суткам клуба в его часовом поясе (сутки начинаются в day_start_local, по умолчанию 06:00;
 // интервал, пересекающий начало суток, принадлежит суткам, в которых начался). Для каждого типа
@@ -28,13 +35,17 @@ import { appendAudit } from '../lib/audit.mjs';
 import { clubTariffSettings } from '../tariffs/index.mjs';
 import { formatLocalTime, parseLocalTime } from '../tariffs/engine.mjs';
 import { KIND_OF_TYPE, KINDS } from './hall.mjs';
+import { isSlotType, SLOT_MINUTES, TABLE_KINDS } from '../lib/resource-kinds.mjs';
 import { cleanReason, clubLive, manualAction } from './mode.mjs';
 
 const DAY = 1440;
 const WEEK = 7 * DAY;
 export const MAX_RULES = 100;
 export const MAX_PRICE_KOPECKS = 100_000_000;
-const ALL_KINDS = Object.keys(KINDS);
+// kind: null («все типы») — все виды столов; корт — только своими правилами (M5.8).
+const ALL_KINDS = [...TABLE_KINDS];
+const RULE_KINDS = Object.keys(KINDS);
+const slotKind = (kind) => kind !== null && isSlotType(KINDS[kind]);
 const HHMM = /^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$/;
 const bad = (detail) => new HttpError(400, 'bad_request', { detail });
 
@@ -120,19 +131,30 @@ export const TEMPLATES = Object.freeze([
 
 export const TEMPLATE_DEFAULTS = Object.freeze({ min_minutes: 30, step_minutes: 1 });
 
-/** Ответ GET /api/tariff-templates. */
+/** Ответ GET /api/tariff-templates. slot — для кортов: длины слота на выбор и по умолчанию (M5.8). */
 export function templatesJson() {
-  return { defaults: { ...TEMPLATE_DEFAULTS }, templates: TEMPLATES.map((t) => ({ ...t, rules: t.rules.map((r) => ({ ...r, days: [...r.days] })) })) };
+  return {
+    defaults: { ...TEMPLATE_DEFAULTS },
+    slot: { options: [...SLOT_MINUTES], default_minutes: 90 },
+    templates: TEMPLATES.map((t) => ({ ...t, rules: t.rules.map((r) => ({ ...r, days: [...r.days] })) })),
+  };
 }
 
 /**
  * Правила шаблона с ценами: prices — { ключ: копейки }; kind — тип столов (null — все).
  * Удобно мастеру и тестам; сервер всё равно проверяет итоговые правила.
  */
-export function applyTemplate(id, prices, { kind = null, min_minutes: min = TEMPLATE_DEFAULTS.min_minutes, step_minutes: step = TEMPLATE_DEFAULTS.step_minutes } = {}) {
+export function applyTemplate(id, prices, { kind = null, min_minutes: min = TEMPLATE_DEFAULTS.min_minutes, step_minutes: step = TEMPLATE_DEFAULTS.step_minutes, slot_minutes: slot = 90 } = {}) {
   const t = TEMPLATES.find((x) => x.id === id);
   if (!t) throw new Error(`шаблон ${id}`);
+  // Корт (вид со слотами): цена параметра — цена слота.
+  if (slotKind(kind)) return t.rules.map((r) => ({ kind, days: [...r.days], from: r.from, to: r.to, slot_minutes: slot, price_per_slot_kopecks: prices[r.price] }));
   return t.rules.map((r) => ({ kind, days: [...r.days], from: r.from, to: r.to, price_per_hour_kopecks: prices[r.price], min_minutes: min, step_minutes: step }));
+}
+
+/** Справочная цена часа правила слота: цена слота × 60 / длина, «половина вверх», не меньше 1 копейки. */
+export function hourlyOfSlot(pricePerSlot, slotMinutes) {
+  return Math.max(1, Math.floor((pricePerSlot * 60 * 2 + slotMinutes) / (2 * slotMinutes)));
 }
 
 // Проверка ------------------------------------------------------------------------------------
@@ -144,13 +166,13 @@ const minuteOf = (hhmm) => parseLocalTime(hhmm);
 export function normalizeRules(input) {
   if (!Array.isArray(input) || input.length === 0) throw bad('rules');
   if (input.length > MAX_RULES) throw bad('rules: too many');
-  return input.map((r, i) => {
+  const out = input.map((r, i) => {
     const where = `rules[${i}]`;
     if (!r || typeof r !== 'object' || Array.isArray(r)) throw bad(where);
     // Тип: kind ('pyramid'…) или resource_type как в базе ('billiard_pyramid'…); нет — все типы.
     const rawKind = r.kind !== undefined ? r.kind : r.resource_type;
     const kind = rawKind === undefined || rawKind === null || rawKind === 'all' ? null : (KIND_OF_TYPE[rawKind] ?? rawKind);
-    if (kind !== null && !ALL_KINDS.includes(kind)) throw bad(`${where}.kind`);
+    if (kind !== null && !RULE_KINDS.includes(kind)) throw bad(`${where}.kind`);
     if (!Array.isArray(r.days) || r.days.length === 0 || r.days.length > 7) throw bad(`${where}.days`);
     const days = [...new Set(r.days)];
     if (days.length !== r.days.length || !days.every((d) => Number.isInteger(d) && d >= 1 && d <= 7)) throw bad(`${where}.days`);
@@ -160,26 +182,38 @@ export function normalizeRules(input) {
     const toText = typeof (r.to ?? r.end_local) === 'string' ? (r.to ?? r.end_local).replace(/^(\d{2}:\d{2}):00$/, '$1') : null;
     if (!fromText || !HHMM.test(fromText)) throw bad(`${where}.from`);
     if (!toText || !HHMM.test(toText)) throw bad(`${where}.to`);
+    const from = minuteOf(fromText);
+    const to = minuteOf(toText);
+    const base = { kind, days, from: formatLocalTime(from), to: formatLocalTime(to), startMin: from, len: (to - from + DAY) % DAY || DAY };
+    if (slotKind(kind)) {
+      // Корт (M5.8 №204): цена за слот, минимум и шаг — слот.
+      if (r.price_per_hour_kopecks !== undefined) throw bad(`${where}.price_per_hour_kopecks: slot kind`);
+      const slot = r.slot_minutes;
+      if (!SLOT_MINUTES.includes(slot)) throw bad(`${where}.slot_minutes`);
+      const price = r.price_per_slot_kopecks;
+      if (!Number.isSafeInteger(price) || price > MAX_PRICE_KOPECKS) throw bad(`${where}.price_per_slot_kopecks`);
+      if (price <= 0) throw bad(`${where}.price_per_slot_kopecks: must be > 0`);
+      if (r.min_minutes !== undefined && r.min_minutes !== slot) throw bad(`${where}.min_minutes: slot`);
+      if (r.step_minutes !== undefined && r.step_minutes !== slot) throw bad(`${where}.step_minutes: slot`);
+      return { ...base, price_per_hour_kopecks: hourlyOfSlot(price, slot), price_per_slot_kopecks: price, slot_minutes: slot, min_minutes: slot, step_minutes: slot };
+    }
+    if (r.slot_minutes !== undefined || r.price_per_slot_kopecks !== undefined) throw bad(`${where}.slot_minutes: hourly kind`);
     const price = r.price_per_hour_kopecks;
     // №163: цена строго больше нуля — бесплатная игра только ручным действием (инвариант 8), не тарифом 0 ₽.
     if (!Number.isSafeInteger(price) || price > MAX_PRICE_KOPECKS) throw bad(`${where}.price_per_hour_kopecks`);
     if (price <= 0) throw bad(`${where}.price_per_hour_kopecks: must be > 0`);
     if (!Number.isInteger(r.min_minutes) || r.min_minutes < 0 || r.min_minutes > DAY) throw bad(`${where}.min_minutes`);
     if (!Number.isInteger(r.step_minutes) || r.step_minutes < 1 || r.step_minutes > 60) throw bad(`${where}.step_minutes`);
-    const from = minuteOf(fromText);
-    const to = minuteOf(toText);
-    return {
-      kind,
-      days,
-      from: formatLocalTime(from),
-      to: formatLocalTime(to),
-      startMin: from,
-      len: (to - from + DAY) % DAY || DAY,
-      price_per_hour_kopecks: price,
-      min_minutes: r.min_minutes,
-      step_minutes: r.step_minutes,
-    };
+    return { ...base, price_per_hour_kopecks: price, price_per_slot_kopecks: null, slot_minutes: null, min_minutes: r.min_minutes, step_minutes: r.step_minutes };
   });
+  // Одна длина слота на вид в клубе: продление слотом и сетка брони не смешивают длины.
+  const slots = new Map();
+  for (const r of out) {
+    if (r.slot_minutes === null) continue;
+    if (slots.has(r.kind) && slots.get(r.kind) !== r.slot_minutes) throw bad('slot_minutes: one per kind');
+    slots.set(r.kind, r.slot_minutes);
+  }
+  return out;
 }
 
 /**
@@ -232,8 +266,9 @@ export function checkWeek(rules, { dayStart, activeKinds }) {
   }
   // Правила «для всех типов» без единого стола — проверяются как один набор.
   if (kinds.size === 0) kinds.add(null);
-  for (const kind of ALL_KINDS.filter((k) => kinds.has(k)).concat(kinds.has(null) ? [null] : [])) {
-    const set = rules.filter((r) => r.kind === null || r.kind === kind);
+  for (const kind of RULE_KINDS.filter((k) => kinds.has(k)).concat(kinds.has(null) ? [null] : [])) {
+    // Правило «все типы» (kind: null) — только для столов; у корта свои правила (M5.8).
+    const set = rules.filter((r) => r.kind === kind || (r.kind === null && (kind === null || ALL_KINDS.includes(kind))));
     const p = weekProblem(set, start);
     if (p) return { ...p, kind };
   }
@@ -259,7 +294,7 @@ const hhmm = (t) => String(t).slice(0, 5);
 async function loadRules(db, clubId) {
   const { rows } = await db.query(
     `select id, resource_type, resource_id, days, start_local::text as start_local, end_local::text as end_local,
-            price_per_hour, step_minutes, min_minutes
+            price_per_hour, step_minutes, min_minutes, slot_minutes, price_per_slot
        from bl.tariff_rules where club_id = $1 and active
       order by resource_id nulls first, days[1], start_local, resource_type`,
     [clubId],
@@ -274,9 +309,11 @@ async function loadRules(db, clubId) {
     price_per_hour_kopecks: Number(r.price_per_hour),
     min_minutes: r.min_minutes,
     step_minutes: r.step_minutes,
+    // Корт (M5.8): цена за слот и длина слота; у стола — нет.
+    ...(r.slot_minutes === null ? {} : { slot_minutes: r.slot_minutes, price_per_slot_kopecks: Number(r.price_per_slot) }),
   }));
   const typed = list.filter((r) => !r.resource_id);
-  const key = (r) => JSON.stringify([r.days, r.from, r.to, r.price_per_hour_kopecks, r.min_minutes, r.step_minutes]);
+  const key = (r) => JSON.stringify([r.days, r.from, r.to, r.price_per_hour_kopecks, r.min_minutes, r.step_minutes, r.slot_minutes ?? null]);
   const groups = new Map();
   for (const r of typed) {
     const k = key(r);
@@ -318,7 +355,7 @@ export async function weekCoverage(db, clubId) {
     const e = minuteOf(hhmm(r.end_local));
     return { days: r.days.map(Number), startMin: s, len: (e - s + DAY) % DAY || DAY };
   };
-  const tables = (await db.query('select id, type from bl.resources where club_id = $1 and active order by number', [clubId])).rows;
+  const tables = (await db.query('select id, type from bl.resources where club_id = $1 and active order by bl.resource_family(type) desc, number', [clubId])).rows;
   const units = tables.length
     ? tables.map((t) => ({ kind: KIND_OF_TYPE[t.type] ?? null, resource_id: t.id, rules: raw.filter((r) => r.resource_id === t.id || r.resource_type === t.type) }))
     : [...new Set(raw.filter((r) => r.resource_type).map((r) => r.resource_type))].map((type) => ({
@@ -339,13 +376,20 @@ export async function coversWeek(db, clubId) {
   return (await weekCoverage(db, clubId)).ok;
 }
 
+/** Длина слота по видам: { padel_court: 90 } (M5.8 №204; у столов слота нет). */
+function slotsOf(raw) {
+  const out = {};
+  for (const r of raw) if (r.slot_minutes !== null && r.resource_type && out[KIND_OF_TYPE[r.resource_type]] === undefined) out[KIND_OF_TYPE[r.resource_type]] = r.slot_minutes;
+  return out;
+}
+
 /** GET …/tariffs. */
 export async function getTariffs(db, { clubId }) {
   const club = await clubRow(db, clubId);
   const { dayStart } = clubTariffSettings(club.settings);
-  const { rules, resourceRules } = await loadRules(db, clubId);
+  const { rules, resourceRules, raw } = await loadRules(db, clubId);
   const coverage = await weekCoverage(db, clubId);
-  return { timezone: club.timezone, day_start_local: dayStart, rules, resource_rules: resourceRules, coverage };
+  return { timezone: club.timezone, day_start_local: dayStart, rules, resource_rules: resourceRules, slots: slotsOf(raw), coverage };
 }
 
 /**
@@ -371,13 +415,18 @@ export async function saveTariffs(db, { clubId, userId, body, now, ctx = null, l
   for (const r of rules) {
     for (const kind of r.kind ? [r.kind] : ALL_KINDS) {
       await db.query(
-        `insert into bl.tariff_rules (club_id, resource_type, days, start_local, end_local, price_per_hour, step_minutes, min_minutes, priority, created_at)
-         values ($1, $2, $3::smallint[], $4::time, $5::time, $6, $7, $8, 0, $9)`,
-        [clubId, KINDS[kind], r.days, r.from, r.to, r.price_per_hour_kopecks, r.step_minutes, r.min_minutes, now],
+        `insert into bl.tariff_rules (club_id, resource_type, days, start_local, end_local, price_per_hour, step_minutes, min_minutes, priority, created_at,
+                                      slot_minutes, price_per_slot)
+         values ($1, $2, $3::smallint[], $4::time, $5::time, $6, $7, $8, 0, $9, $10, $11)`,
+        [clubId, KINDS[kind], r.days, r.from, r.to, r.price_per_hour_kopecks, r.step_minutes, r.min_minutes, now, r.slot_minutes, r.price_per_slot_kopecks],
       );
     }
   }
-  const compact = (list) => list.map((r) => ({ kind: r.kind, days: r.days, from: r.from, to: r.to, price: r.price_per_hour_kopecks, min: r.min_minutes, step: r.step_minutes }));
+  const compact = (list) =>
+    list.map((r) => ({
+      kind: r.kind, days: r.days, from: r.from, to: r.to, price: r.price_per_hour_kopecks, min: r.min_minutes, step: r.step_minutes,
+      ...(r.slot_minutes ? { slot: r.slot_minutes, slot_price: r.price_per_slot_kopecks } : {}),
+    }));
   const data = { mode, before: compact(before.rules), before_resource_rules: before.resourceRules.length, after: compact(rules) };
   if (live) {
     await manualAction(db, {

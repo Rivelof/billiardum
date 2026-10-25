@@ -15,7 +15,8 @@ import { addDays, dayBounds, isDay, daysBetween, workingDayOf } from '../dashboa
 import * as tariffs from '../tariffs/index.mjs';
 import * as engine from '../tariffs/engine.mjs';
 
-const KINDS = [...TYPES, 'billiard_mixed'];
+// Виды ресурсов (M5.8): все типы dashboard TYPES — столы и падел-корт.
+const KINDS = [...new Set([...TYPES, 'billiard_mixed'])];
 export const MAX_BOOKINGS_DAYS = 93;
 export const MAX_BOOKINGS_LIMIT = 1000;
 const OPEN_SESSION = ['active', 'ending', 'grace'];
@@ -48,7 +49,7 @@ export async function tablesNow(ctx, query) {
     `select r.id, r.number, r.title, r.type, d.id as device_id, d.last_seen_at, (d.device_key_enc is not null) as has_key
        from bl.resources r left join bl.devices d on d.resource_id = r.id
       where r.club_id = $1 and r.active and ($2::text is null or r.type = $2)
-      order by r.number`,
+      order by bl.resource_family(r.type) desc, r.number`,
     [club.id, kind],
   );
   const { rows: sessions } = await db.query('select resource_id, status, paid_until from bl.sessions where club_id = $1 and status = any($2::text[])', [club.id, OPEN_SESSION]);
@@ -94,14 +95,14 @@ export async function tariffsNow(ctx, query) {
   const settings = tariffs.clubTariffSettings(club.settings);
   const { rows: rules } = await db.query(
     `select t.id, t.resource_type, t.resource_id, t.days, to_char(t.start_local, 'HH24:MI') as start_local, to_char(t.end_local, 'HH24:MI') as end_local,
-            t.price_per_hour, t.step_minutes, t.min_minutes, t.priority
+            t.price_per_hour, t.step_minutes, t.min_minutes, t.priority, t.slot_minutes, t.price_per_slot
        from bl.tariff_rules t
       where t.club_id = $1 and t.active
       order by t.priority desc, t.resource_type nulls last, t.start_local, t.id`,
     [club.id],
   );
   const { rows: resources } = await db.query(
-    'select id, number, title, type from bl.resources where club_id = $1 and active and ($2::text is null or type = $2) order by number',
+    'select id, number, title, type from bl.resources where club_id = $1 and active and ($2::text is null or type = $2) order by bl.resource_family(type) desc, number',
     [club.id, kind],
   );
   const today = workingDayOf(now, club.timezone, club.day_start_local);
@@ -141,6 +142,8 @@ export async function tariffsNow(ctx, query) {
         step_minutes: t.step_minutes,
         min_minutes: t.min_minutes,
         priority: t.priority,
+        // Корт (M5.8 №204): цена за слот и длина слота; у почасового правила — нет.
+        ...(t.slot_minutes === null ? {} : { slot_minutes: t.slot_minutes, price_per_slot_kopecks: Number(t.price_per_slot) }),
       })),
     tables: items,
   };

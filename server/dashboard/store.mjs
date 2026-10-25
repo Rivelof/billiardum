@@ -1,7 +1,7 @@
 // Сутки дашборда: чтение закрытых суток из bl.stats_daily / bl.stats_hourly, расчёт недостающих и
 // текущих на лету (той же computeDay), запись закрытых суток планировщиком (bl.stats_put_day).
 
-import { computeDay, VERSION } from './day.mjs';
+import { computeDay, matchKind, VERSION } from './day.mjs';
 import { addDays, DEFAULT_DAY_START, eachDay, normalizeHhmm, workingDayOf } from './time.mjs';
 
 /** Сколько закрытых суток без агрегата можно досчитать в одном запросе (остальное — missing_days). */
@@ -78,7 +78,7 @@ export async function storedHourly(db, clubId, days, kind = null) {
     `select h.day::text as day, h.hour, sum(h.play_minutes)::int as play_minutes, sum(h.service_minutes)::int as service_minutes,
             sum(h.booking_minutes)::int as booking_minutes, sum(h.capacity_minutes)::int as capacity_minutes, sum(h.games)::int as games
        from bl.stats_hourly h join bl.resources r on r.id = h.resource_id
-      where h.club_id = $1 and h.day = any($2::date[]) and ($3::text is null or r.type = $3)
+      where h.club_id = $1 and h.day = any($2::date[]) and ($3::text is null or r.type = $3 or bl.resource_family(r.type) = $3)
       group by h.day, h.hour order by h.day, h.hour`,
     [clubId, days, kind],
   );
@@ -92,7 +92,7 @@ export function liveHourlyRows(liveHourly, days, kind = null) {
     const d = days.find((x) => x.day === day);
     const acc = new Map();
     for (const h of rows) {
-      if (kind && d?.resources?.[h.resource_id]?.type !== kind) continue;
+      if (kind && !matchKind(d?.resources?.[h.resource_id]?.type, kind)) continue;
       const a = acc.get(h.hour) ?? { day, hour: h.hour, play_minutes: 0, service_minutes: 0, booking_minutes: 0, capacity_minutes: 0, games: 0 };
       for (const k of ['play_minutes', 'service_minutes', 'booking_minutes', 'capacity_minutes', 'games']) a[k] += h[k];
       acc.set(h.hour, a);

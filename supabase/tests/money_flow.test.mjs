@@ -96,7 +96,10 @@ describe('стол по коду', () => {
     const t = r.json;
     // mode (M5.1 №153): режим клуба — гостю для плашки «Тестовый режим клуба».
     assert.deepEqual(t.club, { id: CLUB_A, name: 'Тестовый клуб', timezone: 'Asia/Yekaterinburg', mode: 'live' });
-    assert.deepEqual(t.resource, { id: TABLE_1, number: 1, type: 'billiard_pyramid', title: 'Стол 1' });
+    // Вид ресурса (M5.8 №203): kind, семья (слово «стол»), почасовой тариф, предел «Я играю».
+    assert.deepEqual(t.resource, {
+      id: TABLE_1, number: 1, type: 'billiard_pyramid', title: 'Стол 1', kind: 'pyramid', family: 'table', billing: 'hourly', slot_minutes: null, max_players: 20,
+    });
     assert.equal(t.status, 'free');
     assert.equal(t.busy_until, null);
     assert.equal(t.price_now.price_per_hour_kopecks, 50000);

@@ -6,7 +6,7 @@
 // Деньги — копейки; проценты — с одним знаком; часы — с одним знаком.
 
 import { HttpError } from '../http/errors.mjs';
-import { median, METHODS, SOURCES, TYPES } from './day.mjs';
+import { KIND_FAMILIES, matchKind, median, METHODS, SOURCES, TYPES } from './day.mjs';
 import { liveHourlyRows, loadDays, storedHourly } from './store.mjs';
 import { addDays, dayBounds, daysBetween, isDay, isoDow, workingDayOf } from './time.mjs';
 import { cashbookTotals } from './cashbook.mjs';
@@ -40,7 +40,7 @@ export function parseQuery(query, { today }) {
   const tab = query.tab ?? 'summary';
   if (!TABS.includes(tab)) throw new HttpError(400, 'bad_request', { detail: 'tab' });
   const kind = query.kind === undefined || query.kind === '' ? null : query.kind;
-  if (kind !== null && !TYPES.includes(kind)) throw new HttpError(400, 'bad_request', { detail: 'kind' });
+  if (kind !== null && !TYPES.includes(kind) && !KIND_FAMILIES.includes(kind)) throw new HttpError(400, 'bad_request', { detail: 'kind' });
   if (query.compare !== undefined && !['0', '1'].includes(query.compare)) throw new HttpError(400, 'bad_request', { detail: 'compare' });
   const compare = query.compare !== '0';
   return { from, to, days, tab, kind, compare, prevFrom: addDays(from, -days), prevTo: addDays(from, -1) };
@@ -117,7 +117,7 @@ export function addDay(a, d, { clubId, kind = null }) {
       ty.resources.add(key);
     }
     a.types.set(r.type, ty);
-    if (kind === null || r.type === kind) {
+    if (matchKind(r.type, kind)) {
       a.t.games += r.games ?? 0;
       a.t.play_minutes += r.play_minutes ?? 0;
       a.t.capacity_minutes += r.capacity_minutes ?? 0;
@@ -422,7 +422,7 @@ export function dailyRows(a, { kind, today }) {
     cur.other_kopecks += d.revenue.structure.packages + d.revenue.structure.tournaments + d.revenue.structure.other;
     cur.bar_sales += d.revenue.bar_sales;
     for (const r of Object.values(d.resources ?? {})) {
-      if (kind && r.type !== kind) continue;
+      if (!matchKind(r.type, kind)) continue;
       cur.games += r.games;
       cur.play_minutes += r.play_minutes;
       cur.capacity_minutes += r.capacity_minutes;
@@ -599,7 +599,7 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
       return { type: t, tables: x.resources.size, games: x.games, play_minutes: x.play_minutes, capacity_minutes: x.capacity_minutes, service_minutes: x.service_minutes, utilization_pct: pct(x.play_minutes, x.capacity_minutes), revenue_kopecks: x.revenue_kopecks - x.refunds_kopecks };
     });
     out.tables.by_resource = [...cur.agg.resources.values()]
-      .filter((r) => (kind === null || r.type === kind) && (r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0))
+      .filter((r) => matchKind(r.type, kind) && (r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0))
       .sort((x, y) => (x.club_id === y.club_id ? x.number - y.number : x.club_id < y.club_id ? -1 : 1))
       .map((r) => ({
         ...(all ? { club_id: r.club_id } : {}),

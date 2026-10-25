@@ -13,7 +13,7 @@ import { createApp } from '../../../http/app.mjs';
 import { createOutbox } from '../../../outbox.mjs';
 import { loadRoutes } from '../../../../api/router.mjs';
 import { appPool, memoryLog, ORIGIN, testConfig } from '../../../test/db/helpers.mjs';
-import { createTestDatabase, seedClubB } from '../../../../supabase/tests/helpers.mjs';
+import { createTestDatabase, deactivateSeedCourts, seedClubB } from '../../../../supabase/tests/helpers.mjs';
 import { createLightService } from '../../../sessions/service.mjs';
 import { amountFor, amountForActual, pricesAround } from '../../../tariffs/index.mjs';
 import * as directoryModule from '../../index.mjs';
@@ -31,6 +31,8 @@ export async function setup() {
   const db = await createTestDatabase();
   await seedClubB(db.pool);
   const admin = db.pool;
+  // Каталог M4 — на 8 столах сида; корты (M5.8) включает directory/test/db/padel.test.mjs.
+  await deactivateSeedCourts(admin);
   await admin.query("update bl.devices set device_key_enc = 'v1:test'");
   let nowMs = T0;
   const clock = { now: () => new Date(nowMs), set: (ms) => { nowMs = ms; }, add: (ms) => { nowMs += ms; } };

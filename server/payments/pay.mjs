@@ -71,9 +71,9 @@ async function loadQuote(db, quoteId, { lock = false } = {}) {
   return rows[0] ?? null;
 }
 
-async function resourceNumber(db, resourceId) {
-  const { rows } = await db.query('select number from bl.resources where id = $1', [resourceId]);
-  return rows[0]?.number ?? null;
+async function resourceRow(db, resourceId) {
+  const { rows } = await db.query('select number, type from bl.resources where id = $1', [resourceId]);
+  return rows[0] ?? { number: null, type: null };
 }
 
 /** Что и за сколько платим по котировке и способу оплаты. */
@@ -122,7 +122,7 @@ export async function payQuote(db, deps, info, config) {
   if (new Date(quote.valid_until).getTime() <= now.getTime()) throw new MoneyError('quote_expired');
 
   const settings = await loadPaymentSettings(db, clubId);
-  const number = await resourceNumber(db, quote.resource_id);
+  const { number, type: resourceType } = await resourceRow(db, quote.resource_id);
   const plan = payPlan(quote, method, settings);
   const balanceMinutes = quote.balance_minutes ?? 0;
 
@@ -139,7 +139,7 @@ export async function payQuote(db, deps, info, config) {
 
   if (method === 'reception') {
     if (!settings.reception) throw new MoneyError('bad_request', 'ресепшн не принимает оплату');
-    const r = await createReceptionRequest(db, deps, { quote, plan, settings, resourceNumber: number, userId, key, now });
+    const r = await createReceptionRequest(db, deps, { quote, plan, settings, resourceNumber: number, resourceType, userId, key, now });
     await db.query('update bl.quotes set used_at = $2 where id = $1', [quoteId, now]);
     return { status: 200, json: receptionResponse(r) };
   }
@@ -149,7 +149,7 @@ export async function payQuote(db, deps, info, config) {
 
   const paymentId = stableUuid(`bl.payment/${quoteId}/${method}`);
   const paidMinutes = plan.minutes === null ? null : plan.minutes - balanceMinutes;
-  const receipt = yookassaReceipt({ phone, resourceNumber: number, minutes: plan.unlimited && plan.capture === false ? null : paidMinutes, amountKopecks: plan.amount, settings });
+  const receipt = yookassaReceipt({ phone, resourceNumber: number, resourceType, minutes: plan.unlimited && plan.capture === false ? null : paidMinutes, amountKopecks: plan.amount, settings });
   const { payment } = await createYooKassaPayment(db, deps, config, {
     settings,
     clubId,

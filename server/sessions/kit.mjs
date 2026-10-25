@@ -2,6 +2,7 @@
 // время (ctx.clock), журнал, outbox, тревоги, уведомления гостю, переходы сессии.
 
 import { plural } from '@billiardum/shared/format';
+import { isCourt, resourceName } from '../lib/resource-kinds.mjs';
 import { isOpen, notifyLight, participants } from './queries.mjs';
 
 /** Недоигранное время меньше этого не считается прерыванием (потери на перезагрузке, правило 4). */
@@ -120,7 +121,7 @@ export function createKit({ deps, log, clock, getBridge = () => null }) {
       s,
       {
         kind: 'session.interrupted',
-        text: `Стол ${s.resource_number}: связь со столом прерывалась, свет погас раньше времени. Продолжить игру или вернуть деньги за ${minutesText(minutes)}?`,
+        text: `${resourceName(s.resource_type, s.resource_number)}: связь ${isCourt(s.resource_type) ? 'с кортом' : 'со столом'} прерывалась, свет погас раньше времени. Продолжить игру или вернуть деньги за ${minutesText(minutes)}?`,
         data: { action: 'resolve', actions: 'continue,refund', unplayed_ms: unplayed },
       },
       { payerOnly: true },

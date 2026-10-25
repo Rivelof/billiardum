@@ -6,6 +6,7 @@
 // кроме ручных действий (уведомляют всегда, №66) и критичной тревоги, о которой не
 // уведомляли 10 минут (№75).
 
+import { resourceName } from '../lib/resource-kinds.mjs';
 import { appendAudit } from '../lib/audit.mjs';
 import { afterCommit } from '../lib/store.mjs';
 import { publish } from '../http/sse.mjs';
@@ -138,9 +139,10 @@ export function dedupeKeyFor(type, data, dedupeKey) {
 /** Типы ручных действий персонала: уведомление владельцу при каждом подъёме. */
 export const MANUAL_TYPES = new Set(['service_light', 'manual_action']);
 
-export function alarmText(type, tableNumber) {
+/** Текст тревоги: «Стол 3: …» или «Корт 1: …» по виду ресурса (M5.8); без вида — стол. */
+export function alarmText(type, tableNumber, resourceType = null) {
   const text = ALARM_TEXTS[type] ?? `Тревога: ${type}`;
-  return tableNumber ? `Стол ${tableNumber}: ${text}` : text;
+  return tableNumber ? `${resourceName(resourceType, tableNumber)}: ${text}` : text;
 }
 
 export function alarmJson(row) {
@@ -151,6 +153,7 @@ export function alarmJson(row) {
     level: row.level,
     resource_id: row.resource_id,
     resource_number: row.resource_number ?? null,
+    resource_type: row.resource_type ?? null,
     data: row.data,
     state: row.state,
     count: row.count,
@@ -159,7 +162,7 @@ export function alarmJson(row) {
     acked_at: row.acked_at instanceof Date ? row.acked_at.toISOString() : (row.acked_at ?? null),
     acked_by: row.acked_by ?? null,
     last_notified_at: row.last_notified_at instanceof Date ? row.last_notified_at.toISOString() : (row.last_notified_at ?? null),
-    text: alarmText(row.type, row.resource_number),
+    text: alarmText(row.type, row.resource_number, row.resource_type),
   };
 }
 
@@ -200,8 +203,9 @@ export async function raise(db, clubId, { type, level, resourceId = null, data =
   );
   const alarm = rows[0];
   if (resourceId) {
-    const r = await db.query('select number from bl.resources where id = $1', [resourceId]);
+    const r = await db.query('select number, type from bl.resources where id = $1', [resourceId]);
     alarm.resource_number = r.rows[0]?.number ?? null;
+    alarm.resource_type = r.rows[0]?.type ?? null;
   }
   if (alarm.created) {
     await appendAudit(db, {
@@ -223,7 +227,7 @@ export async function raise(db, clubId, { type, level, resourceId = null, data =
     await sendToClubStaff(db, clubId, NOTIFY_ROLES, {
       kind: 'alarm',
       level,
-      text: text ?? alarmText(type, alarm.resource_number),
+      text: text ?? alarmText(type, alarm.resource_number, alarm.resource_type),
       data: { alarm_id: alarm.id, type, url: '/club/' },
     });
   }

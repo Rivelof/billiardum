@@ -16,9 +16,15 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { deviceRoleAcls, deviceRoleName } from '../lib/dynsec.mjs';
 import { decryptSecret, deviceKeyContext, encryptSecret } from '../lib/secrets.mjs';
+import { resourceName } from '../lib/resource-kinds.mjs';
 
 /** Клуб сида (supabase/seed.sql). */
 export const SEED_CLUB_ID = 'c1000000-0000-4000-8000-000000000001';
+/**
+ * Номер симулятора у корта (M5.8): своя нумерация кортов (корт 1, 2) пересекается со столами 1–8,
+ * а симулятор различает контроллеры по table_number — корт N получает table_number 100 + N.
+ */
+export const COURT_SIM_OFFSET = 100;
 
 const PASSWORD = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -38,13 +44,14 @@ export async function assertSeedClub(db, clubId = SEED_CLUB_ID) {
  */
 export async function loadSeedDevices(db, clubId = SEED_CLUB_ID) {
   const { rows } = await db.query(
-    `select d.id, d.club_id, d.resource_id, r.number as table_number, d.device_key_enc
+    `select d.id, d.club_id, d.resource_id, r.number as resource_number, r.type as resource_type,
+            r.number + case when bl.resource_family(r.type) = 'court' then ${COURT_SIM_OFFSET} else 0 end as table_number, d.device_key_enc
        from bl.devices d
        join bl.resources r on r.club_id = d.club_id and r.id = d.resource_id
       where d.club_id = $1
         and not exists (select 1 from bl.device_factory f where f.device_id = d.id)
         and not exists (select 1 from bl.device_bind_windows w where w.device_id = d.id and w.claimed_at is not null)
-      order by r.number, d.id`,
+      order by table_number, d.id`,
     [clubId],
   );
   return rows;
@@ -90,6 +97,8 @@ export function planDeviceKeys(rows, prevFile, encKey, { rotate = false } = {}) 
       clubId: r.club_id,
       resourceId: r.resource_id,
       tableNumber: r.table_number,
+      resourceNumber: r.resource_number ?? r.table_number,
+      resourceType: r.resource_type ?? null,
       keyBytes: keep?.keyBytes ?? randomBytes(32),
       password: keep?.password ?? randomBytes(24).toString('base64url'),
       reused: Boolean(keep),
@@ -150,7 +159,7 @@ export async function provisionSeedDevices({ db, dynsec, encKey, devicesFile, mq
 
   for (const d of devices) {
     const rolename = deviceRoleName(d.id);
-    await dynsec.ensureRole(rolename, deviceRoleAcls(d.clubId, d.id), `Стол ${d.tableNumber}`);
+    await dynsec.ensureRole(rolename, deviceRoleAcls(d.clubId, d.id), resourceName(d.resourceType, d.resourceNumber));
     let client = 'kept';
     if (!d.reused || !(await clientReady(dynsec, d, rolename))) {
       client = await dynsec.ensureClient({
@@ -158,7 +167,7 @@ export async function provisionSeedDevices({ db, dynsec, encKey, devicesFile, mq
         password: d.password,
         clientid: d.id,
         rolename,
-        textname: `Контроллер стола ${d.tableNumber}`,
+        textname: `Контроллер ${resourceName(d.resourceType, d.resourceNumber, { case: 'gen', capital: false })}`,
       });
     }
     log?.info('provision_device', { device_id: d.id, table: d.tableNumber, key: d.reused ? 'kept' : 'new', client });
@@ -172,6 +181,10 @@ export async function provisionSeedDevices({ db, dynsec, encKey, devicesFile, mq
       club_id: d.clubId,
       resource_id: d.resourceId,
       table_number: d.tableNumber,
+      // M5.8: вид и номер ресурса (корт 1 — table_number 101 в симуляторе: номера симулятора уникальны).
+      resource_type: d.resourceType,
+      resource_number: d.resourceNumber,
+      label: resourceName(d.resourceType, d.resourceNumber),
       mqtt_username: d.id,
       mqtt_password: d.password,
       device_key: d.keyBytes.toString('base64'),

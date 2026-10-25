@@ -9,6 +9,8 @@
 // TODO(backend-B): заменить запасные tariffs.coversWeek и qr.printedAt на функции server/setup —
 // здесь ничего не менять, достаточно экспорта в server/setup/index.mjs.
 
+import { TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
+
 /** Импорт модуля соседа; нет файла — null (как importOptional в server/http/app.mjs). */
 async function importOptional(spec, base) {
   const url = new URL(spec, base);
@@ -47,7 +49,7 @@ async function coversWeekFallback(db, clubId) {
     const any = await db.query('select 1 from bl.tariff_rules where club_id = $1 and active limit 1', [clubId]);
     return { ok: any.rowCount > 0, stub: true };
   }
-  return { ok: false, stub: true, gap: { weekday: rows[0].day, from: '00:00', to: '24:00', kind: String(rows[0].type).replace('billiard_', '') } };
+  return { ok: false, stub: true, gap: { weekday: rows[0].day, from: '00:00', to: '24:00', kind: TYPE_TO_KIND[rows[0].type] ?? String(rows[0].type).replace('billiard_', '') } };
 }
 
 /** TODO(backend-B): наклейки — resources.sticker_printed_at (1050), если столбец уже есть; иначе null. */

@@ -1,6 +1,7 @@
 // Общее для заказов и кассы: контекст клуба, роли, загрузка заказов, вид для API, вставка
 // заказа и строк, номер заказа за день, публикация SSE после коммита.
 
+
 import { afterCommit } from '../lib/store.mjs';
 import { PosError } from './errors.mjs';
 
@@ -70,7 +71,7 @@ export async function isParticipant(db, sessionId, userId) {
 
 export async function loadSession(db, sessionId) {
   const { rows } = await db.query(
-    `select s.id, s.club_id, s.status, s.resource_id, r.number as resource_number
+    `select s.id, s.club_id, s.status, s.resource_id, r.number as resource_number, r.type as resource_type
        from bl.sessions s join bl.resources r on r.id = s.resource_id where s.id = $1`,
     [sessionId],
   );
@@ -146,7 +147,7 @@ export async function insertOrder(db, o, lines) {
 export async function loadOrders(db, ids, { lock = false } = {}) {
   if (ids.length === 0) return [];
   const { rows } = await db.query(
-    `select o.*, r.number as resource_number from bl.orders o left join bl.resources r on r.id = o.resource_id
+    `select o.*, r.number as resource_number, r.type as resource_type from bl.orders o left join bl.resources r on r.id = o.resource_id
       where o.id = any($1::uuid[]) order by o.created_at, o.id ${lock ? 'for update of o' : ''}`,
     [ids],
   );

@@ -3,12 +3,13 @@
 // (услуга начинается в момент оплаты), ставка НДС и система налогообложения — настройки клуба.
 
 import { formatDuration } from '../tariffs/engine.mjs';
+import { noun } from '../lib/resource-kinds.mjs';
 import { formatValue } from './yookassa.mjs';
 
-/** Текст позиции чека: «Игра, стол 4, 2 ч», «Игра, стол 4, 1 ч 47 мин». */
-export function itemDescription({ resourceNumber, minutes }) {
+/** Текст позиции чека: «Игра, стол 4, 2 ч», «Игра, стол 4, 1 ч 47 мин», «Игра, корт 1, 1 ч 30 мин» (M5.8). */
+export function itemDescription({ resourceNumber, minutes, resourceType = null }) {
   const what = minutes == null ? 'без лимита' : formatDuration(minutes);
-  return `Игра, стол ${resourceNumber}, ${what}`.slice(0, 128);
+  return `Игра, ${noun(resourceType)} ${resourceNumber}, ${what}`.slice(0, 128);
 }
 
 /** Телефон E.164 (+79990000001) → формат ЮKassa без «+» (79990000001); иначе null. */
@@ -18,10 +19,10 @@ export function receiptPhone(phone) {
 }
 
 /** Позиции чека (одна услуга) — общий вид для ЮKassa и задания на ККТ. */
-export function receiptItems({ resourceNumber, minutes, amountKopecks, vatCode }) {
+export function receiptItems({ resourceNumber, minutes, amountKopecks, vatCode, resourceType = null }) {
   return [
     {
-      description: itemDescription({ resourceNumber, minutes }),
+      description: itemDescription({ resourceNumber, minutes, resourceType }),
       quantity: 1,
       amount: { value: formatValue(amountKopecks), currency: 'RUB' },
       vat_code: vatCode,
@@ -35,12 +36,12 @@ export function receiptItems({ resourceNumber, minutes, amountKopecks, vatCode }
  * Чек для запроса ЮKassa (платёж, списание заморозки, возврат).
  * @param {{ phone: string, resourceNumber: number, minutes: number|null, amountKopecks: number, settings: { vat_code: number, tax_system_code: number|null } }} p
  */
-export function yookassaReceipt({ phone, resourceNumber, minutes, amountKopecks, settings }) {
+export function yookassaReceipt({ phone, resourceNumber, minutes, amountKopecks, settings, resourceType = null }) {
   const customerPhone = receiptPhone(phone);
   if (!customerPhone) throw new Error('нет телефона гостя для чека');
   const receipt = {
     customer: { phone: customerPhone },
-    items: receiptItems({ resourceNumber, minutes, amountKopecks, vatCode: settings.vat_code }),
+    items: receiptItems({ resourceNumber, minutes, amountKopecks, vatCode: settings.vat_code, resourceType }),
   };
   if (settings.tax_system_code != null) receipt.tax_system_code = settings.tax_system_code;
   return receipt;

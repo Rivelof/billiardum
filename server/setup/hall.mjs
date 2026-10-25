@@ -16,10 +16,12 @@
 
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
+import { familyOf, KIND_TO_TYPE, resourceName, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
 import { cleanReason, clubLive, manualAction } from './mode.mjs';
 
-export const KINDS = Object.freeze({ pyramid: 'billiard_pyramid', pool: 'billiard_pool', snooker: 'billiard_snooker', mixed: 'billiard_mixed' });
-export const KIND_OF_TYPE = Object.freeze(Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [v, k])));
+// Виды ресурса мастера (M5.8 №203): столы и падел-корт; справочник — server/lib/resource-kinds.mjs.
+export const KINDS = KIND_TO_TYPE;
+export const KIND_OF_TYPE = TYPE_TO_KIND;
 /** Предел координат плана и размера зала: 1 км в сантиметрах. */
 export const PLAN_MAX_CM = 100_000;
 export const HALL_MIN_CM = 100;
@@ -27,7 +29,7 @@ export const MAX_TABLES = 200;
 
 const bad = (detail) => new HttpError(400, 'bad_request', { detail });
 /** Тип стола в тексте уведомления владельцу. */
-const KIND_LABEL = Object.freeze({ pyramid: 'пирамида', pool: 'пул', snooker: 'снукер', mixed: 'смешанный' });
+const KIND_LABEL = Object.freeze({ pyramid: 'пирамида', pool: 'пул', snooker: 'снукер', mixed: 'смешанный', padel_court: 'падел' });
 const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? null));
 const intIn = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
 
@@ -37,6 +39,8 @@ export function resourceJson(r) {
     number: r.number,
     kind: KIND_OF_TYPE[r.type] ?? null,
     type: r.type,
+    // Семья вида: слово интерфейса «стол» или «корт» (M5.8 №203; слова — GET /api/resource-kinds).
+    family: familyOf(r.type),
     title: r.title,
     code: r.code ?? null,
     plan_x: r.plan_x,
@@ -116,7 +120,7 @@ export async function listResources(db, { clubId }) {
   if (club.rowCount === 0) throw new HttpError(404, 'not_found');
   const { rows } = await db.query(
     `select id, number, type, title, code, plan_x, plan_y, plan_rotation, active, sticker_printed_at, created_at
-       from bl.resources where club_id = $1 order by active desc, number`,
+       from bl.resources where club_id = $1 order by active desc, bl.resource_family(type) desc, number`,
     [clubId],
   );
   return { plan: planJson(club.rows[0].settings), resources: rows.map(resourceJson) };
@@ -171,7 +175,7 @@ export async function createResource(db, { clubId, userId, body, now, ctx = null
         `insert into bl.resources (club_id, type, number, title, plan_x, plan_y, plan_rotation, created_at)
          values ($1, $2, $3, $4, $5, $6, $7, $8)
          returning id, number, type, title, code, plan_x, plan_y, plan_rotation, active, sticker_printed_at, created_at`,
-        [clubId, f.type, f.number, f.title ?? `Стол ${f.number}`, f.plan_x ?? 0, f.plan_y ?? 0, f.plan_rotation ?? 0, now],
+        [clubId, f.type, f.number, f.title ?? resourceName(f.type, f.number), f.plan_x ?? 0, f.plan_y ?? 0, f.plan_rotation ?? 0, now],
       )
     ).rows[0],
   );
@@ -186,7 +190,7 @@ export async function createResource(db, { clubId, userId, body, now, ctx = null
       objectId: row.id,
       resourceId: row.id,
       data,
-      text: `Добавлен стол ${row.number}`,
+      text: `Добавлен ${resourceName(row.type, row.number, { capital: false })}`,
       log,
       ctx,
     });
@@ -212,6 +216,8 @@ export async function updateResource(db, { clubId, userId, resourceId, body, now
   const activeChange = f.active !== undefined && f.active !== cur.active;
   // №164: смена типа стола в live меняет его тариф (правила по типам) — ручное действие.
   const kindChange = f.type !== undefined && f.type !== cur.type;
+  // Стол не становится кортом и наоборот (M5.8): другая нумерация, тариф по слотам, другое оборудование.
+  if (kindChange && familyOf(f.type) !== familyOf(cur.type)) throw bad('kind: family');
   const reason = (activeChange || kindChange) && live ? cleanReason(body?.reason) : null;
   if (activeChange && f.active === false) {
     const why = await busyReason(db, cur.id, now);
@@ -238,12 +244,12 @@ export async function updateResource(db, { clubId, userId, resourceId, body, now
   const manual = [];
   if (live && kindChange) {
     const { from, to } = changed.kind;
-    manual.push({ action: 'manual.resource_kind', text: `Стол ${row.number}: тип изменён — ${KIND_LABEL[from] ?? from} → ${KIND_LABEL[to] ?? to}` });
+    manual.push({ action: 'manual.resource_kind', text: `${resourceName(row.type, row.number)}: тип изменён — ${KIND_LABEL[from] ?? from} → ${KIND_LABEL[to] ?? to}` });
   }
   if (live && activeChange) {
     manual.push({
       action: f.active ? 'manual.resource_add' : 'manual.resource_remove',
-      text: f.active ? `Стол ${row.number} возвращён в работу` : `Стол ${row.number} выведен из работы`,
+      text: f.active ? `${resourceName(row.type, row.number)} возвращён в работу` : `${resourceName(row.type, row.number)} выведен из работы`,
     });
   }
   if (manual.length > 0) {

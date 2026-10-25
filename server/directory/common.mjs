@@ -12,8 +12,9 @@ export const fail = (code, detail, status, data) => {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const isUuid = (v) => typeof v === 'string' && UUID.test(v);
 export const PHONE = /^\+[1-9][0-9]{7,14}$/;
-export const DISCIPLINES = Object.freeze(['pyramid', 'pool', 'snooker']);
-export const RESOURCE_DISCIPLINE = Object.freeze({ billiard_pyramid: 'pyramid', billiard_pool: 'pool', billiard_snooker: 'snooker' });
+// Дисциплины каталога; padel — клубы с падел-кортами (M5.8 №205, фильтр «падел» на сайте).
+export const DISCIPLINES = Object.freeze(['pyramid', 'pool', 'snooker', 'padel']);
+export const RESOURCE_DISCIPLINE = Object.freeze({ billiard_pyramid: 'pyramid', billiard_pool: 'pool', billiard_snooker: 'snooker', padel_court: 'padel' });
 export const iso = (d) => (d ? new Date(d).toISOString() : null);
 
 /** Строка 1..max символов после обрезки или null. */

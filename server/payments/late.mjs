@@ -99,8 +99,8 @@ async function lateRefund(db, deps, client, p, amount, now) {
   if (sale[0] && Number(sale[0].amount_kopecks) === amount && receiptPhone(phone)) {
     receipt = { customer: { phone: receiptPhone(phone) }, items: sale[0].items, ...(settings.tax_system_code != null ? { tax_system_code: settings.tax_system_code } : {}) };
   } else {
-    const { rows: res } = await db.query('select number from bl.resources where id = $1', [p.resource_id]);
-    receipt = yookassaReceipt({ phone, resourceNumber: res[0]?.number, minutes: p.minutes, amountKopecks: amount, settings });
+    const { rows: res } = await db.query('select number, type from bl.resources where id = $1', [p.resource_id]);
+    receipt = yookassaReceipt({ phone, resourceNumber: res[0]?.number, resourceType: res[0]?.type ?? null, minutes: p.minutes, amountKopecks: amount, settings });
   }
   // Сначала ЮKassa (ключ идемпотентен: повтор после отката вернёт тот же возврат), потом строка.
   const remote = await client.createRefund(

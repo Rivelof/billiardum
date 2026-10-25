@@ -5,7 +5,8 @@
 //   POST  /api/clubs/{club}/resources        {number, kind, title?, plan_x?, plan_y?, plan_rotation?, reason?} → 201 стол
 //   PATCH /api/clubs/{club}/resources/{id}   {number?, kind?, title?, plan_x?, plan_y?, plan_rotation?, active?, reason?} → стол
 //   PUT   /api/clubs/{club}/hall             {width, height} (см) → { plan }
-//   GET   /api/tariff-templates              → { defaults, templates }
+//   GET   /api/tariff-templates              → { defaults, slot, templates }
+//   GET   /api/resource-kinds                → { kinds, families, slot_minutes, default_slot_minutes } — справочник видов (M5.8)
 //   GET   /api/clubs/{club}/tariffs          → { timezone, day_start_local, rules, resource_rules, coverage }
 //   PUT   /api/clubs/{club}/tariffs          {rules, reason?} → как GET; 400 tariff_gap | tariff_overlap {kind?, weekday, from, to}
 //
@@ -14,6 +15,7 @@
 
 import { createResource, listResources, setHallSize, updateResource } from '../../server/setup/hall.mjs';
 import { getTariffs, saveTariffs, templatesJson } from '../../server/setup/tariffs.mjs';
+import { kindsJson } from '../../server/lib/resource-kinds.mjs';
 
 const MANAGER_UP = ['owner', 'manager'];
 const userId = (ctx) => ctx.user?.id ?? null;
@@ -54,6 +56,13 @@ export const routes = [
     auth: 'staff',
     roles: MANAGER_UP,
     handler: async (ctx, req) => ({ status: 200, json: await setHallSize(ctx.db, { clubId: req.params.club, userId: userId(ctx), body: req.body }) }),
+  },
+  {
+    // Справочник видов ресурсов (M5.8 №203): код, семья, слова «стол/стола/столов», «корт/корта/кортов».
+    method: 'GET',
+    path: '/api/resource-kinds',
+    auth: 'none',
+    handler: async () => ({ status: 200, json: kindsJson() }),
   },
   {
     method: 'GET',

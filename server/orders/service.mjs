@@ -10,6 +10,7 @@
 //   или на кассе. Двойная оплата — один платёж: повторный запрос гостя получает тот же
 //   платёж, а заказ, оплаченный на кассе, пока шла оплата онлайн, возвращается.
 
+import { familyOf, resourceName } from '../lib/resource-kinds.mjs';
 import { stableUuid } from '../payments/records.mjs';
 import { requireGuestReady } from '../payments/context.mjs';
 import { loadPaymentSettings } from '../payments/settings.mjs';
@@ -141,7 +142,7 @@ export async function createGuestOrder(db, deps, info) {
   // Платёж ЮKassa до записи заказа (как money): сбой ЮKassa не оставит заказа без платежа.
   const guest = await createGuestSale(db, deps, {
     clubId, method, orders: [fake], userId, phone, resourceId: session.resource_id, returnUrl: orderReturnUrl(deps, orderId),
-    requestKey: key, description: `Бар, стол ${session.resource_number}`, at,
+    requestKey: key, description: `Бар, ${resourceName(session.resource_type, session.resource_number, { capital: false })}`, at,
   });
   const { order, items } = await insertOrder(db, {
     id: orderId, clubId, source: 'qr', payMode: 'online', sessionId: session.id, resourceId: session.resource_id, userId, comment,
@@ -263,7 +264,7 @@ async function cancelOrder(db, deps, o, { staffId, reason, at }) {
       manual: true,
       resourceId: o.resource_id ?? null,
       data: { order_id: o.id, subtotal_kopecks: Number(o.subtotal_kopecks) },
-      text: `${o.resource_number ? `Стол ${o.resource_number}: о` : 'О'}тменён заказ бара №${o.number} на ${(Number(o.subtotal_kopecks) / 100).toFixed(2).replace('.', ',')} ₽: ${why}`.slice(0, 900),
+      text: `${o.resource_number ? `${resourceName(o.resource_type, o.resource_number)}: о` : 'О'}тменён заказ бара №${o.number} на ${(Number(o.subtotal_kopecks) / 100).toFixed(2).replace('.', ',')} ₽: ${why}`.slice(0, 900),
     });
   }
   const fresh = await loadOrder(db, o.id);
@@ -285,18 +286,19 @@ export async function barQueue(db, { clubId }) {
 /** Открытые счета столов клуба (ресепшн): сессия, стол, сумма. */
 export async function openTabs(db, { clubId }) {
   const { rows } = await db.query(
-    `select o.session_id, s.status as session_status, s.resource_id, r.number as resource_number,
+    `select o.session_id, s.status as session_status, s.resource_id, r.number as resource_number, r.type as resource_type,
             count(*)::int as orders, sum(o.subtotal_kopecks)::bigint as total, min(o.created_at) as since
        from bl.orders o join bl.sessions s on s.id = o.session_id join bl.resources r on r.id = s.resource_id
       where o.club_id = $1 and o.pay_mode = 'tab' and o.paid_at is null and o.status <> 'canceled' and o.committed_at is not null
-      group by o.session_id, s.status, s.resource_id, r.number
-      order by r.number`,
+      group by o.session_id, s.status, s.resource_id, r.number, r.type
+      order by bl.resource_family(r.type) desc, r.number`,
     [clubId],
   );
   return rows.map((r) => ({
     session_id: r.session_id,
     session_status: r.session_status,
-    resource: { id: r.resource_id, number: r.resource_number },
+    // Вид ресурса (M5.8): «Стол 3» или «Корт 1» в списке счетов ресепшена.
+    resource: { id: r.resource_id, number: r.resource_number, type: r.resource_type, family: familyOf(r.resource_type) },
     orders: r.orders,
     total_kopecks: Number(r.total),
     since: new Date(r.since).toISOString(),
@@ -380,7 +382,7 @@ export async function payTab(db, deps, info) {
   const session = await loadSession(db, sessionId);
   const guest = await createGuestSale(db, deps, {
     clubId, method, orders, userId, phone, resourceId: session.resource_id, returnUrl: tabReturnUrl(deps, sessionId), requestKey: key,
-    description: `Бар, счёт стола ${session.resource_number}`, at,
+    description: `Бар, счёт ${resourceName(session.resource_type, session.resource_number, { case: 'gen', capital: false })}`, at,
   });
   await insertGuestSale(db, {
     clubId, saleId: guest.saleId, method, paymentId: guest.payment.id, sessionId, userId, total, items: guest.items, requestKey: key, at,

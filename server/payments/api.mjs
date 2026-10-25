@@ -418,8 +418,9 @@ export async function refund(db, args, injected) {
   if (p.provider === 'balance') return refundBalance(db, deps, p, { key, amountKopecks, reason, args, now });
 
   const settings = await loadPaymentSettings(db, p.club_id, { isTest: p.is_test });
-  const { rows: res } = await db.query('select number from bl.resources where id = $1', [p.resource_id]);
+  const { rows: res } = await db.query('select number, type from bl.resources where id = $1', [p.resource_id]);
   const number = res[0]?.number;
+  const resourceType = res[0]?.type ?? null;
   // Позиции чека возврата: у бара — от кассы (что именно возвращается), у стола — «Игра, стол N».
   const items = args.items === undefined ? null : checkItems(args.items, amountKopecks);
   if (p.kind === 'bar' && !items) throw new MoneyError('bad_request', 'items: позиции чека возврата бара');
@@ -448,7 +449,7 @@ export async function refund(db, args, injected) {
     // Наличные без открытой смены — ждут смены (п. 7): выдаются и попадают в её сверку.
     if (p.method === 'cash' && !(await deps.shifts.currentShift(db, p.club_id))) {
       const { queueCashRefund } = await import('./cash-refunds.mjs');
-      const lines = items ?? receiptItems({ resourceNumber: number, minutes: p.minutes, amountKopecks, vatCode: settings.vat_code });
+      const lines = items ?? receiptItems({ resourceNumber: number, resourceType, minutes: p.minutes, amountKopecks, vatCode: settings.vat_code });
       const { pending } = await queueCashRefund(db, deps, { clubId: p.club_id, payment: p, key, amountKopecks, reason, lines, requestedBy, now });
       return { refund_id: null, status: 'queued', amount_kopecks: amountKopecks, pending_id: pending.id };
     }
@@ -465,7 +466,7 @@ export async function refund(db, args, injected) {
       channel: 'kkt',
       status: 'receipt_pending',
       amountKopecks,
-      items: items ?? receiptItems({ resourceNumber: number, minutes: p.minutes, amountKopecks, vatCode: settings.vat_code }),
+      items: items ?? receiptItems({ resourceNumber: number, resourceType, minutes: p.minutes, amountKopecks, vatCode: settings.vat_code }),
       taxSystemCode: settings.tax_system_code,
       userId: p.user_id,
       now,
@@ -481,7 +482,7 @@ export async function refund(db, args, injected) {
     if (!customer) throw new MoneyError('bad_request', 'нет контакта покупателя для чека возврата');
     receipt = { customer, items, ...(settings.tax_system_code != null ? { tax_system_code: settings.tax_system_code } : {}) };
   } else {
-    receipt = yookassaReceipt({ phone, resourceNumber: number, minutes: p.minutes, amountKopecks, settings });
+    receipt = yookassaReceipt({ phone, resourceNumber: number, resourceType, minutes: p.minutes, amountKopecks, settings });
   }
   const { rows: ins } = await db.query(
     `insert into bl.refunds (club_id, payment_id, idempotence_key, amount_kopecks, status, reason, requested_by, created_at, updated_at)

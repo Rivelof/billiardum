@@ -9,6 +9,7 @@ import { withContext } from '../../lib/store.mjs';
 import { createNotifier, send } from '../../notify/index.mjs';
 import { decryptPayload, p256Scalar } from '../../notify/webpush.mjs';
 import { CLUB_A, MANAGER_A, OWNER_A, RESOURCE_1, startTestApp, waitFor } from './helpers.mjs';
+import { deactivateSeedCourts } from '../../../supabase/tests/helpers.mjs';
 
 let t;
 let owner;
@@ -17,6 +18,8 @@ let reception;
 
 before(async () => {
   t = await startTestApp({ notifyWorker: false });
+  // Зал и наклейки 8 столов сида; корты сида (M5.8) вне работы.
+  await deactivateSeedCourts(t.admin);
   owner = await t.login('+70000000001');
   manager = await t.login('+70000000003');
   reception = await t.login('+70000000004');

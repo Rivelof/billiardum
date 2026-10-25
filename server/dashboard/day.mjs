@@ -14,6 +14,7 @@
 //   суток ёмкость — до «сейчас».
 // Все запросы — в транзакции с контекстом клуба (RLS отсекает чужое).
 
+import { familyOf, RESOURCE_TYPES } from '../lib/resource-kinds.mjs';
 import { maskPhones } from '../notify/index.mjs';
 import { manualActions, revenueOf, shiftLateRefunds, shiftPayments, shiftRefunds } from '../reports/queries.mjs';
 import { dayBounds, localParts, openWindows, overlapMs, sliceByHour } from './time.mjs';
@@ -25,7 +26,11 @@ import { dayBounds, localParts, openWindows, overlapMs, sliceByHour } from './ti
  *   2 — ёмкость округляется один раз на сутки (Н1, apportionMinutes): карта = кольцо.
  */
 export const VERSION = 2;
-export const TYPES = ['billiard_pyramid', 'billiard_pool', 'billiard_snooker'];
+// Виды ресурсов в разрезах дашборда (M5.8 T47): все типы — столы и корт (server/lib/resource-kinds.mjs).
+export const TYPES = [...RESOURCE_TYPES];
+/** Фильтр kind дашборда: тип ресурса (billiard_pool, padel_court…) или семья (table — все столы, court — корты). */
+export const KIND_FAMILIES = ['table', 'court'];
+export const matchKind = (type, kind) => kind === null || kind === undefined || type === kind || (KIND_FAMILIES.includes(kind) && familyOf(type) === kind);
 export const METHODS = ['cash', 'card_terminal', 'sbp', 'card'];
 export const SOURCES = ['qr', 'booking', 'reception', 'staff', 'tournament'];
 /** Команды, при которых свет над столом горит. */
@@ -178,7 +183,7 @@ export async function computeDay(db, { club, day, now }) {
   structure.tables = rev.tables.total_kopecks - structure.deposits;
 
   // Столы: в работе, ёмкость по часам.
-  const res = await db.query('select id, number, title, type, active, created_at from bl.resources where club_id = $1 order by number', [clubId]);
+  const res = await db.query('select id, number, title, type, active, created_at from bl.resources where club_id = $1 order by bl.resource_family(type) desc, number', [clubId]);
   const ev = await resourceEvents(db, clubId, nowMs);
   const byResEvents = new Map();
   for (const e of ev.rows) {

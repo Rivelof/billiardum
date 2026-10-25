@@ -127,7 +127,7 @@ after(async () => {
 describe('provision:dev — только устройства сида (Н1)', () => {
   it('первый запуск: ключи сиду, чужие контроллеры не тронуты, в файле только сид с уникальными столами', async () => {
     const res = await run();
-    assert.deepEqual(res, { devices: 8, reused: 0, issued: 8 });
+    assert.deepEqual(res, { devices: 10, reused: 0, issued: 10 });
 
     assert.deepEqual(await deviceRows(FOREIGN), foreignBefore, 'device_key_enc, mqtt_username и стол привязанных не изменились');
     for (const id of FOREIGN) {
@@ -138,13 +138,18 @@ describe('provision:dev — только устройства сида (Н1)', (
 
     const f = readFile();
     assert.equal(statSync(file).mode & 0o777, 0o600);
-    assert.equal(f.devices.length, 8);
+    assert.equal(f.devices.length, 10);
     const ids = f.devices.map((d) => d.device_id);
     for (const id of FOREIGN) assert.ok(!ids.includes(id), `${id} нет в devices.json`);
     assert.ok(f.devices.every((d) => d.club_id === SEED_CLUB_ID));
     const tables = f.devices.map((d) => d.table_number);
     assert.equal(new Set(tables).size, tables.length, 'номера столов уникальны');
-    assert.deepEqual(tables, [1, 2, 3, 4, 5, 6, 7, 8]);
+    // Столы 1–8 и корты сида (M5.8): у корта N в симуляторе table_number 100 + N, вид и номер — отдельно.
+    assert.deepEqual(tables, [1, 2, 3, 4, 5, 6, 7, 8, 101, 102]);
+    assert.deepEqual(
+      f.devices.slice(7).map((d) => [d.resource_type, d.resource_number, d.label]),
+      [['billiard_pool', 8, 'Стол 8'], ['padel_court', 1, 'Корт 1'], ['padel_court', 2, 'Корт 2']],
+    );
 
     const rows = await deviceRows(ids);
     for (const d of f.devices) {
@@ -160,7 +165,7 @@ describe('provision:dev — только устройства сида (Н1)', (
     const rowsBefore = await deviceRows(before.devices.map((d) => d.device_id));
     const mark = broker.log.length;
     const res = await run();
-    assert.deepEqual(res, { devices: 8, reused: 8, issued: 0 });
+    assert.deepEqual(res, { devices: 10, reused: 10, issued: 0 });
     assert.deepEqual(readFile().devices, before.devices);
     assert.deepEqual(await deviceRows(before.devices.map((d) => d.device_id)), rowsBefore, 'device_key_enc не перешифрован');
     const cmds = broker.log.slice(mark);
@@ -174,7 +179,7 @@ describe('provision:dev — только устройства сида (Н1)', (
     writeFileSync(file, JSON.stringify(prev), { mode: 0o600 });
     broker.clients.delete(SEED(2));
     const res = await run();
-    assert.deepEqual(res, { devices: 8, reused: 7, issued: 1 });
+    assert.deepEqual(res, { devices: 10, reused: 9, issued: 1 });
     const next = readFile();
     assert.notEqual(next.devices[0].device_key, prev.devices[0].device_key);
     assert.notEqual(next.devices[0].mqtt_password, prev.devices[0].mqtt_password);
@@ -187,9 +192,9 @@ describe('provision:dev — только устройства сида (Н1)', (
   it('rotate: новые ключи всем устройствам сида и только им', async () => {
     const prev = readFile();
     const res = await run({ rotate: true });
-    assert.deepEqual(res, { devices: 8, reused: 0, issued: 8 });
+    assert.deepEqual(res, { devices: 10, reused: 0, issued: 10 });
     const next = readFile();
-    for (let i = 0; i < 8; i += 1) assert.notEqual(next.devices[i].device_key, prev.devices[i].device_key);
+    for (let i = 0; i < 10; i += 1) assert.notEqual(next.devices[i].device_key, prev.devices[i].device_key);
     assert.deepEqual(await deviceRows(FOREIGN), foreignBefore);
     for (const id of FOREIGN) assert.equal(broker.clients.get(id).password, userPasswords.get(id));
   });

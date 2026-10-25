@@ -20,6 +20,8 @@
 // * Турниры (M4) — взносы за участие (kind tournament, ЮKassa) — строка tournaments; возврат
 //   взноса — обычный возврат (refunds.kind = 'refund'), отдельной строкой не выводится.
 
+import { familyOf, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
+
 export const METHODS = ['cash', 'card_terminal', 'sbp', 'card'];
 
 const zero = () => Object.fromEntries(METHODS.map((m) => [m, 0]));
@@ -145,9 +147,12 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
       group by s.resource_id`,
     [clubId, from, to],
   );
-  const res = await db.query('select id, number, title, active from bl.resources where club_id = $1 order by number', [clubId]);
+  const res = await db.query('select id, number, title, type, active from bl.resources where club_id = $1 order by bl.resource_family(type) desc, number', [clubId]);
   const byId = new Map(
-    res.rows.map((r) => [r.id, { resource_id: r.id, number: r.number, title: r.title ?? null, sessions: 0, secs: 0, revenue_kopecks: 0, refunds_kopecks: 0, active: r.active }]),
+    res.rows.map((r) => [
+      r.id,
+      { resource_id: r.id, number: r.number, title: r.title ?? null, type: r.type, family: familyOf(r.type), sessions: 0, secs: 0, revenue_kopecks: 0, refunds_kopecks: 0, active: r.active },
+    ]),
   );
   let secs = 0;
   let sessions = 0;
@@ -166,6 +171,29 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
   const minutes = Math.round(secs / 60);
   const shiftMinutes = Math.max(0, (new Date(to).getTime() - new Date(from).getTime()) / 60_000);
   const capacity = active * shiftMinutes;
+  // Разрез по видам ресурсов (M5.8 T47): по типу (пирамида, пул, падел-корт…) и по семье (столы, корты).
+  const group = (keyOf) => {
+    const m = new Map();
+    for (const t of byId.values()) {
+      const k = keyOf(t);
+      const g = m.get(k) ?? { key: k, resources: 0, sessions: 0, secs: 0, revenue_kopecks: 0, refunds_kopecks: 0 };
+      if (t.active) g.resources += 1;
+      g.sessions += t.sessions;
+      g.secs += t.secs;
+      g.revenue_kopecks += t.revenue_kopecks;
+      g.refunds_kopecks += t.refunds_kopecks;
+      m.set(k, g);
+    }
+    return [...m.values()]
+      .filter((g) => g.resources > 0 || g.sessions > 0 || g.secs > 0 || g.revenue_kopecks > 0 || g.refunds_kopecks > 0)
+      .map(({ key, secs: gSecs, ...g }) => {
+        const m2 = Math.round(gSecs / 60);
+        const cap = g.resources * shiftMinutes;
+        return { key, ...g, minutes: m2, hours: Math.round((m2 / 60) * 10) / 10, utilization_percent: cap > 0 ? Math.round((gSecs / 60 / cap) * 1000) / 10 : 0 };
+      });
+  };
+  const byType = group((t) => t.type).map(({ key, ...g }) => ({ type: key, kind: TYPE_TO_KIND[key] ?? null, family: familyOf(key), ...g }));
+  const byFamily = group((t) => t.family).map(({ key, ...g }) => ({ family: key, ...g }));
   return {
     sessions,
     minutes,
@@ -173,6 +201,8 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
     resources: active,
     shift_minutes: Math.round(shiftMinutes),
     utilization_percent: capacity > 0 ? Math.round((secs / 60 / capacity) * 1000) / 10 : 0,
+    by_type: byType,
+    by_family: byFamily,
     by_resource: [...byId.values()]
       .filter((t) => t.active || t.sessions > 0 || t.secs > 0 || t.revenue_kopecks > 0 || t.refunds_kopecks > 0)
       .map(({ secs: tSecs, active: _active, ...t }) => {
