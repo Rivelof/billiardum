@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { formatTime, plural } from '@billiardum/shared/format';
 import { ORDER_ACTION, ORDER_NEXT, itemView, mergeOrder, normalizeMenu, orderPayWord, orderTable, orderWord, sortQueue, waitMinutes, waitTone } from '@billiardum/shared/bar';
-import { resourceName } from '@billiardum/shared/resource';
+import { rowPlace } from '../lib/words.js';
 
-/** Где заказ: «Стол 4», «Корт 1» (M5.8: resource.family, если сервер пришлёт), без ресурса — null. */
-const whereOf = (o, opts) => (orderTable(o) ? resourceName(o.resource ?? 'table', orderTable(o), opts) : null);
+/** Где заказ: «Стол 4», «Корт 1» (M5.8: resource.family и type в заказе), без ресурса — null. */
+const whereOf = (o, opts) => (orderTable(o) ? rowPlace(o, opts) : null);
 import { Icon } from '../components/Icon.jsx';
 import { ModeNote } from '../components/Shell.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';

@@ -188,7 +188,7 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
     rules: n.tariffs.template ? n.tariffs.rules : [],
     clubs: n.clubs.map((m) => {
       const c = info(m.club_id);
-      return { club_id: m.club_id, name: c.name, timezone: c.timezone, day_start_local: c.day_start_local, mode: modeOf(m.club_id), live: live(modeOf(m.club_id)), override: n.tariffs_mode !== 'hard' && m.tariffs_override, applied_version: m.tariffs_version, problem: problemOf(n, m.club_id) };
+      return { club_id: m.club_id, name: c.name, timezone: c.timezone, day_start_local: c.day_start_local, mode: modeOf(m.club_id), live: live(modeOf(m.club_id)), kinds: [...c.types, ...(courtsIn(state().scenario, m.club_id) ? ['padel_court'] : [])], override: n.tariffs_mode !== 'hard' && m.tariffs_override, applied_version: m.tariffs_version, problem: problemOf(n, m.club_id) };
     }),
   });
   const devOverrides = () => (catalog()?.products ?? []).filter((p) => p.network_product_id && p.network_override).length;
@@ -355,6 +355,16 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
       if (a.n.clubs.some((x) => x.club_id === id)) return ok(networkJson(a.n));
       if (netOfClub(id)) return err(409, 'club_in_network');
       if (a.n.clubs.length >= 100) return err(409, 'networks_limit');
+      // Шаблоны сети применяются к клубу сразу (server/networks/templates.mjs applyTemplatesToNewClub); любая ошибка — клуб не добавлен
+      const tpl = a.n.tariffs.template || a.n.menu.template;
+      if (a.n.tariffs.template) {
+        // network-gap: у добавляемого клуба неделя не покрыта шаблоном
+        const p = state().scenario === 'network-gap' ? { type: 'gap', kind: 'pool', weekday: 3, from: '02:00', to: '06:00' } : problemOf(a.n, id);
+        if (p) return fail(400, p.type === 'overlap' ? 'tariff_overlap' : 'tariff_gap', { club_id: id, ...(p.kind ? { kind: p.kind } : {}), weekday: p.weekday, from: p.from, to: p.to });
+      }
+      if (tpl && live(modeOf(id)) && !reasonOk(b)) return err(400, 'reason_required');
+      // network-dup: артикул товара шаблона занят другим товаром в меню клуба
+      if (a.n.menu.template && state().scenario === 'network-dup') return fail(409, 'duplicate', { club_id: id, field: 'sku', value: a.n.menu.products[0]?.sku ?? 'COF-AM' });
       a.n.clubs.push({ club_id: id, tariffs_override: false, tariffs_version: a.n.tariffs.version, menu_version: a.n.menu.version, added_at: iso(now()) });
       touch(a.n);
       return { status: 201, body: networkJson(a.n) };
@@ -468,6 +478,8 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
         if (p.sku) seen.add(`sku:${p.sku}`);
       }
       if (liveTouchedMenu(a.n).length && !reasonOk(b)) return err(400, 'reason_required');
+      // network-dup: название товара шаблона занято другим товаром в меню клуба (409 duplicate { club_id, field, value })
+      if (state().scenario === 'network-dup') return fail(409, 'duplicate', { club_id: a.n.clubs[0]?.club_id, field: 'name', value: String(items[0].name).slice(0, 128) });
       a.n.menu = {
         template: true,
         version: a.n.menu.version + 1,
@@ -499,7 +511,7 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
         const nums = clubNumbers(x.club_id, { from, to, compare });
         return { id: x.club_id, name: c.name, c, numbers: nums.now, prev: nums.prev, ranked: live(modeOf(x.club_id)), tables: c.tables };
       });
-      const ranking = { utilization: rank(rows, 'utilization'), revenue_per_table: rank(rows, 'revenue_per_table_day') };
+      const ranking = { utilization: rank(rows, 'utilization'), revenue_per_table_day: rank(rows, 'revenue_per_table_day') };
       const placeOf = (list, id) => list.find((x) => x.club_id === id)?.place ?? null;
       const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY) + 1;
       const totalNow = sumNumbers(rows, (r) => r.numbers);
@@ -521,7 +533,7 @@ export function networkRoutes({ state, me, err, ok, now, dash, catalog }) {
           tables_avg: r.tables,
           tiles: tilesOf(r.numbers, r.prev),
           place_utilization: placeOf(ranking.utilization, r.id),
-          place_revenue_per_table: placeOf(ranking.revenue_per_table, r.id),
+          place_revenue_per_table_day: placeOf(ranking.revenue_per_table_day, r.id),
         })),
         totals: { tables_avg: totalNow.tables_avg, tiles: tilesOf(totalNow, totalPrev) },
         ranking,

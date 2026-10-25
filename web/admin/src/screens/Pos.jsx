@@ -10,7 +10,8 @@ import { api, streamClub } from '../lib/api.js';
 import { can } from '../lib/auth.js';
 import { session } from '../lib/store.js';
 import { DEFAULT_DISCOUNT_LIMIT, discountPercent, kktState, requestLine, saleTotals, tabLine, tabName } from '../lib/pos.js';
-import { minutesShort, requestName } from '../lib/words.js';
+import { requestName } from '../lib/words.js';
+import { requestLength } from '../lib/court.js';
 import { currentOf } from '../lib/shift.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -580,7 +581,7 @@ function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
                   <button type="button" class={`tile tile--table${added ? ' tile--in' : ''}`} disabled={added} onClick={() => onAdd(line)} aria-describedby={`pos-req-${r.id}`}>
                     <span class="tile__table display">{requestName(r)}</span>{' '}
                     <span class="tile__name">
-                      {r.kind === 'extend' ? 'Продление' : 'Игра'}, {minutesShort(r.minutes)}
+                      {r.kind === 'extend' ? 'Продление' : 'Игра'}, {requestLength(r)}
                     </span>{' '}
                     <span class="tile__foot">
                       <span class="tile__price mono">{formatMoney(r.amount_kopecks)}</span>{' '}

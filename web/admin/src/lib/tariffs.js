@@ -451,6 +451,16 @@ export function hallTypes(hall) {
   return courts ? [] : ['pyramid'];
 }
 
+/**
+ * Виды ресурсов в работе по всем клубам сети из GET /api/networks/{id}/tariffs (clubs[].kinds — коды API:
+ * pyramid | pool | snooker | mixed | padel_court): отдельный запрос ресурсов каждого клуба не нужен.
+ * @returns {{ types: string[], courts: boolean }} types — как hallTypes, courts — как hallHasCourts
+ */
+export function networkKinds(clubs) {
+  const list = (Array.isArray(clubs) ? clubs : []).flatMap((c) => (Array.isArray(c?.kinds) ? c.kinds : [])).map((kind) => ({ kind }));
+  return { types: hallTypes(list), courts: hallHasCourts(list) };
+}
+
 /** Есть ли в зале (списке ресурсов) корты в работе: тогда правила корта обязательны (№213). */
 export function hallHasCourts(hall) {
   return (hall ?? []).some((t) => {

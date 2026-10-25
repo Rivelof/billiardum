@@ -81,6 +81,12 @@ function page(items, cursor) {
 }
 
 export function reportsRoutes({ state, now, me, err, ok, audit, dash, manageOnly }) {
+  // M5.8: заказ с ресурса — номер и вид (resource_type); в ?mock=court… часть заказов — с кортов
+  const place = (source, i, n) => {
+    if (source !== 'qr') return { resource_number: null, resource_type: null };
+    if (String(state().scenario ?? '').startsWith('court') && i % 6 === 0) return { resource_number: 1 + (i % 2), resource_type: 'padel_court' };
+    return { resource_number: n, resource_type: n <= 5 ? 'billiard_pyramid' : 'billiard_pool' };
+  };
   const owner = (fn) => (m, b, q) => (!me() ? err(401, 'unauthorized') : me().role === 'owner' ? fn(m, b, q) : err(403, 'forbidden'));
   const empty = () => state().scenario === 'dashboard-empty' || state().scenario === 'empty';
   const today = () => workDate(now(), TZ, '06:00');
@@ -124,7 +130,7 @@ export function reportsRoutes({ state, now, me, err, ok, audit, dash, manageOnly
           created_at: created,
           canceled_at: status === 'canceled' ? new Date(Date.parse(created) + 6 * MIN).toISOString() : null,
           guest,
-          resource_number: source === 'qr' ? 1 + Math.floor(r() * 8) : null,
+          ...place(source, i, 1 + Math.floor(r() * 8)),
           source,
           amount_kopecks: amount,
           method: source === 'qr' ? pick(r, ['sbp', 'card', 'tab']) : pick(r, ['cash', 'card_terminal', 'sbp']),

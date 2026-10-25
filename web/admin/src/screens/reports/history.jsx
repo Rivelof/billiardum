@@ -10,6 +10,7 @@ import { linkHandler } from '../../lib/router.js';
 import { csvName } from '../../lib/export.js';
 import { countWords, guestLabel, ORDER_SOURCE, ORDER_STATUS, PAY_LABEL, qtyWords, WRITEOFF_SOURCE } from '../../lib/reports.js';
 import { periodWords } from '../../lib/period.js';
+import { placeColumnLabel, rowPlace } from '../../lib/words.js';
 import { downloadResponse, MoreButton, PrintHead, printNow, ReportFilters, ReportTools, usePaged, useReportQuery, When } from './common.jsx';
 
 const money = (v) => (Number.isFinite(v) ? formatMoney(v) : '—');
@@ -35,7 +36,7 @@ function config(kind, tz) {
         date,
         { key: 'canceled_at', label: 'Отмена', sortKey: 'canceled_at', cls: 'rnowrap', render: (r) => stamp(r.canceled_at) },
         { key: 'guest', label: 'Гость', render: (r) => guestLabel(r.guest, { pos: r.source === 'pos' }) },
-        { key: 'table', label: 'Стол', cls: 'rnowrap', render: (r) => (r.resource_number ? `Стол ${r.resource_number}` : ORDER_SOURCE[r.source] ?? '—') },
+        { key: 'table', label: 'Стол', cls: 'rnowrap', render: (r) => rowPlace(r) ?? ORDER_SOURCE[r.source] ?? '—' },
         { key: 'amount', label: 'Сумма', num: true, sortKey: 'amount', render: (r) => money(r.amount_kopecks) },
         { key: 'method', label: 'Способ', render: (r) => PAY_LABEL[r.method] ?? r.method ?? '—' },
         { key: 'status', label: 'Статус', sortKey: 'status', cls: 'rnowrap', render: (r) => <span class={`rstatus rstatus--${r.status}`}>{ORDER_STATUS[r.status] ?? r.status}</span> },
@@ -233,7 +234,7 @@ export function HistoryScreen({ kind, ctx, today, base, title }) {
         <div class={paged.busy ? 'is-busy' : ''}>
           <DataTable
             caption={`${title}, ${periodWords(state.from, state.to, today)}`}
-            columns={cfg.columns}
+            columns={cfg.columns.map((c) => (c.key === 'table' ? { ...c, label: placeColumnLabel(paged.items) } : c))}
             rows={paged.items}
             rowKey={cfg.id}
             sort={{ key: sort.replace(/^-/, ''), desc: sort.startsWith('-') }}

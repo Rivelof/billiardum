@@ -20,14 +20,15 @@ import {
   weekSummary,
 } from '../src/lib/tariffs.js';
 import { familyChange, fitRotation, fitsHall, footprint, kindOf, kindsOfFamily, nextNumber, numberError, planTables, retireBusyText, tableAria } from '../src/lib/hallEditor.js';
-import { courtFreeOptions, courtPlayers, requestFamily, requestHallItem, requestLength, requestLine, sessionSlot } from '../src/lib/court.js';
+import { courtFreeOptions, courtPlayers, needsSessionDetail, requestFamily, requestHallItem, requestLength, requestLine, requestSlot, sessionSlot } from '../src/lib/court.js';
 import { dashboardQuery, familyTotals, kindCards, kindFamily, kindOptions, readFilters, tileViews } from '../src/lib/dashboard.js';
 import { familyLine } from '../src/lib/shift.js';
-import { requestTitle } from '../src/lib/words.js';
+import { placeColumnLabel, requestTitle, rowPlace, rowResource } from '../src/lib/words.js';
 import { requestLine as posRequestLine, tabLine } from '../src/lib/pos.js';
 import { alarmView } from '../src/lib/alarms.js';
 import { auditView } from '../src/lib/audit.js';
 import { problemText } from '../src/lib/networks.js';
+import { reactionView } from '../src/lib/dashboard.js';
 
 const memory = () => {
   let v = null;
@@ -302,4 +303,77 @@ test('заглушка: отчёт смены с кортами — by_family, �
   assert.deepEqual(r.play.by_family.map((f) => f.family), ['table', 'court']);
   assert.equal(r.play.by_family.reduce((a, f) => a + f.minutes, 0), r.play.minutes);
   assert.match(familyLine(r.play), /^Столы — .*; корты — .*\.$/);
+});
+
+test('M5.8: заявка корта — «1 слот · 1,5 ч» из slot_minutes и billing заявки, без запроса тарифа', () => {
+  const court = { id: 'r', resource_number: 1, resource_type: 'padel_court', resource_family: 'court', billing: 'slot', slot_minutes: 90, minutes: 90, amount_kopecks: 240000 };
+  assert.equal(requestSlot(court), 90);
+  assert.equal(requestLength(court), `1 слот · 1,5${NBSP}ч`);
+  assert.equal(requestLine(court), `Корт 1 · 1 слот · 1,5${NBSP}ч · ${formatMoney(240000)}`);
+  assert.equal(requestLength({ ...court, minutes: 180 }), `2 слота · 3${NBSP}ч`);
+  assert.equal(requestLength({ ...court, minutes: 100 }), '1 ч 40 мин', 'не делится на слот — часами');
+  // Касса: плитка и строка чека
+  assert.equal(posRequestLine(court).name, `Корт 1 · 1 слот · 1,5${NBSP}ч`);
+  // Стол: hourly, slot_minutes null — минуты как раньше
+  const table = { resource_number: 4, resource_type: 'billiard_pool', resource_family: 'table', billing: 'hourly', slot_minutes: null, minutes: 120, amount_kopecks: 160000 };
+  assert.equal(requestSlot(table), null);
+  assert.equal(requestLength(table), '2 ч');
+  assert.equal(posRequestLine(table).name, 'Стол 4 · 2 ч');
+  // Явный слот важнее заявки; без данных — как раньше
+  assert.equal(requestLength(court, 60), '1 ч 30 мин', 'явный слот важнее заявки; 90 не делится на 60 — часами');
+  assert.equal(requestSlot({ ...court, billing: 'hourly' }), null);
+  assert.equal(requestSlot(null), null);
+});
+
+test('M5.8: окно корта берёт слот из session зала; GET /api/sessions/{id} — только за недостающим', () => {
+  const hallSession = { id: 's1', status: 'active', billing: 'slot', slot_minutes: 90 };
+  assert.equal(sessionSlot(hallSession), 90);
+  assert.equal(needsSessionDetail(hallSession), true, 'игроков в зале нет — запрос остаётся');
+  const full = { ...hallSession, participants: [{}, {}, {}] };
+  assert.equal(needsSessionDetail(full), false, 'слот и игроки есть — запрос не нужен');
+  assert.equal(needsSessionDetail({ ...full, slot_minutes: null }), true);
+  assert.equal(needsSessionDetail(null), false);
+  assert.equal(courtPlayers({ ...full, resource: { family: 'court' } }).text, 'Игроки 3 из 4');
+});
+
+test('M5.8: заказ бара, история, журнал и отчёт смены — «Корт 1» по resource.family/type и resource_type', () => {
+  assert.equal(rowPlace({ resource: { number: 1, type: 'padel_court', family: 'court' } }), 'Корт 1');
+  assert.equal(rowPlace({ resource: { number: 1, type: 'billiard_pool', family: 'table' } }), 'Стол 1');
+  assert.equal(rowPlace({ resource_number: 2, resource_type: 'padel_court' }), 'Корт 2');
+  assert.equal(rowPlace({ resource_number: 4 }), 'Стол 4');
+  assert.equal(rowPlace({ resource_number: 1, resource_type: 'padel_court' }, { case: 'gen', capital: false }), 'корта 1');
+  assert.equal(rowPlace({ resource_number: null }), null);
+  assert.equal(rowPlace({}), null);
+  assert.equal(rowResource({}), 'table');
+  assert.equal(placeColumnLabel([{ resource_number: 1 }, { resource_number: 2, resource_type: 'padel_court' }]), 'Стол или корт');
+  assert.equal(placeColumnLabel([{ resource_number: 1, resource_type: 'billiard_pool' }]), 'Стол');
+  assert.equal(placeColumnLabel(null), 'Стол');
+  const log = auditView({ action: 'manual.extend_free', resource_number: 1, resource_type: 'padel_court', created_at: '2026-10-24T12:00:00Z' }, 'Asia/Yekaterinburg');
+  assert.equal(log.table, 'Корт 1');
+});
+
+test('заглушка ?mock=court: заявки с billing и slot_minutes, зал с billing, заказ бара с корта, отчёт смены с resource_type', async () => {
+  const call = backend('court');
+  const reqs = (await call(`/api/clubs/${CLUB}/reception/requests`)).body;
+  const cr = reqs.find((r) => r.resource_family === 'court');
+  assert.deepEqual([cr.billing, cr.slot_minutes, cr.resource_type], ['slot', 90, 'padel_court']);
+  assert.equal(requestLine(cr), `Корт 2 · 1 слот · 1,5${NBSP}ч · ${formatMoney(240000)}`);
+  const tr = reqs.find((r) => r.resource_family === 'table');
+  assert.deepEqual([tr.billing, tr.slot_minutes], ['hourly', null]);
+  const hall = (await call(`/api/clubs/${CLUB}/hall`)).body;
+  const busy = hall.find((h) => h.resource.family === 'court' && h.session);
+  assert.deepEqual([busy.session.billing, busy.session.slot_minutes], ['slot', 90]);
+  assert.equal(hall.find((h) => h.resource.number === 1 && h.resource.family === 'table').session.billing, 'hourly');
+  const queue = (await call(`/api/clubs/${CLUB}/bar/queue`)).body;
+  const orders = Array.isArray(queue) ? queue : (queue.orders ?? queue.items ?? []);
+  const co = orders.find((o) => o.resource?.family === 'court');
+  assert.ok(co, 'в очереди бара есть заказ с корта');
+  assert.equal(rowPlace(co), 'Корт 1');
+  assert.equal(co.resource.type, 'padel_court');
+});
+
+test('дашборд «Контроль»: тревога и ручное действие несут resource_type — «Корт 1»', () => {
+  const v = reactionView({ problems: [{ alarm_id: 'a1', type: 'lamp_fault', level: 'important', resource_number: 1, resource_type: 'padel_court', raised_at: '2026-10-22T15:00:00Z', acked_at: null, react_sec: null }] });
+  assert.equal(v.rows[0].resource_type, 'padel_court');
+  assert.equal(rowPlace(v.rows[0]), 'Корт 1');
 });

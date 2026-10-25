@@ -29,6 +29,7 @@
 .net__facts dd { margin: 0; }
 .net__add { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
 .net__add .dfield { flex: 1 1 220px; max-width: 360px; }
+.net__add .net__addnote, .net__add .field { flex: 1 1 100%; margin: 0; }
 .net__danger { box-shadow: inset 0 0 0 1px var(--line); background: transparent; }
 .net__danger .btn { justify-self: start; }
 .net__plan .nbadge { justify-self: start; }

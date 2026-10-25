@@ -65,6 +65,33 @@ export function revenueTable(revenue) {
 }
 
 /**
+ * Отчёт управляющего сети (M5.5 №192): `methods_hidden: true`, by_method — null, суммы по способам в сверке — null.
+ * Итоги, признак `ok` и расхождение `diff_kopecks` остаются.
+ */
+export const methodsHidden = (report) => report?.methods_hidden === true || report?.revenue?.by_method === null;
+
+/**
+ * Итоги выручки без разбивки по способам: столы, бар, пакеты, турниры, прочее — по total_kopecks каждого вида.
+ * Пакеты, турниры и прочее — только когда они не нулевые.
+ * @returns {{ rows: { key: string, label: string, kopecks: number }[], total: number }}
+ */
+export function revenueTotals(revenue) {
+  const sum = (k) => (Number.isSafeInteger(revenue?.[k]?.total_kopecks) ? revenue[k].total_kopecks : 0);
+  const rows = [
+    { key: 'tables', label: 'Столы', always: true },
+    { key: 'bar', label: 'Бар', always: true },
+    { key: 'packages', label: 'Пакеты часов' },
+    { key: 'tournaments', label: 'Турниры' },
+    { key: 'other', label: 'Прочее' },
+  ]
+    .map((r) => ({ ...r, kopecks: sum(r.key) }))
+    .filter((r) => r.always || r.kopecks > 0)
+    .map(({ key, label, kopecks }) => ({ key, label, kopecks }));
+  const total = Number.isSafeInteger(revenue?.total_kopecks) ? revenue.total_kopecks : rows.reduce((s, r) => s + r.kopecks, 0);
+  return { rows, total };
+}
+
+/**
  * Сверка до копейки (backend-kkt reconcile): { ok, diff_kopecks, status? }.
  * ok: null или status ≠ checked у онлайн-сверки — не проверено (ЮKassa не ответила, не настроена).
  * @returns {{ state: 'ok' | 'diff' | 'unchecked', diff: number }}

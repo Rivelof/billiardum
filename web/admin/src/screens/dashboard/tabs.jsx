@@ -10,7 +10,7 @@ import { api } from '../../lib/api.js';
 import { can } from '../../lib/auth.js';
 import { BASE } from '../../lib/env.js';
 import { linkHandler } from '../../lib/router.js';
-import { METHOD_LABEL } from '../../lib/words.js';
+import { METHOD_LABEL, rowPlace } from '../../lib/words.js';
 import { ACTION_LABEL } from '../../lib/audit.js';
 import { alarmView } from '../../lib/alarms.js';
 import { eachDay, dayLong, addDays } from '../../lib/period.js';
@@ -898,7 +898,7 @@ export function ControlTab({ view, busy, ctx }) {
                     <li key={a.id} class="dmanual__item">
                       <p class="dmanual__head">
                         <b>{actionLabel(a.action)}</b>
-                        {a.resource_number ? ` · Стол ${a.resource_number}` : ''}
+                        {rowPlace(a) ? ` · ${rowPlace(a)}` : ''}
                         {Number.isFinite(a.amount_kopecks) ? ` · ${money(a.amount_kopecks)}` : ''}
                       </p>
                       <p class="dmanual__reason">{a.reason ? `«${a.reason}»` : 'Без причины'}</p>
@@ -1043,7 +1043,7 @@ export function ControlTab({ view, busy, ctx }) {
                     <li key={a.id} class={a.problem ? 'is-problem' : ''}>
                       <p>
                         <b>{alarmView(a).title}</b>
-                        {a.resource_number ? ` · Стол ${a.resource_number}` : ''}
+                        {rowPlace(a) ? ` · ${rowPlace(a)}` : ''}
                       </p>
                       <p class="small">
                         {formatDate(a.raised_at, tz)}, {formatTime(a.raised_at, tz)} ·{' '}

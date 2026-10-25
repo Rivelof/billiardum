@@ -292,6 +292,18 @@ export function errorMessage(err, ctx = {}) {
     if (typeof ctx.clubName === 'string' && ctx.clubName.trim()) title = `«${ctx.clubName.trim()}»: ${title[0].toLowerCase()}${title.slice(1)}`;
     if (court && code === 'tariff_gap') return { code, title, action: COURT_GAP_ACTION, text: `${title} ${COURT_GAP_ACTION}` };
   }
+  // M5.5 (409 duplicate шаблона меню сети): что совпало — field 'sku' | 'name' и value (артикул или название товара шаблона)
+  if (code === 'network_menu_duplicate') {
+    const field = err?.data?.field;
+    const value = typeof err?.data?.value === 'string' ? err.data.value.trim() : '';
+    if ((field === 'sku' || field === 'name') && value) {
+      const where = typeof ctx.clubName === 'string' && ctx.clubName.trim() ? `в меню клуба «${ctx.clubName.trim()}»` : 'в меню клуба';
+      const what = field === 'sku' ? `Артикул «${value}»` : `Название «${value}»`;
+      const fix = field === 'sku' ? 'Смените артикул у товара шаблона или у товара клуба и сохраните снова.' : 'Переименуйте товар в шаблоне или в меню клуба и сохраните снова.';
+      title = `${what} уже ${field === 'sku' ? 'занят' : 'занято'} другим товаром ${where}.`;
+      return { code, title, action: fix, text: `${title} ${fix}` };
+    }
+  }
   if (code === 'booking_conflict' && ctx.limitUntil) title = `Стол забронирован — можно продлить до ${ctx.limitUntil}.`;
   // Продление турнира (№147): 409 limit_exceeded { extend_limit_until } — предел в формате времени клуба
   if (code === 'limit_exceeded' && audience === 'staff' && ctx.limitUntil) {

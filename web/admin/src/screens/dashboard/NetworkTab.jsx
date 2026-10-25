@@ -220,7 +220,7 @@ function Compare({ rows, totals, member }) {
               <span class="small">выручка</span>
             </span>
             <span class="visually-hidden">
-              По загрузке — {placeWords(r.placeUtil)}, по выручке со стола — {placeWords(r.placeRevenue)}.
+              По загрузке — {placeWords(r.placeUtil)}, по выручке со стола в день — {placeWords(r.placeRevenue)}.
             </span>
           </span>
         ),

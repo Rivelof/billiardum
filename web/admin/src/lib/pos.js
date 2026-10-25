@@ -1,7 +1,8 @@
 import { plural } from '@billiardum/shared/format';
 import { cartTotals, orderItems } from '@billiardum/shared/bar';
 import { familyOf, resourceName } from '@billiardum/shared/resource';
-import { minutesShort, requestName } from './words.js';
+import { requestName } from './words.js';
+import { requestLength } from './court.js';
 import { packageItems } from './packages.js';
 
 /**
@@ -145,10 +146,10 @@ export function kktState(s) {
   };
 }
 
-/** Заявка ресепшена в корзину: «Стол 4 · 2 ч», «Корт 1 · 1 ч 30 мин» (M5.8: resource_family). */
+/** Заявка ресепшена в корзину: «Стол 4 · 2 ч», «Корт 1 · 1 слот · 1,5 ч» (M5.8: resource_family, slot_minutes). */
 export function requestLine(r) {
   const court = familyOf({ family: r.resource_family, type: r.resource_type }) === 'court';
-  return { key: `request:${r.id}`, kind: 'request', request_id: r.id, name: `${requestName(r)} · ${minutesShort(r.minutes)}`, sub: r.kind === 'extend' ? 'Продление игры' : court ? 'Время корта' : 'Время стола', amount_kopecks: r.amount_kopecks };
+  return { key: `request:${r.id}`, kind: 'request', request_id: r.id, name: `${requestName(r)} · ${requestLength(r)}`, sub: r.kind === 'extend' ? 'Продление игры' : court ? 'Время корта' : 'Время стола', amount_kopecks: r.amount_kopecks };
 }
 
 /** Название открытого счёта: «Стол 3», «Корт 1» (M5.8: resource.family). */

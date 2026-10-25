@@ -6,6 +6,8 @@ import { can, isNetworkManager } from '../src/lib/auth.js';
 import { navItems } from '../src/lib/nav.js';
 import { TABS } from '../src/lib/dashboard.js';
 import {
+  addClubError,
+  addClubPlan,
   addableClubs,
   clubMenuState,
   clubTariffState,
@@ -15,6 +17,7 @@ import {
   groupByCategory,
   managerStatusText,
   menuBody,
+  menuDuplicate,
   moneyHiddenForAll,
   networkNameError,
   networkRights,
@@ -31,6 +34,9 @@ import {
   withReason,
 } from '../src/lib/networks.js';
 import { dashboardTabs, networkCompareView, tablesAvgWords } from '../src/lib/networkDashboard.js';
+import { networkKinds } from '../src/lib/tariffs.js';
+import { errorMessage } from '@billiardum/shared/errors';
+import { readError } from '@billiardum/shared/api';
 
 const memory = () => {
   let v = null;
@@ -170,12 +176,12 @@ test('вкладка «Сеть»: клубы в тесте — отдельно
     network: { id: 'n', name: 'Сеть Урал' },
     period: { from: '2026-10-01', to: '2026-10-24', days: 24 },
     clubs: [
-      { club_id: 'b', name: 'Б', timezone: 'Europe/Kaliningrad', day_start_local: '08:00', mode: 'live', ranked: true, tables_avg: 6, tiles: [tile('revenue', 100000, 80000), tile('utilization', 32)], place_utilization: 2, place_revenue_per_table: 1 },
-      { club_id: 'a', name: 'А', timezone: TZ, day_start_local: '06:00', mode: 'live', ranked: true, tables_avg: 8, tiles: [tile('revenue', 200000), tile('utilization', 42.4)], place_utilization: 1, place_revenue_per_table: 2 },
-      { club_id: 'c', name: 'В', timezone: TZ, day_start_local: '06:00', mode: 'test', ranked: false, tables_avg: 4, tiles: [tile('revenue', 0)], place_utilization: null, place_revenue_per_table: null },
+      { club_id: 'b', name: 'Б', timezone: 'Europe/Kaliningrad', day_start_local: '08:00', mode: 'live', ranked: true, tables_avg: 6, tiles: [tile('revenue', 100000, 80000), tile('utilization', 32)], place_utilization: 2, place_revenue_per_table_day: 1 },
+      { club_id: 'a', name: 'А', timezone: TZ, day_start_local: '06:00', mode: 'live', ranked: true, tables_avg: 8, tiles: [tile('revenue', 200000), tile('utilization', 42.4)], place_utilization: 1, place_revenue_per_table_day: 2 },
+      { club_id: 'c', name: 'В', timezone: TZ, day_start_local: '06:00', mode: 'test', ranked: false, tables_avg: 4, tiles: [tile('revenue', 0)], place_utilization: null, place_revenue_per_table_day: null },
     ],
     totals: { tables_avg: 14, tiles: [tile('revenue', 300000)] },
-    ranking: { utilization: [{ club_id: 'a', name: 'А', value: 42.4, place: 1 }, { club_id: 'b', name: 'Б', value: 32, place: 2 }], revenue_per_table: [{ club_id: 'b', name: 'Б', value: 727612, place: 1 }] },
+    ranking: { utilization: [{ club_id: 'a', name: 'А', value: 42.4, place: 1 }, { club_id: 'b', name: 'Б', value: 32, place: 2 }], revenue_per_table_day: [{ club_id: 'b', name: 'Б', value: 727612, place: 1 }] },
     missing_days: [],
   });
   assert.deepEqual(v.ranked.map((c) => c.id), ['a', 'b']);
@@ -199,7 +205,12 @@ test('заглушка: сеть владельца, PIN — 403, управля
   assert.equal(n.body.clubs.length, 3);
   assert.equal(n.body.plan.applies, true);
   // Четвёртый клуб — свой, добавляется; второй раз в другую сеть — 409
-  const add = await api(`/api/networks/${NET_ID}/clubs`, 'POST', { club_id: NET_CLUBS.fourth });
+  // M5.5: шаблоны сети применяются к клубу сразу — боевой клуб добавляется с причиной
+  const noReason = await api(`/api/networks/${NET_ID}/clubs`, 'POST', { club_id: NET_CLUBS.fourth });
+  assert.equal(noReason.status, 400);
+  assert.equal(noReason.body.error, 'reason_required');
+  assert.equal((await api(`/api/networks/${NET_ID}`)).body.clubs.length, 3, 'клуб не добавлен');
+  const add = await api(`/api/networks/${NET_ID}/clubs`, 'POST', { club_id: NET_CLUBS.fourth, reason: 'Подключаем клуб к сети' });
   assert.equal(add.status, 201);
   const other = await api('/api/networks', 'POST', { name: 'Вторая' });
   assert.equal(other.status, 201);
@@ -267,4 +278,94 @@ test('заглушка: жёсткий шаблон, управляющий се
 
   const empty = backend('network-empty');
   assert.deepEqual((await empty('/api/me')).body.networks, []);
+});
+
+test('M5.5: рейтинг сети — ключи revenue_per_table_day и place_revenue_per_table_day', async () => {
+  const api = backend('network');
+  const d = (await api(`/api/networks/${NET_ID}/dashboard?from=2026-10-01&to=2026-10-24&compare=1`)).body;
+  assert.ok(Array.isArray(d.ranking.revenue_per_table_day));
+  assert.equal(d.ranking.revenue_per_table, undefined);
+  const view = networkCompareView(d);
+  assert.equal(view.ranking.revenue.length, d.ranking.revenue_per_table_day.length);
+  assert.ok(view.ranked.every((c) => c.placeRevenue !== null), 'место по выручке на столо-день у каждого клуба рейтинга');
+  // Плитка revenue_per_table осталась плиткой
+  assert.ok(d.clubs[0].tiles.some((t) => t.id === 'revenue_per_table'));
+});
+
+test('M5.5: добавление клуба в сеть — что получит клуб, причина для боевого, понятные ошибки', () => {
+  const live = { club_id: 'a', mode: 'live' };
+  const test = { club_id: 'b', mode: 'test' };
+  const both = { tariffs: { template: true }, menu: { template: true } };
+  assert.match(addClubPlan(both, live).warning, /тарифы будут заменены.*меню/);
+  assert.equal(addClubPlan(both, live).reasonNeeded, true);
+  assert.equal(addClubPlan(both, test).reasonNeeded, false, 'тестовый клуб — без причины');
+  assert.match(addClubPlan({ tariffs: { template: true }, menu: { template: false } }, test).warning, /шаблон тарифов.*заменены/);
+  assert.match(addClubPlan({ tariffs: { template: false }, menu: { template: true } }, test).warning, /шаблон меню/);
+  const none = addClubPlan({ tariffs: { template: false }, menu: { template: false } }, live);
+  assert.equal(none.warning, null);
+  assert.equal(none.reasonNeeded, false, 'шаблонов нет — применять нечего');
+  assert.equal(addClubPlan(both, { mode: 'suspended' }).reasonNeeded, true, 'приостановленный — как боевой');
+  // Ошибки
+  const need = addClubError({ code: 'reason_required' });
+  assert.equal(need.needReason, true);
+  assert.match(need.hint, /Клуб не добавлен/);
+  const gap = addClubError({ code: 'tariff_gap', data: { club_id: 'a', kind: 'pool', weekday: 3, from: '02:00', to: '06:00' } }, 'Клуб Москва');
+  assert.equal(gap.clubName, 'Клуб Москва');
+  assert.match(gap.hint, /Клуб не добавлен.*В среду с 02:00 до 06:00 нет цены/);
+  assert.match(errorMessage(gap.error, { audience: 'staff', clubName: gap.clubName }).title, /^«Клуб Москва»: в среду с 02:00 до 06:00 нет цены\.$/);
+  const whole = addClubError({ code: 'tariff_gap', data: { club_id: 'a', kind: 'snooker', weekday: 1, from: '06:00', to: '06:00' } });
+  assert.match(whole.hint, /нет цены ни на один час/);
+  const overlap = addClubError({ code: 'tariff_overlap', data: { club_id: 'a', weekday: 2, from: '10:00', to: '12:00' } });
+  assert.match(overlap.hint, /задано две цены/);
+  const dup = addClubError({ code: 'duplicate', data: { club_id: 'a', field: 'sku', value: 'COF-AM' } }, 'Клуб Москва');
+  assert.equal(dup.error.code, 'network_menu_duplicate');
+  assert.equal(errorMessage(dup.error, { audience: 'staff', clubName: dup.clubName }).title, 'Артикул «COF-AM» уже занят другим товаром в меню клуба «Клуб Москва».');
+  assert.equal(addClubError({ code: 'club_in_network' }).hint, null);
+  assert.equal(addClubError({ code: 'duplicate', data: null }).error.code, 'duplicate', 'duplicate без field — как есть');
+});
+
+test('M5.5: 409 duplicate шаблона меню — что совпало: артикул или название', async () => {
+  const sku = menuDuplicate({ code: 'duplicate', data: { club_id: 'c', field: 'sku', value: 'COF-AM' } }, 'Уральский');
+  assert.equal(errorMessage(sku.error, { audience: 'staff', clubName: sku.clubName }).title, 'Артикул «COF-AM» уже занят другим товаром в меню клуба «Уральский».');
+  assert.match(errorMessage(sku.error, { audience: 'staff' }).action, /Смените артикул/);
+  const name = menuDuplicate({ code: 'duplicate', data: { club_id: 'c', field: 'name', value: 'Американо' } });
+  assert.equal(errorMessage(name.error, { audience: 'staff' }).title, 'Название «Американо» уже занято другим товаром в меню клуба.');
+  assert.equal(menuDuplicate({ code: 'duplicate', data: { club_id: 'c' } }), null);
+  assert.equal(menuDuplicate({ code: 'reason_required' }), null);
+  // Клиент ошибок API оставляет club_id, field и value (в пределах 128 знаков, без управляющих символов)
+  const res = (obj, status = 409) => ({ status, text: async () => JSON.stringify(obj) });
+  assert.deepEqual((await readError(res({ error: 'duplicate', club_id: 'c1', field: 'name', value: 'Кофе с молоком и очень длинным названием, которое длиннее шестидесяти четырёх знаков подряд' }))).data, { club_id: 'c1', field: 'name', value: 'Кофе с молоком и очень длинным названием, которое длиннее шестидесяти четырёх знаков подряд' });
+  assert.equal((await readError(res({ error: 'duplicate', field: 'sku', value: 'A\nB' }))).data.value, undefined);
+  assert.equal((await readError(res({ error: 'duplicate', field: 'other', value: 'x' }))).data.value, undefined);
+  // Заглушка network-dup: PUT меню и добавление клуба
+  const api = backend('network-dup');
+  const put = await api(`/api/networks/${NET_ID}/menu`, 'PUT', { products: [{ name: 'Американо', price_kopecks: 19000 }], reason: 'Меню' });
+  assert.equal(put.status, 409);
+  assert.deepEqual([put.body.field, put.body.value], ['name', 'Американо']);
+  const add = await api(`/api/networks/${NET_ID}/clubs`, 'POST', { club_id: NET_CLUBS.fourth, reason: 'Подключаем' });
+  assert.equal(add.status, 409);
+  assert.equal(add.body.field, 'sku');
+});
+
+test('M5.5: добавление клуба — заглушка network-gap: дыра недели, клуб не добавлен', async () => {
+  const api = backend('network-gap');
+  const add = await api(`/api/networks/${NET_ID}/clubs`, 'POST', { club_id: NET_CLUBS.fourth, reason: 'Подключаем' });
+  assert.equal(add.status, 400);
+  assert.equal(add.body.error, 'tariff_gap');
+  assert.equal(add.body.club_id, NET_CLUBS.fourth);
+  assert.equal((await api(`/api/networks/${NET_ID}`)).body.clubs.length, 3);
+});
+
+test('M5.5: GET …/tariffs — виды ресурсов клубов (kinds), запрос ресурсов каждого клуба не нужен', async () => {
+  const api = backend('network-court');
+  const t = (await api(`/api/networks/${NET_ID}/tariffs`)).body;
+  assert.deepEqual(t.clubs.find((c) => c.club_id === NET_CLUBS.dev).kinds, ['pyramid', 'pool']);
+  assert.deepEqual(t.clubs.find((c) => c.club_id === NET_CLUBS.third).kinds, ['pyramid', 'padel_court']);
+  const k = networkKinds(t.clubs);
+  assert.deepEqual(k.types, ['pyramid', 'pool', 'snooker']);
+  assert.equal(k.courts, true);
+  assert.deepEqual(networkKinds([{ kinds: ['pool'] }]), { types: ['pool'], courts: false });
+  assert.deepEqual(networkKinds([{ kinds: ['padel_court'] }]), { types: [], courts: true }, 'только корты — цен столов не нужно');
+  assert.deepEqual(networkKinds([{ kinds: [] }, {}]), { types: ['pyramid'], courts: false }, 'нет ни столов, ни кортов — пирамида');
+  assert.deepEqual(networkKinds(null), { types: ['pyramid'], courts: false });
 });

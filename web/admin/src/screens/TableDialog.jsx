@@ -11,7 +11,7 @@ import { api, newIdempotencyKey } from '../lib/api.js';
 import { parseRubles } from '../lib/cash.js';
 import { can } from '../lib/auth.js';
 import { minutesWords } from '../lib/words.js';
-import { courtFreeOptions, courtPlayers, sessionSlot } from '../lib/court.js';
+import { courtFreeOptions, courtPlayers, needsSessionDetail, sessionSlot } from '../lib/court.js';
 
 const SERVICE_MINUTES = [15, 30, 60];
 const FREE_MINUTES = [10, 15, 30, 60];
@@ -29,6 +29,8 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
   const [detail, setDetail] = useState(null); // игра корта целиком: участники и длина слота
   const sessionId = item?.session?.id ?? null;
   const court = familyOf(item?.resource) === 'court';
+  // M5.8: слот и игроки корта берём из `session` зала, если они там есть; отдельный запрос — только за недостающим
+  const needDetail = court && needsSessionDetail(item?.session);
 
   useEffect(() => {
     setMode(null);
@@ -36,7 +38,7 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
   }, [item?.resource?.id]);
   useEffect(() => {
     setDetail(null);
-    if (!court || !sessionId) return undefined;
+    if (!needDetail || !sessionId) return undefined;
     let alive = true;
     api
       .session(sessionId)
@@ -45,7 +47,7 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
     return () => {
       alive = false;
     };
-  }, [sessionId, court]);
+  }, [sessionId, needDetail]);
 
   if (!item) return <Dialog open={false} onClose={onClose} title="" />;
 
@@ -55,7 +57,7 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
   const d = item.device ?? {};
   const name = resourceName(item.resource);
   const family = court ? 'court' : 'table';
-  const players = court ? courtPlayers(detail) : null;
+  const players = court ? courtPlayers(Array.isArray(s?.participants) ? { ...s, resource: { ...item.resource, ...s.resource } } : detail) : null;
   // №122: предложение из очереди держит стол — ресепшн может снять удержание с причиной
   const offer = item.hold?.source === 'waitlist' && item.hold.kind !== 'pending' ? item.hold : null;
 
@@ -166,7 +168,7 @@ export function TableDialog({ item, role, timeZone, onClose, onChanged }) {
         {mode === 'service' ? (
           <ServiceForm item={item} court={court} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'free' ? (
-          <ExtendFreeForm session={s} court={court} slot={sessionSlot(detail)} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
+          <ExtendFreeForm session={s} court={court} slot={sessionSlot(s) ?? sessionSlot(detail)} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'release' ? (
           <ReleaseForm offerId={offer?.offer_id} name={name} family={family} onCancel={() => setMode(null)} onDone={() => (onChanged?.(), onClose())} />
         ) : mode === 'deposit' ? (

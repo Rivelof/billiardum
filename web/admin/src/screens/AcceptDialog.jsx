@@ -6,9 +6,9 @@ import { Keypad } from '../components/Keypad.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { changeFor, keypad, parseRubles, quickSums, groupDigits } from '../lib/cash.js';
-import { minutesShort, requestName } from '../lib/words.js';
+import { requestName } from '../lib/words.js';
 import { familyText } from '@billiardum/shared/resource';
-import { requestFamily, requestHallItem } from '../lib/court.js';
+import { requestFamily, requestHallItem, requestLength } from '../lib/court.js';
 
 /**
  * «Принять оплату» по заявке гостя (контракт §5): наличные — ввод полученной суммы и сдача крупно;
@@ -53,7 +53,7 @@ export function AcceptDialog({ request, onClose, onDone, hall, refreshHall }) {
   const receivedK = parseRubles(received);
   const calc = changeFor(amount, receivedK);
   const tooMuch = receivedK !== null && receivedK - amount > 1_000_000; // сдача больше 10 000 ₽ — почти наверняка опечатка
-  const what = `${requestName(request)} · ${minutesShort(request.minutes)}`;
+  const what = `${requestName(request)} · ${requestLength(request)}`;
   const onWhat = requestName(request, { case: 'pre', capital: false });
 
   const submit = async (e) => {

@@ -25,6 +25,25 @@ export function minutesShort(minutes) {
   return `${m} мин`;
 }
 
+/**
+ * Ресурс строки заказа, истории или отчёта по виду (M5.8): `resource` ({ type, family }), иначе плоские
+ * resource_type | resource_family рядом с resource_number, без них — стол.
+ */
+export function rowResource(row) {
+  if (row?.resource && typeof row.resource === 'object') return row.resource;
+  if (row?.resource_type || row?.resource_family) return { type: row.resource_type, family: row.resource_family };
+  return 'table';
+}
+
+/** Где игра или заказ: «Стол 4», «Корт 1»; без номера — null. opts — падеж. */
+export function rowPlace(row, opts) {
+  const n = row?.resource?.number ?? row?.resource_number ?? null;
+  return n === null || n === undefined || n === '' ? null : resourceName(rowResource(row), n, opts);
+}
+
+/** Заголовок столбца с местом: «Стол» или, если среди строк есть корты, «Стол или корт». */
+export const placeColumnLabel = (rows) => ((rows ?? []).some((r) => familyOf(rowResource(r)) === 'court') ? 'Стол или корт' : 'Стол');
+
 /** Ресурс заявки по виду (M5.8: resource_family | resource_type): «Стол 4», «Корт 1»; opts — падеж. */
 export function requestName(req, opts) {
   return resourceName(familyOf({ family: req?.resource_family, type: req?.resource_type }), req?.resource_number, opts);

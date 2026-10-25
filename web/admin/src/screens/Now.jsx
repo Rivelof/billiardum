@@ -10,8 +10,7 @@ import { mergeHall } from '../lib/hall.js';
 import { api, streamClub } from '../lib/api.js';
 import { METHOD_LABEL } from '../lib/words.js';
 import { isNetworkManager } from '../lib/auth.js';
-
-const METHODS = ['sbp', 'card', 'cash', 'card_terminal'];
+import { revenueToday } from '../lib/now.js';
 
 /**
  * «Сейчас» для владельца и управляющего (сначала телефон): тревоги сверху, зал, выручка за сегодня по способам оплаты.
@@ -64,8 +63,9 @@ export function Now({ ctx }) {
     };
   }, [clubId, load, loadAlarms]);
 
-  const revenue = data?.revenue_today_kopecks ?? {};
-  const total = METHODS.reduce((s, m) => s + (Number.isSafeInteger(revenue[m]) ? revenue[m] : 0), 0);
+  // M5.5 (№192): у управляющего сети разбивки по способам нет — revenue_today_kopecks: null, итог — revenue_today_total_kopecks
+  const revenue = revenueToday(data, { networkManager: isNetworkManager(club) });
+  const total = revenue.total;
   // Ближайшая бронь стола — next_booking в ответе зала (№120)
   const hall = Array.isArray(data?.hall) ? data.hall : [];
 
@@ -100,15 +100,14 @@ export function Now({ ctx }) {
           {data ? (
             <div class="money">
               <p class="money__total display">{formatMoney(total)}</p>
-              {/* M5.5 (№192): управляющему сети — выручка без разбивки по способам оплаты */}
-              {isNetworkManager(club) ? (
-                <p class="small">Разбивку по способам оплаты видит владелец клуба.</p>
+              {revenue.hidden ? (
+                <p class="small">Способы оплаты скрыты для управляющего сети. Разбивку видит владелец клуба.</p>
               ) : (
                 <dl class="receipt money__list">
-                  {METHODS.map((m) => (
-                    <div class="receipt__row" key={m}>
-                      <dt>{METHOD_LABEL[m]}</dt>
-                      <dd class="receipt__sum">{formatMoney(Number.isSafeInteger(revenue[m]) ? revenue[m] : 0)}</dd>
+                  {revenue.rows.map((r) => (
+                    <div class="receipt__row" key={r.method}>
+                      <dt>{METHOD_LABEL[r.method]}</dt>
+                      <dd class="receipt__sum">{formatMoney(r.kopecks)}</dd>
                     </div>
                   ))}
                 </dl>

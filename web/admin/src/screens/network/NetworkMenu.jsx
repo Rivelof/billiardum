@@ -14,6 +14,7 @@ import {
   groupByCategory,
   isLive,
   menuBody,
+  menuDuplicate,
   priceText,
   productFormErrors,
   productFromForm,
@@ -87,6 +88,7 @@ export function NetworkMenu({ n, rights, ctx, onNetwork }) {
     }
   };
   const dup = draft ? duplicateError(draft) : null;
+  const dupView = menuDuplicate(saveError, nameOf(saveError?.data?.club_id));
   const rErr = reasonError(reason, live.length > 0);
   const save = async () => {
     setTried(true);
@@ -104,7 +106,7 @@ export function NetworkMenu({ n, rights, ctx, onNetwork }) {
       setNotice(`Шаблон меню сохранён${Number.isInteger(res?.version) ? ` (версия ${res.version})` : ''}: ${productsWord(draft.length)} в ${clubsWord(clubs.length)}.`);
       onNetwork(null);
     } catch (err) {
-      setSaveError(err?.code === 'duplicate' ? { code: 'network_menu_duplicate', club: nameOf(err?.data?.club_id) } : err);
+      setSaveError(err);
       if (err?.code === 'reason_required') document.getElementById('nm-reason')?.focus();
     } finally {
       setBusy(false);
@@ -180,7 +182,9 @@ export function NetworkMenu({ n, rights, ctx, onNetwork }) {
               {dup}
             </p>
           ) : null}
-          <ErrorNote error={saveError}>{saveError?.club ? <p class="small">Клуб: {saveError.club}.</p> : null}</ErrorNote>
+          <ErrorNote error={dupView?.error ?? saveError} clubName={dupView?.clubName}>
+            {dupView ? <p class="small">Шаблон не сохранён, меню клубов не изменено.</p> : null}
+          </ErrorNote>
           <div class="row">
             <button type="button" class="btn btn--primary btn--lg" onClick={save} disabled={busy}>
               {busy ? 'Сохраняем…' : 'Сохранить шаблон меню'}

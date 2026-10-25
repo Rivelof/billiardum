@@ -73,6 +73,53 @@ export function addableClubs(memberships, network) {
   return (Array.isArray(memberships) ? memberships : []).filter((m) => m.role === 'owner' && !isNetworkManager(m) && !inNet.has(m.club_id));
 }
 
+/**
+ * Что случится с клубом при добавлении в сеть (POST /api/networks/{id}/clubs): шаблоны сети применяются сразу —
+ * тарифы заменяют тарифы клуба, товары шаблона меню записываются в каталог. Клуб в боевом режиме — ручное действие
+ * с причиной (инвариант 8).
+ * @param {{ tariffs?: { template?: boolean }, menu?: { template?: boolean } }} network GET /api/networks/{id}
+ * @param {{ live?: boolean, mode?: string } | null} club членство из GET /api/me
+ * @returns {{ tariffs: boolean, menu: boolean, live: boolean, reasonNeeded: boolean, warning: string | null }}
+ */
+export function addClubPlan(network, club) {
+  const tariffs = network?.tariffs?.template === true;
+  const menu = network?.menu?.template === true;
+  const live = isLive(club);
+  let warning = null;
+  if (tariffs && menu) warning = 'Клуб сразу получит шаблоны сети: его тарифы будут заменены тарифами шаблона, а товары шаблона меню запишутся в его меню.';
+  else if (tariffs) warning = 'Клуб сразу получит шаблон тарифов сети: его нынешние тарифы будут заменены.';
+  else if (menu) warning = 'Клуб сразу получит шаблон меню сети: товары шаблона запишутся в его меню.';
+  return { tariffs, menu, live, reasonNeeded: live && (tariffs || menu), warning };
+}
+
+/**
+ * Ошибка добавления клуба в сеть словами: клуб не добавлен ни при какой из них.
+ * 400 reason_required — нужна причина (клуб в боевом режиме); 400 tariff_gap | tariff_overlap { club_id, … } — шаблон
+ * тарифов не покрывает неделю клуба; 409 duplicate { field, value } — артикул или название товара шаблона занят в меню клуба.
+ * @returns {{ error: unknown, clubName: string | null, hint: string | null, needReason: boolean }}
+ */
+export function addClubError(err, clubName = null) {
+  const code = err?.code;
+  if (code === 'reason_required') return { error: err, clubName: null, hint: 'Клуб не добавлен. Напишите причину: клуб в боевом режиме, владелец получит уведомление.', needReason: true };
+  if (code === 'tariff_gap' || code === 'tariff_overlap') {
+    const where = problemText({ ...err.data, type: code === 'tariff_overlap' ? 'overlap' : 'gap' });
+    return { error: err, clubName, hint: `Клуб не добавлен, тарифы не изменены. ${where ? `${where} ` : ''}Дополните шаблон тарифов сети: он должен покрывать всю неделю клуба.`, needReason: false };
+  }
+  const dup = menuDuplicate(err, clubName);
+  if (dup) return { ...dup, hint: 'Клуб не добавлен, меню не изменено.', needReason: false };
+  return { error: err, clubName: null, hint: null, needReason: false };
+}
+
+/**
+ * 409 duplicate { club_id, field: 'sku' | 'name', value } при записи шаблона меню в клуб (PUT меню, добавление клуба):
+ * ошибка с кодом network_menu_duplicate и тем, что совпало (артикул или название); иначе null.
+ * @returns {{ error: { code: string, data: object }, clubName: string | null } | null}
+ */
+export function menuDuplicate(err, clubName = null) {
+  if (err?.code !== 'duplicate' || !['sku', 'name'].includes(err?.data?.field)) return null;
+  return { error: { code: 'network_menu_duplicate', data: err.data }, clubName: clubName ?? null };
+}
+
 /** Сеть для экрана: из адреса, затем сеть клуба (управляющий сети), затем первая. */
 export function pickNetwork(networks, membership, wanted) {
   const list = Array.isArray(networks) ? networks : [];

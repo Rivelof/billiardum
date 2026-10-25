@@ -43,7 +43,7 @@ export function networkCompareView(res, { compare = true } = {}) {
     tablesAvg: num(c.tables_avg),
     tiles: tileMap(c.tiles, compare),
     placeUtil: num(c.place_utilization),
-    placeRevenue: num(c.place_revenue_per_table),
+    placeRevenue: num(c.place_revenue_per_table_day),
   }));
   const byPlace = (a, b) => (a.placeUtil ?? 1e9) - (b.placeUtil ?? 1e9) || a.name.localeCompare(b.name, 'ru');
   const rankList = (list, unit) =>
@@ -56,7 +56,7 @@ export function networkCompareView(res, { compare = true } = {}) {
     ranked: clubs.filter((c) => c.ranked).sort(byPlace),
     outside: clubs.filter((c) => !c.ranked),
     totals: res?.totals ? { tablesAvg: num(res.totals.tables_avg), tiles: tileMap(res.totals.tiles, compare) } : null,
-    ranking: { utilization: rankList(res?.ranking?.utilization, 'pct'), revenue: rankList(res?.ranking?.revenue_per_table, 'kopecks') },
+    ranking: { utilization: rankList(res?.ranking?.utilization, 'pct'), revenue: rankList(res?.ranking?.revenue_per_table_day, 'kopecks') },
     missing: arr(res?.missing_days),
     mixedDays: zones.size > 1,
     empty: clubs.length === 0,

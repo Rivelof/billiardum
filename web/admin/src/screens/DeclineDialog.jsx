@@ -3,9 +3,8 @@ import { DECLINE_REASONS } from '@billiardum/shared/reasons';
 import { Dialog } from '../components/Dialog.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
-import { requestTitle } from '../lib/words.js';
 import { familyText } from '@billiardum/shared/resource';
-import { requestFamily } from '../lib/court.js';
+import { requestFamily, requestLine } from '../lib/court.js';
 
 /** «Отклонить» заявку с причиной: гость увидит отказ, стол освободится. */
 export function DeclineDialog({ request, onClose, onDone }) {
@@ -37,7 +36,7 @@ export function DeclineDialog({ request, onClose, onDone }) {
     <Dialog open={Boolean(request)} onClose={onClose} title="Отклонить заявку" labelledBy="decline-title">
       {request ? (
         <form class="form" onSubmit={submit}>
-          <p class="lead">{requestTitle(request)}</p>
+          <p class="lead">{requestLine(request)}</p>
           <fieldset>
             <legend class="field__label">Причина</legend>
             <div class="choice choice--list">

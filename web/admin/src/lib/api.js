@@ -384,8 +384,12 @@ export const api = {
   updateNetwork: (id, body) => client.request('PATCH', `/networks/${e(id)}`, { body }),
   /** Архив сети: { ok, clubs_removed }. */
   deleteNetwork: (id) => client.request('DELETE', `/networks/${e(id)}`),
-  /** { club_id } → 201 сеть; 403 не свой клуб; 409 club_in_network | networks_limit. */
-  addNetworkClub: (id, clubId) => client.post(`/networks/${e(id)}/clubs`, { club_id: clubId }),
+  /**
+   * { club_id, reason? } → 201 сеть; шаблоны сети применяются к клубу сразу: клуб в боевом режиме — с причиной
+   * (400 reason_required), дыра или пересечение недели — 400 tariff_gap | tariff_overlap { club_id, … }, товар —
+   * 409 duplicate { club_id, field, value }; клуб не добавлен. 403 не свой клуб; 409 club_in_network | networks_limit.
+   */
+  addNetworkClub: (id, clubId, reason) => client.post(`/networks/${e(id)}/clubs`, reason ? { club_id: clubId, reason } : { club_id: clubId }),
   removeNetworkClub: (id, clubId) => client.request('DELETE', `/networks/${e(id)}/clubs/${e(clubId)}`),
   /** Владелец: { items: [{ id, status: 'invited'|'active', user_id, name, phone_masked, created_at, expires_at, accepted_at }] } */
   networkManagers: (id) => client.get(`/networks/${e(id)}/managers`),

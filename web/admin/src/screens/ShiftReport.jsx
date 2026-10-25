@@ -6,7 +6,7 @@ import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
 import { api } from '../lib/api.js';
 import { ACTION_LABEL } from '../lib/audit.js';
-import { familyLine, manualDetail, reconcile, revenueTable, staffName } from '../lib/shift.js';
+import { familyLine, manualDetail, methodsHidden, reconcile, revenueTable, revenueTotals, staffName } from '../lib/shift.js';
 import { METHOD_LABEL, minutesWords } from '../lib/words.js';
 import { linkHandler } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
@@ -91,8 +91,8 @@ export function ShiftReport({ ctx }) {
             </header>
             <div class="report__grid">
               <Cash cash={report.cash ?? s} comment={s.close_comment ?? s.comment} />
-              <Reconcile rec={report.reconciliation} />
-              <Revenue revenue={report.revenue} />
+              <Reconcile rec={report.reconciliation} hidden={methodsHidden(report)} />
+              <Revenue revenue={report.revenue} hidden={methodsHidden(report)} />
               <Play play={report.play} />
               <Service light={report.service_light} />
               <Manual manual={report.manual_actions} timeZone={tz} clubId={clubId} />
@@ -157,7 +157,40 @@ function Cash({ cash, comment }) {
   );
 }
 
-function Revenue({ revenue }) {
+const HIDDEN_NOTE = 'Способы оплаты скрыты для управляющего сети.';
+
+/** Выручка управляющего сети (M5.5 №192): только итоги по видам, без способов оплаты. */
+function RevenueTotals({ revenue }) {
+  const t = revenueTotals(revenue);
+  const refunds = revenue?.refunds?.total_kopecks ?? 0;
+  return (
+    <section class="rcard rcard--wide" aria-labelledby="r-rev">
+      <h3 class="rcard__title" id="r-rev">
+        <Icon name="cash" />
+        Выручка: {formatMoney(t.total)}
+      </h3>
+      <dl class="receipt">
+        {t.rows.map((r) => (
+          <div class="receipt__row" key={r.key}>
+            <dt>{r.label}</dt>
+            <dd class="receipt__sum">{formatMoney(r.kopecks)}</dd>
+          </div>
+        ))}
+        <div class="receipt__row receipt__row--total">
+          <dt>Всего</dt>
+          <dd class="receipt__sum">{formatMoney(t.total)}</dd>
+        </div>
+      </dl>
+      <p class="small">
+        {HIDDEN_NOTE} Разбивку по способам оплаты видит владелец клуба.
+        {refunds ? ` Возвраты за смену: ${formatMoney(refunds)}, после возвратов — ${formatMoney(revenue.net_kopecks ?? t.total - refunds)}.` : ''}
+      </p>
+    </section>
+  );
+}
+
+function Revenue({ revenue, hidden = false }) {
+  if (hidden) return <RevenueTotals revenue={revenue} />;
   const t = revenueTable(revenue);
   const refunds = revenue?.refunds?.total_kopecks ?? 0;
   const withOther = t.other > 0;
@@ -253,11 +286,14 @@ function Revenue({ revenue }) {
   );
 }
 
-function Reconcile({ rec }) {
+function Reconcile({ rec, hidden = false }) {
   const kkt = reconcile(rec?.kkt);
   const online = reconcile(rec?.online);
   const k = rec?.kkt ?? {};
   const o = rec?.online ?? {};
+  // M5.5 (№192): у управляющего сети суммы по способам — null; сходится ли и на сколько — остаётся
+  const kktSums = Number.isSafeInteger(k.system_kopecks);
+  const onlineSums = Number.isSafeInteger(o.system_kopecks);
   const pending = (k.receipts?.pending?.count ?? 0) + (k.receipts?.unknown?.count ?? 0);
   const failed = k.receipts?.failed?.count ?? 0;
   const UNCHECKED = {
@@ -273,22 +309,25 @@ function Reconcile({ rec }) {
         <Icon name="shield" />
         Сверка
       </h3>
+      {hidden ? <p class="small">Суммы по способам оплаты не показываем, а сверка до копейки работает.</p> : null}
       <ul class="recons">
         <li class={`recon recon--${kkt.state === 'diff' ? 'bad' : kkt.state === 'ok' ? 'ok' : 'wait'}`}>
           <p class="recon__title">
             <Icon name={kkt.state === 'ok' ? 'check' : kkt.state === 'diff' ? 'alert' : 'clock'} />
             Чеки ККТ
           </p>
-          <dl class="recon__pair">
-            <div>
-              <dt>Продажи на кассе</dt>
-              <dd class="mono">{formatMoney(k.system_kopecks ?? 0)}</dd>
-            </div>
-            <div>
-              <dt>Пробито чеков</dt>
-              <dd class="mono">{formatMoney(k.kkt_kopecks ?? 0)}</dd>
-            </div>
-          </dl>
+          {kktSums ? (
+            <dl class="recon__pair">
+              <div>
+                <dt>Продажи на кассе</dt>
+                <dd class="mono">{formatMoney(k.system_kopecks)}</dd>
+              </div>
+              <div>
+                <dt>Пробито чеков</dt>
+                <dd class="mono">{formatMoney(k.kkt_kopecks ?? 0)}</dd>
+              </div>
+            </dl>
+          ) : null}
           <p class="recon__word">
             {word(kkt, [pending ? `${pending} ${plural(pending, RECEIPTS)} ещё в очереди кассы` : '', failed ? `не пробились ${failed}` : ''].filter(Boolean).join(', ')) ?? 'Не проверено.'}
           </p>
@@ -308,16 +347,18 @@ function Reconcile({ rec }) {
             <Icon name={online.state === 'ok' ? 'check' : online.state === 'diff' ? 'alert' : 'clock'} />
             Онлайн-оплаты
           </p>
-          <dl class="recon__pair">
-            <div>
-              <dt>Платежи в системе</dt>
-              <dd class="mono">{formatMoney((o.system_kopecks ?? 0) - (o.system_refunds_kopecks ?? 0))}</dd>
-            </div>
-            <div>
-              <dt>ЮKassa</dt>
-              <dd class="mono">{Number.isSafeInteger(o.yookassa_kopecks) ? formatMoney(o.yookassa_kopecks - (o.yookassa_refunds_kopecks ?? 0)) : '—'}</dd>
-            </div>
-          </dl>
+          {onlineSums ? (
+            <dl class="recon__pair">
+              <div>
+                <dt>Платежи в системе</dt>
+                <dd class="mono">{formatMoney(o.system_kopecks - (o.system_refunds_kopecks ?? 0))}</dd>
+              </div>
+              <div>
+                <dt>ЮKassa</dt>
+                <dd class="mono">{Number.isSafeInteger(o.yookassa_kopecks) ? formatMoney(o.yookassa_kopecks - (o.yookassa_refunds_kopecks ?? 0)) : '—'}</dd>
+              </div>
+            </dl>
+          ) : null}
           <p class="recon__word">{word(online, o.mismatches?.length ? `${o.mismatches.length} ${plural(o.mismatches.length, ['платёж', 'платежа', 'платежей'])} не совпали, проверьте журнал` : '') ?? UNCHECKED[o.status] ?? 'Не проверено.'}</p>
         </li>
       </ul>

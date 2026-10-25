@@ -53,7 +53,14 @@ export const ERROR_FIELDS = Object.freeze([
   'to',
   'kind',
   'resource_type',
+  // M5.5: шаблоны сети — 400 tariff_gap | tariff_overlap { club_id, … }, 409 duplicate { club_id, field: 'sku' | 'name', value }
+  'club_id',
+  'field',
 ]);
+
+/** 409 duplicate шаблона меню сети: value — артикул или название товара (до 128 символов), только рядом с field sku | name. */
+const DUPLICATE_FIELDS = new Set(['sku', 'name']);
+const DUPLICATE_VALUE_MAX = 128;
 
 /**
  * Поля-списки ошибки: 409 checklist_incomplete { failed: ['devices', 'shop_live'] } (M5.1).
@@ -101,6 +108,8 @@ export async function readError(res) {
       const v = obj[k];
       if (v === null || typeof v === 'boolean' || typeof v === 'number' || (typeof v === 'string' && v.length <= 64)) (data ??= {})[k] = v;
     }
+    const v0 = obj.value;
+    if (DUPLICATE_FIELDS.has(obj.field) && typeof v0 === 'string' && v0.length > 0 && v0.length <= DUPLICATE_VALUE_MAX && ![...v0].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) (data ??= {}).value = v0;
     for (const k of ERROR_LIST_FIELDS) {
       const v = obj[k];
       if (Array.isArray(v) && v.length <= 20 && v.every((x) => typeof x === 'string' && CODE_RE.test(x))) (data ??= {})[k] = [...v];

@@ -13,28 +13,40 @@ export const MAX_FREE_EXTEND_MINUTES = 240;
 /** Семья ресурса заявки ресепшена: resource_family, иначе по resource_type (M5.8), без них — стол. */
 export const requestFamily = (req) => familyOf({ family: req?.resource_family, type: req?.resource_type });
 
+/** Длина слота корта из заявки (M5.8: billing 'slot' и slot_minutes); у стола и без данных — null. */
+export function requestSlot(req) {
+  const m = Number(req?.slot_minutes);
+  return req?.billing !== 'hourly' && Number.isInteger(m) && m > 0 ? m : null;
+}
 
 /**
  * Длительность заявки: у корта — слоты, если длина слота известна и делит минуты («2 слота · 3 ч»), иначе часы.
  * @param {{ minutes: number | null }} req
- * @param {number | null} [slot] длина слота корта (GET …/tariffs → slots.padel_court)
+ * @param {number | null} [slot] длина слота корта; не задана — из заявки (slot_minutes), иначе часами
  */
-export function requestLength(req, slot = null) {
+export function requestLength(req, slot = requestSlot(req)) {
   const m = req?.minutes;
   if (requestFamily(req) === 'court' && Number.isInteger(slot) && slot > 0 && Number.isInteger(m) && m > 0 && m % slot === 0) return `${slotsText(m / slot)} · ${slotLabel(m)}`;
   return minutesShort(m);
 }
 
 /** Заявка ресепшена: «Стол 4 · 2 ч · 1 600 ₽», «Корт 1 · 1 слот · 1,5 ч · 2 400 ₽». */
-export function requestLine(req, slot = null) {
+export function requestLine(req, slot = requestSlot(req)) {
   return `${requestName(req)} · ${requestLength(req, slot)} · ${formatMoney(req.amount_kopecks)}`;
 }
 
-/** Длина слота корта из сессии (GET /api/sessions/{id}: resource.slot_minutes) или null. */
+/** Длина слота корта из игры: GET /api/sessions/{id} (resource.slot_minutes) или `session` зала (slot_minutes), иначе null. */
 export function sessionSlot(session) {
   const m = Number(session?.resource?.slot_minutes ?? session?.slot_minutes);
   return Number.isInteger(m) && m > 0 ? m : null;
 }
+
+/**
+ * Нужен ли отдельный GET /api/sessions/{id} окну корта: слот и игроки берём из `session` зала, если они там есть
+ * (participants — массив, слот — slot_minutes); в ответе зала игроков пока нет, тогда запрос остаётся.
+ * @param {{ participants?: unknown[], slot_minutes?: number } | null} session
+ */
+export const needsSessionDetail = (session) => Boolean(session) && !(Array.isArray(session.participants) && sessionSlot(session) !== null);
 
 /**
  * Ресурс заявки в зале: по resource_id, иначе по номеру внутри семьи (у стола и корта номера свои, №213).

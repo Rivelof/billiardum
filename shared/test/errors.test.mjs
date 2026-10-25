@@ -136,3 +136,11 @@ test('M5.8: tariff_gap кортов (kind: padel_court) и смена вида �
   assert.equal(f.title, 'Стол не может стать кортом, а корт — столом.');
   assert.match(f.action, /Выведите ресурс из работы/);
 });
+
+test('M5.5: 409 duplicate шаблона меню — что совпало (артикул или название) и в каком клубе', () => {
+  const sku = new ApiError('network_menu_duplicate', { status: 409, data: { club_id: 'c1', field: 'sku', value: 'COF-AM' } });
+  assert.equal(errorMessage(sku, { audience: 'staff', clubName: 'Клуб на Ленина' }).title, 'Артикул «COF-AM» уже занят другим товаром в меню клуба «Клуб на Ленина».');
+  const name = new ApiError('network_menu_duplicate', { status: 409, data: { club_id: 'c1', field: 'name', value: 'Американо' } });
+  assert.equal(errorMessage(name, { audience: 'staff' }).title, 'Название «Американо» уже занято другим товаром в меню клуба.');
+  assert.equal(errorMessage('network_menu_duplicate', { audience: 'staff' }).title, 'Товар шаблона совпал с другим товаром в меню клуба.');
+});

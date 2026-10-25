@@ -696,7 +696,7 @@ export function reactionView(alarms) {
   }
   const a = obj(alarms);
   const min = (sec) => (num(sec) === null ? null : sec / 60);
-  const rows = arr(a.problems).map((p) => ({ id: p.alarm_id ?? p.id, type: p.type, level: p.level, resource_number: p.resource_number ?? null, raised_at: p.raised_at, acked_at: p.acked_at ?? null, by: p.acked_by_name ?? null, minutes: min(p.react_sec), problem: true }));
+  const rows = arr(a.problems).map((p) => ({ id: p.alarm_id ?? p.id, type: p.type, level: p.level, resource_number: p.resource_number ?? null, resource_type: p.resource_type ?? null, raised_at: p.raised_at, acked_at: p.acked_at ?? null, by: p.acked_by_name ?? null, minutes: min(p.react_sec), problem: true }));
   const byType = arr(a.by_type);
   const acked = byType.reduce((acc, g) => acc + (num(g.acked) ?? 0), 0);
   const avgAll = acked ? byType.reduce((acc, g) => acc + (num(g.avg_react_sec) ?? 0) * (num(g.acked) ?? 0), 0) / acked / 60 : null;
@@ -777,7 +777,7 @@ export function dashboardView(res) {
       daily: arr(s.guests_daily).map((d) => ({ date: d.date, new: num(d.new) ?? 0, returning: Math.max(0, (num(d.active) ?? 0) - (num(d.new) ?? 0)) })),
     },
     control: {
-      manual: arr(t.manual_items).map((m, i) => ({ id: m.id ?? `${m.at}-${i}`, at: m.at, action: m.action, staff_id: m.actor_id ?? null, staff_name: m.actor_name ?? null, resource_number: m.resource_number ?? null, reason: m.reason ?? null, amount_kopecks: num(m.amount_kopecks), club_name: m.club_name ?? null })),
+      manual: arr(t.manual_items).map((m, i) => ({ id: m.id ?? `${m.at}-${i}`, at: m.at, action: m.action, staff_id: m.actor_id ?? null, staff_name: m.actor_name ?? null, resource_number: m.resource_number ?? null, resource_type: m.resource_type ?? null, reason: m.reason ?? null, amount_kopecks: num(m.amount_kopecks), club_name: m.club_name ?? null })),
       byAction: arr(t.manual_by_action).map((x) => ({ action: x.action, count: num(x.count) ?? 0 })),
       byStaff: arr(t.manual_by_staff).map((x) => ({ id: x.user_id ?? null, name: x.name ?? 'Сотрудник', count: num(x.count) ?? 0, actions: Object.entries(obj(x.by_action)) })),
       automatic: num(obj(t.automatic).count) ?? 0,

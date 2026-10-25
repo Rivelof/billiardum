@@ -14,6 +14,8 @@ import { linkHandler, navigate } from '../../lib/router.js';
 import {
   MODE_LABEL,
   PERSONAL_LOGIN_TEXT,
+  addClubError,
+  addClubPlan,
   addableClubs,
   cleanName,
   clubsWord,
@@ -23,9 +25,10 @@ import {
   normalizePhone,
   pickNetwork,
   productsWord,
+  reasonError,
   sectionsFor,
 } from '../../lib/networks.js';
-import { ClubModeBadge, ConfirmDialog } from './parts.jsx';
+import { ClubModeBadge, ConfirmDialog, ReasonField } from './parts.jsx';
 import { NetworkTariffs } from './NetworkTariffs.jsx';
 import { NetworkMenu } from './NetworkMenu.jsx';
 import '../../styles/dashboard.css';
@@ -319,27 +322,54 @@ function SectionTabs({ sections, value, onChange }) {
 
 function ClubsSection({ n, rights, memberships, ctx, onChanged }) {
   const [adding, setAdding] = useState('');
+  const [reason, setReason] = useState('');
+  const [tried, setTried] = useState(false);
+  const [needReason, setNeedReason] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(null); // addClubError(): { error, clubName, hint }
   const [removing, setRemoving] = useState(null);
   const [renaming, setRenaming] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const candidates = addableClubs(memberships, n);
   const clubs = Array.isArray(n.clubs) ? n.clubs : [];
   const disabledWhy = rights.pin ? PIN_NOTE_ID : undefined;
+  // M5.5: шаблоны сети применяются к клубу сразу; клуб в боевом режиме — ручное действие с причиной
+  const pickedId = adding || candidates[0]?.club_id;
+  const picked = candidates.find((c) => c.club_id === pickedId) ?? null;
+  const plan = addClubPlan(n, picked);
+  const reasonShown = plan.reasonNeeded || needReason;
+  const rErr = reasonShown ? reasonError(reason, true) : null;
+  const pick = (value) => {
+    setAdding(value);
+    setNeedReason(false);
+    setError(null);
+  };
   const add = async (e) => {
     e.preventDefault();
-    const id = adding || candidates[0]?.club_id;
+    const id = pickedId;
     if (!id) return;
+    setTried(true);
+    if (rErr) {
+      document.getElementById('net-add-reason')?.focus();
+      return;
+    }
     setBusy(true);
     setError(null);
+    const name = picked?.name ?? 'Клуб';
     try {
-      const next = await api.addNetworkClub(n.id, id);
-      const name = candidates.find((c) => c.club_id === id)?.name ?? 'Клуб';
+      const next = await api.addNetworkClub(n.id, id, reasonShown ? reason.trim() : undefined);
       setAdding('');
-      onChanged(next, `«${name}» теперь в сети «${n.name}».`);
+      setReason('');
+      setTried(false);
+      setNeedReason(false);
+      onChanged(next, `«${name}» теперь в сети «${n.name}».${plan.warning ? ' Шаблоны сети применены.' : ''}`);
     } catch (err) {
-      setError(err);
+      const view = addClubError(err, name);
+      if (view.needReason) {
+        setNeedReason(true);
+        setTried(true);
+      }
+      setError(view);
     } finally {
       setBusy(false);
     }
@@ -399,7 +429,7 @@ function ClubsSection({ n, rights, memberships, ctx, onChanged }) {
             <form class="net__add" onSubmit={add}>
               <label class="dfield">
                 <span class="dfield__label">Ваш клуб</span>
-                <select class="field__input" value={adding || candidates[0].club_id} onChange={(e) => setAdding(e.currentTarget.value)} disabled={!rights.edit}>
+                <select class="field__input" value={pickedId} onChange={(e) => pick(e.currentTarget.value)} disabled={!rights.edit}>
                   {candidates.map((c) => (
                     <option key={c.club_id} value={c.club_id}>
                       {c.name ?? 'Клуб'}
@@ -407,9 +437,26 @@ function ClubsSection({ n, rights, memberships, ctx, onChanged }) {
                   ))}
                 </select>
               </label>
+              {plan.warning ? (
+                <p class="note note--lamp net__addnote">
+                  <Icon name="info" />
+                  <span class="note__title">Тарифы и меню клуба изменятся сразу</span>
+                  <span class="note__body">{plan.warning}</span>
+                </p>
+              ) : null}
+              {reasonShown ? (
+                <ReasonField
+                  id="net-add-reason"
+                  label="Причина добавления"
+                  hint="Клуб в боевом режиме: это ручное действие. Причина уйдёт в журнал клуба и владельцу в уведомлении."
+                  value={reason}
+                  onInput={setReason}
+                  error={tried ? rErr : null}
+                />
+              ) : null}
               <button type="submit" class="btn btn--primary" disabled={busy || !rights.edit} aria-describedby={disabledWhy}>
                 <Icon name="plus" />
-                {busy ? 'Добавляем…' : 'Добавить в сеть'}
+                {busy ? 'Добавляем…' : plan.warning ? 'Добавить и применить шаблоны' : 'Добавить в сеть'}
               </button>
             </form>
           ) : (
@@ -421,7 +468,9 @@ function ClubsSection({ n, rights, memberships, ctx, onChanged }) {
             </p>
           )}
           <p class="small muted">Добавить можно только клуб, где вы владелец. Клуб входит не больше чем в одну сеть, в сети — до 100 клубов.</p>
-          <ErrorNote error={error} />
+          <ErrorNote error={error?.error} clubName={error?.clubName}>
+            {error?.hint ? <p class="small">{error.hint}</p> : null}
+          </ErrorNote>
         </section>
       ) : null}
 

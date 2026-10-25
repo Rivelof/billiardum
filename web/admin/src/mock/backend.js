@@ -11,6 +11,8 @@
  * M5.7 (mock/clubapi.js): api — «API и вебхуки» владельца, api-pin — тот же владелец вошёл по PIN на терминале
  * M5.5 (mock/networks.js): network — владелец сети из трёх клубов, network-hard — жёсткие шаблоны, network-empty — без сети,
  * network-manager — управляющий сети, network-pin — владелец по PIN на терминале, network-court — у третьего клуба сети корты
+ * M5.5 (ошибки шаблонов при добавлении клуба): network-gap — неделя клуба не покрыта (tariff_gap), network-dup — артикул или название
+ * товара шаблона занято в меню клуба (409 duplicate { field, value })
  * M5.8 (падел-корт): court — ресепшн в клубе с 8 столами и 2 кортами (корт 1 в игре, 3 игрока из 4; заявка на корт 2),
  * court-owner — владелец (зал, тарифы со слотом, дашборд «Столы / Корты», отчёт смены по видам), court-manager —
  * управляющий (продление без оплаты слотами), court-owner-gap — владелец, у кортов нет цены (tariff_gap padel_court)
@@ -55,6 +57,8 @@ const TYPES = { pyramid: ['billiard_pyramid', 'Пирамида 12 футов'],
 /** M5.8: корты клуба разработки в ?mock=court… — id как в mock/dashboard.js, своя нумерация «Корт 1, 2». */
 const COURT_IDS = ['c0000000-0000-4000-8000-0000000000c1', 'c0000000-0000-4000-8000-0000000000c2'];
 const COURT_CODES = ['C9KX2RT4MA', 'D3HW8QN5PZ'];
+/** Поля заявки по столу (server/reception staffView): вид, семья и тарификация. */
+const TABLE_REQ = (n) => ({ resource_number: n, resource_type: n <= 5 ? 'billiard_pyramid' : 'billiard_pool', resource_family: 'table', billing: 'hourly', slot_minutes: null });
 export const isCourtScenario = (sc) => String(sc ?? '').startsWith('court');
 
 function freshState(scenario, t) {
@@ -72,6 +76,9 @@ function freshState(scenario, t) {
     started_at: new Date(t - startMin * MIN).toISOString(),
     paid_until: new Date(t + (leftMin ?? 120) * MIN).toISOString(),
     unlimited: leftMin === null,
+    // M5.8: тарификация в зале (server/sessions/view.mjs sessionSummary): у стола — hourly, у корта — slot и длина слота
+    billing: 'hourly',
+    slot_minutes: null,
     ...over,
   });
   const empty = scenario === 'empty' || scenario === 'dashboard-empty';
@@ -99,15 +106,15 @@ function freshState(scenario, t) {
     table(7, 'pool', 'busy', { session: session(7, 35, null) }),
     table(8, 'pool', 'offline', { device: { online: false, rssi: null, fw: '1.0.0', caps: ['relay', 'led', 'buzzer', 'current'] } }),
     // M5.8: падел-корты — в зале 24 × 37 м под столами; корт 1 в игре (слот 1,5 ч, 3 игрока), корт 2 свободен
-    ...(isCourtScenario(scenario) ? [court(1, 'busy', { session: session('c1', 50, 40) }), court(2, empty ? 'free' : 'pending')] : []),
+    ...(isCourtScenario(scenario) ? [court(1, 'busy', { session: session('c1', 50, 40, { billing: 'slot', slot_minutes: 90 }) }), court(2, empty ? 'free' : 'pending')] : []),
   ];
   const requests = empty || fresh
     ? []
     : [
-        { id: uuid(), status: 'waiting', kind: 'start', resource_number: 6, minutes: 60, amount_kopecks: 80000, created_at: new Date(t - 9 * MIN).toISOString(), expires_at: new Date(t + 6 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-71-08' },
-        { id: uuid(), status: 'waiting', kind: 'start', resource_number: 4, minutes: 120, amount_kopecks: 160000, created_at: new Date(t - 2 * MIN).toISOString(), expires_at: new Date(t + 13 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-45-12' },
+        { id: uuid(), status: 'waiting', kind: 'start', ...TABLE_REQ(6), minutes: 60, amount_kopecks: 80000, created_at: new Date(t - 9 * MIN).toISOString(), expires_at: new Date(t + 6 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-71-08' },
+        { id: uuid(), status: 'waiting', kind: 'start', ...TABLE_REQ(4), minutes: 120, amount_kopecks: 160000, created_at: new Date(t - 2 * MIN).toISOString(), expires_at: new Date(t + 13 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-45-12' },
         // M5.8: заявка на корт — resource_type и resource_family (server/reception staffView), один слот 1,5 ч
-        ...(isCourtScenario(scenario) ? [{ id: uuid(), status: 'waiting', kind: 'start', resource_id: COURT_IDS[1], resource_number: 2, resource_type: 'padel_court', resource_family: 'court', minutes: 90, amount_kopecks: 240000, created_at: new Date(t - 1 * MIN).toISOString(), expires_at: new Date(t + 14 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-18-40' }] : []),
+        ...(isCourtScenario(scenario) ? [{ id: uuid(), status: 'waiting', kind: 'start', resource_id: COURT_IDS[1], resource_number: 2, resource_type: 'padel_court', resource_family: 'court', billing: 'slot', slot_minutes: 90, minutes: 90, amount_kopecks: 240000, created_at: new Date(t - 1 * MIN).toISOString(), expires_at: new Date(t + 14 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-18-40' }] : []),
       ];
   const alarms = fresh ? [] : [
     { id: uuid(), type: 'bypass_detected', level: 'critical', resource_number: 2, created_at: new Date(t - 6 * MIN).toISOString() },
@@ -232,7 +239,7 @@ export function createBackend(storage, now = () => Date.now()) {
     state.nextRequestAt = now() + 60_000;
     if (!free || state.requests.length >= 4) return;
     free.status = 'pending';
-    state.requests.push({ id: uuid(), status: 'waiting', kind: 'start', resource_id: free.resource.id, resource_number: free.resource.number, minutes: 120, amount_kopecks: 160000, created_at: new Date(now()).toISOString(), expires_at: new Date(now() + 15 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-30-55' });
+    state.requests.push({ id: uuid(), status: 'waiting', kind: 'start', resource_id: free.resource.id, ...TABLE_REQ(free.resource.number), minutes: 120, amount_kopecks: 160000, created_at: new Date(now()).toISOString(), expires_at: new Date(now() + 15 * MIN).toISOString(), guest_masked_phone: '+7 *** ***-30-55' });
     save();
     emit('hall', free);
     emit('reception_request', { state: 'new' });
@@ -367,7 +374,11 @@ export function createBackend(storage, now = () => Date.now()) {
         deposit_kopecks: t.session.deposit_kopecks ?? null,
       });
     }],
-    ['GET', /^\/api\/clubs\/([^/]+)\/now$/, () => ok({ hall: m3.withNextBooking(state.hall), revenue_today_kopecks: state.revenue, alarms_open: state.alarms.length })],
+    // M5.5 (№192): управляющему сети — без разбивки по способам оплаты: revenue_today_kopecks: null, итог — отдельно
+    ['GET', /^\/api\/clubs\/([^/]+)\/now$/, () => {
+      const total = Object.values(state.revenue ?? {}).reduce((a, v) => a + (Number.isSafeInteger(v) ? v : 0), 0);
+      return ok({ hall: m3.withNextBooking(state.hall), revenue_today_kopecks: state.scenario === 'network-manager' ? null : state.revenue, revenue_today_total_kopecks: total, alarms_open: state.alarms.length });
+    }],
     ['GET', /^\/api\/clubs\/([^/]+)\/alarms$/, () => ok(state.alarms)],
     // Д2: повтор чека зачёта (управляющий+, причина, Idempotency-Key) → { receipt_id, status, retried }
     ['POST', /^\/api\/receipts\/([^/]+)\/retry$/, (m, b) => {
@@ -431,6 +442,7 @@ export function createBackend(storage, now = () => Date.now()) {
     err,
     ok,
     byNumber,
+    requestTable,
     audit,
     staffById: (id) => Object.values(STAFF).find((u) => u.id === id),
     approvers: () => [STAFF.manager, STAFF.owner].map((u) => ({ user_id: u.id, name: u.name, role: u.role })),

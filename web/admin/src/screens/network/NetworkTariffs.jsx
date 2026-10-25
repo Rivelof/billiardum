@@ -3,7 +3,7 @@ import { Icon } from '../../components/Icon.jsx';
 import { ErrorNote } from '../../components/ErrorNote.jsx';
 import { TariffWizard, TypedWeek } from '../../components/TariffEditor.jsx';
 import { api } from '../../lib/api.js';
-import { COURT_KIND, hallHasCourts, hallTypes, rulesSlot, TYPE_WORD } from '../../lib/tariffs.js';
+import { COURT_KIND, networkKinds, rulesSlot, TYPE_WORD } from '../../lib/tariffs.js';
 import { clubTariffState, clubsWord, isLive, liveTouched, problemText, tariffTouched, withReason } from '../../lib/networks.js';
 import { ClubModeBadge, ConfirmDialog, ModeBlock } from './parts.jsx';
 
@@ -16,8 +16,6 @@ import { ClubModeBadge, ConfirmDialog, ModeBlock } from './parts.jsx';
  */
 export function NetworkTariffs({ n, rights, onNetwork }) {
   const [t, setT] = useState(null);
-  const [types, setTypes] = useState(null);
-  const [courts, setCourts] = useState(false);
   const [error, setError] = useState(null);
   const [editing, setEditing] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -33,19 +31,6 @@ export function NetworkTariffs({ n, rights, onNetwork }) {
   useEffect(() => {
     load();
   }, [load, n.tariffs_mode]);
-  // Типы столов в работе — по всем клубам сети: шаблон с разными ценами по типам должен покрыть каждый
-  useEffect(() => {
-    let alive = true;
-    Promise.all((n.clubs ?? []).map((c) => api.resources(c.club_id).catch(() => null))).then((list) => {
-      if (!alive) return;
-      const all = list.flatMap((r) => (Array.isArray(r?.resources) ? r.resources : []));
-      setCourts(hallHasCourts(all));
-      setTypes(hallTypes(all));
-    });
-    return () => {
-      alive = false;
-    };
-  }, [n.id, (n.clubs ?? []).length]);
 
   if (error && !t) {
     return (
@@ -56,8 +41,10 @@ export function NetworkTariffs({ n, rights, onNetwork }) {
       </ErrorNote>
     );
   }
-  if (!t || !types) return <p class="muted loading">Загружаем шаблон тарифов…</p>;
+  if (!t) return <p class="muted loading">Загружаем шаблон тарифов…</p>;
   const clubs = Array.isArray(t.clubs) ? t.clubs : [];
+  // Виды ресурсов в работе — по всем клубам сети (clubs[].kinds ответа): шаблон с разными ценами по видам должен покрыть каждый
+  const { types, courts } = networkKinds(clubs);
   const dayStarts = [...new Set(clubs.map((c) => c.day_start_local ?? '06:00'))];
   const dayStart = dayStarts[0] ?? '06:00';
   const touched = tariffTouched(clubs, t.mode);

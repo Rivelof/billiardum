@@ -100,7 +100,7 @@ function orderLine(cat, productId, qty, modIds = []) {
 }
 
 /** Заказ в виде orderView backend-pos (server/orders/core.mjs). */
-function makeOrder(cat, { number, session, table, status, minAgo, pay, items, comment = null, source = 'qr', paid }, t) {
+function makeOrder(cat, { number, session, table, resource = null, status, minAgo, pay, items, comment = null, source = 'qr', paid }, t) {
   const list = items.map(([name, qty, mods = []]) => orderLine(cat, PID[name], qty, mods.map((x) => MOD[x])));
   const created = new Date(t - minAgo * MIN).toISOString();
   return {
@@ -112,7 +112,8 @@ function makeOrder(cat, { number, session, table, status, minAgo, pay, items, co
     paid: paid ?? pay !== 'tab',
     awaiting_payment: false,
     session_id: session ?? null,
-    resource: table ? { id: id('00000000', table), number: table } : null,
+    // M5.8 (server/orders/core.mjs): resource — { id, number, type, family }; type — тип в базе, family — table | court
+    resource: resource ? { id: resource.id, number: resource.number, type: resource.type ?? null, family: resource.family ?? 'table' } : table ? { id: id('00000000', table), number: table, type: TABLE_TYPE(table), family: 'table' } : null,
     items: list,
     subtotal_kopecks: list.reduce((s, i) => s + i.amount_kopecks, 0),
     comment,
@@ -201,13 +202,14 @@ export function reportSeed(shift, x) {
     .filter((v) => v.minutes > 0);
   const svcTotal = x.service.reduce((a, v) => a + v.minutes, 0);
   const items = [
+    ...(x.courts ? [{ at: new Date(opened + 120 * MIN).toISOString(), action: 'manual.extend_free', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Свет на корте погас на 10 минут, компенсируем слот', resource_id: COURT_PLAY[0].id, resource_number: 1, resource_type: 'padel_court', amount_kopecks: null }] : []),
     { at: new Date(opened + 95 * MIN).toISOString(), action: 'service.start', actor_id: null, actor_name: STAFF_NAMES.reception, reason: 'Протираем сукно после пролитого напитка', resource_id: null, amount_kopecks: null },
     { at: new Date(opened + 210 * MIN).toISOString(), action: 'manual.extend_free', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Свет мигнул из-за сбоя питания, компенсировали 15 минут', resource_id: null, amount_kopecks: null },
     { at: new Date(opened + 300 * MIN).toISOString(), action: 'manual.discount', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Постоянный гость, турнир клуба', resource_id: null, amount_kopecks: 18000 },
     // M4 (№147): исправление счёта турнира и решение спора по партии — ручные строки
     // Строки несут data (server/reports DETAIL_ACTIONS): было → стало и tournament_id для перехода
-    { at: new Date(opened + 330 * MIN).toISOString(), action: 'manual.tournament_score', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Игроки внесли счёт наоборот', resource_id: id('00000000', 7), resource_number: 7, amount_kopecks: null, data: { tournament_id: LIVE_TOURNAMENT, match_id: null, before: '2:3', after: '3:2' } },
-    { at: new Date(opened + 345 * MIN).toISOString(), action: 'plus.match_resolve', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Посмотрели запись камеры: последний шар забит', resource_id: id('00000000', 3), resource_number: 3, amount_kopecks: null, data: { match_id: null, result: 'a', before: '8:7', after: '8:7' } },
+    { at: new Date(opened + 330 * MIN).toISOString(), action: 'manual.tournament_score', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Игроки внесли счёт наоборот', resource_id: id('00000000', 7), resource_number: 7, resource_type: TABLE_TYPE(7), amount_kopecks: null, data: { tournament_id: LIVE_TOURNAMENT, match_id: null, before: '2:3', after: '3:2' } },
+    { at: new Date(opened + 345 * MIN).toISOString(), action: 'plus.match_resolve', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Посмотрели запись камеры: последний шар забит', resource_id: id('00000000', 3), resource_number: 3, resource_type: TABLE_TYPE(3), amount_kopecks: null, data: { match_id: null, result: 'a', before: '8:7', after: '8:7' } },
     // M4 (№147, №149): продление турнира и возврат взноса одному игроку
     { at: new Date(opened + 352 * MIN).toISOString(), action: 'manual.tournament_extend', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Полуфиналы затянулись', resource_id: null, resource_number: null, amount_kopecks: null, data: { tournament_id: LIVE_TOURNAMENT, before: { ends_at: new Date(opened + 360 * MIN).toISOString(), match_minutes: 90, light_until: new Date(opened + 450 * MIN).toISOString() }, after: { ends_at: new Date(opened + 420 * MIN).toISOString(), match_minutes: 90, light_until: new Date(opened + 510 * MIN).toISOString() } } },
     { at: new Date(opened + 358 * MIN).toISOString(), action: 'manual.tournament_refund', actor_id: null, actor_name: STAFF_NAMES.manager, reason: 'Травма руки во втором матче', resource_id: null, resource_number: null, amount_kopecks: 50000, data: { tournament_id: LIVE_TOURNAMENT, entry_id: null, scope: 'entry', reason_code: 'health', refunds: null } },
@@ -238,20 +240,20 @@ export function reportSeed(shift, x) {
     // №125: ручные и действия персонала — общим списком с kind; действия системы — automatic отдельно
     manual_actions: {
       count: items.length,
-      by_action: { 'service.start': 1, 'manual.extend_free': 1, 'manual.discount': 1, 'manual.tournament_score': 1, 'plus.match_resolve': 1, 'manual.tournament_extend': 1, 'manual.tournament_refund': 1 },
+      by_action: { 'service.start': 1, 'manual.extend_free': x.courts ? 2 : 1, 'manual.discount': 1, 'manual.tournament_score': 1, 'plus.match_resolve': 1, 'manual.tournament_extend': 1, 'manual.tournament_refund': 1 },
       items: items.map((it) => ({ kind: it.action.startsWith('manual.') ? 'manual' : 'staff', linked: [], ...it })),
       // Действия гостей (отмена брони гостем с возвратом) — отдельно, свёрнуто
       guests: {
         count: 1,
         by_action: { 'booking.cancel': 1 },
-        items: [{ at: new Date(opened + 180 * MIN).toISOString(), action: 'booking.cancel', kind: 'guest', actor_id: null, actor_name: null, reason: 'Бронь отменена гостем поздно', resource_id: id('00000000', 4), resource_number: 4, amount_kopecks: 31500, linked: ['payment.refunded'] }],
+        items: [{ at: new Date(opened + 180 * MIN).toISOString(), action: 'booking.cancel', kind: 'guest', actor_id: null, actor_name: null, reason: 'Бронь отменена гостем поздно', resource_id: id('00000000', 4), resource_number: 4, resource_type: TABLE_TYPE(4), amount_kopecks: 31500, linked: ['payment.refunded'] }],
       },
       automatic: {
         count: 2,
         by_action: { 'payment.forfeited': 1, 'payment.refunded': 1 },
         items: [
-          { at: new Date(opened + 140 * MIN).toISOString(), action: 'payment.forfeited', kind: 'automatic', actor_id: null, actor_name: null, reason: 'Гость не пришёл по брони', resource_id: id('00000000', 3), resource_number: 3, amount_kopecks: 120000 },
-          { at: new Date(opened + 260 * MIN).toISOString(), action: 'payment.refunded', kind: 'automatic', actor_id: null, actor_name: null, reason: 'Оплата пришла на занятый стол', resource_id: id('00000000', 5), resource_number: 5, amount_kopecks: 80000 },
+          { at: new Date(opened + 140 * MIN).toISOString(), action: 'payment.forfeited', kind: 'automatic', actor_id: null, actor_name: null, reason: 'Гость не пришёл по брони', resource_id: id('00000000', 3), resource_number: 3, resource_type: TABLE_TYPE(3), amount_kopecks: 120000 },
+          { at: new Date(opened + 260 * MIN).toISOString(), action: 'payment.refunded', kind: 'automatic', actor_id: null, actor_name: null, reason: 'Оплата пришла на занятый стол', resource_id: id('00000000', 5), resource_number: 5, resource_type: TABLE_TYPE(5), amount_kopecks: 80000 },
         ],
       },
     },
@@ -275,6 +277,24 @@ export function reportSeed(shift, x) {
       online: { ok: true, status: 'checked', system_kopecks: online, system_refunds_kopecks: 0, payments: 23, refunds: 0, yookassa_kopecks: online, yookassa_refunds_kopecks: 0, diff_kopecks: 0, mismatches: [] },
     },
     generated_at: new Date(closed).toISOString(),
+  };
+}
+
+/**
+ * Отчёт смены управляющему сети (M5.5 №192, server/reports/shift-report.mjs withoutMethods): methods_hidden, by_method
+ * и суммы по способам — null, итоги, ok и diff_kopecks остаются.
+ */
+export function withoutMethods(report) {
+  const hide = (v) => (Array.isArray(v) ? v.map(hide) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === 'by_method' ? null : hide(x)])) : v);
+  const { kkt, online } = report.reconciliation;
+  return {
+    ...report,
+    methods_hidden: true,
+    revenue: hide(report.revenue),
+    reconciliation: {
+      kkt: { ...kkt, system_kopecks: null, kkt_kopecks: null, receipts: Object.fromEntries(Object.entries(kkt.receipts).map(([k, x]) => [k, { ...x, amount_kopecks: null }])) },
+      online: { ...online, system_kopecks: null, system_refunds_kopecks: null, yookassa_kopecks: null, yookassa_refunds_kopecks: null },
+    },
   };
 }
 
@@ -309,6 +329,8 @@ export function m2State(scenario, t, hall) {
   const closedSession = `5e550000-0000-4000-8000-${String(Math.floor(t / 1000) % 1e12).padStart(12, '0')}`;
   const orders = [
     makeOrder(cat, { number: 41, session: sess(1), table: 1, status: 'new', minAgo: 3, pay: 'tab', items: [['Капучино', 2, ['0,4 л', 'Овсяное', 'Без сахара']], ['Картофель фри', 1, ['Сырный']]], comment: 'Принесите, пожалуйста, побольше салфеток' }, t),
+    // M5.8: заказ с корта — «Корт 1» на экране бара
+    ...(hall.some((x) => x.resource.family === 'court') ? [makeOrder(cat, { number: 42, session: hall.find((x) => x.resource.family === 'court' && x.session)?.session?.id ?? null, resource: hall.find((x) => x.resource.family === 'court').resource, status: 'new', minAgo: 1, pay: 'tab', items: [['Лимонад домашний, 0,4 л', 2]] }, t)] : []),
     makeOrder(cat, { number: 40, session: sess(7), table: 7, status: 'preparing', minAgo: 11, pay: 'online', items: [['Чай чёрный', 1, ['1 л']], ['Сэндвич с курицей', 1]] }, t),
     makeOrder(cat, { number: 39, session: sess(3), table: 3, status: 'ready', minAgo: 23, pay: 'tab', items: [['Лимонад домашний, 0,4 л', 2]] }, t),
     makeOrder(cat, { number: 38, status: 'preparing', minAgo: 6, pay: 'pos', source: 'pos', items: [['Американо', 1, ['0,3 л', '1 ложка']]] }, t),
@@ -336,7 +358,7 @@ export function m2State(scenario, t, hall) {
     settings: { discount_limit_percent: 10, stop_at_zero: false, tab_limit_kopecks: null },
     orders,
     nextOrderNumber: 42,
-    sessionInfo: { [closedSession]: { resource_number: 2, session_status: 'closed' } },
+    sessionInfo: { [closedSession]: { resource_number: 2, resource_type: TABLE_TYPE(2), session_status: 'closed' } },
     shift: current,
     shifts: history,
     reports,
@@ -384,7 +406,7 @@ export function m2Routes(ctx) {
 
   const sessionInfo = (sid) => {
     const t = ctx.state().hall.find((x) => x.session?.id === sid);
-    if (t) return { resource_number: t.resource.number, session_status: t.session.status ?? 'active' };
+    if (t) return { resource_number: t.resource.number, resource: t.resource, session_status: t.session.status ?? 'active' };
     return S().sessionInfo[sid] ?? null;
   };
 
@@ -401,7 +423,7 @@ export function m2Routes(ctx) {
         return {
           session_id: sid,
           session_status: info.session_status,
-          resource: { id: id('00000000', info.resource_number), number: info.resource_number },
+          resource: info.resource ? { id: info.resource.id, number: info.resource.number, type: info.resource.type ?? null, family: info.resource.family ?? 'table' } : { id: id('00000000', info.resource_number), number: info.resource_number, type: info.resource_type ?? TABLE_TYPE(info.resource_number), family: 'table' },
           orders: list.length,
           total_kopecks: list.reduce((s, o) => s + o.subtotal_kopecks, 0),
           since: list[0].created_at,
@@ -483,7 +505,7 @@ export function m2Routes(ctx) {
       const r = st.requests.find((x) => x.id === rid);
       if (!r) continue;
       st.requests = st.requests.filter((x) => x !== r);
-      const table = ctx.byNumber(r.resource_number);
+      const table = ctx.requestTable?.(r) ?? ctx.byNumber(r.resource_number);
       const s = { id: uuid(), status: 'active', started_at: new Date(now()).toISOString(), paid_until: new Date(now() + (r.minutes ?? 120) * MIN).toISOString(), unlimited: r.minutes === null };
       Object.assign(table, { status: 'busy', session: s });
       ctx.emit('hall', table);
@@ -735,8 +757,10 @@ export function m2Routes(ctx) {
       return ok(closed);
     })],
     ['GET', /^\/api\/shifts\/([^/]+)\/report$/, managerOnly((mm) => {
-      if (S().shift?.id === mm[1]) return ok(liveReport());
-      return S().reports[mm[1]] ? ok(S().reports[mm[1]]) : err(404, 'not_found');
+      // M5.5 (№192): управляющему сети — отчёт без способов оплаты
+      const hide = ctx.state().scenario === 'network-manager';
+      const report = S().shift?.id === mm[1] ? liveReport() : S().reports[mm[1]];
+      return report ? ok(hide ? withoutMethods(report) : report) : err(404, 'not_found');
     })],
 
     // ---------- склад ----------
@@ -942,7 +966,7 @@ export function m2Tick(ctx) {
   const busy = ctx.state().hall.filter((x) => x.session && x.status === 'busy');
   if (!busy.length || S.orders.filter((o) => o.status === 'new').length >= 4) return;
   const table = busy[S.nextOrderNumber % busy.length];
-  const order = makeOrder(S.catalog, { number: S.nextOrderNumber++, session: table.session.id, table: table.resource.number, status: 'new', minAgo: 0, pay: 'tab', items: [['Американо', 1, ['0,3 л', '1 ложка']], ['Мел для кия', 1]] }, ctx.now());
+  const order = makeOrder(S.catalog, { number: S.nextOrderNumber++, session: table.session.id, resource: table.resource, status: 'new', minAgo: 0, pay: 'tab', items: [['Американо', 1, ['0,3 л', '1 ложка']], ['Мел для кия', 1]] }, ctx.now());
   S.orders.push(order);
   ctx.emit('bar', order);
 }
