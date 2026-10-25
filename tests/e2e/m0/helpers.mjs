@@ -119,15 +119,20 @@ export async function waitFor(fn, { timeoutMs = 30_000, intervalMs = 500, what =
   }
 }
 
-/** Сервер снова видит 8/8 после момента since (симулятор восстановился). */
-export async function waitAllOnline(since, total, { timeoutMs = 45_000 } = {}) {
+/**
+ * Сервер снова видит онлайн все устройства симулятора после момента since.
+ * `online` — число устройств сида (у симулятора); `total` в строке devices_online — устройства ВСЕЙ базы
+ * (store.deviceTotal: и тестовые клубы других проверок, которые в симуляторе не подключены), поэтому
+ * сравнивается как `total >= online`, а не `total === online` (иначе тест красный, пока в базе есть чужие клубы).
+ */
+export async function waitAllOnline(since, online, { timeoutMs = 45_000 } = {}) {
   return waitFor(
     () => {
       const lines = containerLog(SERVER_CONTAINER, { since }).filter((l) => l.msg === 'devices_online');
       const last = lines.at(-1);
-      return last && last.online === total && last.total === total ? last : null;
+      return last && last.online === online && last.total >= online ? last : null;
     },
-    { timeoutMs, intervalMs: 1000, what: `devices_online ${total}/${total} в логе сервера` },
+    { timeoutMs, intervalMs: 1000, what: `devices_online online=${online} (total не меньше) в логе сервера` },
   );
 }
 

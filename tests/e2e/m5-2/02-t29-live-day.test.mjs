@@ -441,8 +441,11 @@ test('T29 сегодня: приращение после набора = наб�
   assert.ok(svcA - svcB >= 0 && svcA - svcB <= 2, `сервис: + ${svcA - svcB} мин`);
   // Таблица по столам 1–4: игры по одной.
   for (const n of [1, 2, 3, 4]) {
-    const rb = B.hall.tables.by_resource.find((x) => x.number === n);
-    const ra = A.hall.tables.by_resource.find((x) => x.number === n);
+    // Номера столов и кортов у семей свои (решение №213, с M5.8 есть «Стол 1» и «Корт 1»): ищем по id стола сида,
+    // а не по номеру — иначе чужие игры pentester на кортах (там же шли проверки M5.8) попадали в строку стола.
+    const tableId = `e1000000-0000-4000-8000-00000000000${n}`;
+    const rb = B.hall.tables.by_resource.find((x) => x.resource_id === tableId);
+    const ra = A.hall.tables.by_resource.find((x) => x.resource_id === tableId);
     assert.equal(ra.games - (rb?.games ?? 0), 1, `стол ${n}: + 1 игра`);
   }
   // Доля без персонала и скан → свет: игра по QR стола 1 — в метрике.

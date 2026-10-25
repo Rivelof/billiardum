@@ -197,7 +197,7 @@ test('вход: учётки устройства и сервера только
 });
 
 test(`после проверок сервер не принял ни одной подделки и снова видит ${devices.length}/${devices.length}`, async (t) => {
-  // С M5.8 устройств сида 10 (столы 1–8 и 2 корта) — число берётся из devices.json.
+  // С M5.8 устройств сида 10 (столы 1–8 и 2 корта) — число берётся из devices.json; `total` в логе — вся база (≥ online).
   const last = await waitAllOnline(startedAt, devices.length, { timeoutMs: 75_000 });
   t.diagnostic(`devices_online после проверки: ${JSON.stringify(last)}`);
   const lines = containerLog(SERVER_CONTAINER, { since: startedAt });

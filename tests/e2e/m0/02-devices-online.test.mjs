@@ -1,10 +1,13 @@
 // Критерий 1: симулятор показывает все устройства сида онлайн в логе сервера:
 // строка devices_online N/N и cmd_ack ok на ping от каждого из N устройств.
 // С M5.8 (сид 1300_padel.sql) N = 10: столы 1–8 и 2 корта (в devices.json — table_number 101, 102).
+// В строке devices_online `online` — подключённые устройства (у симулятора их N, все — сида), а `total` — устройства
+// ВСЕЙ базы, в том числе тестовых клубов других проверок (у них контроллера в симуляторе нет): поэтому
+// сравниваем `online === N` и `total >= N`, а в базе считаем устройства клуба сида (`club_id = CLUB_A`).
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { adminClient, containerLog, loadDevices, SERVER_CONTAINER, SIM_CONTAINER } from './helpers.mjs';
+import { adminClient, CLUB_A, containerLog, loadDevices, SERVER_CONTAINER, SIM_CONTAINER } from './helpers.mjs';
 
 const devices = loadDevices();
 /** Устройства сида: столы 1–8 и корты M5.8 (101, 102). */
@@ -25,24 +28,28 @@ test(`devices.json: ${N} устройств сида (столы 1–8, корт
   assert.equal(new Set(devices.map((d) => d.mqtt_password)).size, N, 'пароли MQTT разные');
 });
 
-test(`лог сервера: devices_online ${N}/${N} (свежая строка, total = число устройств в базе)`, async (t) => {
+test(`лог сервера: devices_online ${N}/… (online = ${N} устройств сида, total — все устройства базы)`, async (t) => {
   const db = await adminClient();
-  let dbTotal;
+  let seedTotal;
+  let allTotal;
   try {
-    dbTotal = Number((await db.query('select count(*) from bl.devices')).rows[0].count);
+    seedTotal = Number((await db.query('select count(*) from bl.devices where club_id = $1', [CLUB_A])).rows[0].count);
+    allTotal = Number((await db.query('select count(*) from bl.devices')).rows[0].count);
   } finally {
     await db.end();
   }
   const lines = containerLog(SERVER_CONTAINER).filter((l) => l.msg === 'devices_online');
   assert.ok(lines.length > 0, 'нет строк devices_online');
-  const reached = lines.find((l) => l.online === N && l.total === N);
+  const reached = lines.find((l) => l.online === N && l.total >= N);
   const last = lines.at(-1);
-  t.diagnostic(`первая ${N}/${N}: ${JSON.stringify(reached)}`);
-  t.diagnostic(`последняя: ${JSON.stringify(last)}; устройств в bl.devices: ${dbTotal}`);
-  assert.ok(reached, `в логе нет devices_online ${N}/${N}`);
-  assert.equal(dbTotal, N);
-  assert.equal(last.online, N);
-  assert.equal(last.total, dbTotal);
+  t.diagnostic(`первая online=${N}: ${JSON.stringify(reached)}`);
+  t.diagnostic(`последняя: ${JSON.stringify(last)}; устройств в bl.devices: клуб сида ${seedTotal}, вся база ${allTotal}`);
+  assert.ok(reached, `в логе нет devices_online с online=${N}`);
+  assert.equal(seedTotal, N, 'устройств клуба сида');
+  assert.equal(last.online, N, 'онлайн — ровно устройства симулятора');
+  // total — вся база: не меньше устройств сида; чужие тестовые клубы могут добавиться между строкой лога и запросом,
+  // поэтому верхняя граница — число сейчас.
+  assert.ok(last.total >= N && last.total <= allTotal, `total в логе ${last.total} вне [${N}; ${allTotal}]`);
   // Сервер повторяет строку раз в 60 с — последняя не старше 70 с.
   assert.ok(Date.now() - Date.parse(last.t) < 70_000, `последняя devices_online старая: ${last.t}`);
 });

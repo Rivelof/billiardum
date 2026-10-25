@@ -256,7 +256,7 @@ for (const day of DAYS) {
     assert.equal(tv(hall.json, 'utilization'), ring.capacity_minutes ? Math.round((ring.played_minutes / ring.capacity_minutes) * 1000) / 10 : null, 'загрузка = сыграно / ёмкость');
     // Таблица по столам: игры по началу, минуты, выручка столов − возвраты = SQL.
     const perRes = await db.query(
-      `select r.number,
+      `select r.id, r.number, r.title,
               (select count(*)::int from bl.sessions s where s.resource_id = r.id and not s.is_test and s.status <> 'cancelled' and s.started_at >= $2 and s.started_at < $3) as games,
               (select coalesce(sum(case when p.capture then p.amount_kopecks else coalesce(p.captured_kopecks, 0) end), 0)::bigint from bl.payments p
                 where p.resource_id = r.id and p.status = 'succeeded' and p.provider <> 'balance' and not p.is_test and p.kind in ('start', 'extend', 'booking', 'booking_start')
@@ -268,13 +268,14 @@ for (const day of DAYS) {
       [CLUB_A, x.b.from, x.b.to],
     );
     for (const r of perRes.rows) {
-      const row2 = hall.json.tables.by_resource.find((y) => y.number === r.number);
+      // С M5.8 у столов и кортов номера свои («Стол 1» и «Корт 1»): строка — по id ресурса, не по номеру.
+      const row2 = hall.json.tables.by_resource.find((y) => y.resource_id === r.id);
       if (!row2) {
-        assert.equal(r.games, 0, `стол ${r.number}`);
+        assert.equal(r.games, 0, `${r.title}`);
         continue;
       }
-      assert.equal(row2.games, r.games, `стол ${r.number}: игры`);
-      assert.equal(row2.revenue_kopecks, Number(r.rev) - Number(r.ref), `стол ${r.number}: выручка столов − возвраты`);
+      assert.equal(row2.games, r.games, `${r.title}: игры`);
+      assert.equal(row2.revenue_kopecks, Number(r.rev) - Number(r.ref), `${r.title}: выручка столов − возвраты`);
     }
     t.diagnostic(`${day}: кольцо ${JSON.stringify(ring)}; карта (минуты по часам) ${JSON.stringify(row)}`);
   });
@@ -313,8 +314,9 @@ test('T29: период = сумма суток; CSV revenue_daily, tables, hour
   const hall = (await dash(S.owner.token, CLUB_A, { from, to, tab: 'hall' })).json;
   const tcsv = parseCsv((await apiRaw('GET', `/api/clubs/${CLUB_A}/dashboard/export.csv?from=${from}&to=${to}&table=tables`, { token: S.owner.token, headers: { 'x-club-id': CLUB_A } })).buf);
   for (const r of hall.tables.by_resource) {
-    const line = tcsv.find((l) => l[0] === String(r.number));
-    assert.ok(line, `стол ${r.number} в CSV`);
+    // CSV: номер и название (у «Стол 1» и «Корт 1» номер один).
+    const line = tcsv.find((l) => l[0] === String(r.number) && l[1] === (r.title ?? ''));
+    assert.ok(line, `${r.title} в CSV`);
     assert.equal(Number(line[3]), r.games, `стол ${r.number}: игры`);
     assert.equal(line[4], String(r.play_hours).replace('.', ','), `стол ${r.number}: часы`);
     assert.equal(line[6], rubCsv(r.revenue_kopecks), `стол ${r.number}: выручка`);
