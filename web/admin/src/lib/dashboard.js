@@ -755,7 +755,7 @@ export function dashboardView(res) {
         for (const [k, v] of Object.entries(obj(d.by_type))) o[kindOfType(k)] = num(v);
         return o;
       }),
-      byKind: byType.map((x) => ({ kind: kindOfType(x.type), tables: num(x.tables) ?? 0, games: num(x.games), play_minutes: num(x.play_minutes) ?? 0, revenue: num(x.revenue_kopecks), load: num(x.utilization_pct) })),
+      byKind: byType.map((x) => ({ kind: kindOfType(x.type), family: x.family === 'court' || x.type === COURT_TYPE ? 'court' : 'table', resources: num(x.resources) ?? num(x.tables) ?? 0, games: num(x.games), play_minutes: num(x.play_minutes) ?? 0, revenue: num(x.revenue_kopecks), load: num(x.utilization_pct) })),
       resources: arr(t.by_resource).map((r) => ({ id: r.resource_id, number: r.number, title: r.title ?? null, kind: kindOfType(r.type), family: r.family === 'court' || r.type === COURT_TYPE ? 'court' : 'table', club: r.club_name ?? null, games: num(r.games), play_minutes: num(r.play_minutes) ?? (num(r.play_hours) ?? 0) * 60, revenue: num(r.revenue_kopecks), load: num(r.utilization_pct), cloth_hours: num(r.cloth_hours), cloth_since: r.cloth_since ?? null, cloth_threshold_hours: num(r.cloth_threshold_hours), cloth_due: r.cloth_due === true })),
       // M5.6 (server/maintenance/README.md): прогноз 7 × 24 рядом с тепловой картой и подсказки по цене;
       // у «всех клубов» forecast: null, подсказки — с club_id и club_name

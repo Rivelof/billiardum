@@ -611,7 +611,7 @@ export function HallTab({ view, now, busy, ctx }) {
           <ul class="dkindsum">
             {h.byKind.map((k) => (
               <li key={k.kind}>
-                <b>{KIND_LABEL[k.kind] ?? k.kind}</b> · {countText(k.tables, k.kind === 'padel_court' ? 'court' : 'table')} · {formatHours(k.play_minutes)} · {pctText(k.load)} · {money(k.revenue)}
+                <b>{KIND_LABEL[k.kind] ?? k.kind}</b> · {countText(k.resources, k.family)} · {formatHours(k.play_minutes)} · {pctText(k.load)} · {money(k.revenue)}
               </li>
             ))}
           </ul>

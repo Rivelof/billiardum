@@ -39,6 +39,7 @@ import {
 } from '../src/lib/dashboard.js';
 import { journalLink } from '../src/lib/audit.js';
 import { createDashboardMock, CLUBS } from '../src/mock/dashboard.js';
+import { countText } from '@billiardum/shared/resource';
 
 const NB = '\u00a0';
 const TZ = 'Asia/Yekaterinburg'; // UTC+5
@@ -379,7 +380,7 @@ test('сервер → вид: зал (тепловая карта 7 × 24, ко
       utilization_daily: [{ date: '2026-10-21', pct: 4.3, by_type: { billiard_pyramid: 5.6, billiard_pool: 2.1, billiard_snooker: null } }],
     },
     tables: {
-      by_type: [{ type: 'billiard_pyramid', tables: 5, games: 4, play_minutes: 340, capacity_minutes: 14400, service_minutes: 20, utilization_pct: 2.4, revenue_kopecks: 265000 }],
+      by_type: [{ type: 'billiard_pyramid', family: 'table', resources: 5, tables: 5, games: 4, play_minutes: 340, capacity_minutes: 14400, service_minutes: 20, utilization_pct: 2.4, revenue_kopecks: 265000 }],
       by_resource: [{ resource_id: 'e1', number: 1, title: 'Стол 1', type: 'billiard_pyramid', games: 1, play_minutes: 90, play_hours: 1.5, service_minutes: 0, revenue_kopecks: 75000, utilization_pct: 3.1, cloth_hours: null }],
     },
   });
@@ -390,8 +391,14 @@ test('сервер → вид: зал (тепловая карта 7 × 24, ко
   assert.equal(capacityRing(v.hall.ring).segments[2].minutes, 22500);
   assert.deepEqual(v.hall.loadDaily[0], { date: '2026-10-21', total: 4.3, pyramid: 5.6, pool: 2.1, snooker: null });
   assert.deepEqual(v.period.kinds, ['pyramid', 'pool', 'snooker']);
-  assert.deepEqual(v.hall.byKind[0], { kind: 'pyramid', tables: 5, games: 4, play_minutes: 340, revenue: 265000, load: 2.4 });
+  assert.deepEqual(v.hall.byKind[0], { kind: 'pyramid', family: 'table', resources: 5, games: 4, play_minutes: 340, revenue: 265000, load: 2.4 });
   assert.equal(v.hall.resources[0].kind, 'pyramid');
+  // M5.8: корт — resources + family; старое имя tables читается как запасное, подпись «кортов» через plural
+  const hv = dashboardView({ tables: { by_type: [{ type: 'padel_court', family: 'court', resources: 2, games: 1 }, { type: 'billiard_pool', tables: 3 }] } });
+  assert.deepEqual(hv.hall.byKind.map((k) => [k.kind, k.family, k.resources]), [['padel_court', 'court', 2], ['pool', 'table', 3]]);
+  assert.equal(countText(hv.hall.byKind[0].resources, hv.hall.byKind[0].family), '2 корта');
+  assert.equal(countText(5, 'court'), '5 кортов');
+  assert.equal(countText(hv.hall.byKind[1].resources, hv.hall.byKind[1].family), '3 стола');
   assert.equal(v.hall.resources[0].cloth_hours, null);
   // тепловая карта только с процентами — тоже читается
   assert.deepEqual(heatCells({ rows: [7], cols: [22], pct: [[50]] }), [{ dow: 7, hour: 22, play_minutes: 50, capacity_minutes: 100 }]);

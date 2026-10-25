@@ -663,7 +663,7 @@ export function createDashboardMock({ now, scenario }) {
         const list = res.filter((r) => r.type === typeOf(k));
         const play = list.reduce((a, r) => a + r.play_minutes, 0);
         const cap = cur.per.reduce((a, p) => a + (p.row.byKind[k]?.capacity ?? 0), 0);
-        return { type: typeOf(k), tables: list.length, games: list.reduce((a, r) => a + r.games, 0), play_minutes: play, capacity_minutes: cap, service_minutes: list.reduce((a, r) => a + r.service_minutes, 0), utilization_pct: cap ? r1((play / cap) * 100) : null, revenue_kopecks: list.reduce((a, r) => a + r.revenue_kopecks, 0) };
+        return { type: typeOf(k), family: k === COURT ? 'court' : 'table', resources: list.length, tables: list.length, games: list.reduce((a, r) => a + r.games, 0), play_minutes: play, capacity_minutes: cap, service_minutes: list.reduce((a, r) => a + r.service_minutes, 0), utilization_pct: cap ? r1((play / cap) * 100) : null, revenue_kopecks: list.reduce((a, r) => a + r.revenue_kopecks, 0) };
       });
       base.tables.by_resource = res;
     }
