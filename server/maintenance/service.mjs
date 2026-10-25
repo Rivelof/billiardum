@@ -17,6 +17,7 @@
 // Журнал: maintenance.event, maintenance.correct (с причиной), maintenance.thresholds_update,
 // maintenance.threshold_reached (система); расходы — cashbook.entry, cashbook.storno.
 
+import { plural } from '@billiardum/shared/format';
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
 import { isUuid, safely } from '../lib/store.mjs';
@@ -30,6 +31,9 @@ export const KIND_LABELS = Object.freeze({ cloth: 'Замена сукна', bal
 /** Пороги по умолчанию, часы игры (№198); null — без порога. */
 export const DEFAULT_THRESHOLDS = Object.freeze({ cloth: 1500, balls: 3000, cushions: 5000, leveling: null, other: null });
 export const MAX_THRESHOLD_HOURS = 100_000;
+/** Н-2: уведомлений maintenance.due на клуб за рабочие сутки, не больше. */
+export const MAX_DUE_PER_DAY = 5;
+const KIND_SHORT = Object.freeze({ cloth: 'сукно', balls: 'шары', cushions: 'резина бортов', leveling: 'выравнивание', other: 'другое' });
 /** Дата события — не раньше чем столько суток назад (без стоимости). */
 export const MAX_EVENT_BACKDATE_DAYS = 366;
 export const CATEGORY_NAME = 'Ремонт столов';
@@ -117,7 +121,8 @@ async function lastEvents(db, clubId) {
  * { hours, minutes, since, event_id, threshold_hours, due } } }]. kinds — только виды из list.
  */
 export async function counters(db, club, { now, kinds = KINDS }) {
-  const res = await db.query('select id, number, title, type, active, created_at from bl.resources where club_id = $1 order by number', [club.id]);
+  // Износ сукна, шаров и резины — только у столов бильярда (M5.8: у кортов счётчиков нет).
+  const res = await db.query("select id, number, title, type, active, created_at from bl.resources where club_id = $1 and bl.resource_family(type) = 'table' order by number", [club.id]);
   if (res.rows.length === 0) return [];
   const events = await lastEvents(db, club.id);
   const evBy = new Map(events.map((e) => [`${e.resource_id}|${e.kind}`, e]));
@@ -276,6 +281,23 @@ async function repairCategory(db, club, userId, now) {
   return (await db.query(`select id from bl.cashbook_categories where club_id = $1 and kind = 'expense' and lower(btrim(name)) = lower($2)`, [club.id, CATEGORY_NAME])).rows[0].id;
 }
 
+/** Действующие (без сторно) расходы событий цепочки исправлений до eventId включительно. */
+async function activeExpenses(db, clubId, eventId) {
+  const { rows } = await db.query(
+    `with recursive chain (id, corrects_id) as (
+       select id, corrects_id from bl.maintenance_events where club_id = $1 and id = $2
+       union all
+       select e.id, e.corrects_id from bl.maintenance_events e join chain c on e.id = c.corrects_id where e.club_id = $1
+     )
+     select x.id from bl.cashbook_entries x
+      where x.club_id = $1 and x.maintenance_event_id in (select id from chain) and x.reverses_id is null
+        and not exists (select 1 from bl.cashbook_entries r where r.club_id = x.club_id and r.reverses_id = x.id)
+      order by x.created_at`,
+    [clubId, eventId],
+  );
+  return rows;
+}
+
 function resourceName(r) {
   return r.title || `Стол ${r.number}`;
 }
@@ -315,16 +337,17 @@ export async function addEvent(db, { club, userId, body, now }) {
     if (typeof b.comment !== 'string' || b.comment.trim().length > 500) throw new HttpError(400, 'bad_request', { detail: 'comment' });
     comment = b.comment.trim() || null;
   }
-  let cost = b.cost_kopecks ?? (orig && !voided ? Number(orig.cost_kopecks) : 0);
+  // Стоимость — только явная (Н-3): исправление без cost_kopecks стоимость не переносит и кассу не трогает.
+  const explicitCost = b.cost_kopecks !== undefined && b.cost_kopecks !== null;
+  const cost = explicitCost ? b.cost_kopecks : 0;
   if (!Number.isSafeInteger(cost) || cost < 0 || cost > MAX_COST) throw new HttpError(400, 'bad_request', { detail: 'cost_kopecks' });
-  if (voided) {
-    if (b.cost_kopecks) throw new HttpError(400, 'bad_request', { detail: 'cost_kopecks' });
-    cost = 0;
-  }
+  if (voided && cost !== 0) throw new HttpError(400, 'bad_request', { detail: 'cost_kopecks' });
   // Расход в кассу — по правилам даты кассы (№189).
   if (cost > 0 && day < addDays(today, -MAX_BACKDATE_DAYS)) throw new HttpError(400, 'bad_request', { detail: 'date' });
-  const res = (await db.query('select id, number, title from bl.resources where id = $1 and club_id = $2', [resourceId, club.id])).rows[0];
+  const res = (await db.query('select id, number, title, bl.resource_family(type) as family from bl.resources where id = $1 and club_id = $2', [resourceId, club.id])).rows[0];
   if (!res) throw new HttpError(404, 'not_found');
+  // Обслуживание — только столов бильярда; корт (M5.8) — 400 bad_request (detail resource_family).
+  if (res.family !== 'table') throw new HttpError(400, 'bad_request', { detail: 'resource_family' });
 
   let ins;
   try {
@@ -341,18 +364,20 @@ export async function addEvent(db, { club, userId, body, now }) {
   }
   const eventId = ins.rows[0].id;
 
-  // Касса: сторно расхода исправляемого события, новый расход по стоимости.
-  let stornoId = null;
+  // Касса (Н-1, Н-3): исправление с явной стоимостью или «события не было» сторнирует действующий
+  // расход цепочки исправлений (сторно наследует is_test исходной записи — миграция 1251) и вносит
+  // новый по явной стоимости — расход текущего режима клуба. Исправление без стоимости кассу не
+  // трогает: расход остаётся по исходной записи (action kept).
+  const cash = { action: 'none', entry_id: null, storno_entry_ids: [], kept_entry_id: null };
   if (orig) {
-    const prev = await db.query(
-      `select e.id from bl.cashbook_entries e
-        where e.club_id = $1 and e.maintenance_event_id = $2 and e.reverses_id is null
-          and not exists (select 1 from bl.cashbook_entries r where r.club_id = e.club_id and r.reverses_id = e.id)`,
-      [club.id, orig.id],
-    );
-    if (prev.rows[0]) stornoId = (await stornoEntry(db, { club, userId, entryId: prev.rows[0].id, reason: `Исправление обслуживания: ${reason}`.slice(0, 2000), now })).entry_id;
+    const active = (await activeExpenses(db, club.id, orig.id)).map((r) => r.id);
+    if (voided || explicitCost) {
+      for (const id of active) cash.storno_entry_ids.push((await stornoEntry(db, { club, userId, entryId: id, reason: `Исправление обслуживания: ${reason}`.slice(0, 2000), now })).entry_id);
+    } else if (active.length) {
+      cash.action = 'kept';
+      cash.kept_entry_id = active[0];
+    }
   }
-  let entryId = null;
   if (cost > 0) {
     const categoryId = await repairCategory(db, club, userId, now);
     const text = `${resourceName(res)} — ${KIND_LABELS[kind].toLowerCase()}${comment ? `: ${comment}` : ''}`;
@@ -363,8 +388,11 @@ export async function addEvent(db, { club, userId, body, now }) {
       now,
       maintenanceEventId: eventId,
     });
-    entryId = entry.entry_id;
+    cash.entry_id = entry.entry_id;
   }
+  if (cash.action !== 'kept') cash.action = cash.storno_entry_ids.length ? (cash.entry_id ? 'replaced' : 'reversed') : cash.entry_id ? 'created' : 'none';
+  const stornoId = cash.storno_entry_ids[0] ?? null;
+  const entryId = cash.entry_id;
 
   await appendAudit(db, {
     action: orig ? 'maintenance.correct' : 'maintenance.event',
@@ -380,16 +408,17 @@ export async function addEvent(db, { club, userId, body, now }) {
       kind,
       day,
       cost_kopecks: cost,
-      ...(orig ? { corrects_id: orig.id, voided, storno_entry_id: stornoId } : {}),
+      ...(orig ? { corrects_id: orig.id, voided, storno_entry_id: stornoId, cost_explicit: explicitCost } : {}),
       cashbook_entry_id: entryId,
+      cashbook_action: cash.action,
     },
   });
   const row = (await db.query(`${EVENT_SELECT} where e.id = $1 and e.club_id = $2`, [eventId, club.id])).rows[0];
-  return eventJson(row, await staffNames(db, [row.created_by]));
+  return { ...eventJson(row, await staffNames(db, [row.created_by])), cashbook: cash };
 }
 
 /** PUT …/maintenance/thresholds {cloth?, balls?, cushions?, leveling?, other?} — часы или null. */
-export async function setThresholds(db, { club, userId, body }) {
+export async function setThresholds(db, { club, userId, body, roles = [] }) {
   const b = body && typeof body === 'object' && !Array.isArray(body) ? body : null;
   if (!b || Object.keys(b).length === 0) throw new HttpError(400, 'bad_request', { detail: 'body' });
   const before = thresholdsOf(club.settings);
@@ -401,48 +430,94 @@ export async function setThresholds(db, { club, userId, body }) {
   }
   await db.query(`update bl.clubs set settings = jsonb_set(coalesce(settings, '{}'::jsonb), '{maintenance_thresholds}', $2::jsonb) where id = $1`, [club.id, JSON.stringify(after)]);
   await appendAudit(db, { action: 'maintenance.thresholds_update', objectType: 'club', objectId: club.id, actorType: 'user', actorId: userId, data: { before, after } });
+  // Н-2: смену порогов не владельцем (управляющий) — сразу владельцу, как ручное действие (без тревоги).
+  const changed = KINDS.filter((k) => before[k] !== after[k]);
+  if (changed.length && !roles.includes('owner')) {
+    const who = (await db.query('select name from bl.users where id = $1', [userId])).rows[0]?.name ?? 'Управляющий';
+    const h = (v) => (v === null ? 'без порога' : `${nf.format(v)} ч`);
+    await sendToClubStaff(db, club.id, ['owner'], {
+      kind: 'maintenance.thresholds',
+      level: 'important',
+      text: `Обслуживание: ${who} изменил пороги — ${changed.map((k) => `${KIND_SHORT[k]} ${h(before[k])} → ${h(after[k])}`).join(', ')}.`,
+      data: { club_id: club.id, before, after, url: `/club/c/${encodeURIComponent(club.id)}/maintenance` },
+    });
+  }
   return { thresholds: after, defaults: { ...DEFAULT_THRESHOLDS } };
 }
 
 /**
  * Проверка порогов клуба (планировщик, контекст клуба, system): достигнутый порог — отметка
  * bl.maintenance_alerts (одна на стол, вид, событие, порог), журнал и уведомление управляющему и владельцу.
- * @returns {Promise<{ notified: { resource_id: string, kind: string, hours: number, threshold_hours: number }[] }>}
+ * Н-2: не больше MAX_DUE_PER_DAY уведомлений клуба за рабочие сутки; сверх лимита — одно свёрнутое
+ * «и ещё K столов» (последнее место лимита), остальное — отметкой без уведомления (notified = false),
+ * видно в счётчиках (due).
+ * @returns {Promise<{ notified: { resource_id: string, kind: string, hours: number, threshold_hours: number }[], silent: number }>}
  */
 export async function checkThresholds(db, club, { now }) {
   const thresholds = thresholdsOf(club.settings);
   const kinds = KINDS.filter((k) => thresholds[k] !== null);
-  if (!kinds.length) return { notified: [] };
-  const notified = [];
+  if (!kinds.length) return { notified: [], silent: 0 };
+  const due = [];
   for (const row of await counters(db, club, { now, kinds })) {
     if (!row.active) continue;
-    for (const k of kinds) {
-      const c = row.kinds[k];
-      if (!c.due) continue;
-      const ins = await db.query(
-        `insert into bl.maintenance_alerts (club_id, resource_id, kind, event_id, threshold_hours, hours_at, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7) on conflict on constraint maintenance_alerts_once do nothing returning id`,
-        [club.id, row.resource_id, k, c.event_id, c.threshold_hours, c.hours, now],
-      );
-      if (ins.rowCount === 0) continue;
-      const name = resourceName(row);
-      const since = c.event_id ? 'с прошлого раза' : 'с начала учёта';
-      await appendAudit(db, {
-        action: 'maintenance.threshold_reached',
-        objectType: 'resource',
-        objectId: row.resource_id,
-        actorType: 'system',
-        actorId: null,
-        data: { alert_id: ins.rows[0].id, resource_id: row.resource_id, number: row.number, kind: k, hours: c.hours, threshold_hours: c.threshold_hours, event_id: c.event_id },
-      });
-      await sendToClubStaff(db, club.id, ['owner', 'manager'], {
-        kind: 'maintenance.due',
-        level: 'info',
-        text: `${name}: пора — ${KIND_LABELS[k].toLowerCase()}. Сыграно ${nf.format(Math.floor(c.hours))} ч ${since}, порог ${nf.format(c.threshold_hours)} ч.`,
-        data: { club_id: club.id, resource_id: row.resource_id, kind: k, hours: c.hours, threshold_hours: c.threshold_hours, url: `/club/c/${encodeURIComponent(club.id)}/maintenance` },
-      });
-      notified.push({ resource_id: row.resource_id, kind: k, hours: c.hours, threshold_hours: c.threshold_hours });
-    }
+    for (const k of kinds) if (row.kinds[k].due) due.push({ row, k, c: row.kinds[k] });
   }
-  return { notified };
+  if (!due.length) return { notified: [], silent: 0 };
+  const known = await db.query(
+    `select resource_id, kind, event_id, threshold_hours from bl.maintenance_alerts where club_id = $1 and resource_id = any($2::uuid[])`,
+    [club.id, [...new Set(due.map((d) => d.row.resource_id))]],
+  );
+  const seen = new Set(known.rows.map((a) => `${a.resource_id}|${a.kind}|${a.event_id ?? ''}|${a.threshold_hours}`));
+  const fresh = due.filter((d) => !seen.has(`${d.row.resource_id}|${d.k}|${d.c.event_id ?? ''}|${d.c.threshold_hours}`));
+  if (!fresh.length) return { notified: [], silent: 0 };
+  const dayFrom = dayBounds(workingDayOf(now, club.timezone, club.day_start_local), club.timezone, club.day_start_local).from;
+  const sent = (await db.query('select count(*)::int as n from bl.maintenance_alerts where club_id = $1 and notified and created_at >= $2', [club.id, dayFrom])).rows[0].n;
+  const budget = Math.max(0, MAX_DUE_PER_DAY - sent);
+  // Отдельных уведомлений — budget (если не все влезают — budget − 1 и одно свёрнутое).
+  const single = fresh.length <= budget ? fresh.length : Math.max(0, budget - 1);
+  const rolled = fresh.length > budget && budget > 0 ? fresh.slice(single) : [];
+  const notified = [];
+  let silent = 0;
+  for (const [i, d] of fresh.entries()) {
+    const { row, k, c } = d;
+    const notify = i < single || rolled.includes(d);
+    const ins = await db.query(
+      `insert into bl.maintenance_alerts (club_id, resource_id, kind, event_id, threshold_hours, hours_at, created_at, notified)
+       values ($1, $2, $3, $4, $5, $6, $7, $8) on conflict on constraint maintenance_alerts_once do nothing returning id`,
+      [club.id, row.resource_id, k, c.event_id, c.threshold_hours, c.hours, now, notify],
+    );
+    if (ins.rowCount === 0) continue;
+    await appendAudit(db, {
+      action: 'maintenance.threshold_reached',
+      objectType: 'resource',
+      objectId: row.resource_id,
+      actorType: 'system',
+      actorId: null,
+      data: { alert_id: ins.rows[0].id, resource_id: row.resource_id, number: row.number, kind: k, hours: c.hours, threshold_hours: c.threshold_hours, event_id: c.event_id, notified: notify },
+    });
+    if (!notify) {
+      silent += 1;
+      continue;
+    }
+    notified.push({ resource_id: row.resource_id, kind: k, hours: c.hours, threshold_hours: c.threshold_hours });
+    if (i >= single) continue;
+    const since = c.event_id ? 'с прошлого раза' : 'с начала учёта';
+    await sendToClubStaff(db, club.id, ['owner', 'manager'], {
+      kind: 'maintenance.due',
+      level: 'info',
+      text: `${resourceName(row)}: пора — ${KIND_LABELS[k].toLowerCase()}. Сыграно ${nf.format(Math.floor(c.hours))} ч ${since}, порог ${nf.format(c.threshold_hours)} ч.`,
+      data: { club_id: club.id, resource_id: row.resource_id, kind: k, hours: c.hours, threshold_hours: c.threshold_hours, url: `/club/c/${encodeURIComponent(club.id)}/maintenance` },
+    });
+  }
+  if (rolled.length) {
+    const tables = new Set(rolled.map((d) => d.row.resource_id)).size;
+    const list = rolled.slice(0, 5).map((d) => `${resourceName(d.row)} (${KIND_SHORT[d.k]})`).join(', ');
+    await sendToClubStaff(db, club.id, ['owner', 'manager'], {
+      kind: 'maintenance.due',
+      level: 'info',
+      text: `Обслуживание: порог достигнут ещё у ${tables} ${plural(tables, ['стола', 'столов', 'столов'])} — ${list}${rolled.length > 5 ? ' и другие' : ''}.`,
+      data: { club_id: club.id, count: rolled.length, url: `/club/c/${encodeURIComponent(club.id)}/maintenance` },
+    });
+  }
+  return { notified, silent };
 }

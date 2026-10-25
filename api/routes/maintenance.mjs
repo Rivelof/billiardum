@@ -52,7 +52,8 @@ export const routes = [
     path: '/api/clubs/{club}/maintenance/thresholds',
     auth: 'staff',
     roles: MANAGER,
-    rateLimit: { max: 30, windowMs: 60_000 },
-    handler: async (ctx, req) => ({ json: await setThresholds(ctx.db, { club: await club(ctx), userId: req.user.id, body: req.body }) }),
+    rateLimit: { max: 10, windowMs: 60_000 },
+    // Смена порогов управляющим — уведомление владельцу (Н-2).
+    handler: async (ctx, req) => ({ json: await setThresholds(ctx.db, { club: await club(ctx), userId: req.user.id, body: req.body, roles: ctx.roles ?? [] }) }),
   },
 ];
