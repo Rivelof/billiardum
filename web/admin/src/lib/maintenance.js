@@ -122,7 +122,78 @@ export function maintenanceView(res) {
       };
     })
     .sort((a, b) => (a.date === b.date ? String(b.at ?? '').localeCompare(String(a.at ?? '')) : a.date < b.date ? 1 : -1));
+  chainExpenses(events);
   return { thresholds, defaults, labels, resources, events, reachedCount: resources.filter((x) => x.reached.length).length };
+}
+
+/**
+ * Расход кассы по цепочкам исправлений (Н-3, server/maintenance/README.md): стоимость исправления — только явная, без
+ * неё касса не трогается и расход остаётся по исходной записи. Каждому событию — held: { id, cost, eventId } — какой
+ * расход стоит в кассе за его цепочку на момент этой записи (от неё к исходной: «не было» — сторно, своя стоимость > 0 —
+ * свой расход, исправление без стоимости — расход предыдущей), и cash — что показать в истории:
+ * in_cash (свой расход в кассе), storno (свой расход сторнирован), inherited (своей стоимости нет, расход цепочки стоит
+ * по исходной записи), none (без расхода). Мутирует события.
+ */
+function chainExpenses(events) {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  const heldOf = (e, seen = new Set()) => {
+    if (!e || seen.has(e.id)) return null;
+    seen.add(e.id);
+    if (e.voided) return null;
+    if (e.cost > 0) return e.cashbookEntryId ? { id: e.cashbookEntryId, cost: e.cost, eventId: e.id } : null;
+    return e.corrects ? heldOf(byId.get(e.corrects), seen) : null;
+  };
+  const tipOf = (e) => {
+    let x = e;
+    for (let i = 0; x?.correctedBy && byId.has(x.correctedBy) && i < events.length; i += 1) x = byId.get(x.correctedBy);
+    return x;
+  };
+  for (const e of events) e.held = heldOf(e);
+  for (const e of events) {
+    const now = tipOf(e).held;
+    if (e.cost > 0) e.cash = now?.eventId === e.id ? 'in_cash' : 'storno';
+    else if (!e.voided && e.corrects && now && now.eventId !== e.id && e.held?.eventId === now.eventId) e.cash = 'inherited';
+    else e.cash = 'none';
+  }
+}
+
+/** Стоимость в истории событий словами (Д1 M5.6). */
+export function eventCostWords(e) {
+  if (e.cash === 'in_cash') return { money: e.cost, note: 'в кассе' };
+  if (e.cash === 'storno') return { money: e.cost, note: 'расход сторнирован' };
+  if (e.cash === 'inherited') return { money: null, note: 'расход по исходной записи' };
+  return { money: null, note: 'без расхода' };
+}
+
+/**
+ * Что стало с кассой — по ответу POST …/maintenance (cashbook.action), не по форме (Д1 M5.6). heldCost — прежний расход
+ * цепочки, копейки (для «сторнирован»). none или нет поля — null (о кассе ни слова).
+ */
+export function cashbookWords(res, heldCost = null) {
+  const action = res?.cashbook?.action;
+  const cost = num(res?.cost_kopecks) ?? 0;
+  if (action === 'created') return `Расход ${formatMoney(cost)} внесён в кассу управляющего`;
+  if (action === 'replaced') return `Прежний расход сторнирован, внесён новый — ${formatMoney(cost)}`;
+  if (action === 'reversed') return num(heldCost) > 0 ? `Расход ${formatMoney(heldCost)} сторнирован` : 'Расход сторнирован';
+  if (action === 'kept') return 'Стоимость не изменена: расход в кассе по исходной записи';
+  return null;
+}
+
+/**
+ * Сообщение после записи события или исправления: стол, вид и дата — из ответа сервера, касса — по cashbook.action.
+ * fix — исправляемое событие (вид экрана) или null; labels — названия видов.
+ */
+export function eventDoneText(res, { fix = null, labels = MAINT_KIND_LABEL } = {}) {
+  const kind = String(labels[res?.kind] ?? res?.kind ?? '').toLowerCase();
+  const table = num(res?.resource_number) ?? fix?.number ?? null;
+  const where = [kind, table !== null ? `стол ${table}` : null].filter(Boolean).join(', ');
+  const cash = cashbookWords(res, fix?.held?.cost ?? null);
+  const head = fix
+    ? res?.voided
+      ? `Отмечено: события не было (${where}). Счётчик пересчитан.`
+      : `Запись исправлена: ${where}${res?.date ? `, ${dayLong(res.date)}` : ''}.`
+    : `Записано: ${where}${res?.date ? `, ${dayLong(res.date)}` : ''}.`;
+  return cash ? `${head} ${cash}.` : head;
 }
 
 /** Состояние записи истории словом: исправление и «не было» — с причиной. */
@@ -183,8 +254,9 @@ export function correctionBody(orig, { resourceId, kind, date, cost, comment, re
   if (resourceId && resourceId !== orig.resourceId) body.resource_id = resourceId;
   if (kind && kind !== orig.kind) body.kind = kind;
   if (date && date !== orig.date) body.date = date;
-  const c = Number.isSafeInteger(cost) && cost > 0 ? cost : 0;
-  if (c !== orig.cost) body.cost_kopecks = c;
+  // Стоимость — только явная (Н-3): пустое поле (null) — касса не меняется, расход остаётся по исходной записи;
+  // число (и 0) — сторно расхода цепочки и новый расход по этой стоимости.
+  if (Number.isSafeInteger(cost) && cost >= 0) body.cost_kopecks = cost;
   const cm = typeof comment === 'string' ? comment.trim() : '';
   if (cm !== (orig.comment ?? '')) body.comment = cm;
   return body;
@@ -198,12 +270,20 @@ export function eventServerError(err) {
   return null;
 }
 
-/** Что произойдёт после записи — для подсказки. */
-export function eventEffect({ kind, cost, number }) {
+/**
+ * Что произойдёт после записи — для подсказки. correction — исправление: cost null (поле пустое) — касса не меняется;
+ * held — расход цепочки в кассе ({ cost }) или null.
+ */
+export function eventEffect({ kind, cost, number, correction = false, held = null }) {
   const parts = [];
   const k = MAINT_KINDS.find((m) => m.value === kind);
   if (k?.counter && number !== null && number !== undefined) parts.push(`Счётчик «${k.short}» стола ${number} начнётся заново с этой даты.`);
-  if (cost > 0) parts.push(`${formatMoney(cost)} уйдут расходом в кассу управляющего (статья «Ремонт столов») этой датой.`);
+  const explicit = Number.isSafeInteger(cost) && cost >= 0;
+  if (correction && held?.cost > 0) {
+    if (!explicit) parts.push(`Расход ${formatMoney(held.cost)} в кассе не изменится.`);
+    else if (cost > 0) parts.push(`Прежний расход ${formatMoney(held.cost)} сторнируется, ${formatMoney(cost)} уйдут новым расходом в кассу управляющего этой датой.`);
+    else parts.push(`Расход ${formatMoney(held.cost)} сторнируется, нового не будет.`);
+  } else if (cost > 0) parts.push(`${formatMoney(cost)} уйдут расходом в кассу управляющего (статья «Ремонт столов») этой датой.`);
   return parts;
 }
 

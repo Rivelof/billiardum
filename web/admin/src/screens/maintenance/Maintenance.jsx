@@ -19,6 +19,8 @@ import {
   correctionBody,
   costMinDate,
   eventBody,
+  eventCostWords,
+  eventDoneText,
   eventEffect,
   eventFormErrors,
   eventMinDate,
@@ -198,15 +200,17 @@ export function MaintenanceScreen({ ctx, today, base, title }) {
                   label: 'Стоимость',
                   num: true,
                   sortValue: (r) => r.cost,
-                  render: (r) =>
-                    r.cost > 0 ? (
+                  render: (r) => {
+                    const w = eventCostWords(r);
+                    return w.money !== null ? (
                       <span>
-                        {money(r.cost)}
-                        <span class="small muted">{r.cashbookEntryId ? ' · в кассе' : ' · расход сторнирован'}</span>
+                        {money(w.money)}
+                        <span class="small muted"> · {w.note}</span>
                       </span>
                     ) : (
-                      <span class="muted">без расхода</span>
-                    ),
+                      <span class="muted">{w.note}</span>
+                    );
+                  },
                 },
                 { key: 'comment', label: 'Комментарий', render: (r) => r.comment ?? '—' },
                 { key: 'who', label: 'Кто', render: (r) => `${r.by ?? '—'}${r.at ? `, ${when(r.at)}` : ''}` },
@@ -231,7 +235,7 @@ export function MaintenanceScreen({ ctx, today, base, title }) {
               empty={view.events.length ? 'По этим условиям событий нет.' : 'Событий пока нет. Отметьте последнюю замену сукна и шаров кнопкой «Событие» — счётчик начнётся с этой даты.'}
             />
             <p class="small muted">
-              Записи не удаляются: ошибку исправьте кнопкой «Исправить» — появится новая запись с причиной, расход в кассе сторнируется и внесётся заново. Расходы — в{' '}
+              Записи не удаляются: ошибку исправьте кнопкой «Исправить» — появится новая запись с причиной. Расход меняется, только если в исправлении указать стоимость: прежний сторнируется, новый внесётся. Расходы — в{' '}
               <a href={`${base}/cashbook`} onClick={linkHandler} class="dlink dlink--inline">
                 кассе управляющего
               </a>
@@ -293,7 +297,8 @@ function Counter({ c, kind, number }) {
 
 const formFrom = (today, preset, fix) =>
   fix
-    ? { resourceId: fix.resourceId, kind: fix.kind, date: fix.date, cost: fix.cost ? String(fix.cost / 100).replace('.', ',') : '', comment: fix.comment ?? '', reason: '', voided: false }
+    ? // Стоимость исправления — только явная (Н-3): поле пустое, пусто — расход не меняется.
+      { resourceId: fix.resourceId, kind: fix.kind, date: fix.date, cost: '', comment: fix.comment ?? '', reason: '', voided: false }
     : { resourceId: preset?.resourceId ?? '', kind: preset?.kind ?? 'cloth', date: today, cost: '', comment: '', reason: '', voided: false };
 
 /** «+ Событие» и «Исправить» (fix — исправляемая запись): одна форма, у исправления — причина и «События не было». */
@@ -313,7 +318,8 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const costValue = form.cost.trim() ? (parseRubles(form.cost) ?? Number.NaN) : null;
   const table = view.resources.find((r) => r.id === form.resourceId);
-  const effect = form.voided ? [] : eventEffect({ kind: form.kind, cost: Number.isSafeInteger(costValue) ? costValue : 0, number: table?.number });
+  const held = fix?.held ?? null;
+  const effect = form.voided ? [] : eventEffect({ kind: form.kind, cost: Number.isSafeInteger(costValue) ? costValue : null, number: table?.number, correction: Boolean(fix), held });
   const choices = view.resources.filter((r) => r.active || r.id === form.resourceId);
   const submit = async (e) => {
     e.preventDefault();
@@ -327,15 +333,9 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
     setError(null);
     try {
       const body = fix ? correctionBody(fix, { ...form, cost: costValue }) : eventBody({ ...form, cost: costValue });
-      await api.addMaintenanceEvent(clubId, body, key.current);
-      const kindLabel = (view.labels[form.kind] ?? form.kind).toLowerCase();
-      onDone(
-        fix
-          ? form.voided
-            ? `Отмечено: события не было (${kindLabel}, стол ${table?.number}). Счётчик пересчитан${fix.cost ? ', расход в кассе сторнирован' : ''}.`
-            : `Запись исправлена: ${kindLabel}, стол ${table?.number}, ${dayLong(form.date)}.`
-          : `Записано: ${kindLabel}, стол ${table?.number}, ${dayLong(form.date)}${costValue > 0 ? `. Расход ${money(costValue)} — в кассе управляющего` : ''}.`,
-      );
+      const res = await api.addMaintenanceEvent(clubId, body, key.current);
+      // Текст — из ответа сервера (Д1 M5.6): что стало с кассой, говорит cashbook.action.
+      onDone(eventDoneText(res, { fix, labels: view.labels }));
     } catch (err) {
       const mapped = eventServerError(err);
       if (mapped?.reason) {
@@ -362,7 +362,7 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
           <>
             <p class="hint">
               Было: {fix.kindLabel.toLowerCase()}, стол {fix.number}, {dayLong(fix.date)}
-              {fix.cost ? `, ${money(fix.cost)}` : ''}. Запись не удаляется: появится исправление с причиной.
+              {held ? `, расход ${money(held.cost)} в кассе${held.eventId !== fix.id ? ' по исходной записи' : ''}` : ''}. Запись не удаляется: появится исправление с причиной.
             </p>
             <div class="field">
               <label class="field__label" for="me-reason">
@@ -377,7 +377,7 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
             </div>
             <label class="check">
               <input type="checkbox" checked={form.voided} onChange={(e) => set({ voided: e.currentTarget.checked })} />
-              <span>События не было — убрать из счётчика{fix.cost ? ' и сторнировать расход' : ''}</span>
+              <span>События не было — убрать из счётчика{held ? ` и сторнировать расход ${money(held.cost)}` : ''}</span>
             </label>
           </>
         ) : null}
@@ -417,12 +417,14 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
             </div>
             <div class="field">
               <label class="field__label" for="me-cost">
-                Стоимость, ₽ <span class="muted">(необязательно)</span>
+                {fix ? 'Новая стоимость, ₽' : 'Стоимость, ₽'} <span class="muted">(необязательно)</span>
               </label>
               <input id="me-cost" class="field__input field__input--money" inputMode="decimal" autoComplete="off" value={form.cost} onInput={(e) => set({ cost: e.currentTarget.value })} {...err('cost', 'me-cost-hint')} />
               {fieldError('cost') ?? (
                 <p class="field__hint" id="me-cost-hint">
-                  Пусто — без расхода. Со стоимостью дата — не раньше {dayLong(costMinDate(today))} ({MAINT_COST_MAX_BACK_DAYS} дней назад), без неё — до года назад.
+                  {fix
+                    ? `Оставьте пустым, чтобы не менять расход.${held ? ' 0 — сторнировать расход без нового.' : ''} Со стоимостью дата — не раньше ${dayLong(costMinDate(today))}.`
+                    : `Пусто — без расхода. Со стоимостью дата — не раньше ${dayLong(costMinDate(today))} (${MAINT_COST_MAX_BACK_DAYS} дней назад), без неё — до года назад.`}
                 </p>
               )}
             </div>
@@ -439,8 +441,10 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
             </div>
             <div class="note note--lamp">
               <Icon name="alert" />
-              <p class="note__title">Стоимость уйдёт расходом в кассу управляющего</p>
-              <p class="note__body">Статья «Ремонт столов», дата события. {fix ? 'Прежний расход этой записи сторнируется.' : 'Ошибку потом исправьте здесь же — расход сторнируется сам.'}</p>
+              <p class="note__title">{fix ? 'Новая стоимость заменит расход в кассе управляющего' : 'Стоимость уйдёт расходом в кассу управляющего'}</p>
+              <p class="note__body">
+                Статья «Ремонт столов», дата события. {fix ? 'Прежний расход этой записи сторнируется, новый внесётся. Пустое поле — касса не меняется.' : 'Ошибку потом исправьте здесь же — расход сторнируется сам.'}
+              </p>
             </div>
           </>
         ) : null}
@@ -459,7 +463,7 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
         )}
         <div class="dialog__actions">
           <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
-            {busy ? 'Записываем…' : fix ? (form.voided ? 'Отметить: события не было' : 'Записать исправление') : costValue > 0 ? `Записать событие и расход ${money(costValue)}` : 'Записать событие'}
+            {busy ? 'Записываем…' : fix ? fixLabel(form.voided, costValue, held) : costValue > 0 ? `Записать событие и расход ${money(costValue)}` : 'Записать событие'}
           </button>
           <button type="button" class="btn btn--quiet btn--block" onClick={onClose}>
             Отмена
@@ -468,6 +472,14 @@ function EventDialog({ open, fix, view, today, clubId, onClose, onDone }) {
       </form>
     </Dialog>
   );
+}
+
+/** Кнопка исправления говорит, что станет с кассой. */
+function fixLabel(voided, cost, held) {
+  if (voided) return 'Отметить: события не было';
+  if (cost > 0) return `Записать исправление и расход ${money(cost)}`;
+  if (cost === 0 && held) return 'Записать исправление и сторно расхода';
+  return 'Записать исправление';
 }
 
 const thrText = (v) => (v === null || v === undefined ? '' : String(v));

@@ -4,7 +4,11 @@
  * Счётчик — часы игры стола с последнего действующего события вида (из синтетики дашборда); до первой отметки — с начала
  * учёта плюс «наработка до программы» (сукно стола 1 и шары стола 4 уже за порогом). События только добавляются:
  * исправление — новая запись с corrects_id и причиной (одна на событие, повтор — 409 duplicate), void — «не было».
- * Стоимость > 0 — расход «Ремонт столов» в кассе управляющего той же датой; исправление сторнирует прежний расход.
+ * Стоимость > 0 — расход «Ремонт столов» в кассе управляющего той же датой. Исправление (Н-3): стоимость только явная —
+ * без cost_kopecks касса не трогается (cashbook.action kept, если расход цепочки стоит, иначе none); с cost_kopecks
+ * (и 0) или void — сторно действующего расхода всей цепочки и новый по явной стоимости (replaced, reversed, created).
+ * В ответе POST — cashbook {action, entry_id, storno_entry_ids, kept_entry_id}; cashbook_entry_id событий — только
+ * действующий (без сторно) расход.
  * Ресепшн и бар — 403.
  */
 
@@ -93,7 +97,7 @@ export function maintenanceRoutes({ state, me, err, ok, audit, dash, today, hall
       defaults: { ...DEFAULT_THRESHOLDS },
       kinds: ALL_KINDS.map((k) => ({ kind: k, label: LABEL[k] })),
       counters: hall().map(({ resource: r }) => ({ resource_id: r.id, number: r.number, title: `Стол ${r.number}`, type: r.type, active: true, kinds: kindsOf(r.id, r.number) })),
-      events: [...S().events].map((e) => ({ ...e, corrected_by: corrected.get(e.event_id) ?? null })).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
+      events: [...S().events].map((e) => ({ ...e, corrected_by: corrected.get(e.event_id) ?? null, cashbook_entry_id: activeEntry(e.cashbook_entry_id) })).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
     };
   };
 
@@ -113,11 +117,31 @@ export function maintenanceRoutes({ state, me, err, ok, audit, dash, today, hall
     return id;
   }
 
-  function storno(entryId, reason) {
+  /** Расход действует, пока у него нет сторно (в том числе ручного из кассы). */
+  function activeEntry(entryId) {
+    if (!entryId) return null;
+    return ensureCashbook(state()).manual.some((x) => x.reverses_id === entryId) ? null : entryId;
+  }
+
+  /** Действующие расходы цепочки исправлений до ev включительно (как activeExpenses на сервере). */
+  function chainActive(ev) {
+    const out = [];
+    const seen = new Set();
+    for (let x = ev; x && !seen.has(x.event_id); x = x.corrects_id ? S().events.find((e) => e.event_id === x.corrects_id) : null) {
+      seen.add(x.event_id);
+      const id = activeEntry(x.cashbook_entry_id);
+      if (id) out.unshift({ id, ev: x });
+    }
+    return out;
+  }
+
+  /** Сторно расхода; расход сида без строки в кассе — сторно по сумме события. */
+  function storno(entryId, ev, reason) {
     const cbk = ensureCashbook(state());
-    const orig = cbk.manual.find((x) => x.entry_id === entryId);
-    if (!orig || cbk.manual.some((x) => x.reverses_id === entryId)) return;
-    cbk.manual.push({ ...orig, date: today(), comment: null, entry_id: globalThis.crypto.randomUUID(), amount_kopecks: -orig.amount_kopecks, signed_kopecks: orig.amount_kopecks, reverses_id: entryId, reason, created_at: new Date().toISOString(), created_by: me().id, created_by_name: me().name });
+    const orig = cbk.manual.find((x) => x.entry_id === entryId) ?? { kind: 'expense', category_id: null, category: 'Ремонт столов', amount_kopecks: ev.cost_kopecks, shift_id: null, maintenance_event_id: ev.event_id };
+    const id = globalThis.crypto.randomUUID();
+    cbk.manual.push({ ...orig, date: today(), comment: null, entry_id: id, amount_kopecks: -orig.amount_kopecks, signed_kopecks: orig.amount_kopecks, reverses_id: entryId, reversed_by: null, reason, created_at: new Date().toISOString(), created_by: me().id, created_by_name: me().name });
+    return id;
   }
 
   const routes = [
@@ -146,19 +170,24 @@ export function maintenanceRoutes({ state, me, err, ok, audit, dash, today, hall
         if (!MAINT_KINDS.some((k) => k.value === kind) || !isYmd(date) || date > t || date < addDays(t, -MAINT_MAX_BACK_DAYS)) return err(400, 'bad_request');
         const comment = b.comment !== undefined ? (typeof b.comment === 'string' && b.comment.trim() ? b.comment.trim() : null) : (orig?.comment ?? null);
         if (comment && comment.length > 500) return err(400, 'bad_request');
-        const cost = voided ? 0 : (b.cost_kopecks ?? (orig ? orig.cost_kopecks : 0));
-        if (!Number.isSafeInteger(cost) || cost < 0) return err(400, 'bad_request');
+        // Стоимость — только явная (Н-3): исправление без cost_kopecks стоимость не переносит
+        const explicitCost = b.cost_kopecks !== undefined && b.cost_kopecks !== null;
+        const cost = explicitCost ? b.cost_kopecks : 0;
+        if (!Number.isSafeInteger(cost) || cost < 0 || (voided && cost !== 0)) return err(400, 'bad_request');
         if (cost > 0 && date < addDays(t, -MAINT_COST_MAX_BACK_DAYS)) return err(400, 'bad_request');
         if (!r) return err(404, 'not_found');
         const ev = { event_id: globalThis.crypto.randomUUID(), resource_id: r.id, resource_number: r.number, kind, date, comment, cost_kopecks: cost, corrects_id: orig?.event_id ?? null, corrected_by: null, voided, reason, cashbook_entry_id: null, created_by: me().id, created_by_name: me().name, created_at: new Date().toISOString() };
-        if (orig?.cashbook_entry_id) {
-          storno(orig.cashbook_entry_id, `Исправление обслуживания: ${reason}`);
-          orig.cashbook_entry_id = null;
+        const cash = { action: 'none', entry_id: null, storno_entry_ids: [], kept_entry_id: null };
+        if (orig) {
+          const active = chainActive(orig);
+          if (voided || explicitCost) for (const a of active) cash.storno_entry_ids.push(storno(a.id, a.ev, `Исправление обслуживания: ${reason}`));
+          else if (active.length) Object.assign(cash, { action: 'kept', kept_entry_id: active[0].id });
         }
-        if (cost > 0) ev.cashbook_entry_id = cashExpense(ev, r.number);
+        if (cost > 0) ev.cashbook_entry_id = cash.entry_id = cashExpense(ev, r.number);
+        if (cash.action !== 'kept') cash.action = cash.storno_entry_ids.length ? (cash.entry_id ? 'replaced' : 'reversed') : cash.entry_id ? 'created' : 'none';
         S().events.push(ev);
-        audit(orig ? 'maintenance.correct' : 'maintenance.event', { resource_number: r.number, reason: reason ?? undefined, data: { kind, date, cost_kopecks: cost, void: voided } });
-        return { status: 201, body: ev };
+        audit(orig ? 'maintenance.correct' : 'maintenance.event', { resource_number: r.number, reason: reason ?? undefined, data: { kind, date, cost_kopecks: cost, void: voided, cashbook_action: cash.action } });
+        return { status: 201, body: { ...ev, cashbook: cash } };
       }),
     ],
     [
