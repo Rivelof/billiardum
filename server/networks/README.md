@@ -24,6 +24,7 @@
 Режим у каждого шаблона свой: `tariffs_mode`, `menu_mode` — `soft` (по умолчанию) или `hard`.
 
 **Тарифы.** Шаблон — правила мастера тарифов (`server/setup/tariffs.mjs`, `normalizeRules`: те же поля и проверки, цена — копейки строго > 0, №163; в базе `price_per_hour > 0`). Шаблон записывается в правила каждого клуба тем же путём, что мастер (`replaceClubRules`): движок тарифов не меняется, а время правил — местное, поэтому в каждом клубе правило действует **по его поясу и рабочим суткам**. Перед записью шаблон проверяется по неделе каждого клуба (его `day_start_local` и типы столов в работе): `400 tariff_gap | tariff_overlap {club_id, kind?, weekday, from, to}` — ничего не записывается.
+- Корты (M5.8): правило корта в шаблоне — как в мастере, слотом (`kind: 'padel_court'`, `slot_minutes` 60/90/120, `price_per_slot_kopecks` > 0; в базе — миграция 1351). `kind: null` — только столы. Шаблон заменяет все правила клуба, поэтому клубу с кортами в работе шаблон без правил корта не подходит: `400 tariff_gap {kind: 'padel_court', club_id}`. Клубу без кортов правила корта из шаблона записываются впрок (как в мастере).
 - `soft`: клуб может сохранить свои тарифы (`PUT /api/clubs/{club}/tariffs`) — он «переопределил» шаблон, новые версии шаблона его не меняют (в его журнале — `network.tariffs_template {applied: false}`). Первый шаблон сети применяется ко всем клубам.
 - `hard`: шаблон — во все клубы; `PUT /api/clubs/{club}/tariffs` → `409 network_locked {network_id}`. Переход сети в `hard` возвращает переопределивших к шаблону.
 - Клуб возвращается к шаблону сам: `POST /api/clubs/{club}/network/reset {scope: 'tariffs', reason?}`.
@@ -41,6 +42,8 @@
 ## Вкладка «Сеть» (№193)
 
 `GET /api/networks/{id}/dashboard?from&to&compare` — владелец и управляющие сети. Числа — те же, что у дашборда клуба (`collect` и `metrics` из `server/dashboard/service.mjs`: агрегаты `stats_daily`/`stats_hourly` и текущие сутки на лету), каждый клуб — по своим рабочим суткам и поясу (даты периода общие), `is_test` не входит никуда. Денег по способам оплаты нет. Клубы в `test` показываются (их деньги — нули), но в рейтинг не входят (`ranked: false`, места `null`). Рейтинг: `utilization` (загрузка) и `revenue_per_table` (по `revenue_per_table_day` — выручка на столо-день, сравнимо между клубами разного размера); равные — одно место.
+
+Столы и корты (M5.8): `revenue`, `games`, `play_hours`, `guests`, `no_staff_share`, `avg_check_bar` — по клубу целиком (как дашборд без фильтра). Плитки, зависящие от числа столов, — `utilization`, `avg_check_game`, `revenue_per_table_day`, `revenue_per_table`, `avg_hour_price`, `tables_avg` — только столы, как дашборд клуба с `kind=table` (выручка столов / столо-дни). Рейтинг — по столам. Корты — блок `courts: {courts_avg, games, play_hours, utilization, revenue_kopecks, revenue_per_court_day_kopecks}` у клуба и итога (`null`, если кортов в периоде не было). Среднее число столов и кортов — по прошедшим суткам периода (будущие сутки его не занижают). Подписка «Сеть» считает «столы в работе» как billing M5.3 (корты сейчас — тоже, решение за Андреем).
 
 ## API — формы ответов для frontend
 
@@ -128,8 +131,8 @@
     "club_id": "…", "name": "Клуб Калининград", "timezone": "Europe/Kaliningrad", "day_start_local": "06:00", "mode": "live",
     "today": "2026-10-25", "includes_today": true, "ranked": true, "tables_avg": 1.5,
     "tiles": [ { "id": "revenue", "value": 60000, "unit": "kopecks", "prev": null, "delta_pct": null }, … ],
-    "place_utilization": 1, "place_revenue_per_table": 1 } ],
-  "totals": { "tables_avg": 6.5, "tiles": [ … ] },
+    "courts": null, "place_utilization": 1, "place_revenue_per_table": 1 } ],
+  "totals": { "tables_avg": 6.5, "tiles": [ … ], "courts": { "courts_avg": 2, "games": 3, "play_hours": 4.5, "utilization": 6.3, "revenue_kopecks": 900000, "revenue_per_court_day_kopecks": 112500 } },
   "ranking": { "utilization": [ { "club_id": "…", "name": "…", "value": 4.2, "place": 1 } ], "revenue_per_table": [ … ] },
   "missing_days": [], "generated_at": "…"
 }
