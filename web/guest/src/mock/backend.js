@@ -7,6 +7,9 @@
  * M2 (mock/bar.js): barorders (игра, заказы бара и счёт стола) | closedtab (игра закончилась, счёт не оплачен);
  * M3 (mock/m3.js): book | mybooking | early | waitlist | balance; limit — продление ограничено бронью в 21:00 (№106)
  * M5.1: testclub — клуб в тестовом режиме (плашка на столе, оплате и игре), testgame — то же с идущей игрой
+ * M5.8 (падел-корт, слоты по 90 минут): court — корт 1 свободен (/app/t/TESTC00001), корт 2 занят;
+ *   courtgame — идёт игра на корте 1 (продление слотом); courtfull — на корте 2 уже 4 игрока (пятый «Я играю» — limit_exceeded);
+ *   courtbook — бронь в клубе со столами и кортами
  */
 
 import { barRoutes, barSeed } from './bar.js';
@@ -29,6 +32,22 @@ const TABLES = [
 ];
 
 const resourceId = (n) => `00000000-0000-4000-8000-00000000000${n}`;
+/** id ресурса заглушки: у корта свой (номера кортов — своя нумерация, M5.8), у стола — по номеру. */
+const ridOf = (t) => t.id ?? resourceId(t.number);
+
+// M5.8: падел-корты — как в сиде 1300_padel.sql (коды TESTC00001, TESTC00002, слот 90 минут)
+const COURTS = [
+  { code: 'TESTC00001', id: 'e1000000-0000-4000-8000-000000000101', number: 1, type: 'padel_court', title: 'Корт 1', status: 'free' },
+  { code: 'TESTC00002', id: 'e1000000-0000-4000-8000-000000000102', number: 2, type: 'padel_court', title: 'Корт 2', status: 'busy', busyMin: 52 },
+];
+const SLOT = 90;
+const isCourtT = (t) => t?.type === 'padel_court';
+// Цена слота (как сид): будни 06–17 — 2 400 ₽, 17–06 — 3 600 ₽ (заглушка не различает выходные)
+const SLOT_BANDS = [
+  [0, 6, 360000],
+  [6, 17, 240000],
+  [17, 24, 360000],
+];
 
 // Тарифы для разработки (PRODUCT §9, будни): 06–12 и 12–17 — 500 ₽/ч, 17–24 — 800 ₽/ч, 00–06 — 900 ₽/ч
 const BANDS = [
@@ -50,6 +69,63 @@ function bandAt(ms) {
 
 const pad = (n) => String(n).padStart(2, '0');
 
+/** Вид ресурса в ответах (как server/lib/resource-kinds.mjs kindJson). */
+function kindFields(t, { withSlot = true } = {}) {
+  if (isCourtT(t)) return { kind: 'padel_court', family: 'court', max_players: 4, ...(withSlot ? { billing: 'slot', slot_minutes: SLOT } : {}) };
+  return { kind: t.type.replace('billiard_', ''), family: 'table', max_players: 20, ...(withSlot ? { billing: 'hourly', slot_minutes: null } : {}) };
+}
+
+function slotBandAt(ms) {
+  const { h } = localParts(ms);
+  return SLOT_BANDS.find(([from, to]) => h >= from && h < to);
+}
+
+function courtPricesAround(ms) {
+  const [, to, price] = slotBandAt(ms);
+  const next = SLOT_BANDS.find(([from]) => from === to % 24) ?? SLOT_BANDS[0];
+  const ref = (k) => Math.round((k * 60) / SLOT);
+  return {
+    price_now: { price_per_hour_kopecks: ref(price), price_per_slot_kopecks: price, slot_minutes: SLOT, until_local: `${pad(to % 24)}:00` },
+    price_next: next[2] === price ? null : { price_per_hour_kopecks: ref(next[2]), price_per_slot_kopecks: next[2], slot_minutes: SLOT, from_local: `${pad(to % 24)}:00` },
+  };
+}
+
+/** Корт: минута стоит цену слота / 90, точно в целых, один раз до рублей «половина вверх» (как сервер). */
+function courtAmountFor(from, minutes) {
+  const parts = [];
+  let num = 0;
+  for (let i = 0; i < minutes; i += 1) {
+    const t = from + i * MIN;
+    const price = slotBandAt(t)[2];
+    const last = parts[parts.length - 1];
+    if (last && last.price === price) {
+      last.to = t + MIN;
+      last.num += price;
+    } else parts.push({ from: t, to: t + MIN, price, num: price });
+    num += price;
+  }
+  const round = (n) => Math.floor((n * 2 + SLOT * 100) / (2 * SLOT * 100)) * 100;
+  let cum = 0;
+  let prev = 0;
+  return {
+    amount_kopecks: round(num),
+    breakdown: parts.map((b) => {
+      cum += b.num;
+      const r = round(cum);
+      const amount = r - prev;
+      prev = r;
+      return {
+        from: new Date(b.from).toISOString(),
+        to: new Date(b.to).toISOString(),
+        price_per_hour_kopecks: Math.round((b.price * 60) / SLOT),
+        price_per_slot_kopecks: b.price,
+        slot_minutes: SLOT,
+        amount_kopecks: amount,
+      };
+    }),
+  };
+}
+
 function pricesAround(ms) {
   const [, to, price] = bandAt(ms);
   const next = BANDS.find(([from]) => from === to % 24) ?? BANDS[0];
@@ -59,8 +135,9 @@ function pricesAround(ms) {
   };
 }
 
-/** Поминутно по тарифу, округление один раз до рублей «половина вверх» (решение №44). */
-function amountFor(from, minutes) {
+/** Поминутно по тарифу, округление один раз до рублей «половина вверх» (решение №44). Корт — по цене слота. */
+function amountFor(from, minutes, table) {
+  if (isCourtT(table)) return courtAmountFor(from, minutes);
   const breakdown = [];
   let exact = 0;
   for (let i = 0; i < minutes; i += 1) {
@@ -136,7 +213,8 @@ export function createBackend(storage) {
     const table = state.tables[s.code];
     return {
       id: s.id,
-      resource: { id: table.id ?? resourceId(table.number), number: table.number, type: table.type, title: table.title },
+      // Как server/sessions/view.mjs: kind, family, max_players; длины слота в сессии нет (её берут из флоу или доступности)
+      resource: { id: ridOf(table), number: table.number, type: table.type, title: table.title, ...kindFields(table, { withSlot: false }) },
       club: clubView(),
       status,
       started_at: new Date(s.started_at).toISOString(),
@@ -209,6 +287,10 @@ export function createBackend(storage) {
     state = freshState();
     state.scenario = name;
     state.testMode = name === 'testclub' || name === 'testgame';
+    // M5.8: корты есть только в сценариях court* — остальные проверки видят прежний зал из 7 столов
+    if (name?.startsWith('court')) {
+      for (const c of COURTS) state.tables[c.code] = { ...c, busy_until: c.busyMin ? now() + c.busyMin * MIN : null };
+    }
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа; nobots — вошёл, ботов нет
     if (['anon', 'nologin', 'tgonly'].includes(name)) return save();
     state.user = { ...USER, consent_version: name === 'fresh' ? null : 'draft-2026-10' };
@@ -241,6 +323,34 @@ export function createBackend(storage) {
       state.sessions[SESSION_ID].payments.push({ payment_id: uuid(), method: 'cash', amount_kopecks: 40000, minutes: 30, at: t - 30 * MIN });
       Object.assign(state.tables['4K7P9QW2XM'], { status: 'free', session_id: null, busy_until: null });
     }
+    if (name === 'courtgame' || name === 'courtfull') {
+      const court = state.tables.TESTC00001;
+      const s = {
+        id: SESSION_ID,
+        code: court.code,
+        status: 'active',
+        started_at: t - 25 * MIN,
+        paid_until: t + 65 * MIN,
+        unlimited: false,
+        is_payer: true,
+        participants: [{ nick: 'Игрок 1', is_payer: true }, { nick: 'Андрей К.' }],
+        payments: [{ payment_id: uuid(), method: 'sbp', amount_kopecks: 240000, minutes: SLOT, at: t - 25 * MIN }],
+      };
+      state.sessions[s.id] = s;
+      Object.assign(court, { status: 'busy', session_id: s.id, busy_until: s.paid_until });
+    }
+    if (name === 'courtfull') {
+      // Чужая игра на корте 2: уже 4 игрока — пятому «Я играю на этом корте» сервер отвечает 400 limit_exceeded
+      const court = state.tables.TESTC00002;
+      const id = 'b7e1d2c3-0000-4000-8000-0000000000c2';
+      state.sessions[id] = {
+        id, code: court.code, status: 'active', started_at: t - 40 * MIN, paid_until: court.busy_until, unlimited: false, is_payer: false,
+        participants: [{ nick: 'Мария С.', is_payer: true }, { nick: 'Олег' }, { nick: 'Ника' }, { nick: 'Тимур' }], payments: [],
+      };
+      court.session_id = id;
+      delete state.sessions[SESSION_ID];
+      Object.assign(state.tables.TESTC00001, { status: 'free', session_id: null, busy_until: null });
+    }
     if (name === 'limit') mk({ extend_limit_until: t + 65 * MIN + 40 * MIN, next_booking_at: t + 65 * MIN + 45 * MIN });
     // M4 (№146): на столе турнир через 45 минут после конца оплаты — предел продления без next_booking_at
     if (name === 'tourlimit') mk({ extend_limit_until: t + 65 * MIN + 40 * MIN, tournament_at: t + 65 * MIN + 45 * MIN, tournament_until: t + 65 * MIN + 6 * 60 * MIN });
@@ -272,13 +382,16 @@ export function createBackend(storage) {
       const mineView = mine && sessionView(mine);
       const isMine = Boolean(state.user && mineView && !['closed', 'cancelled'].includes(mineView.status) && mine.participants.some((p) => p.nick === state.user.nick));
       const status = mineView && ['closed', 'cancelled'].includes(mineView.status) ? 'free' : table.status;
+      const court = isCourtT(table);
       return ok({
         club: clubView(),
-        resource: { id: resourceId(table.number), number: table.number, type: table.type, title: table.title },
+        // M5.8: вид ресурса — kind, family, billing, slot_minutes, max_players (server/payments/quotes.mjs tableByCode)
+        resource: { id: ridOf(table), number: table.number, type: table.type, title: table.title, ...kindFields(table) },
         status,
         busy_until: ['busy', 'service', 'reserved'].includes(status) && table.busy_until ? new Date(table.busy_until).toISOString() : null,
-        ...pricesAround(now()),
-        options: [60, 120, 180, 'unlimited'],
+        ...(court ? courtPricesAround(now()) : pricesAround(now())),
+        // Корт — три варианта слотов, без «Без лимита»
+        options: court ? [SLOT, 2 * SLOT, 3 * SLOT] : [60, 120, 180, 'unlimited'],
         my_session_id: isMine ? table.session_id : null,
         // id чужой сессии для «Я играю за этим столом» — только вошедшим (f1052c2)
         session_id: status === 'busy' && state.user ? table.session_id ?? 'b7e1d2c3-0000-4000-8000-0000000000aa' : null,
@@ -322,9 +435,11 @@ export function createBackend(storage) {
       const u = needUser();
       if (u) return u;
       if (!state.user.consent_version) return err(403, 'consent_required');
-      const table = tableBy((t) => resourceId(t.number) === body.resource_id);
+      const table = tableBy((t) => ridOf(t) === body.resource_id);
       if (!table) return err(404, 'not_found');
       const t = now();
+      // Корт (M5.8): 1…4 слота, без «Без лимита» и часов пакета — иначе 400 bad_request
+      if (isCourtT(table) && (body.minutes === null || body.use_balance === true || ![1, 2, 3, 4].map((k) => k * SLOT).includes(body.minutes))) return err(400, 'bad_request');
       let from = t;
       if (body.kind === 'start') {
         if (table.status === 'pending' && table.pending_by !== state.user.id) return err(409, 'table_pending');
@@ -345,10 +460,11 @@ export function createBackend(storage) {
         }
       }
       const minutes = body.minutes === null ? 120 : body.minutes;
-      const { amount_kopecks, breakdown } = amountFor(from, minutes);
+      const { amount_kopecks, breakdown } = amountFor(from, minutes, table);
       const id = uuid();
       state.quotes[id] = { id, code: table.code, kind: body.kind, minutes: body.minutes, session_id: body.session_id, amount_kopecks, valid_until: t + 3 * MIN, used: false };
       const out = { quote_id: id, amount_kopecks, minutes: body.minutes, valid_until: new Date(t + 3 * MIN).toISOString(), breakdown };
+      if (isCourtT(table)) Object.assign(out, { slot_minutes: SLOT, slots: body.minutes / SLOT });
       // Блок «Без лимита» как у backend-money: заморозка за 2 часа по карте, блоки по 30 минут по СБП
       if (body.minutes === null) out.unlimited = { hold_minutes: 120, hold_amount_kopecks: amount_kopecks, sbp_block_minutes: 30, sbp_block_amount_kopecks: amountFor(from, 30).amount_kopecks };
       // M3 (№112): use_balance — часть минут часами пакета, amount_kopecks — доплата
@@ -443,6 +559,9 @@ export function createBackend(storage) {
         state.sessions[s.id] = s;
         table.session_id = s.id;
       }
+      // Корт (M5.8 №205): до 4 игроков в одной игре
+      const court = isCourtT(state.tables[s.code]);
+      if (court && !s.participants.some((p) => p.nick === state.user.nick) && s.participants.length >= 4) return err(400, 'limit_exceeded');
       if (!s.participants.some((p) => p.nick === state.user.nick)) s.participants.push({ nick: state.user.nick });
       s.is_payer = s.participants.find((p) => p.nick === state.user.nick)?.is_payer === true;
       emit(s.id);
@@ -470,7 +589,7 @@ export function createBackend(storage) {
       const s = state.sessions[m[1]];
       if (!s) return err(404, 'not_found');
       const lines = s.payments.map((p, i) => ({
-        title: p.minutes ? `${i === 0 ? 'Игра' : 'Продление'}, ${p.minutes >= 60 ? `${p.minutes / 60} ч` : `${p.minutes} мин`}` : 'Игра без лимита',
+        title: p.minutes ? `${i === 0 ? 'Игра' : 'Продление'}, ${[Math.floor(p.minutes / 60) ? `${Math.floor(p.minutes / 60)} ч` : '', p.minutes % 60 ? `${p.minutes % 60} мин` : ''].filter(Boolean).join(' ')}` : 'Игра без лимита',
         amount_kopecks: p.amount_kopecks,
         from: new Date(p.at).toISOString(),
         to: new Date(p.at + (p.minutes ?? 72) * MIN).toISOString(),
@@ -495,6 +614,8 @@ export function createBackend(storage) {
     club: clubView(),
     tables: () => Object.values(state.tables),
     resourceId,
+    ridOf,
+    kindFields,
     amountFor,
     createSession,
     err,
@@ -510,6 +631,7 @@ export function createBackend(storage) {
     club: clubView(),
     tables: () => Object.values(state.tables),
     resourceId,
+    ridOf,
     err,
     ok,
     needUser,

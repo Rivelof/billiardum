@@ -23,6 +23,11 @@ function card(s, city) {
     tables_count: s.tables_count ?? null,
     free_now: Number.isInteger(s.free_now) ? s.free_now : null,
     price_from_kopecks: Number.isInteger(s.price_from_kopecks) ? s.price_from_kopecks : null,
+    // M5.8: падел-корты отдельно от столов — число, свободные сейчас, «от» за слот
+    courts_count: Number.isInteger(s.courts_count) ? s.courts_count : null,
+    courts_free_now: Number.isInteger(s.courts_free_now) ? s.courts_free_now : null,
+    court_price_from_kopecks: Number.isInteger(s.court_price_from_kopecks) ? s.court_price_from_kopecks : null,
+    slot_minutes: Number.isInteger(s.slot_minutes) ? s.slot_minutes : null,
     rating: s.rating?.count > 0 && s.rating.avg !== null ? { avg: s.rating.avg, count: s.rating.count } : null,
   };
 }
@@ -69,7 +74,8 @@ export function createApi(data) {
             id: t.id,
             number: t.number,
             title: t.title,
-            type: `billiard_${t.discipline ?? 'pyramid'}`,
+            type: t.family === 'court' || t.discipline === 'padel' ? 'padel_court' : `billiard_${t.discipline ?? 'pyramid'}`,
+            family: t.family === 'court' || t.discipline === 'padel' ? 'court' : 'table',
             status: t.status,
             until: t.busy_until ?? null,
           })),
@@ -79,7 +85,11 @@ export function createApi(data) {
     const blocks = new Map();
     for (const r of res.prices ?? []) {
       if (!blocks.has(r.discipline)) blocks.set(r.discipline, { type: r.discipline, rules: [] });
-      blocks.get(r.discipline).rules.push({ days: r.days, from: r.from, to: r.to, price_per_hour_kopecks: r.price_per_hour_kopecks, min_minutes: r.min_minutes ?? null });
+      blocks.get(r.discipline).rules.push({
+        days: r.days, from: r.from, to: r.to, price_per_hour_kopecks: r.price_per_hour_kopecks, min_minutes: r.min_minutes ?? null,
+        // Корт (M5.8): цена за слот
+        ...(Number.isInteger(r.slot_minutes) && Number.isInteger(r.price_per_slot_kopecks) ? { slot_minutes: r.slot_minutes, price_per_slot_kopecks: r.price_per_slot_kopecks } : {}),
+      });
     }
     const index = await clubIndexFrom([{ club: k, city: c }]);
     const reviews = res.reviews ?? { avg: null, count: 0, items: [] };

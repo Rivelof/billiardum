@@ -42,6 +42,13 @@
 .ta-bar { fill: var(--hall-floor); stroke: var(--hall-bg); stroke-width: 24; }
 .ta-lamps { fill: color-mix(in oklab, var(--lamp) calc(var(--lit) * 100%), var(--hall-line)); }
 
+/* M5.8: падел-корт (courtSvg) — стекло у задних линий, сетка по бокам, белая разметка, сетка посередине */
+.co-glass { stroke: var(--hall-text); stroke-opacity: 0.55; stroke-width: 140; stroke-linecap: square; }
+.co-mesh { stroke: var(--hall-text-2); stroke-opacity: 0.6; stroke-width: 90; stroke-dasharray: 160 140; }
+.co-lines { stroke: var(--hall-text); stroke-opacity: 0.85; stroke-width: 90; }
+.co-net { stroke: var(--hall-text); stroke-width: 130; stroke-dasharray: 60 50; }
+.co-posts { fill: var(--hall-brass); }
+
 /* Элемент, который держит свет: transition переменной --lit, чтобы лампа загоралась плавно */
 .lit-host {
   transition: --lit var(--lamp-duration) var(--lamp-easing);
@@ -133,6 +140,7 @@
   word-break: keep-all;
 }
 .tbl[data-kind='pool'] .tbl__cap { width: 249%; }
+.tbl[data-kind='court'] .tbl__cap { width: 134%; } /* шаг корта на плане: 14 200 / 10 600 мм */
 .tbl__num { display: block; white-space: nowrap; color: var(--hall-text); font-weight: 600; }
 .tbl[data-tone='play'] .tbl__status,
 .tbl[data-tone='ending'] .tbl__status { color: var(--lamp); }

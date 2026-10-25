@@ -2,7 +2,7 @@ import { breakSvg } from '@billiardum/shared/break';
 import { plural } from '@billiardum/shared/format';
 import { html, Icon, Raw } from '../html.mjs';
 import { Abacus, ClubRow, Empty, HallPlan, TournamentRow } from '../components.mjs';
-import { DISCIPLINES, HOURS, applyFilters, clubsWord, freeWord, levelOf, liveMatch, parseFilters, tablesWord, tournamentUrl } from '../lib.mjs';
+import { CATALOG_DISCIPLINES, HOURS, applyFilters, clubsWord, freeWord, levelOf, liveMatch, parseFilters, tablesWord, tournamentUrl } from '../lib.mjs';
 import { organizationLd, websiteLd } from '../seo.mjs';
 
 /** Город главной: из cookie bl-city (последний открытый город), иначе город с наибольшим числом клубов на программе. */
@@ -43,7 +43,7 @@ function Hero({ city, cities }) {
         <span class="search__l">Игра</span>
         <select name="d" class="field__input">
           <option value="">Любая</option>
-          ${Object.entries(DISCIPLINES).map(([k, v]) => html`<option value=${k}>${v}</option>`)}
+          ${Object.entries(CATALOG_DISCIPLINES).map(([k, v]) => html`<option value=${k}>${v}</option>`)}
         </select>
       </label>
       <fieldset class="search__f">

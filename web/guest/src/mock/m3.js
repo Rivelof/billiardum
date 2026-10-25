@@ -35,7 +35,7 @@ export function m3Routes(ctx) {
   };
   const tz = club.timezone;
   const iso = (t) => new Date(t).toISOString();
-  const tableById = (id) => ctx.tables().find((t) => ctx.resourceId(t.number) === id);
+  const tableById = (id) => ctx.tables().find((t) => ctx.ridOf(t) === id);
   const userId = () => ctx.state().user?.id;
 
   // Рабочий день клуба: 12:00–02:00 по местному времени
@@ -45,6 +45,12 @@ export function m3Routes(ctx) {
     { from: iso(zonedMs(date, 17 * 60, tz)), to: iso(zonedMs(date, 24 * 60, tz)), per_hour_kopecks: 80000 },
     { from: iso(zonedMs(date, 24 * 60, tz)), to: iso(zonedMs(date, 26 * 60, tz)), per_hour_kopecks: 90000 },
   ];
+  // M5.8: корт — цена за слот 90 минут (как server/bookings availability: per_slot_kopecks, slot_minutes)
+  const courtRates = (date) => [
+    { from: iso(zonedMs(date, 12 * 60, tz)), to: iso(zonedMs(date, 17 * 60, tz)), per_hour_kopecks: 160000, per_slot_kopecks: 240000, slot_minutes: 90 },
+    { from: iso(zonedMs(date, 17 * 60, tz)), to: iso(zonedMs(date, 26 * 60, tz)), per_hour_kopecks: 240000, per_slot_kopecks: 360000, slot_minutes: 90 },
+  ];
+  const isCourtT = (t) => t?.type === 'padel_court';
 
   /** Чужие брони для живой борт-шкалы: по одной-две на стол каждый день. */
   function seededBusy(date, number) {
@@ -63,7 +69,7 @@ export function m3Routes(ctx) {
     if (table.busy_until && ['busy', 'service'].includes(table.status)) list.push({ from: iso(now() - 30 * MIN), to: iso(table.busy_until + 2 * MIN), kind: table.status === 'busy' ? 'session' : 'service' });
     if (table.status === 'pending') list.push({ from: iso(now()), to: iso(now() + 3 * MIN), kind: 'pending' });
     for (const b of Object.values(S().bookings)) {
-      if (b.resource_id !== ctx.resourceId(table.number) || !['pending_payment', 'confirmed', 'reserved'].includes(b.status)) continue;
+      if (b.resource_id !== ctx.ridOf(table) || !['pending_payment', 'confirmed', 'reserved'].includes(b.status)) continue;
       list.push({ from: iso(b.starts), to: iso(b.ends), kind: 'booking' });
     }
     return list.filter((x) => Date.parse(x.to) > open && Date.parse(x.from) < close).sort((a, b) => Date.parse(a.from) - Date.parse(b.from));
@@ -98,7 +104,7 @@ export function m3Routes(ctx) {
     return {
       id: b.id,
       club: { id: club.id, name: club.name, timezone: tz },
-      resource: { id: b.resource_id, number: t.number, title: t.title, type: t.type },
+      resource: { id: b.resource_id, number: t.number, title: t.title, type: t.type, ...ctx.kindFields(t, { withSlot: false }) },
       status: b.status,
       source: b.source ?? 'app',
       starts_at: iso(b.starts),
@@ -119,8 +125,8 @@ export function m3Routes(ctx) {
   }
 
   function makeBooking(table, starts, minutes, over = {}) {
-    const b = { id: uuid(), resource_id: ctx.resourceId(table.number), user_id: userId(), starts, ends: starts + minutes * MIN, minutes, status: 'confirmed', paid: 0, created: now(), ...over };
-    b.amount = ctx.amountFor(b.starts, b.minutes).amount_kopecks;
+    const b = { id: uuid(), resource_id: ctx.ridOf(table), user_id: userId(), starts, ends: starts + minutes * MIN, minutes, status: 'confirmed', paid: 0, created: now(), ...over };
+    b.amount = ctx.amountFor(b.starts, b.minutes, table).amount_kopecks;
     b.prepay = SETTINGS.prepayment === 'full' ? b.amount : 0;
     b.hold = b.prepay > 0 ? SETTINGS.hold_prepaid_minutes : SETTINGS.hold_minutes;
     if (over.status === undefined) b.paid = b.prepay;
@@ -139,7 +145,7 @@ export function m3Routes(ctx) {
     return {
       id: w.id,
       club_id: club.id,
-      resource: { id: ctx.resourceId(t.number), number: t.number, title: t.title },
+      resource: { id: ctx.ridOf(t), number: t.number, title: t.title },
       status: w.status,
       position: w.position,
       offer_until: w.status === 'offered' ? iso(w.offer_until) : null,
@@ -152,7 +158,7 @@ export function m3Routes(ctx) {
 
   const wlResource = (w) => {
     const t = ctx.tables().find((x) => x.code === w.code);
-    return { id: ctx.resourceId(t.number), number: t.number, title: t.title };
+    return { id: ctx.ridOf(t), number: t.number, title: t.title };
   };
 
   /** Стол освободился, очередь есть (T20): игра на нём закончилась, первому — предложение на 5 минут, стол держим за ним. */
@@ -270,8 +276,13 @@ export function m3Routes(ctx) {
         resources: ctx
           .tables()
           .filter((t) => t.status !== 'offline')
-          .sort((a, b) => a.number - b.number)
-          .map((t) => ({ id: ctx.resourceId(t.number), number: t.number, type: t.type, title: t.title, plan: { x: null, y: null, rotation: null }, busy: busyFor(date, t), free: [], rates: rates(date) })),
+          // Столы, затем корты (как server/bookings/availability.mjs)
+          .sort((a, b) => Number(isCourtT(a)) - Number(isCourtT(b)) || a.number - b.number)
+          .map((t) => ({
+            id: ctx.ridOf(t), number: t.number, type: t.type, title: t.title, plan: { x: null, y: null, rotation: null }, busy: busyFor(date, t), free: [],
+            rates: isCourtT(t) ? courtRates(date) : rates(date),
+            kind: ctx.kindFields(t).kind, family: isCourtT(t) ? 'court' : 'table', slot_minutes: isCourtT(t) ? 90 : null,
+          })),
       });
     }],
     ['POST', /^\/api\/bookings$/, (_m, body) => {
@@ -280,7 +291,10 @@ export function m3Routes(ctx) {
       const table = tableById(body.resource_id);
       if (!table) return err(404, 'not_found');
       const starts = Date.parse(body.starts_at);
-      if (!Number.isFinite(starts) || !Number.isInteger(body.minutes) || body.minutes < 60 || body.minutes > 240 || body.minutes % 30) return err(400, 'bad_request');
+      // Корт (M5.8): длительность кратна слоту 90 минут, не больше 240 минут, округлённых до слота (180)
+      const court = isCourtT(table);
+      if (!Number.isFinite(starts) || !Number.isInteger(body.minutes)) return err(400, 'bad_request');
+      if (court ? body.minutes % 90 || body.minutes < 90 || body.minutes > 180 : body.minutes < 60 || body.minutes > 240 || body.minutes % 30) return err(400, 'bad_request');
       if (starts < now() + 15 * MIN) return err(400, 'bad_request');
       const date = localDate(starts - 6 * 60 * MIN, tz);
       const clash = busyFor(date, table).some((x) => Date.parse(x.from) < starts + body.minutes * MIN && starts < Date.parse(x.to));
@@ -329,7 +343,7 @@ export function m3Routes(ctx) {
       if (table.status === 'service') return err(409, 'table_service');
       const early = t < b.starts - SETTINGS.early_free_minutes * MIN;
       // №123: минуты раннего прихода — вниз
-      const extra = early ? ctx.amountFor(t, Math.floor((b.starts - t) / MIN)).amount_kopecks : 0;
+      const extra = early ? ctx.amountFor(t, Math.floor((b.starts - t) / MIN), table).amount_kopecks : 0;
       const due = Math.max(0, b.amount - b.paid) + extra;
       if (due === 0) return ok({ status: 'started', session_id: startSession(b, { id: uuid(), method: 'booking' }), booking: view(b) });
       const id = uuid();

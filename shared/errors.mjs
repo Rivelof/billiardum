@@ -6,7 +6,11 @@
  *   → { code: 'table_busy', title: 'Стол занят до 21:40.', action: 'Выберите другой стол.', text: '…' }
  *
  * audience: 'guest' — приложение гостя, 'staff' — программа клуба. Обращение на «вы» везде (DESIGN §7).
+ * M5.8: family — семья вида ресурса ('table' | 'court' или сам ресурс): у корта те же тексты со словом «корт»;
+ * playersLimit — предел игроков вида (max_players): limit_exceeded на «Я играю» — «На корте уже 4 игрока».
  */
+import { plural } from './format.mjs';
+import { familyOf, familyText, nounOf } from './resource.mjs';
 
 /** @type {Record<string, [string, string] | { guest: [string, string], staff: [string, string] }>} */
 const TEXTS = {
@@ -220,6 +224,14 @@ const TEXTS = {
   webhook_disabled: ['Этот адрес вебхука выключен.', 'Выключение необратимо: добавьте адрес заново, если события снова нужны.'],
   url_invalid: ['Адрес вебхука не принят.', 'Нужен https:// на порту 443, без логина и пароля; имя сервера должно находиться в DNS.'],
   url_forbidden: ['Адрес вебхука ведёт во внутреннюю сеть.', 'Укажите публичный адрес сервера, доступный из интернета.'],
+  // M5.5: сети клубов (server/networks/README.md, №190–194)
+  network_locked: ['Это задаёт сеть клубов: шаблон сети жёсткий.', 'Изменить может только владелец сети в разделе «Сеть».'],
+  club_in_network: ['Этот клуб уже входит в другую сеть.', 'Клуб может быть только в одной сети. Сначала уберите его из той сети.'],
+  networks_limit: ['Достигнут предел: не больше 5 сетей у владельца и 100 клубов в сети.', 'Уберите ненужный клуб или удалите пустую сеть.'],
+  // Клиентские уточнения 409 duplicate по месту (как city_duplicate): приглашение управляющего и товар шаблона меню
+  network_manager_duplicate: ['Этот номер уже у управляющего сети или это ваш номер.', 'Проверьте номер. Повторное приглашение на тот же номер продлевает прежнее.'],
+  network_menu_duplicate: ['Товар шаблона совпал с другим товаром в меню клуба.', 'Проверьте артикулы и названия в шаблоне и в меню этого клуба.'],
+  network_template: ['Товар задан шаблоном меню сети.', 'Поля шаблона меняет владелец сети в разделе «Сеть»; стоп-лист и склад клуб ведёт сам.'],
 };
 
 /** День недели (1 — понедельник) с предлогом: «в среду», «во вторник». */
@@ -243,12 +255,13 @@ export function errorCode(err) {
 
 /**
  * @param {unknown} err ApiError, код строкой или любая ошибка
- * @param {{ audience?: 'guest' | 'staff', busyUntil?: string, limitUntil?: string }} [ctx] busyUntil — уже отформатированное
+ * @param {{ audience?: 'guest' | 'staff', busyUntil?: string, limitUntil?: string, clubName?: string }} [ctx] busyUntil — уже отформатированное
  *   время клуба, '21:40'; limitUntil — extend_limit_until котировки в формате времени клуба, '20:55' (booking_conflict;
- *   у персонала — и limit_exceeded продления турнира)
+ *   у персонала — и limit_exceeded продления турнира); clubName — имя клуба для tariff_gap и tariff_overlap шаблона сети (M5.5)
  * @returns {{ code: string, title: string, action: string, text: string }}
  */
 export function errorMessage(err, ctx = {}) {
+  if (ctx.family !== undefined || ctx.playersLimit !== undefined) return resourceMessage(err, ctx);
   const audience = ctx.audience === 'staff' ? 'staff' : 'guest';
   const code = errorCode(err);
   const entry = TEXTS[code] ?? TEXTS.unknown;
@@ -267,6 +280,8 @@ export function errorMessage(err, ctx = {}) {
     const span = HHMM.test(d.from ?? '') && HHMM.test(d.to ?? '') ? ` с ${d.from} до ${d.to}` : '';
     const day = ON_WEEKDAY[d.weekday];
     title = `${day[0].toUpperCase()}${day.slice(1)}${span} ${code === 'tariff_gap' ? 'нет цены' : 'задано две цены'}.`;
+    // M5.5: шаблон тарифов сети проверяется по неделе каждого клуба — { club_id, … }; имя клуба подставляет экран
+    if (typeof ctx.clubName === 'string' && ctx.clubName.trim()) title = `«${ctx.clubName.trim()}»: ${title[0].toLowerCase()}${title.slice(1)}`;
   }
   if (code === 'booking_conflict' && ctx.limitUntil) title = `Стол забронирован — можно продлить до ${ctx.limitUntil}.`;
   // Продление турнира (№147): 409 limit_exceeded { extend_limit_until } — предел в формате времени клуба
@@ -275,4 +290,25 @@ export function errorMessage(err, ctx = {}) {
     return { code, title, action: 'Выберите время не позже этого.', text: `${title} Выберите время не позже этого.` };
   }
   return { code, title, action, text: `${title} ${action}` };
+}
+
+/**
+ * M5.8 (№203, №205): текст ошибки по виду ресурса. Корт — те же тексты со словом «корт» (familyText);
+ * limit_exceeded с playersLimit — пятый «Я играю»: «На корте уже 4 игрока».
+ */
+function resourceMessage(err, ctx) {
+  const { family, playersLimit, ...rest } = ctx;
+  const code = errorCode(err);
+  const n = nounOf(family);
+  if (code === 'limit_exceeded' && Number.isInteger(playersLimit) && playersLimit > 0) {
+    const players = `${playersLimit} ${plural(playersLimit, ['игрок', 'игрока', 'игроков'])}`;
+    const title = `${n.At} уже ${players}.`;
+    const action = `В одной игре — не больше ${playersLimit} ${plural(playersLimit, ['игрока', 'игроков', 'игроков'])}. Продлевать её могут те, кто уже играет.`;
+    return { code, title, action, text: `${title} ${action}` };
+  }
+  const m = errorMessage(err, rest);
+  if (familyOf(family) !== 'court') return m;
+  const title = familyText(m.title, 'court');
+  const action = familyText(m.action, 'court');
+  return { code: m.code, title, action, text: `${title} ${action}` };
 }

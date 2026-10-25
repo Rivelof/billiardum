@@ -3,7 +3,8 @@ import { TestModeNote } from '../components/TestModeNote.jsx';
 import { useEffect, useState, useCallback, useRef } from 'preact/hooks';
 import { optionPrice } from '../lib/prices.js';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
-import { tableKind, typeLabel } from '@billiardum/shared/hall';
+import { resourceArt, typeLabel } from '@billiardum/shared/hall';
+import { familyText, isSlot, nounOf, slotLabel } from '@billiardum/shared/resource';
 import { Stage, StatusBadge } from '../components/Stage.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
@@ -133,7 +134,11 @@ export function TableScreen({ code, search }) {
     if (step === 'choose') setFlow({ noBalance: false });
     if (inFlight.current) return;
     setError(null);
-    setFlow({ code, intent, option, number: table?.resource?.number, resourceId: table?.resource?.id, timeZone: table?.club?.timezone, kind: 'start' });
+    setFlow({
+      code, intent, option, number: table?.resource?.number, resourceId: table?.resource?.id, timeZone: table?.club?.timezone, kind: 'start',
+      // Вид ресурса (M5.8): экраны ожидания и игры пишут «корт» и продлевают слотом
+      family: nounOf(table?.resource).family, slotMinutes: table?.resource?.slot_minutes ?? null,
+    });
     const st = auth.get();
     if (st.status !== 'user') return goStep('signin');
     if (needsConsent(st.user)) return goStep('consent');
@@ -156,7 +161,8 @@ export function TableScreen({ code, search }) {
       // Часы пакета на балансе в клубе (M3, №112) — котировка сразу с use_balance; гость может отказаться
       const minutes = optionMinutes(option);
       let useBalance = false;
-      if (minutes !== null && !getFlow().noBalance && table.club?.id) {
+      // Корт (M5.8): часов пакета у слотов нет — сервер ответил бы 400 bad_request
+      if (minutes !== null && !isSlot(table.resource) && !getFlow().noBalance && table.club?.id) {
         const bal = await api.balance(table.club.id).catch(() => null);
         useBalance = (bal?.minutes ?? 0) > 0;
       }
@@ -175,8 +181,8 @@ export function TableScreen({ code, search }) {
   if (loadError && !table) {
     return (
       <div class="screen">
-        <Stage label="Стол">
-          <h1 class="stage__title display">{loadError.code === 'not_found' ? 'Стол не найден' : 'Не загрузили стол'}</h1>
+        <Stage label="Стол или корт">
+          <h1 class="stage__title display">{loadError.code === 'not_found' ? 'Код не найден' : 'Не загрузили данные'}</h1>
         </Stage>
         <main class="wrap content">
           <ErrorNote error={loadError}>
@@ -193,9 +199,9 @@ export function TableScreen({ code, search }) {
   if (!table) {
     return (
       <div class="screen" aria-busy="true">
-        <Stage label="Стол">
+        <Stage label="Загрузка">
           <p class="stage__title display" aria-hidden="true">
-            Стол
+            Бильярдум
           </p>
           <p class="stage__sub">Загружаем…</p>
         </Stage>
@@ -205,10 +211,12 @@ export function TableScreen({ code, search }) {
 
   const tz = table.club?.timezone;
   const number = table.resource?.number;
-  const kind = tableKind(table.resource?.type);
+  const res = table.resource;
+  const w = nounOf(res);
+  const kind = resourceArt(res);
   const lit = table.status === 'busy' ? 'true' : 'false';
   const compact = step !== 'choose';
-  const what = `${tableName(number)} · ${optionLabel(option)}`;
+  const what = `${tableName(number, res)} · ${optionLabel(option, res)}`;
 
   return (
     <div class="screen">
@@ -218,16 +226,17 @@ export function TableScreen({ code, search }) {
         compact={compact}
         tone={table.status === 'busy' ? 'play' : 'idle'}
         variant="table"
-        label={`${tableName(number)}, ${typeLabel(table.resource?.type, table.resource?.title)}`}
+        label={`${tableName(number, res)}, ${typeLabel(res?.type, res?.title)}`}
         back={compact ? { href: `${BASE}t/${encodeURIComponent(code)}`, label: 'Назад к выбору времени' } : undefined}
       >
         {table.club?.name ? <p class="stage__kicker">{table.club.name}</p> : null}
         <div class="stage__row">
-          <h1 class="stage__title display">{tableName(number)}</h1>
-          {!compact ? <StatusBadge status={table.status} /> : null}
+          <h1 class="stage__title display">{tableName(number, res)}</h1>
+          {!compact ? <StatusBadge status={table.status} resource={res} /> : null}
         </div>
         <p class="stage__sub">{typeLabel(table.resource?.type, table.resource?.title)}</p>
         {!compact && table.status === 'free' && table.price_now ? <StagePrice now={table.price_now} next={table.price_next} /> : null}
+        {!compact && table.status === 'free' && !table.price_now && isSlot(res) && !res.slot_minutes ? <p class="stage__sub">У корта пока нет цены за слот</p> : null}
       </Stage>
 
       <main class="wrap content">
@@ -242,7 +251,7 @@ export function TableScreen({ code, search }) {
         {step === 'choose' && !myBooking && held ? (
           <p class="note note--lamp" role="status">
             <Icon name="clock" />
-            <span class="note__title">Стол держим за вами 3 минуты — выберите время и оплатите.</span>
+            <span class="note__title">{w.Nom} держим за вами 3 минуты — выберите время и оплатите.</span>
           </p>
         ) : null}
         {step === 'choose' && !myBooking && (table.status === 'free' || held) ? (
@@ -278,6 +287,7 @@ export function TableScreen({ code, search }) {
             kind="start"
             unlimited={optionMinutes(option) === null}
             timeZone={tz}
+            resource={res}
             onRequote={() => proceed('start')}
             onWithoutBalance={() => {
               setFlow({ noBalance: true });
@@ -296,7 +306,7 @@ export function TableScreen({ code, search }) {
             Считаем цену…
           </p>
         ) : null}
-        {step !== 'choose' && error ? <ErrorNote error={error} /> : null}
+        {step !== 'choose' && error ? <ErrorNote error={error} resource={res} /> : null}
       </main>
     </div>
   );
@@ -313,6 +323,9 @@ function AutoProceed({ run }) {
 function Choose({ table, option, setOption, busy, error, onNext }) {
   const now = useNow();
   const tz = table.club?.timezone;
+  const res = table.resource;
+  const w = nounOf(res);
+  const slot = isSlot(res) ? res.slot_minutes : null;
   // Бронь позже сегодня (M3, №106): играть можно до её начала минус 5 минут
   const limit = table.next_booking?.starts_at ? Date.parse(table.next_booking.starts_at) - 5 * 60000 : null;
   return (
@@ -324,18 +337,18 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
       }}
     >
       <fieldset>
-        <legend class="step__label">Сколько играем?</legend>
+        <legend class="step__label">{slot ? `Сколько играем? Слот — ${slotLabel(slot)}` : 'Сколько играем?'}</legend>
         <div class="choice choice--grid">
           {(table.options ?? []).map((o) => {
             const m = optionMinutes(o);
             const blocked = limit !== null && (m === null || now + m * 60000 > limit);
-            const sub = blocked ? 'Стол забронирован' : m === null ? 'Платите за фактическое время' : `До ${formatTime(now + m * 60000, tz)}`;
+            const sub = blocked ? `${w.Nom} забронирован` : m === null ? 'Платите за фактическое время' : `До ${formatTime(now + m * 60000, tz)}`;
             return (
               <label class="choice__item" key={String(o)}>
                 <input type="radio" name="option" value={String(o)} checked={option === o} disabled={blocked} onChange={() => setOption(o)} />
                 {/* «Фишка»: время крупно, ориентировочная цена, до скольких */}
                 <span class="choice__box chip">
-                  <span class="choice__title chip__time display">{optionLabel(o)}</span>
+                  <span class="choice__title chip__time display">{optionLabel(o, res)}</span>
                   {m !== null && optionPrice(table, m, now) !== null && !blocked ? (
                     <span class="chip__price mono">≈ {formatMoney(optionPrice(table, m, now))}</span>
                   ) : null}
@@ -351,16 +364,18 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
         <p class="note note--lamp">
           <Icon name="calendar" />
           <span class="note__title">
-            Стол забронирован на {formatTime(table.next_booking.starts_at, tz)}, играть можно до {formatTime(limit, tz)}
+            {w.Nom} забронирован на {formatTime(table.next_booking.starts_at, tz)}, играть можно до {formatTime(limit, tz)}
           </span>
         </p>
       ) : null}
       <p class="hint hint--icon">
         <Icon name="lamp" />
-        Свет загорится сразу после оплаты. За 10 минут до конца напомним, продлить можно в один шаг.
+        {slot
+          ? `Игра на корте — слотами по ${slotLabel(slot)}. Свет загорится сразу после оплаты, за 10 минут до конца напомним, продлить можно ещё на слот.`
+          : 'Свет загорится сразу после оплаты. За 10 минут до конца напомним, продлить можно в один шаг.'}
       </p>
 
-      <ErrorNote error={error} />
+      <ErrorNote error={error} resource={res} />
 
       <div class="actionbar">
         <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || !option || (limit !== null && (optionMinutes(option) === null || now + optionMinutes(option) * 60000 > limit))}>
@@ -371,8 +386,22 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
   );
 }
 
-/** Цена в сцене: «900 ₽/ч до 06:00, потом 500 ₽/ч» (PRODUCT §3, п. 2). */
+/** Цена в сцене: «900 ₽/ч до 06:00, потом 500 ₽/ч» (PRODUCT §3, п. 2); корт — «2 400 ₽ за 1,5 ч до 17:00, потом 3 600 ₽». */
 function StagePrice({ now, next }) {
+  if (now.slot_minutes && Number.isSafeInteger(now.price_per_slot_kopecks)) {
+    return (
+      <p class="stage__price">
+        <span class="stage__price-value">
+          <span class="display">{formatMoney(now.price_per_slot_kopecks).replace(/\s?₽$/, '')}</span>
+          <span class="stage__price-unit">&nbsp;₽ за&nbsp;{slotLabel(now.slot_minutes)}</span>
+        </span>
+        <span class="stage__price-when">
+          {now.until_local ? `до ${now.until_local}` : 'весь день'}
+          {next?.price_per_slot_kopecks ? `, потом ${formatMoney(next.price_per_slot_kopecks)} за ${slotLabel(next.slot_minutes ?? now.slot_minutes)}` : ''}
+        </span>
+      </p>
+    );
+  }
   return (
     <p class="stage__price">
       <span class="stage__price-value">
@@ -415,6 +444,11 @@ function NotFree({ table, error, busy, onReload, onJoin, signedIn, onSignIn, onT
     title = 'Стол не на связи';
     text = 'Свет на нём сейчас не включится. Выберите другой стол или подойдите на ресепшн.';
   }
+  // Корт (M5.8): те же тексты со словом «корт»
+  const res = table.resource;
+  const w = nounOf(res);
+  title = familyText(title, res);
+  text = familyText(text, res);
   // Предложение из очереди (5 минут) важнее всего остального на экране
   if (waitEntry?.status === 'offered') {
     return (
@@ -436,23 +470,28 @@ function NotFree({ table, error, busy, onReload, onJoin, signedIn, onSignIn, onT
       {s === 'busy' && (table.session_id || !signedIn) ? (
         <section class="join" aria-labelledby="join-title">
           <h2 class="step__label" id="join-title">
-            Играете за этим столом?
+            Играете {w.atThis}?
           </h2>
-          <p class="hint">Присоединитесь к игре: сможете продлевать её со своего телефона, а партии попадут в вашу историю.</p>
-          <ErrorNote error={error} />
+          <p class="hint">
+            {w.family === 'court'
+              ? `Присоединитесь к игре: сможете продлевать её со своего телефона. В одной игре на корте — до ${res?.max_players ?? 4} игроков.`
+              : 'Присоединитесь к игре: сможете продлевать её со своего телефона, а партии попадут в вашу историю.'}
+          </p>
+          {/* Пятый «Я играю» на корте — 400 limit_exceeded: «На корте уже 4 игрока» (№205) */}
+          <ErrorNote error={error} resource={res} playersLimit={res?.max_players} />
           <div class="actionbar">
             <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={onJoin}>
               <Icon name="users" />
-              {busy ? 'Присоединяем…' : 'Я играю за этим столом'}
+              {busy ? 'Присоединяем…' : `Я играю ${w.atThis}`}
             </button>
           </div>
         </section>
       ) : (
         <>
-          <ErrorNote error={error} />
+          <ErrorNote error={error} resource={res} />
           <button type="button" class="btn btn--quiet btn--block" onClick={onReload}>
             <Icon name="refresh" />
-            Проверить стол снова
+            Проверить {w.acc} снова
           </button>
         </>
       )}

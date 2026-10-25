@@ -4,9 +4,13 @@
  */
 import { formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { tableState } from '@billiardum/shared/hall';
+import { familyOf, resourceName, slotLabel } from '@billiardum/shared/resource';
 
+/** Дисциплины бильярда: турниры и рейтинг Бильярдум+ (рейтинг падела — в бэклоге, №205). */
 export const DISCIPLINES = Object.freeze({ pyramid: 'Русская пирамида', pool: 'Пул', snooker: 'Снукер' });
-export const DISCIPLINE_SHORT = Object.freeze({ pyramid: 'Пирамида', pool: 'Пул', snooker: 'Снукер' });
+/** Дисциплины каталога: бильярд и падел (M5.8, фильтр «Падел» — клубы с кортами). */
+export const CATALOG_DISCIPLINES = Object.freeze({ ...DISCIPLINES, padel: 'Падел' });
+export const DISCIPLINE_SHORT = Object.freeze({ pyramid: 'Пирамида', pool: 'Пул', snooker: 'Снукер', padel: 'Падел' });
 
 /** Дисциплины списком: «Пирамида, пул, снукер». */
 export function disciplinesText(list) {
@@ -42,6 +46,16 @@ export function levelOf(rating) {
 }
 
 export const tablesWord = (n) => plural(n, ['стол', 'стола', 'столов']);
+export const courtsWord = (n) => plural(n, ['корт', 'корта', 'кортов']);
+
+/** Только падел в фильтре: «свободно сейчас» и статус — по кортам (как server/directory public.mjs). */
+export const padelOnly = (f) => f.d.length > 0 && f.d.every((d) => d === 'padel');
+
+/** Цена корта в карточке: «от 2 400 ₽ за 1,5 ч» (court_price_from_kopecks за slot_minutes). null — цены нет. */
+export function courtPriceText(club) {
+  if (!Number.isInteger(club.court_price_from_kopecks) || !(club.slot_minutes > 0)) return null;
+  return `от ${formatMoney(club.court_price_from_kopecks)} за ${slotLabel(club.slot_minutes)}`;
+}
 export const clubsWord = (n) => plural(n, ['клуб', 'клуба', 'клубов']);
 export const freeWord = (n) => plural(n, ['свободен', 'свободно', 'свободно']);
 
@@ -64,7 +78,7 @@ export const HOURS = Object.freeze([1, 2, 3]);
  */
 export function parseFilters(params) {
   const sp = params instanceof URLSearchParams ? params : new URLSearchParams(params ?? '');
-  const d = [...new Set(sp.getAll('d').filter((x) => x in DISCIPLINES))];
+  const d = [...new Set(sp.getAll('d').filter((x) => x in CATALOG_DISCIPLINES))];
   const max = Number(sp.get('max'));
   const h = Number(sp.get('h'));
   const sort = sp.get('sort');
@@ -82,7 +96,7 @@ export function parseFilters(params) {
 /** Фильтры обратно в адрес — в одном порядке, чтобы ссылки и кэш не множились. */
 export function filtersQuery(f) {
   const sp = new URLSearchParams();
-  for (const d of Object.keys(DISCIPLINES)) if (f.d?.includes(d)) sp.append('d', d);
+  for (const d of Object.keys(CATALOG_DISCIPLINES)) if (f.d?.includes(d)) sp.append('d', d);
   if (f.free) sp.set('free', '1');
   if (f.online) sp.set('online', '1');
   if (f.h24) sp.set('h24', '1');
@@ -108,9 +122,11 @@ export function priceFrom(club) {
  * сначала онлайн-бронь, затем больше свободных, затем по названию.
  */
 export function applyFilters(clubs, f) {
+  // «Свободно сейчас» с фильтром только «Падел» — свободные корты, иначе — столы (M5.8)
+  const freeOf = padelOnly(f) ? (c) => c.courts_free_now : (c) => c.free_now;
   const out = clubs.filter((c) => {
     if (f.d.length && !f.d.every((d) => c.disciplines?.includes(d))) return false;
-    if (f.free && !(c.free_now > 0)) return false;
+    if (f.free && !(freeOf(c) > 0)) return false;
     if (f.online && !c.online_booking) return false;
     if (f.h24 && !c.open_24h) return false;
     if (f.max) {
@@ -121,8 +137,8 @@ export function applyFilters(clubs, f) {
   });
   const byName = (a, b) => a.name.localeCompare(b.name, 'ru');
   const sorts = {
-    recommended: (a, b) => Number(b.online_booking) - Number(a.online_booking) || (b.free_now ?? -1) - (a.free_now ?? -1) || byName(a, b),
-    free: (a, b) => (b.free_now ?? -1) - (a.free_now ?? -1) || byName(a, b),
+    recommended: (a, b) => Number(b.online_booking) - Number(a.online_booking) || (freeOf(b) ?? -1) - (freeOf(a) ?? -1) || byName(a, b),
+    free: (a, b) => (freeOf(b) ?? -1) - (freeOf(a) ?? -1) || byName(a, b),
     price: (a, b) => (priceFrom(a) ?? Infinity) - (priceFrom(b) ?? Infinity) || byName(a, b),
     rating: (a, b) => (b.rating?.avg ?? -1) - (a.rating?.avg ?? -1) || (b.rating?.count ?? 0) - (a.rating?.count ?? 0) || byName(a, b),
     name: byName,
@@ -207,10 +223,12 @@ export function priceGrid(block) {
         const b = minutes(r.to) || 1440;
         return a <= at && at < (b > a ? b : b + 1440);
       });
-      return hit?.price_per_hour_kopecks ?? null;
+      // Корт (M5.8): цена за слот
+      return hit ? (Number.isInteger(hit.price_per_slot_kopecks) ? hit.price_per_slot_kopecks : hit.price_per_hour_kopecks) : null;
     }),
   }));
-  return { type: block.type, title: block.title ?? DISCIPLINES[block.type] ?? block.type, cols, rows };
+  const slot = rules.find((r) => r.slot_minutes > 0)?.slot_minutes ?? null;
+  return { type: block.type, title: block.title ?? CATALOG_DISCIPLINES[block.type] ?? block.type, cols, rows, slot_minutes: slot };
 }
 
 // ---------- часы работы ----------
@@ -244,12 +262,15 @@ export function publicTableState(item, timeZone, now = Date.now()) {
   return { ...st, spoken: st.spoken ?? st.word.toLowerCase() };
 }
 
-/** Подпись стола для экранного диктора: начинается с видимого текста («Стол 4 До 21:40»), дальше — словами. */
+/** Подпись стола для экранного диктора: начинается с видимого текста («Стол 4 До 21:40», «Корт 1 Свободен»), дальше — словами. */
 export function hallLabel(item, state) {
   const spoken = state.spoken ?? state.word.toLowerCase();
-  const visible = `Стол ${item.number} ${state.word}`;
+  const visible = `${resourceName(item, item.number)} ${state.word}`;
   return spoken && spoken !== state.word.toLowerCase() ? `${visible}, ${spoken}` : visible;
 }
+
+/** Ключ ресурса на плане: номера у столов и кортов свои (M5.8) — «table-3», «court-1». */
+export const hallKey = (item) => `${familyOf(item)}-${item.number}`;
 
 // ---------- турниры ----------
 

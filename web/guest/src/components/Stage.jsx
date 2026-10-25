@@ -1,3 +1,4 @@
+import { familyText } from '@billiardum/shared/resource';
 import { Header } from './Header.jsx';
 import { TableArt } from './TableArt.jsx';
 
@@ -26,13 +27,13 @@ const BADGE = {
   offline: ['alert', 'Нет связи со столом'],
 };
 
-/** Статус стола словом и точкой (статус никогда не только цветом). */
-export function StatusBadge({ status }) {
+/** Статус стола словом и точкой (статус никогда не только цветом); у корта — «Нет связи с кортом» (M5.8). */
+export function StatusBadge({ status, resource }) {
   const [tone, word] = BADGE[status] ?? BADGE.free;
   return (
     <p class={`badge badge--${tone}`}>
       <span class="badge__dot" aria-hidden="true" />
-      {word}
+      {familyText(word, resource)}
     </p>
   );
 }

@@ -12,6 +12,8 @@
 export const TABLE_SIZES = Object.freeze({
   pyramid: { fieldLong: 3550, fieldShort: 1775, rail: 170, outerShort: 2115, outerLong: 3890 },
   pool: { fieldLong: 2540, fieldShort: 1270, rail: 150, outerShort: 1570, outerLong: 2840 },
+  // M5.8: падел-корт 10 × 20 м, «rail» — стеклянные стены и сетка по краю
+  court: { fieldLong: 20000, fieldShort: 10000, rail: 300, outerShort: 10600, outerLong: 20600 },
 });
 
 const TYPE_LABEL = {
@@ -20,6 +22,8 @@ const TYPE_LABEL = {
   pool: 'Пул, 9 футов',
   // M5.1: стол под пирамиду и пул (billiard_mixed)
   mixed: 'Стол под пирамиду и пул',
+  // M5.8: падел-корт (padel_court)
+  court: 'Падел-корт, 10 × 20 м',
 };
 
 /**
@@ -37,11 +41,26 @@ export function tableKind(type) {
  * @param {string | undefined} [title] resource.title из API, например 'Пирамида 12 футов'
  */
 export function typeLabel(type, title) {
-  // Название вида «Стол 2» ничего не добавляет к номеру — тогда подпись по типу
-  if (title && !/^стол\s*№?\s*\d+$/i.test(title.trim())) return title;
+  // Название вида «Стол 2» или «Корт 1» ничего не добавляет к номеру — тогда подпись по типу
+  if (title && !/^(стол|корт)\s*№?\s*\d+$/i.test(title.trim())) return title;
+  if (/padel/i.test(type ?? '')) return TYPE_LABEL.court;
   if (/snooker/i.test(type ?? '')) return TYPE_LABEL.snooker;
   if (/mixed/i.test(type ?? '')) return TYPE_LABEL.mixed;
   return TYPE_LABEL[tableKind(type)];
+}
+
+/**
+ * Рисунок ресурса по типу (или ресурсу из API): 'pyramid' | 'pool' | 'court' (M5.8, падел-корт).
+ * tableKind остаётся только для столов: на его ответ опираются расстановки зала.
+ * @param {string | { type?: string, kind?: string, family?: string } | undefined} x
+ * @returns {'pyramid' | 'pool' | 'court'}
+ */
+export function resourceArt(x) {
+  if (x && typeof x === 'object') {
+    if (x.family === 'court' || /padel/i.test(x.kind ?? '') || /padel/i.test(x.type ?? '')) return 'court';
+    return tableKind(x.type);
+  }
+  return /padel/i.test(x ?? '') ? 'court' : tableKind(x);
 }
 
 // Геометрия рисунка — из shared/styleguide.html, единица viewBox — 1 мм
@@ -75,6 +94,7 @@ let uidCounter = 0;
  * @returns {string} разметка SVG, только константы — безопасно для innerHTML
  */
 export function tableSvg(kind, options = {}) {
+  if (kind === 'court') return courtSvg(options);
   const a = ART[kind] ?? ART.pyramid;
   const uid = options.uid ?? `bl-spot-${(uidCounter += 1)}`;
   const c = (cx, cy, r) => `<circle cx="${cx}" cy="${cy}" r="${r}"/>`;
@@ -120,6 +140,91 @@ export function tableSvg(kind, options = {}) {
     );
   }
   return `<svg class="${cls}" viewBox="0 0 ${a.w} ${a.h}" aria-hidden="true" focusable="false">${defs}${body}</svg>`;
+}
+
+/**
+ * Падел-корт сверху (M5.8, №203): 10 × 20 м, по краю — стеклянные стены у задних линий и сетка по бокам,
+ * искусственная трава цветом сукна, белая разметка (линии подачи в 6,95 м от сетки, центральная линия),
+ * сетка посередине, четыре прожектора на мачтах вдоль боков. Свет — та же переменная --lit, что у стола:
+ * трава светлеет, прожекторы горят, на корте тёплое пятно. Классы — hall.css (ta-*, co-*).
+ * @param {{ horizontal?: boolean, uid?: string, className?: string }} [options]
+ */
+export function courtSvg(options = {}) {
+  const s = TABLE_SIZES.court;
+  const w = s.outerShort;
+  const h = s.outerLong;
+  const r = s.rail;
+  const uid = options.uid ?? `bl-spot-${(uidCounter += 1)}`;
+  const fw = s.fieldShort;
+  const fl = s.fieldLong;
+  const netY = r + fl / 2;
+  const service = 6950; // линия подачи — в 6,95 м от сетки
+  const glass = 4000; // стекло на боковых стенах у задней линии
+  const c = (cx, cy, rr) => `<circle cx="${cx}" cy="${cy}" r="${rr}"/>`;
+  const line = (x1, y1, x2, y2) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+  const lamps = [r + fl * 0.25, r + fl * 0.75].flatMap((y) => [c(r / 2, y, 230), c(w - r / 2, y, 230)]).join('');
+  const body =
+    `<rect class="ta-rail" width="${w}" height="${h}" rx="160" fill="url(#${uid}-r)"/>` +
+    `<rect class="ta-cloth" x="${r}" y="${r}" width="${fw}" height="${fl}" fill="url(#${uid}-c)"/>` +
+    `<ellipse class="ta-spot" cx="${w / 2}" cy="${h / 2}" rx="${fw * 0.62}" ry="${fl * 0.56}" fill="url(#${uid})"/>` +
+    `<g class="co-glass">${line(r, r, w - r, r)}${line(r, h - r, w - r, h - r)}${[r, w - r].flatMap((x) => [line(x, r, x, r + glass), line(x, h - r - glass, x, h - r)]).join('')}</g>` +
+    `<g class="co-mesh">${[r, w - r].map((x) => line(x, r + glass, x, h - r - glass)).join('')}</g>` +
+    `<g class="co-lines">${line(r, netY - service, w - r, netY - service)}${line(r, netY + service, w - r, netY + service)}${line(w / 2, netY - service, w / 2, netY + service)}</g>` +
+    `<g class="co-net">${line(r - 120, netY, w - r + 120, netY)}</g>` +
+    `<g class="co-posts">${c(r - 120, netY, 110)}${c(w - r + 120, netY, 110)}</g>` +
+    `<g class="ta-lamps">${lamps}</g>`;
+  const defs =
+    '<defs>' +
+    `<radialGradient id="${uid}">` +
+    '<stop offset="0" class="ta-stop" stop-opacity="0.34"/>' +
+    '<stop offset="0.6" class="ta-stop" stop-opacity="0.12"/>' +
+    '<stop offset="1" class="ta-stop" stop-opacity="0"/>' +
+    '</radialGradient>' +
+    `<linearGradient id="${uid}-r" x1="0" y1="0" x2="1" y2="1">` +
+    '<stop offset="0" class="ta-r1"/><stop offset="0.45" class="ta-r2"/><stop offset="1" class="ta-r3"/>' +
+    '</linearGradient>' +
+    `<radialGradient id="${uid}-c" cx="0.5" cy="0.5" r="0.72">` +
+    '<stop offset="0" class="ta-c1"/><stop offset="1" class="ta-c2"/>' +
+    '</radialGradient>' +
+    '</defs>';
+  const cls = `ta ta--court${options.className ? ` ${options.className}` : ''}`;
+  if (options.horizontal) {
+    return (
+      `<svg class="${cls}" viewBox="0 0 ${h} ${w}" aria-hidden="true" focusable="false">${defs}` +
+      `<g transform="translate(${h} 0) rotate(90)">${body}</g></svg>`
+    );
+  }
+  return `<svg class="${cls}" viewBox="0 0 ${w} ${h}" aria-hidden="true" focusable="false">${defs}${body}</svg>`;
+}
+
+/**
+ * Расстановка кортов на плане (M5.8): корты в ряд по perRow (по умолчанию — все, но не больше 4), в своём
+ * масштабе — корт в 5 раз длиннее стола, поэтому столы и корты на одном плане не смешиваются.
+ * @param {{ id: string, number: number }[]} resources
+ * @param {{ perRow?: number }} [options]
+ * @returns {{ width: number, height: number, items: { id: string, number: number, kind: 'court', x: number, y: number, w: number, h: number }[] }}
+ */
+export function courtLayout(resources, options = {}) {
+  const sorted = [...resources].sort((a, b) => a.number - b.number);
+  const s = TABLE_SIZES.court;
+  const perRow = Math.max(1, options.perRow ?? Math.min(4, Math.max(1, sorted.length)));
+  const gapX = 3600;
+  const gapY = 9000; // под кортом — подпись
+  const margin = 3000;
+  const cols = Math.max(1, Math.min(perRow, sorted.length));
+  const rows = Math.ceil(sorted.length / perRow);
+  const items = sorted.map((r, i) => ({
+    id: r.id,
+    number: r.number,
+    kind: 'court',
+    x: margin + (i % perRow) * (s.outerShort + gapX),
+    y: margin + Math.floor(i / perRow) * (s.outerLong + gapY),
+    w: s.outerShort,
+    h: s.outerLong,
+  }));
+  const width = 2 * margin + cols * s.outerShort + (cols - 1) * gapX;
+  const height = rows ? margin + rows * s.outerLong + (rows - 1) * gapY + gapY * 0.75 : margin;
+  return { width, height, items };
 }
 
 const MARGIN_X = 1500;

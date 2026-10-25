@@ -112,3 +112,16 @@ test('M5.3: тексты кодов подписки — без кодов и б
   }
   assert.equal(errorMessage('billing_unavailable', { audience: 'staff' }).title, 'Подписка ещё не подключена.');
 });
+
+test('M5.5: тексты кодов сети клубов; дыра шаблона тарифов — с именем клуба', () => {
+  for (const code of ['network_locked', 'club_in_network', 'networks_limit', 'network_manager_duplicate', 'network_menu_duplicate', 'network_template']) {
+    assert.ok(KNOWN_CODES.includes(code), code);
+    const m = errorMessage(code, { audience: 'staff' });
+    assert.match(m.title, /[А-ЯЁ«].*\.$/u, code);
+    assert.match(m.action, /[А-ЯЁ].*[.!]$/u, code);
+    assert.doesNotMatch(m.text, /\b[a-z_]{4,}\b/, `${code}: без кодов и английских слов`);
+  }
+  const gap = new ApiError('tariff_gap', { status: 400, data: { club_id: 'c1', weekday: 3, from: '02:00', to: '06:00' } });
+  assert.equal(errorMessage(gap, { audience: 'staff', clubName: 'Клуб Калининград' }).title, '«Клуб Калининград»: в среду с 02:00 до 06:00 нет цены.');
+  assert.equal(errorMessage(gap, { audience: 'staff', clubName: ' ' }).title, 'В среду с 02:00 до 06:00 нет цены.');
+});

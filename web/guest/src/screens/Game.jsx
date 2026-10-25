@@ -2,7 +2,8 @@ import { isTestClub } from '../lib/testmode.js';
 import { TestModeNote } from '../components/TestModeNote.jsx';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { formatDuration, formatMoney, formatTime } from '@billiardum/shared/format';
-import { tableKind } from '@billiardum/shared/hall';
+import { resourceArt } from '@billiardum/shared/hall';
+import { familyText, nounOf, slotLabel, slotMinutesOf, slotOptions } from '@billiardum/shared/resource';
 import { Stage } from '../components/Stage.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { Dialog } from '../components/Dialog.jsx';
@@ -118,7 +119,7 @@ export function GameScreen({ id }) {
 
   const tz = clubTimeZone(session.club?.timezone);
   const number = session.resource?.number;
-  const kind = tableKind(session.resource?.type);
+  const kind = resourceArt(session.resource);
   const phase = view.phase;
 
   if (phase === 'interrupted') return <Interrupted session={session} view={view} kind={kind} onUpdate={apply} />;
@@ -129,9 +130,9 @@ export function GameScreen({ id }) {
 
   return (
     <div class={`screen screen--game screen--${phase}`}>
-      <Stage kind={kind} lit={lampState(phase)} tone={tone} label={`${tableName(number)}, игра`} pulse={pulseLamp(view, session)} ring={timeLeftShare(view, session)}>
+      <Stage kind={kind} lit={lampState(phase)} tone={tone} label={`${tableName(number, session.resource)}, игра`} pulse={pulseLamp(view, session)} ring={timeLeftShare(view, session)}>
         <p class="stage__kicker">
-          {tableName(number)}
+          {tableName(number, session.resource)}
           {live !== 'open' ? <span class="stage__live"> · обновляем…</span> : null}
         </p>
         <div class={`timer timer--${phase}`} role="timer" aria-label={texts.aria}>
@@ -168,7 +169,8 @@ export function GameScreen({ id }) {
 let matchPanel = null;
 function MatchSlot({ session }) {
   const { user } = useStore(auth);
-  const hasRival = (session.participants ?? []).some((p) => p.user_id && p.user_id !== user?.id);
+  // Рейтинг Бильярдум+ для падела — в бэклоге (№205): на корте партию не записываем
+  const hasRival = nounOf(session.resource).family !== 'court' && (session.participants ?? []).some((p) => p.user_id && p.user_id !== user?.id);
   const [Panel, setPanel] = useState(() => matchPanel);
   useEffect(() => {
     if (!hasRival || Panel) return;
@@ -204,10 +206,14 @@ function PhaseAnnouncer({ phase }) {
 function Participants({ session }) {
   const list = Array.isArray(session.participants) ? session.participants : [];
   if (!list.length) return null;
+  const w = nounOf(session.resource);
+  // Корт (M5.8 №205): до 4 игроков в одной игре — показываем, сколько мест занято
+  const max = w.family === 'court' && Number.isInteger(session.resource?.max_players) ? session.resource.max_players : null;
   return (
     <section class="players" aria-labelledby="players-title">
       <h2 class="step__label" id="players-title">
-        За столом
+        {w.At}
+        {max ? <span class="step__aside">{list.length} из {max}</span> : null}
       </h2>
       <ul class="players__list">
         {list.map((p, i) => (
@@ -219,7 +225,11 @@ function Participants({ session }) {
           </li>
         ))}
       </ul>
-      <p class="hint">Друг тоже может продлевать игру: пусть отсканирует QR на столе и нажмёт «Я играю за этим столом».</p>
+      <p class="hint">
+        {max && list.length >= max
+          ? `В игре уже ${max} игрока — больше на этот корт не присоединиться.`
+          : `Друг тоже может продлевать игру: пусть отсканирует QR ${w.family === 'court' ? 'на корте' : 'на столе'} и нажмёт «Я играю ${w.atThis}».`}
+      </p>
     </section>
   );
 }
@@ -235,7 +245,7 @@ function ExtendPending({ session, tz }) {
   return (
     <div class="note note--lamp" role="status">
       <Icon name="reception" />
-      <p class="note__title">Подойдите на ресепшн: «{tableName(session.resource?.number)}, {minutesWords(p.minutes)}»</p>
+      <p class="note__title">Подойдите на ресепшн: «{tableName(session.resource?.number, session.resource)}, {minutesWords(p.minutes)}»</p>
       <p class="note__body">
         К оплате <b class="mono">{formatMoney(p.amount)}</b>. Таймер продлится, как только администратор примет оплату. Заявка действует до{' '}
         <span class="mono">{formatTime(p.expiresAt, tz)}</span>.
@@ -295,7 +305,32 @@ function GameActions({ session, view, tz, onUpdate, reload }) {
   );
 }
 
+/**
+ * Длина слота корта для продления (M5.8 №204): из ресурса сессии, из покупки в этой вкладке или из
+ * доступности клуба (GET /api/clubs/{club}/availability — у корта slot_minutes). У стола — null.
+ */
+function useSlotMinutes(session) {
+  const res = session?.resource;
+  const court = nounOf(res).family === 'court';
+  const flow = getFlow();
+  const known = slotMinutesOf(res) ?? (flow.resourceId === res?.id && flow.slotMinutes ? flow.slotMinutes : null);
+  const [slot, setSlot] = useState(known);
+  useEffect(() => {
+    if (!court || slot || !session?.club?.id) return;
+    api
+      .availability(session.club.id)
+      .then((day) => {
+        const r = (day?.resources ?? []).find((x) => x.id === res?.id);
+        if (slotMinutesOf(r)) setSlot(r.slot_minutes);
+      })
+      .catch(() => {});
+  }, [court, res?.id]);
+  return court ? slot ?? known : null;
+}
+
 function ExtendDialog({ open, onClose, session, tz, reload }) {
+  const slot = useSlotMinutes(session);
+  const court = nounOf(session.resource).family === 'court';
   const [minutes, setMinutes] = useState(60);
   const [quote, setQuote] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -308,18 +343,24 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
   // Бронь после игры (№106): к вариантам добавляем «до 20:55» — ровно до предела, если он не совпал с вариантом
   const limitText = extendLimitText(session, (x) => formatTime(x, tz), { by: limitBy });
   const tournamentNote = tournamentExtendText(error, session, (x) => formatTime(x, tz));
-  const options = max !== null && max >= 5 && !EXTEND_OPTIONS.includes(max) ? [...EXTEND_OPTIONS.filter((m) => m < max), max] : EXTEND_OPTIONS;
+  // Корт: продление только слотами — 1…4 слота (сервер, quotes.mjs); вариант «до 20:55» не кратен слоту
+  const options = court
+    ? slotOptions(slot)
+    : max !== null && max >= 5 && !EXTEND_OPTIONS.includes(max) ? [...EXTEND_OPTIONS.filter((m) => m < max), max] : EXTEND_OPTIONS;
 
   useEffect(() => {
     if (!open) {
       setQuote(null);
       setError(null);
+    } else if (court && slot && !options.includes(minutes)) {
+      const fit = options.filter((m) => max === null || m <= max);
+      setMinutes(fit[0] ?? slot);
     } else if (max !== null && minutes > max) {
       // Бронь близко: выбираем самый длинный доступный вариант
       const fit = options.filter((m) => m <= max);
       if (fit.length) setMinutes(fit[fit.length - 1]);
     }
-  }, [open]);
+  }, [open, slot]);
 
   const unlimited = Boolean(session.unlimited);
   const requestQuote = async (opts = {}) => {
@@ -339,6 +380,8 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
         number: session.resource?.number,
         resourceId: session.resource?.id,
         timeZone: tz,
+        family: nounOf(session.resource).family,
+        slotMinutes: slot ?? null,
       });
       setQuote(q);
     } catch (err) {
@@ -356,7 +399,8 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
       {quote ? (
         <Pay
           quote={quote}
-          what={unlimited ? `${tableName(session.resource?.number)} · без лимита` : `${tableName(session.resource?.number)} · ещё ${minutesWords(minutes)}`}
+          what={unlimited ? `${tableName(session.resource?.number, session.resource)} · без лимита` : `${tableName(session.resource?.number, session.resource)} · ещё ${court ? slotLabel(minutes) : minutesWords(minutes)}`}
+          resource={session.resource}
           kind="extend"
           unlimited={unlimited}
           timeZone={tz}
@@ -395,7 +439,7 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
               <p class="note__body">{tournamentNote.action}</p>
             </div>
           ) : (
-            <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
+            <ErrorNote error={error} resource={session.resource} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
           )}
           <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
             {busy ? 'Считаем цену…' : 'Рассчитать продление'}
@@ -409,8 +453,14 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
             requestQuote();
           }}
         >
+          {court && !slot ? (
+            <p class="waiting" role="status">
+              <span class="waiting__dot" aria-hidden="true" />
+              Узнаём длину слота корта…
+            </p>
+          ) : null}
           <fieldset>
-            <legend class="step__label">На сколько продлить?</legend>
+            <legend class="step__label">{court && slot ? `На сколько продлить? Слот — ${slotLabel(slot)}` : 'На сколько продлить?'}</legend>
             <div class="choice choice--grid">
               {options.map((m) => {
                 const blocked = max !== null && m > max;
@@ -419,8 +469,8 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
                   <label class="choice__item" key={m}>
                     <input type="radio" name="extend" value={m} checked={minutes === m} disabled={blocked} onChange={() => setMinutes(m)} />
                     <span class="choice__box">
-                      <span class="choice__title">{toLimit ? `До ${formatTime(session.extend_limit_until, tz)}` : optionLabel(m)}</span>
-                      <span class="choice__sub">{blocked ? (limitBy === 'tournament' ? 'Турнир' : 'Стол занят') : `До ${formatTime(from + m * 60000, tz)}`}</span>
+                      <span class="choice__title">{toLimit ? `До ${formatTime(session.extend_limit_until, tz)}` : optionLabel(m, court ? { slot_minutes: slot } : undefined)}</span>
+                      <span class="choice__sub">{blocked ? (limitBy === 'tournament' ? 'Турнир' : `${nounOf(session.resource).Nom} занят`) : `До ${formatTime(from + m * 60000, tz)}`}</span>
                     </span>
                   </label>
                 );
@@ -440,10 +490,10 @@ function ExtendDialog({ open, onClose, session, tz, reload }) {
               <p class="note__body">{tournamentNote.action}</p>
             </div>
           ) : (
-            <ErrorNote error={error} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
+            <ErrorNote error={error} resource={session.resource} limitUntil={session.extend_limit_until ? formatTime(session.extend_limit_until, tz) : undefined} />
           )}
-          <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || (max !== null && minutes > max)}>
-            {busy ? 'Считаем цену…' : `Рассчитать цену за ${minutesWords(minutes, { accusative: true })}`}
+          <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || (max !== null && minutes > max) || (court && !options.includes(minutes))}>
+            {busy ? 'Считаем цену…' : `Рассчитать цену за ${court ? slotLabel(minutes) : minutesWords(minutes, { accusative: true })}`}
           </button>
         </form>
       )}
@@ -476,11 +526,11 @@ function StopDialog({ open, onClose, session, view, onStopped }) {
       <div class="step">
         {unlimited ? (
           <p class="lead">
-            Свет над столом погаснет. Посчитаем фактическое время — <b>{durationWords(view.ms)}</b> — и сразу покажем чек.
+            {familyText('Свет над столом погаснет.', session.resource)} Посчитаем фактическое время — <b>{durationWords(view.ms)}</b> — и сразу покажем чек.
           </p>
         ) : (
           <>
-            <p class="lead">Свет над столом погаснет.</p>
+            <p class="lead">{familyText('Свет над столом погаснет.', session.resource)}</p>
             <div class="note note--lamp">
               <Icon name="info" />
               <p class="note__title">Оплаченное время не возвращается</p>
@@ -526,14 +576,14 @@ function Interrupted({ session, view, kind, onUpdate }) {
 
   return (
     <div class="screen">
-      <Stage kind={kind} lit="false" label={`${tableName(session.resource?.number)}, игра прервана`}>
-        <p class="stage__kicker">{tableName(session.resource?.number)}</p>
+      <Stage kind={kind} lit="false" label={`${tableName(session.resource?.number, session.resource)}, игра прервана`}>
+        <p class="stage__kicker">{tableName(session.resource?.number, session.resource)}</p>
         <h1 class="stage__title display">Свет погас раньше времени</h1>
       </Stage>
       <main class="wrap content">
         <div class="step">
           <p class="lead">
-            Стол терял связь с сервером и выключил свет по своему таймеру. Неотыгранное время — <b>{left}</b>.
+            {familyText('Стол терял связь с сервером и выключил свет по своему таймеру.', session.resource)} Неотыгранное время — <b>{left}</b>.
           </p>
           {session.is_payer ? (
             <>
@@ -562,13 +612,13 @@ function Closed({ session, kind, tab }) {
   const t = tabSummary(tab);
   return (
     <div class="screen">
-      <Stage kind={kind} lit="false" label={`${tableName(session.resource?.number)}, игра завершена`}>
-        <p class="stage__kicker">{tableName(session.resource?.number)}</p>
+      <Stage kind={kind} lit="false" label={`${tableName(session.resource?.number, session.resource)}, игра завершена`}>
+        <p class="stage__kicker">{tableName(session.resource?.number, session.resource)}</p>
         <h1 class="stage__title display">{session.status === 'cancelled' ? 'Игра отменена' : 'Игра завершена'}</h1>
       </Stage>
       <main class="wrap content">
         <div class="step">
-          <p class="lead">Свет над столом выключен. Спасибо за игру!</p>
+          <p class="lead">{familyText('Свет над столом выключен. Спасибо за игру!', session.resource)}</p>
           {t.open ? (
             <div class="note note--lamp" role="status">
               <Icon name="cup" />

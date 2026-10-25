@@ -19,6 +19,7 @@
     "./bar": "./bar.mjs",
     "./booking": "./booking.mjs",
     "./plus": "./plus.mjs",
+    "./resource": "./resource.mjs",
     "./tokens.css": "./tokens.css",
     "./fonts.css": "./fonts.css",
     "./hall.css": "./hall.css",

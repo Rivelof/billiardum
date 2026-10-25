@@ -81,13 +81,14 @@ export function busyAt(resource, fromMs, toMs) {
  * Для выбранного стола — занят ли он в это деление; без стола — сколько столов свободны хотя бы min_minutes.
  * Прошедшее время и ближе lead_minutes к «сейчас» недоступно.
  * @param {object} day ответ availability
- * @param {{ resourceId?: string | null, now?: number }} [opts]
+ * @param {{ resourceId?: string | null, now?: number, minMinutes?: number }} [opts]
  * @returns {{ at: number, label: string, hour: boolean, state: 'free' | 'busy' | 'past', free: number }[]}
  */
 export function boardSlots(day, opts = {}) {
   const tz = day.club?.timezone;
   const step = day.step_minutes ?? 30;
-  const min = day.min_minutes ?? 60;
+  // minMinutes — короче нельзя: у корта — слот (M5.8), у стола — min_minutes клуба
+  const min = opts.minMinutes ?? day.min_minutes ?? 60;
   const open = ms(day.open_at);
   const close = ms(day.close_at);
   const now = opts.now ?? Date.now();
@@ -139,6 +140,8 @@ export function freeTables(day, startMs, minutes) {
  */
 export function bookingPrice(rates, startMs, minutes) {
   if (!Array.isArray(rates) || !rates.length || !(minutes > 0)) return null;
+  // Корт (M5.8 №204): цена за слот — минута стоит per_slot_kopecks / slot_minutes (как движок тарифов сервера)
+  if (rates.some(isSlotRate)) return slotBookingPrice(rates, startMs, minutes);
   const parts = [];
   let exact = 0;
   for (let i = 0; i < minutes; i += 1) {
@@ -154,6 +157,73 @@ export function bookingPrice(rates, startMs, minutes) {
   }
   const round = (k) => Math.floor(k / 100 + 0.5) * 100;
   return { amount_kopecks: round(exact), breakdown: parts.map(({ exact: e, ...p }) => ({ ...p, amount_kopecks: round(e) })) };
+}
+
+const isSlotRate = (r) => Number.isInteger(r?.slot_minutes) && r.slot_minutes > 0 && Number.isSafeInteger(r.per_slot_kopecks);
+const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+
+/**
+ * Цена брони корта (M5.8 №204) — точно в целых числах, как server/tariffs/engine.mjs: минута правила слота
+ * стоит per_slot_kopecks / slot_minutes, почасового — per_hour_kopecks / 60; общий знаменатель — НОК единиц,
+ * округление до рублей «половина вверх» один раз (№44). Граница расписания внутри слота делит его по минутам.
+ * Отрезок разбивки: { from, to, per_hour_kopecks, per_slot_kopecks?, slot_minutes?, amount_kopecks }.
+ */
+function slotBookingPrice(rates, startMs, minutes) {
+  const unit = (r) => (isSlotRate(r) ? r.slot_minutes : 60);
+  const price = (r) => (isSlotRate(r) ? r.per_slot_kopecks : r.per_hour_kopecks);
+  let den = 60;
+  for (const r of rates) den = (den / gcd(den, unit(r))) * unit(r);
+  const weight = (r) => price(r) * (den / unit(r));
+  // Рубли «половина вверх» из numerator / den копеек
+  const round = (num) => Math.floor((num * 2 + den * 100) / (2 * den * 100)) * 100;
+  const parts = [];
+  let total = 0;
+  for (let i = 0; i < minutes; i += 1) {
+    const t = startMs + i * MIN;
+    const rate = rates.find((r) => ms(r.from) <= t && t < ms(r.to));
+    if (!rate || !Number.isSafeInteger(price(rate))) return null;
+    const last = parts[parts.length - 1];
+    if (last && last.rate.per_hour_kopecks === rate.per_hour_kopecks && price(last.rate) === price(rate) && unit(last.rate) === unit(rate)) {
+      last.to = t + MIN;
+      last.num += weight(rate);
+    } else parts.push({ rate, from: t, to: t + MIN, num: weight(rate) });
+    total += weight(rate);
+  }
+  // Сумма отрезка — разница округлённых нарастающих итогов, как у сервера: отрезки в сумме дают итог
+  let cum = 0;
+  let prev = 0;
+  return {
+    amount_kopecks: round(total),
+    breakdown: parts.map(({ rate, from, to, num }) => {
+      cum += num;
+      const r = round(cum);
+      const amount = r - prev;
+      prev = r;
+      return {
+        from,
+        to,
+        per_hour_kopecks: rate.per_hour_kopecks,
+        ...(isSlotRate(rate) ? { per_slot_kopecks: rate.per_slot_kopecks, slot_minutes: rate.slot_minutes } : {}),
+        amount_kopecks: amount,
+      };
+    }),
+  };
+}
+
+/**
+ * Длительности брони корта (M5.8 №204): 1, 2, 3… слота — от слота до max_minutes клуба, округлённого вниз
+ * до слота (но не меньше слота), и не дольше свободного окна корта. Нет слота у корта — [].
+ * @param {object} day ответ availability
+ * @param {{ id: string, slot_minutes?: number | null }} resource
+ */
+export function slotDurations(day, resource, startMs) {
+  const slot = Number(resource?.slot_minutes);
+  if (!Number.isInteger(slot) || slot <= 0) return [];
+  const max = Math.max(slot, Math.floor((day.max_minutes ?? 240) / slot) * slot);
+  const run = freeRun(day, resource.id, startMs);
+  const out = [];
+  for (let m = slot; m <= Math.min(max, run); m += slot) out.push(m);
+  return out;
 }
 
 /**

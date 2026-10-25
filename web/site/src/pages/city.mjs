@@ -1,7 +1,7 @@
 import { formatMoney, plural } from '@billiardum/shared/format';
 import { html } from '../html.mjs';
 import { ClubRow, Crumbs, Empty } from '../components.mjs';
-import { DISCIPLINES, PRICE_CAPS, SORTS, applyFilters, clubsWord, hasFilters, parseFilters, tablesWord } from '../lib.mjs';
+import { CATALOG_DISCIPLINES, PRICE_CAPS, SORTS, applyFilters, clubsWord, courtsWord, hasFilters, padelOnly, parseFilters, tablesWord } from '../lib.mjs';
 import { breadcrumbsLd, clubListLd } from '../seo.mjs';
 
 function Chip({ type = 'checkbox', name, value = '1', checked, children }) {
@@ -13,7 +13,7 @@ function Filters({ city, f, total, shown }) {
   return html`<form class="filters" method="get" action=${`/${city.slug}/`} data-autosubmit aria-label="Фильтры каталога">
     <fieldset class="filters__group">
       <legend>Игра</legend>
-      <div class="chips">${Object.entries(DISCIPLINES).map(([k, v]) => html`<${Chip} name="d" value=${k} checked=${f.d.includes(k)}>${v}<//>`)}</div>
+      <div class="chips">${Object.entries(CATALOG_DISCIPLINES).map(([k, v]) => html`<${Chip} name="d" value=${k} checked=${f.d.includes(k)}>${v}<//>`)}</div>
     </fieldset>
     <fieldset class="filters__group">
       <legend>Условия</legend>
@@ -24,7 +24,7 @@ function Filters({ city, f, total, shown }) {
       </div>
     </fieldset>
     <fieldset class="filters__group">
-      <legend>Цена часа</legend>
+      <legend>Цена часа стола</legend>
       <div class="chips">
         <${Chip} type="radio" name="max" value="" checked=${!f.max}>Любая<//>
         ${PRICE_CAPS.map((p) => html`<${Chip} type="radio" name="max" value=${p} checked=${f.max === p}>до ${formatMoney(p * 100)}<//>`)}
@@ -53,6 +53,11 @@ export async function cityPage({ api, cfg, params, url }) {
   const list = applyFilters(clubs, f);
   const platform = clubs.filter((c) => c.status === 'platform');
   const freeTotal = platform.reduce((s, c) => s + (c.free_now ?? 0), 0);
+  // M5.8: падел-корты города — отдельно от столов
+  const padel = clubs.some((c) => c.disciplines?.includes('padel'));
+  const courtsFree = platform.reduce((s, c) => s + (c.courts_free_now ?? 0), 0);
+  const courtsTotal = platform.reduce((s, c) => s + (c.courts_count ?? 0), 0);
+  const onlyPadel = padelOnly(f);
   const crumbs = [{ name: 'Главная', path: '/' }, { name: city.name, path: `/${city.slug}/` }];
 
   const body = html`<div class="wrap page">
@@ -61,7 +66,7 @@ export async function cityPage({ api, cfg, params, url }) {
       <h1 class="display page__title">Бильярдные клубы ${city.name_in}</h1>
       <p class="page__lead">${clubs.length
         ? html`${clubs.length} ${clubsWord(clubs.length)}${platform.length
-          ? html`, ${platform.length} из них на программе Бильярдума: там видно свободные столы, а играть можно по QR-коду. Сейчас свободно <b>${freeTotal} ${tablesWord(freeTotal)}</b>.`
+          ? html`, ${platform.length} из них на программе Бильярдума: там видно свободные столы, а играть можно по QR-коду. Сейчас свободно <b>${freeTotal} ${tablesWord(freeTotal)}</b>${courtsTotal ? html` и <b>${courtsFree} ${courtsWord(courtsFree)}</b> для падела` : ''}.`
           : '. Клубы на программе Бильярдума здесь пока не работают: бронь — по заявке.'}`
         : 'Клубов в каталоге пока нет.'}</p>
     </header>
@@ -69,7 +74,7 @@ export async function cityPage({ api, cfg, params, url }) {
       <${Filters} city=${city} f=${f} total=${clubs.length} shown=${list.length} />
       <section class="catalog__list" aria-labelledby="found">
         <h2 class="catalog__count" id="found"><span role="status">${list.length ? `Найдено ${list.length} ${clubsWord(list.length)}` : 'Ничего не нашлось'}</span></h2>
-        ${list.length ? html`<ul class="clubs">${list.map((c) => html`<${ClubRow} club=${c} hours=${f.h} />`)}</ul>`
+        ${list.length ? html`<ul class="clubs">${list.map((c) => html`<${ClubRow} club=${c} hours=${f.h} courts=${onlyPadel} />`)}</ul>`
           : html`<${Empty} ill="pocket" title="Под эти условия клубов нет"
               action=${html`<a class="btn btn--quiet" href=${`/${city.slug}/`}>Показать все клубы</a>`}>
               ${f.free ? '«Свободно сейчас» видно только у клубов на программе Бильярдума. ' : ''}Попробуйте убрать часть фильтров.<//>`}
@@ -85,7 +90,7 @@ export async function cityPage({ api, cfg, params, url }) {
   return {
     path: `/${city.slug}/`,
     title: `Бильярдные клубы ${city.name_in}${platform.length ? `: свободно ${freeTotal} ${plural(freeTotal, ['стол', 'стола', 'столов'])} сейчас` : ''} — Бильярдум`,
-    description: `${clubs.length} ${clubsWord(clubs.length)} ${city.name_in}: русская пирамида, пул, снукер. Свободные столы сейчас, цены за час, онлайн-бронь и круглосуточные клубы.`,
+    description: `${clubs.length} ${clubsWord(clubs.length)} ${city.name_in}: русская пирамида, пул, снукер${padel ? ', падел' : ''}. Свободные столы${padel ? ' и корты' : ''} сейчас, цены, онлайн-бронь и круглосуточные клубы.`,
     body,
     islands: [],
     jsonld: [breadcrumbsLd(cfg.origin, crumbs), clubListLd(cfg.origin, city, list)],

@@ -7,7 +7,7 @@ import { createApi } from './api.mjs';
 import { ApiUnavailable } from './data.mjs';
 import { renderDocument } from './document.mjs';
 import { listArticles } from './journal.mjs';
-import { DISCIPLINE_SHORT, RESERVED, SLUG, TABLE_CODE, UUID, tablesWord } from './lib.mjs';
+import { DISCIPLINE_SHORT, RESERVED, SLUG, TABLE_CODE, UUID, courtPriceText, courtsWord, tablesWord } from './lib.mjs';
 import { ogImage } from './og.mjs';
 import { robotsTxt, sitemapXml } from './seo.mjs';
 import { homePage } from './pages/home.mjs';
@@ -107,6 +107,8 @@ export function createSite({ cfg, data, now: clock = () => Date.now(), mockApi =
         subtitle: c.address,
         facts: [
           c.tables_count ? `${c.tables_count} ${tablesWord(c.tables_count)}${disc ? `: ${disc}` : ''}` : disc,
+          // M5.8: падел-корты клуба и цена слота
+          c.courts_count ? `${c.courts_count} ${courtsWord(c.courts_count)} для падела${courtPriceText(c) ? `, ${courtPriceText(c)}` : ''}` : null,
           c.price_from_kopecks ? `от ${formatMoney(c.price_from_kopecks)} в час` : c.status === 'platform' ? '' : 'Бронь по заявке',
         ].filter(Boolean),
       };

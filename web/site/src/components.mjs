@@ -3,11 +3,12 @@
  * счёты, сетка турнира, таблица рейтинга, сетка цен, пустые состояния. Всё рендерится на сервере.
  */
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
-import { tableKind, tableSvg } from '@billiardum/shared/hall';
+import { resourceArt, tableKind, tableSvg } from '@billiardum/shared/hall';
+import { familyOf, resourceName, slotLabel } from '@billiardum/shared/resource';
 import { illustration } from '@billiardum/shared/illustrations';
 import { html, Icon, Raw } from './html.mjs';
 import {
-  DISCIPLINES, FORMATS, disciplinesText, TOURNAMENT_STATUS, freeWord, hallLabel, hoursText, priceForHours,
+  DISCIPLINES, FORMATS, courtPriceText, courtsWord, disciplinesText, TOURNAMENT_STATUS, freeWord, hallKey, hallLabel, hoursText, priceForHours,
   priceGrid, publicTableState, seatsLeft, tablesWord, tournamentUrl,
 } from './lib.mjs';
 
@@ -137,37 +138,45 @@ export function Badge({ tone = 'free', children }) {
 export function HallPlan({ hall, club, city, timezone, now = Date.now(), headingId, heading }) {
   const resources = [...(hall?.resources ?? [])].sort((a, b) => a.number - b.number);
   const states = resources.map((r) => ({ r, s: publicTableState(r, timezone, now) }));
-  const free = states.filter(({ s }) => s.tone === 'free' || s.tone === 'booked').length;
+  const isFree = ({ s }) => s.tone === 'free' || s.tone === 'booked';
+  // M5.8: столы и падел-корты — отдельными рядами и своими счётчиками («Корт 1» и «Стол 1» — разные)
+  const tables = states.filter(({ r }) => familyOf(r) !== 'court');
+  const courts = states.filter(({ r }) => familyOf(r) === 'court');
+  const free = tables.filter(isFree).length;
+  const freeCourts = courts.filter(isFree).length;
   const groups = [
-    states.filter(({ r }) => tableKind(r.type) === 'pyramid'),
-    states.filter(({ r }) => tableKind(r.type) === 'pool'),
+    tables.filter(({ r }) => tableKind(r.type) === 'pyramid'),
+    tables.filter(({ r }) => tableKind(r.type) === 'pool'),
   ].filter((g) => g.length);
   const booking = club.online_booking && club.club_id;
   // Одна сетка для всех рядов: пул под пирамидами стоит в тех же колонках
   const cols = Math.min(6, Math.max(1, ...groups.map((g) => g.length)));
+  const cell = ({ r, s }) => {
+    const kind = resourceArt(r);
+    const court = kind === 'court';
+    const art = html`<span class="tbl__art lit-host" data-lit=${s.lit ? 'true' : 'false'}><span class="tbl__glow"></span><${Raw} html=${tableSvg(kind, { uid: `t${club.slug}-${court ? 'c' : ''}${r.number}` })} /></span>
+          <span class="tbl__cap"><span class="tbl__num">${resourceName(r, r.number)}</span>${' '}<span class="tbl__status" data-status>${s.word}</span></span>`;
+    const attrs = { 'data-tone': s.tone, 'data-kind': kind, 'data-n': hallKey(r) };
+    const href = `${APP}book/${club.club_id}${court ? '?family=court' : `?table=${r.number}`}`;
+    return html`<li class="plan-cell">${booking
+      ? html`<a class="tbl" href=${href} aria-label=${`${hallLabel(r, s)}. Забронировать`} ...${attrs}>${art}</a>`
+      : html`<div class="tbl" role="img" aria-label=${hallLabel(r, s)} ...${attrs}>${art}</div>`}</li>`;
+  };
   return html`<section class="hall hall--site" aria-labelledby=${headingId}
       data-hall data-src=${`/api/public/clubs/${city}/${club.slug}`} data-tz=${timezone}>
     <div class="hall__head">
       <h2 class="hall__title" id=${headingId}>${heading ?? 'Зал сейчас'}</h2>
-      <p class="hall__free" aria-live="polite"><b data-hall-free>${free}</b> <span data-hall-word>${plural(free, ['стол', 'стола', 'столов'])} ${freeWord(free)}</span> из ${resources.length}</p>
+      ${tables.length ? html`<p class="hall__free" aria-live="polite"><b data-hall-free>${free}</b> <span data-hall-word>${plural(free, ['стол', 'стола', 'столов'])} ${freeWord(free)}</span> из ${tables.length}</p>` : null}
+      ${courts.length ? html`<p class="hall__free" aria-live="polite"><b data-hall-free-court>${freeCourts}</b> <span data-hall-word-court>${courtsWord(freeCourts)} ${freeWord(freeCourts)}</span> из ${courts.length}</p>` : null}
       <ul class="legend" aria-label="Обозначения">
         <li><span class="legend__mark"></span>Свободен</li>
         <li><span class="legend__mark legend__mark--play"></span>Идёт игра, свет горит</li>
         <li><span class="legend__mark legend__mark--booked"></span>Бронь</li>
       </ul>
     </div>
-    ${groups.map((g) => html`<ul class=${`plan-grid plan-grid--c${cols}`}>
-      ${g.map(({ r, s }) => {
-        const kind = tableKind(r.type);
-        const art = html`<span class="tbl__art lit-host" data-lit=${s.lit ? 'true' : 'false'}><span class="tbl__glow"></span><${Raw} html=${tableSvg(kind, { uid: `t${club.slug}-${r.number}` })} /></span>
-          <span class="tbl__cap"><span class="tbl__num">Стол ${r.number}</span>${' '}<span class="tbl__status" data-status>${s.word}</span></span>`;
-        const attrs = { 'data-tone': s.tone, 'data-kind': kind, 'data-n': r.number };
-        return html`<li class="plan-cell">${booking
-          ? html`<a class="tbl" href=${`${APP}book/${club.club_id}?table=${r.number}`} aria-label=${`${hallLabel(r, s)}. Забронировать`} ...${attrs}>${art}</a>`
-          : html`<div class="tbl" role="img" aria-label=${hallLabel(r, s)} ...${attrs}>${art}</div>`}</li>`;
-      })}
-    </ul>`)}
-    <p class="hall__note small">${booking ? 'Нажмите на стол, чтобы забронировать его в приложении.' : 'Онлайн-бронь в этом клубе пока не включена: приходите и играйте по QR-коду на столе.'} Обновляется каждые 30 секунд.</p>
+    ${groups.map((g) => html`<ul class=${`plan-grid plan-grid--c${cols}`}>${g.map(cell)}</ul>`)}
+    ${courts.length ? html`<h3 class="hall__sub">Падел-корты</h3><ul class=${`plan-grid plan-grid--courts plan-grid--c${Math.min(4, courts.length)}`}>${courts.map(cell)}</ul>` : null}
+    <p class="hall__note small">${booking ? `Нажмите на ${courts.length && tables.length ? 'стол или корт' : courts.length ? 'корт' : 'стол'}, чтобы забронировать в приложении.` : 'Онлайн-бронь в этом клубе пока не включена: приходите и играйте по QR-коду.'} Обновляется каждые 30 секунд.</p>
   </section>`;
 }
 
@@ -177,37 +186,52 @@ export function HallPlan({ hall, club, city, timezone, now = Date.now(), heading
  */
 export function HallStrip({ club }) {
   const n = club.tables_count ?? 0;
-  if (!n) return null;
+  // M5.8: корты — после столов, крупнее
+  const k = club.courts_count ?? 0;
+  if (!n && !k) return null;
   const live = club.status === 'platform' && club.free_now !== null;
   const free = live ? Math.min(n, club.free_now) : 0;
-  const label = live ? `Свободно ${free} из ${n}` : `${n} ${tablesWord(n)}, занятость видна только у клубов на программе`;
+  const freeK = live ? Math.min(k, club.courts_free_now ?? 0) : 0;
+  const parts = live
+    ? [n ? `Свободно ${free} из ${n} ${plural(n, ['стола', 'столов', 'столов'])}` : null, k ? `${n ? 'с' : 'С'}вободно ${freeK} из ${k} ${plural(k, ['корта', 'кортов', 'кортов'])}` : null]
+    : [n ? `${n} ${tablesWord(n)}` : null, k ? `${k} ${courtsWord(k)}` : null];
+  const label = live ? parts.filter(Boolean).join(', ') : `${parts.filter(Boolean).join(', ')}, занятость видна только у клубов на программе`;
+  const item = (i, f, court) => html`<i class=${`strip__t${court ? ' strip__t--court' : ''} ${!live ? 'strip__t--idle' : i < f ? 'strip__t--off' : 'strip__t--on'}`}></i>`;
   return html`<span class=${`strip${live ? '' : ' strip--idle'}`} role="img" aria-label=${label}>
-    ${Array.from({ length: Math.min(n, 30) }, (_, i) => html`<i class=${`strip__t ${!live ? 'strip__t--idle' : i < free ? 'strip__t--off' : 'strip__t--on'}`}></i>`)}
+    ${Array.from({ length: Math.min(n, 30) }, (_, i) => item(i, free, false))}
+    ${Array.from({ length: Math.min(k, 8) }, (_, i) => item(i, freeK, true))}
   </span>`;
 }
 
-export function ClubStatus({ club }) {
+export function ClubStatus({ club, courts = false }) {
   if (club.status !== 'platform') return html`<${Badge} tone="reserved">Бронь по заявке<//>`;
+  // Только корты в клубе или фильтр «Падел» — статус по кортам (M5.8)
+  if (courts || (!club.tables_count && club.courts_count)) {
+    if (club.courts_free_now > 0) return html`<${Badge} tone="free">Свободно ${club.courts_free_now} ${courtsWord(club.courts_free_now)}<//>`;
+    return html`<${Badge} tone="play">Все корты заняты<//>`;
+  }
   if (club.free_now > 0) return html`<${Badge} tone="free">Свободно ${club.free_now}<//>`;
   return html`<${Badge} tone="play">Все столы заняты<//>`;
 }
 
-export function ClubRow({ club, hours }) {
+export function ClubRow({ club, hours, courts = false }) {
   const h = hoursText(club);
   const disciplines = disciplinesText(club.disciplines);
-  const forHours = priceForHours(club, hours);
+  const forHours = courts ? null : priceForHours(club, hours);
+  const court = courtPriceText(club);
   return html`<li class="club-row">
     <div class="club-row__main">
       <h3 class="club-row__name"><a href=${club.path}>${club.name}</a></h3>
       <p class="club-row__addr">${club.address}</p>
-      <p class="club-row__meta">${[disciplines, club.tables_count ? `${club.tables_count} ${tablesWord(club.tables_count)}` : null, h[0]].filter(Boolean).join(', ')}</p>
+      <p class="club-row__meta">${[disciplines, club.tables_count ? `${club.tables_count} ${tablesWord(club.tables_count)}` : null, club.courts_count ? `${club.courts_count} ${courtsWord(club.courts_count)}` : null, h[0]].filter(Boolean).join(', ')}</p>
     </div>
     <div class="club-row__hall"><${HallStrip} club=${club} /></div>
     <div class="club-row__side">
-      <${ClubStatus} club=${club} />
+      <${ClubStatus} club=${club} courts=${courts} />
       ${forHours ? html`<p class="club-row__price"><b>${forHours}</b></p>`
-        : club.price_from_kopecks ? html`<p class="club-row__price"><span>от <b>${formatMoney(club.price_from_kopecks)}</b> в час</span></p>`
-        : html`<p class="club-row__price small">Цены уточняйте в клубе</p>`}
+        : club.price_from_kopecks && !courts ? html`<p class="club-row__price"><span>от <b>${formatMoney(club.price_from_kopecks)}</b> в час</span></p>`
+        : !court ? html`<p class="club-row__price small">Цены уточняйте в клубе</p>` : null}
+      ${court ? html`<p class="club-row__price small">Падел: ${court}</p>` : null}
       ${club.rating ? html`<p class="club-row__rate small"><${Icon} name="star" /> ${String(club.rating.avg).replace('.', ',')}, ${club.rating.count} ${plural(club.rating.count, ['отзыв', 'отзыва', 'отзывов'])}</p>` : null}
     </div>
   </li>`;
@@ -221,7 +245,7 @@ export function PriceGrid({ prices }) {
     const g = priceGrid(block);
     return html`<div class="scroll-x" tabindex="0" role="region" aria-label=${`Цены: ${g.title}`}>
       <table class="ptable">
-        <caption>${g.title}, ₽ за час</caption>
+        <caption>${g.title}, ₽ за ${g.slot_minutes ? slotLabel(g.slot_minutes) : 'час'}</caption>
         <thead><tr><th scope="col"><span class="visually-hidden">Дни</span></th>${g.cols.map((c) => html`<th scope="col">${c.label}</th>`)}</tr></thead>
         <tbody>${g.rows.map((r) => html`<tr><th scope="row">${r.label}</th>${r.cells.map((k) => html`<td>${k === null ? html`<span aria-label="нет">—</span>` : formatMoney(k)}</td>`)}</tr>`)}</tbody>
       </table>

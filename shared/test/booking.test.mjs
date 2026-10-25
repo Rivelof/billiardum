@@ -20,6 +20,7 @@ import {
   primaryChannel,
   normalizePhone,
   prepayFor,
+  slotDurations,
   sortBookings,
   waitlistView,
   zonedMs,
@@ -96,6 +97,43 @@ test('цена брони поминутно по тарифу, округлен
   assert.equal(prepayFor({ prepayment: 'none' }, 105000), 0);
   assert.equal(holdMinutes(0), 15);
   assert.equal(holdMinutes(50000), 30);
+});
+
+test('M5.8: цена брони корта по слотам — минута стоит цену слота / длину слота, граница внутри слота по минутам', () => {
+  const rates = [
+    { from: new Date(at(12)).toISOString(), to: new Date(at(17)).toISOString(), per_hour_kopecks: 160000, per_slot_kopecks: 240000, slot_minutes: 90 },
+    { from: new Date(at(17)).toISOString(), to: new Date(at(26)).toISOString(), per_hour_kopecks: 240000, per_slot_kopecks: 360000, slot_minutes: 90 },
+  ];
+  assert.equal(bookingPrice(rates, at(13), 90).amount_kopecks, 240000, 'один дневной слот');
+  assert.equal(bookingPrice(rates, at(18), 270).amount_kopecks, 3 * 360000, 'три вечерних слота — ровно, без ошибки плавающей точки');
+  // 16:30–18:00: 30 минут дневной цены (800 ₽) и 60 минут вечерней (2 400 ₽) — как server/payments README
+  const p = bookingPrice(rates, at(16, 30), 90);
+  assert.equal(p.amount_kopecks, 80000 + 240000);
+  assert.deepEqual(p.breakdown.map((b) => [b.per_slot_kopecks, b.slot_minutes, b.amount_kopecks]), [[240000, 90, 80000], [360000, 90, 240000]]);
+  assert.equal(p.breakdown.reduce((s, b) => s + b.amount_kopecks, 0), p.amount_kopecks, 'отрезки в сумме — итог');
+  // Округление до рублей «половина вверх» один раз: 1 001 ₽ за 90 минут, 60 минут — 667,33 ₽ → 667 ₽
+  const odd = [{ from: new Date(at(12)).toISOString(), to: new Date(at(26)).toISOString(), per_hour_kopecks: 66733, per_slot_kopecks: 100100, slot_minutes: 90 }];
+  assert.equal(bookingPrice(odd, at(13), 60).amount_kopecks, 66700);
+  assert.equal(bookingPrice(odd, at(13), 45).amount_kopecks, 50100, '500,50 ₽ — половина вверх');
+  assert.equal(bookingPrice(rates, at(25, 30), 90), null, 'нет тарифа после закрытия');
+  // Почасовой стол — прежний расчёт (без полей слота)
+  const hourly = [{ from: new Date(at(12)).toISOString(), to: new Date(at(26)).toISOString(), per_hour_kopecks: 50000 }];
+  assert.deepEqual(Object.keys(bookingPrice(hourly, at(13), 60).breakdown[0]).sort(), ['amount_kopecks', 'from', 'per_hour_kopecks', 'to']);
+});
+
+test('M5.8: длительности брони корта — 1…N слотов, не дольше окна и max_minutes (округлён вниз до слота)', () => {
+  const court = { id: 'r1', slot_minutes: 90 };
+  assert.deepEqual(slotDurations(DAY, court, at(20)), [90, 180], 'max_minutes 240 → 180');
+  assert.deepEqual(slotDurations(DAY, court, at(16)), [90], 'до брони в 18:00 — 120 минут, помещается один слот');
+  assert.deepEqual(slotDurations(DAY, court, at(17)), [], 'час до брони — слот не помещается');
+  assert.deepEqual(slotDurations({ ...DAY, max_minutes: 60 }, court, at(20)), [90], 'max_minutes меньше слота — один слот');
+  assert.deepEqual(slotDurations(DAY, { id: 'r1', slot_minutes: null }, at(20)), [], 'у корта нет тарифа слотов');
+  assert.deepEqual(slotDurations(DAY, { id: 'r1', slot_minutes: 60 }, at(20)), [60, 120, 180, 240]);
+  // Борт-шкала корта: короче слота нельзя
+  const slots = boardSlots(DAY, { resourceId: 'r1', now: at(12), minMinutes: 90 });
+  assert.equal(slots.find((s) => s.label === '17:00').state, 'busy', '17:00 + 90 минут упирается в бронь в 18:00');
+  assert.equal(slots.find((s) => s.label === '16:30').state, 'free', '16:30–18:00 — граница не пересечение');
+  assert.equal(slots.at(-1).label, '00:30', 'последнее начало — за слот до закрытия');
 });
 
 test('мои брони: ближайшие сверху, прошедшие ниже; условия отмены словами', () => {

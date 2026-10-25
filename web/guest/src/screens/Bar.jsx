@@ -33,6 +33,7 @@ import { linkHandler } from '../lib/router.js';
 import { session as sessionStore } from '../lib/store.js';
 import { safeRedirectUrl } from '../lib/urls.js';
 import { tableName } from '../lib/words.js';
+import { familyText } from '@billiardum/shared/resource';
 import { ORDER_STEPS, canOrder, itemsWord, orderCta, ordersWord, sortGuestOrders, stepIndex, tabSummary } from '../lib/bar.js';
 import '../styles/bar.css';
 
@@ -143,7 +144,7 @@ export function BarScreen({ sessionId }) {
           <h1 class="page-title display">Бар</h1>
           {session ? (
             <p class="muted">
-              {open ? `${tableName(number)} — принесём заказ к столу` : `${tableName(number)} — игра закончилась, заказать к столу уже нельзя`}
+              {familyText(open ? `${tableName(number, session.resource)} — принесём заказ к столу` : `${tableName(number, session.resource)} — игра закончилась, заказать к столу уже нельзя`, session.resource)}
             </p>
           ) : null}
         </div>

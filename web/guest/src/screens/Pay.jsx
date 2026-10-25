@@ -10,6 +10,7 @@ import { safeRedirectUrl } from '../lib/urls.js';
 import { navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { balanceCover } from '@billiardum/shared/booking';
+import { nounOf, slotLabel } from '@billiardum/shared/resource';
 
 const METHODS = {
   sbp: { icon: 'transfer', title: 'СБП', sub: 'В приложении вашего банка' },
@@ -30,8 +31,10 @@ const METHODS = {
  * @param {string} props.timeZone
  * @param {() => void} props.onRequote пересчитать цену после истечения
  * @param {(res: object) => void} props.onReception заявка создана
+ * @param {object} [props.resource] ресурс (M5.8): у корта — «корт пока за вами», цена отрезка — за слот
  */
-export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onReception, onError, onWithoutBalance }) {
+export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onReception, onError, onWithoutBalance, resource }) {
+  const w = nounOf(resource);
   // «Без лимита» (решение №26, блок unlimited котировки): карта — заморозка за hold_minutes,
   // СБП — оплата блоками по sbp_block_minutes, ресепшн — депозит. Нет блока unlimited — СБП не предлагаем.
   const u = unlimited ? quote.unlimited ?? null : null;
@@ -144,7 +147,7 @@ export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onRecep
                   {formatTime(b.from, timeZone)}–{formatTime(b.to, timeZone)}
                 </span>
                 {' · '}
-                {perHour(b.price_per_hour_kopecks)}
+                {b.slot_minutes && Number.isSafeInteger(b.price_per_slot_kopecks) ? `${formatMoney(b.price_per_slot_kopecks)} за ${slotLabel(b.slot_minutes)}` : perHour(b.price_per_hour_kopecks)}
               </span>
               <span class="receipt__sum">{formatMoney(b.amount_kopecks)}</span>
             </div>
@@ -158,7 +161,7 @@ export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onRecep
           <span>Цена держалась 3 минуты, время вышло.</span>
         ) : (
           <span>
-            Цена держится ещё <span class="mono">{formatDuration(left)}</span>, стол пока за вами
+            Цена держится ещё <span class="mono">{formatDuration(left)}</span>, {w.nom} пока за вами
           </span>
         )}
       </p>
@@ -191,7 +194,7 @@ export function Pay({ quote, what, kind, unlimited, timeZone, onRequote, onRecep
               ))}
             </div>
           </fieldset>
-          <ErrorNote error={error} />
+          <ErrorNote error={error} resource={resource} />
           <div class="actionbar">
             <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy}>
               {busy ? 'Отправляем…' : cta}

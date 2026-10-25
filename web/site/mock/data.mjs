@@ -35,6 +35,22 @@ function tables(spec) {
   return out;
 }
 
+/** M5.8: падел-корты — своя нумерация «Корт 1…n», как в миграции 1300. */
+function courts(count) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(101 + i).padStart(4, '0')}${'0'.repeat(8)}`,
+    number: i + 1,
+    type: 'padel_court',
+    title: `Корт ${i + 1}`,
+  }));
+}
+
+/** Цены корта за слот (рубли): будни днём, будни вечером, выходные. */
+function courtRules([day, evening, weekendAll], slot = 90) {
+  const r = (days, from, to, rub) => ({ days, from, to, price_per_hour_kopecks: Math.round((rub * 100 * 60) / slot), price_per_slot_kopecks: rub * 100, slot_minutes: slot });
+  return { type: 'padel', title: 'Падел-корт', rules: [r(weekday, '06:00', '17:00', day), r(weekday, '17:00', '06:00', evening), r(weekend, '06:00', '06:00', weekendAll)] };
+}
+
 function priceRules(spec) {
   // spec: { pyramid: [дневная, вечерняя, ночная, выходные] } в рублях за час
   return Object.entries(spec).map(([type, [day, evening, night, weekendDay, weekendEvening]]) => ({
@@ -155,6 +171,26 @@ export const CLUBS = [
     price_day_kopecks: 30000,
     price_night_kopecks: 45000,
     prices: [],
+    reviews: [],
+  },
+  {
+    // M5.8: клуб со столами и падел-кортами (демо-данные разработки)
+    id: '11111111-1111-4111-8111-000000000007',
+    club_id: 'cccccccc-cccc-4ccc-8ccc-000000000007',
+    slug: 'setka',
+    city_slug: 'perm',
+    name: 'Сетка',
+    address: 'ул. Ленина, 50',
+    status: 'platform',
+    description: 'Четыре стола русской пирамиды и два крытых падел-корта. Корт бронируется слотами по полтора часа.',
+    phone: '+7 342 000-00-07',
+    online_booking: true,
+    open_24h: false,
+    hours: [{ days: [1, 2, 3, 4, 5, 6, 7], open: '08:00', close: '00:00' }],
+    payment_methods: ['sbp', 'card', 'cash'],
+    geo: { lat: 58.0105, lon: 56.2502 },
+    resources: [...tables([['pyramid', 4]]), ...courts(2)],
+    prices: [...priceRules({ pyramid: [400, 650, 450, 550, 750] }), courtRules([2400, 3600, 3900])],
     reviews: [],
   },
   {

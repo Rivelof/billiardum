@@ -1,4 +1,5 @@
 import { plural, formatMoney } from '@billiardum/shared/format';
+import { isSlot, resourceName, slotLabel } from '@billiardum/shared/resource';
 
 const HOURS = ['час', 'часа', 'часов'];
 const MINUTES = ['минута', 'минуты', 'минут'];
@@ -40,10 +41,15 @@ export function optionMinutes(option) {
   return option === 'unlimited' || option === null ? null : Number(option);
 }
 
-/** Подпись варианта: '1 час', '2 часа', '30 минут', 'Без лимита'. */
-export function optionLabel(option) {
+/**
+ * Подпись варианта: '1 час', '2 часа', '30 минут', 'Без лимита'; у корта (M5.8, слоты) — коротко '1,5 ч', '3 ч'.
+ * @param {number | 'unlimited' | null} option
+ * @param {object} [resource] ресурс из API: billing 'slot' или slot_minutes — корт
+ */
+export function optionLabel(option, resource) {
   const m = optionMinutes(option);
-  return m === null ? 'Без лимита' : minutesWords(m);
+  if (m === null) return 'Без лимита';
+  return resource && isSlot(resource) ? slotLabel(m) : minutesWords(m);
 }
 
 /** Цена за час: '800 ₽/ч'. */
@@ -51,7 +57,12 @@ export function perHour(kopecks) {
   return `${formatMoney(kopecks)}/ч`;
 }
 
-/** Номер стола: 'Стол 4'. */
-export function tableName(number) {
-  return number === undefined || number === null ? 'Стол' : `Стол ${number}`;
+/**
+ * Название ресурса: 'Стол 4', у корта (M5.8) — 'Корт 2'. Слово — по семье вида (resource.family, kind, type),
+ * без ресурса — «стол», как раньше.
+ * @param {number | null | undefined} number
+ * @param {object | string} [resource] ресурс из API или семья 'table' | 'court'
+ */
+export function tableName(number, resource) {
+  return resourceName(resource ?? 'table', number === undefined ? null : number);
 }

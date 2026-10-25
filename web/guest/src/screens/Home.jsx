@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { formatDuration } from '@billiardum/shared/format';
-import { tableKind } from '@billiardum/shared/hall';
+import { resourceArt } from '@billiardum/shared/hall';
 import { Stage } from '../components/Stage.jsx';
 import { Icon } from '../components/Icon.jsx';
 import { ErrorNote } from '../components/ErrorNote.jsx';
@@ -45,7 +45,7 @@ export function Home() {
     <div class="screen">
       <Stage
         variant={active.length ? 'table' : 'home'}
-        kind={tableKind(active[0]?.resource?.type)}
+        kind={resourceArt(active[0]?.resource)}
         lit={active.length ? 'true' : 'false'}
         tone={active.length ? 'play' : 'idle'}
         label="Бильярдум"
@@ -69,7 +69,7 @@ export function Home() {
               return (
                 <li key={s.id}>
                   <a class="games__item" href={`${BASE}s/${encodeURIComponent(s.id)}`} onClick={linkHandler}>
-                    <span class="games__table display">{tableName(s.resource?.number)}</span>
+                    <span class="games__table display">{tableName(s.resource?.number, s.resource)}</span>
                     <span class="games__state">
                       {PHASE_WORD[v.phase] ?? 'идёт игра'} <span class="mono">{formatDuration(v.ms)}</span>
                     </span>

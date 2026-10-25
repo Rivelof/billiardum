@@ -10,6 +10,7 @@ import { api } from '../lib/api.js';
 import { navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
 import { tableName } from '../lib/words.js';
+import { familyText, nounOf } from '@billiardum/shared/resource';
 import { setFlow } from '../lib/flow.js';
 import { useMeStream } from '../lib/live.js';
 export { startableBooking } from '../lib/booking.js';
@@ -29,6 +30,9 @@ export function MyBooking({ table, booking: b, code, onReload }) {
   const at = formatTime(b.starts_at, tz);
   const until = formatTime(b.ends_at, tz);
   const early = Date.parse(b.starts_at) - now > 5 * 60_000;
+  // Корт (M5.8): те же тексты со словом «корт»
+  const res = table.resource;
+  const ft = (t) => familyText(t, res);
 
   const start = async (method) => {
     setBusy(true);
@@ -42,7 +46,7 @@ export function MyBooking({ table, booking: b, code, onReload }) {
       if (res?.status === 'payment_required') {
         const url = safeRedirectUrl(res.confirmation?.url ?? res.confirmation?.confirmation_url);
         if (url) {
-          setFlow({ paymentId: res.payment_id, code, number: table.resource?.number, resourceId: table.resource?.id, timeZone: tz, kind: 'start' });
+          setFlow({ paymentId: res.payment_id, code, number: table.resource?.number, resourceId: table.resource?.id, timeZone: tz, kind: 'start', family: nounOf(table.resource).family });
           window.location.assign(url);
           return;
         }
@@ -60,35 +64,36 @@ export function MyBooking({ table, booking: b, code, onReload }) {
     <section class="mybook" aria-labelledby="mybook-title">
       <p class="mybook__kicker">
         <Icon name="calendar" />
-        {b.status === 'reserved' ? 'Стол ждёт вас' : 'Ваша бронь'}
+        {b.status === 'reserved' ? ft('Стол ждёт вас') : 'Ваша бронь'}
       </p>
       <h2 class="mybook__title display" id="mybook-title">
         Ваша бронь на {at}
       </h2>
       <p class="lead">
-        {tableName(table.resource?.number)}, {at}–{until}
+        {tableName(table.resource?.number, res)}, {at}–{until}
         {b.paid_kopecks ? ` · оплачено ${formatMoney(b.paid_kopecks)}` : ''}
       </p>
       {table.status === 'busy' ? (
         <p class="note note--lamp" role="status">
           <Icon name="clock" />
-          <span class="note__title">Стол ещё занят предыдущей игрой</span>
-          <span class="note__body">Время брони за вами: начнёте, как только стол освободится. Удержим его до {formatTime(b.hold_until ?? b.starts_at, tz)}.</span>
+          <span class="note__title">{ft('Стол ещё занят предыдущей игрой')}</span>
+          <span class="note__body">{ft('Время брони за вами: начнёте, как только стол освободится.')} Удержим его до {formatTime(b.hold_until ?? b.starts_at, tz)}.</span>
         </p>
       ) : null}
-      {early && !due ? <p class="hint">Вы пришли раньше брони. Если стол свободен, можно начать сейчас — доплатите за время до {at}.</p> : null}
+      {early && !due ? <p class="hint">{ft('Вы пришли раньше брони. Если стол свободен, можно начать сейчас')} — доплатите за время до {at}.</p> : null}
       {due?.quote ? (
         <Pay
           quote={due.quote}
-          what={`${tableName(table.resource?.number)} · доплата по брони`}
+          what={`${tableName(table.resource?.number, res)} · доплата по брони`}
           kind="start"
           unlimited={false}
           timeZone={tz}
+          resource={res}
           onRequote={() => start()}
           onError={() => false}
         />
       ) : null}
-      <ErrorNote error={error} />
+      <ErrorNote error={error} resource={res} />
       {!due?.quote ? (
         <div class="actionbar">
           <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy || table.status === 'busy'} onClick={() => start()}>
@@ -98,7 +103,7 @@ export function MyBooking({ table, booking: b, code, onReload }) {
           {table.status === 'busy' ? (
             <button type="button" class="btn btn--quiet btn--block" onClick={onReload}>
               <Icon name="refresh" />
-              Проверить стол снова
+              Проверить {nounOf(res).acc} снова
             </button>
           ) : null}
         </div>
@@ -118,6 +123,8 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
   const v = waitlistView(entry, now);
   const tz = table.club?.timezone;
   const resourceId = table.resource?.id;
+  const res = table.resource;
+  const ft = (t) => familyText(t, res);
 
   const join = async () => {
     if (!signedIn) {
@@ -167,17 +174,17 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
       <section class="offer" aria-labelledby="offer-title" role="alert">
         <p class="offer__kicker">
           <Icon name="lamp" />
-          {tableName(table.resource?.number)} освободился
+          {tableName(table.resource?.number, res)} освободился
         </p>
         <h2 class="offer__title display" id="offer-title">
-          Стол ваш на 5 минут
+          {ft('Стол ваш на 5 минут')}
         </h2>
         <Countdown left={v.left} total={5 * 60000} label={`Осталось ${Math.ceil(v.left / 60000)} мин`} />
         <p class="hint">Не займёте за это время — предложим следующему в очереди.</p>
-        <ErrorNote error={error} />
+        <ErrorNote error={error} resource={res} />
         <div class="actionbar">
           <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={take}>
-            {busy ? 'Занимаем…' : 'Занять стол'}
+            {busy ? 'Занимаем…' : ft('Занять стол')}
           </button>
           <button type="button" class="btn btn--quiet btn--block" disabled={busy} onClick={leave}>
             Не надо, выйти из очереди
@@ -201,9 +208,9 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
           </p>
         ) : null}
         <p class="hint">
-          Когда стол освободится, пришлём уведомление{table.busy_until ? ` — ориентировочно в ${formatTime(table.busy_until, tz)}` : ''}. Стол будет ваш 5 минут.
+          {ft('Когда стол освободится, пришлём уведомление')}{table.busy_until ? ` — ориентировочно в ${formatTime(table.busy_until, tz)}` : ''}. {ft('Стол будет ваш 5 минут.')}
         </p>
-        <ErrorNote error={error} />
+        <ErrorNote error={error} resource={res} />
         <button type="button" class="btn btn--quiet btn--block" disabled={busy} onClick={leave}>
           Выйти из очереди
         </button>
@@ -216,17 +223,17 @@ export function Waitlist({ table, entry, setEntry, signedIn, onSignIn, onTaken }
   return (
     <section class="queue-me" aria-labelledby="wl-title">
       <h2 class="step__label" id="wl-title">
-        Подождать этот стол?
+        {ft('Подождать этот стол?')}
       </h2>
-      <p class="hint">Встаньте в очередь: когда стол освободится, он будет ваш 5 минут.</p>
+      <p class="hint">{ft('Встаньте в очередь: когда стол освободится, он будет ваш 5 минут.')}</p>
       {error?.code === 'limit_exceeded' ? (
         <p class="note note--error" role="alert">
           <Icon name="alert" />
-          <span class="note__title">Вы уже ждёте три стола</span>
+          <span class="note__title">{ft('Вы уже ждёте три стола')}</span>
           <span class="note__body">Выйдите из одной очереди, чтобы встать в эту.</span>
         </p>
       ) : (
-        <ErrorNote error={error} />
+        <ErrorNote error={error} resource={res} />
       )}
       <button type="button" class="btn btn--secondary btn--block btn--lg" disabled={busy} onClick={join}>
         <Icon name="bell" />

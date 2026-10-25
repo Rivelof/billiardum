@@ -46,7 +46,7 @@ export function ReceiptScreen({ id }) {
         <h1 class="page-title display">Чек</h1>
         {session ? (
           <p class="muted">
-            {tableName(session.resource?.number)}
+            {tableName(session.resource?.number, session.resource)}
             {session.started_at ? `, ${formatDate(session.started_at, tz)}` : ''}
           </p>
         ) : null}

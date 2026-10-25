@@ -1,7 +1,7 @@
 import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
 import { html, Icon } from '../html.mjs';
 import { APP, Badge, Crumbs, HallPlan, PriceGrid, TournamentRow } from '../components.mjs';
-import { hoursText, tablesWord, telHref } from '../lib.mjs';
+import { courtPriceText, courtsWord, hoursText, tablesWord, telHref } from '../lib.mjs';
 import { breadcrumbsLd, clubLd } from '../seo.mjs';
 
 /**
@@ -62,6 +62,10 @@ export async function clubPage({ api, cfg, params, now }) {
     [safeUrl(club.url), 'Сайт клуба'],
   ].filter(([u]) => u);
   const canBook = platform && club.online_booking && club.club_id;
+  // M5.8: падел-корты клуба — отдельно от столов
+  const courts = club.courts_count ?? 0;
+  const tablesN = club.tables_count ?? 0;
+  const bookWhat = courts && tablesN ? 'стол или корт' : courts ? 'корт' : 'стол';
 
   const body = html`<div class="wrap page">
     <${Crumbs} items=${crumbs.map((c) => ({ name: c.name, href: c.path }))} />
@@ -72,12 +76,12 @@ export async function clubPage({ api, cfg, params, now }) {
         <p class="club-head__badges">
           ${platform ? html`<${Badge} tone="free">На программе Бильярдума<//>` : html`<${Badge} tone="reserved">Бронь по заявке<//>`}
           ${club.open_24h ? html`<${Badge} tone="play">Круглосуточно<//>` : null}
-          ${club.tables_count ? html`<span class="small">${club.tables_count} ${tablesWord(club.tables_count)}</span>` : null}
+          ${tablesN || courts ? html`<span class="small">${[tablesN ? `${tablesN} ${tablesWord(tablesN)}` : null, courts ? `${courts} ${courtsWord(courts)} для падела` : null].filter(Boolean).join(', ')}</span>` : null}
         </p>
         ${club.description ? html`<p class="club-head__about">${club.description}</p>` : null}
       </div>
       <div class="club-head__cta">
-        ${canBook ? html`<a class="btn btn--primary btn--lg" href=${`${APP}book/${club.club_id}`}>Забронировать стол</a>` : null}
+        ${canBook ? html`<a class="btn btn--primary btn--lg" href=${`${APP}book/${club.club_id}${courts && !tablesN ? '?family=court' : ''}`}>Забронировать ${bookWhat}</a>` : null}
         ${!platform ? html`<a class="btn btn--primary btn--lg" href=${`${APP}request/${club.id}`}>Оставить заявку на бронь</a>` : null}
         ${club.phone ? html`<a class="btn btn--quiet" href=${telHref(club.phone)}><${Icon} name="phone" />Позвонить в клуб</a>` : null}
       </div>
@@ -93,8 +97,8 @@ export async function clubPage({ api, cfg, params, now }) {
 
         <section class="block" aria-labelledby="price-title">
           <h2 class="display" id="price-title">Цены</h2>
-          ${prices.length ? html`<${PriceGrid} prices=${prices} /><p class="small">Цена за час по местному времени клуба. Ночь после полуночи считается по тарифу предыдущего дня.</p>`
-            : club.price_from_kopecks ? html`<p>От <b>${formatMoney(club.price_from_kopecks)}</b> в час. Подробные цены — у клуба.</p>`
+          ${prices.length ? html`<${PriceGrid} prices=${prices} /><p class="small">${prices.some((b) => b.rules?.some((r) => r.slot_minutes)) ? 'Столы — цена за час, падел-корт — за слот: корт бронируется и продлевается слотами. ' : 'Цена за час '}по местному времени клуба. Ночь после полуночи считается по тарифу предыдущего дня.</p>`
+            : club.price_from_kopecks || courtPriceText(club) ? html`<p>${club.price_from_kopecks ? html`Стол от <b>${formatMoney(club.price_from_kopecks)}</b> в час. ` : null}${courtPriceText(club) ? `Падел-корт ${courtPriceText(club)}. ` : null}Подробные цены — у клуба.</p>`
             : html`<p class="hint">Клуб не указал цены. Уточните по телефону.</p>`}
         </section>
 
@@ -119,7 +123,7 @@ export async function clubPage({ api, cfg, params, now }) {
         </section>
         ${platform ? html`<section class="side-card">
           <h2 class="side-card__h">Как играть</h2>
-          <p>Отсканируйте QR-код на борту свободного стола и оплатите через СБП или картой — свет включится сам, чек придёт сразу.</p>
+          <p>Отсканируйте QR-код на борту свободного стола${courts ? ' или корта' : ''} и оплатите через СБП или картой — свет включится сам, чек придёт сразу.</p>
         </section>` : null}
         ${club.phone || links.length ? html`<section class="side-card">
           <h2 class="side-card__h">Связаться</h2>
@@ -138,7 +142,7 @@ export async function clubPage({ api, cfg, params, now }) {
   return {
     path: club.path,
     title: `${club.name}, бильярдный клуб ${city.name_in}${platform && club.free_now !== null ? `: свободно ${club.free_now} ${plural(club.free_now, ['стол', 'стола', 'столов'])}` : ''} — Бильярдум`,
-    description: `${club.name}, ${city.name}, ${club.address}. ${platform ? 'Свободные столы сейчас, цены по дням и часам, онлайн-бронь и турниры.' : 'Часы работы, цены и бронь по заявке.'}`,
+    description: `${club.name}, ${city.name}, ${club.address}. ${platform ? `Свободные столы${courts ? ' и падел-корты' : ''} сейчас, цены по дням и часам, онлайн-бронь и турниры.` : 'Часы работы, цены и бронь по заявке.'}`,
     body,
     islands: [platform && hall ? 'hall' : null].filter(Boolean),
     jsonld: [clubLd(cfg.origin, { club, city, reviews }), breadcrumbsLd(cfg.origin, crumbs)],

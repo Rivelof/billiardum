@@ -12,6 +12,7 @@ const REGION = { ekaterinburg: 'Свердловская область', chelya
 const DAYS = ['', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 function kindOf(type) {
+  if (/padel/.test(type)) return 'padel';
   if (/pool/.test(type)) return 'pool';
   if (/snooker/.test(type)) return 'snooker';
   return 'pyramid';
@@ -31,7 +32,11 @@ function summary(club, now) {
   const city = CITIES.find((c) => c.slug === club.city_slug);
   const platform = club.status === 'platform';
   const states = platform ? club.resources.map((r) => liveStatus(club, r, now)) : null;
-  const rules = (club.prices ?? []).flatMap((p) => p.rules);
+  // M5.8: столы и корты отдельно (server/directory public.mjs)
+  const isCourt = (r) => r.type === 'padel_court';
+  const rules = (club.prices ?? []).flatMap((p) => p.rules).filter((r) => !r.slot_minutes);
+  const slotRules = (club.prices ?? []).flatMap((p) => p.rules).filter((r) => r.slot_minutes);
+  const nCourts = platform ? club.resources.filter(isCourt).length : 0;
   const reviews = club.reviews ?? [];
   return {
     id: club.id,
@@ -45,8 +50,12 @@ function summary(club, now) {
     hours_text: hoursText(club),
     around_the_clock: club.open_24h,
     disciplines: platform ? [...new Set(club.resources.map((r) => kindOf(r.type)))] : (club.disciplines ?? []),
-    tables_count: platform ? club.resources.length : (club.tables_count ?? null),
-    free_now: platform ? states.filter((s) => s.status === 'free').length : null,
+    tables_count: platform ? club.resources.length - nCourts : (club.tables_count ?? null),
+    free_now: platform ? states.filter((s, i) => !isCourt(club.resources[i]) && s.status === 'free').length : null,
+    courts_count: platform ? nCourts : null,
+    courts_free_now: platform ? states.filter((s, i) => isCourt(club.resources[i]) && s.status === 'free').length : null,
+    court_price_from_kopecks: slotRules.length ? Math.min(...slotRules.map((r) => r.price_per_slot_kopecks)) : null,
+    slot_minutes: slotRules[0]?.slot_minutes ?? null,
     price_from_kopecks: rules.length ? Math.min(...rules.map((r) => r.price_per_hour_kopecks)) : (club.price_day_kopecks ?? null),
     rating: {
       avg: reviews.length ? Math.round((reviews.reduce((s, r) => s + r.rating, 0) / reviews.length) * 10) / 10 : null,
@@ -145,6 +154,7 @@ export function handle({ method = 'GET', path, query = new URLSearchParams(), bo
           const st = liveStatus(club, r, now);
           return {
             id: r.id, number: r.number, title: r.title, discipline: kindOf(r.type), plan: { x: null, y: null, rotation: 0 },
+            kind: r.type === 'padel_court' ? 'padel_court' : kindOf(r.type), family: r.type === 'padel_court' ? 'court' : 'table',
             status: st.status, busy_until: st.status === 'busy' ? st.until : null,
           };
         })
@@ -162,9 +172,12 @@ export function handle({ method = 'GET', path, query = new URLSearchParams(), bo
           telegram_url: null,
           description: club.description || null,
         },
-        live: platform ? { updated_at: new Date(now).toISOString(), free_now: s.free_now, total: tables.length, plan: null, tables } : null,
+        live: platform ? { updated_at: new Date(now).toISOString(), free_now: s.free_now, total: s.tables_count, courts_free_now: s.courts_free_now, courts_total: s.courts_count, plan: null, tables } : null,
         prices: platform
-          ? club.prices.flatMap((p) => p.rules.map((r) => ({ discipline: p.type, days: r.days, from: r.from, to: r.to, price_per_hour_kopecks: r.price_per_hour_kopecks, min_minutes: 30 })))
+          ? club.prices.flatMap((p) => p.rules.map((r) => ({
+            discipline: p.type, days: r.days, from: r.from, to: r.to, price_per_hour_kopecks: r.price_per_hour_kopecks, min_minutes: r.slot_minutes ?? 30,
+            ...(r.slot_minutes ? { slot_minutes: r.slot_minutes, price_per_slot_kopecks: r.price_per_slot_kopecks } : {}),
+          })))
           : [],
         tournaments: platform ? tournaments().filter((t) => t.club_slug === club.slug).map(tView) : [],
         reviews: {

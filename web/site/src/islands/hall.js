@@ -3,7 +3,7 @@
  * обновляем свет, подпись и подпись для экранного диктора. Без JS план показывает состояние на момент загрузки.
  */
 import { plural } from '@billiardum/shared/format';
-import { freeWord, hallLabel, publicTableState } from '../lib.mjs';
+import { courtsWord, freeWord, hallKey, hallLabel, publicTableState } from '../lib.mjs';
 
 const PERIOD = 30_000;
 
@@ -18,12 +18,19 @@ for (const hall of document.querySelectorAll('[data-hall]')) {
       if (!res.ok) return;
       const json = await res.json();
       // Форма ответа — GET /api/public/clubs/{city}/{slug}: live.tables (server/directory/README.md)
-      const resources = (json.live?.tables ?? []).map((t) => ({ number: t.number, status: t.status, until: t.busy_until ?? null }));
+      // M5.8: у корта своя нумерация — ключ «court-1», счётчик свободных кортов отдельный
+      const resources = (json.live?.tables ?? []).map((t) => ({
+        number: t.number, status: t.status, until: t.busy_until ?? null, family: t.family === 'court' || t.discipline === 'padel' ? 'court' : 'table',
+      }));
       let free = 0;
+      let freeCourts = 0;
       for (const r of resources) {
         const st = publicTableState(r, tz);
-        if (st.tone === 'free' || st.tone === 'booked') free += 1;
-        const el = hall.querySelector(`.tbl[data-n="${r.number}"]`);
+        if (st.tone === 'free' || st.tone === 'booked') {
+          if (r.family === 'court') freeCourts += 1;
+          else free += 1;
+        }
+        const el = hall.querySelector(`.tbl[data-n="${hallKey(r)}"]`);
         if (!el) continue;
         el.dataset.tone = st.tone;
         el.querySelector('.lit-host')?.setAttribute('data-lit', st.lit ? 'true' : 'false');
@@ -36,6 +43,10 @@ for (const hall of document.querySelectorAll('[data-hall]')) {
       const w = hall.querySelector('[data-hall-word]');
       if (n && String(free) !== n.textContent) n.textContent = String(free);
       if (w) w.textContent = `${plural(free, ['стол', 'стола', 'столов'])} ${freeWord(free)}`;
+      const nc = hall.querySelector('[data-hall-free-court]');
+      const wc = hall.querySelector('[data-hall-word-court]');
+      if (nc && String(freeCourts) !== nc.textContent) nc.textContent = String(freeCourts);
+      if (wc) wc.textContent = `${courtsWord(freeCourts)} ${freeWord(freeCourts)}`;
     } catch {
       // нет связи — попробуем в следующий раз
     }

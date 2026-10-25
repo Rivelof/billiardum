@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { Countdown } from '../components/Countdown.jsx';
 import { Ill } from '../components/Ill.jsx';
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
-import { planLayout, tableSvg, typeLabel } from '@billiardum/shared/hall';
+import { courtLayout, planLayout, tableSvg, typeLabel } from '@billiardum/shared/hall';
+import { countText, familyOf, familyText, nounOf, pluralForms, resourceName, slotLabel } from '@billiardum/shared/resource';
 import {
   BOOKING_WORD,
   addDays,
@@ -16,6 +17,7 @@ import {
   holdMinutes,
   localDate,
   prepayFor,
+  slotDurations,
   sortBookings,
   waitlistView,
 } from '@billiardum/shared/booking';
@@ -39,7 +41,7 @@ import '../styles/m3.css';
 import '../styles/m3-redesign.css';
 
 const MIN = 60_000;
-const TABLES = ['стол', 'стола', 'столов'];
+const FAMILY_ORDER = ['table', 'court'];
 const WEEKDAY = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' });
 const dayShort = (date) => {
   const [y, m, d] = date.split('-').map(Number);
@@ -121,6 +123,11 @@ export function BookScreen({ clubId }) {
   const [slot, setSlot] = useState(saved.slot ?? null);
   const [resourceId, setResourceId] = useState(saved.resourceId ?? null);
   const [minutes, setMinutes] = useState(saved.minutes ?? null);
+  // M5.8: что бронируем — стол или корт (клуб может иметь и то и другое); ?family=court — с сайта
+  const [family, setFamily] = useState(() => {
+    const q = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('family');
+    return q === 'court' || q === 'table' ? q : saved.family ?? null;
+  });
   const [method, setMethod] = useState('sbp');
   const [loadError, setLoadError] = useState(null);
   const [error, setError] = useState(null);
@@ -157,18 +164,26 @@ export function BookScreen({ clubId }) {
   useEffect(() => {
     load(date);
   }, [date]);
-  useEffect(() => sessionStore.set(KEY, { date, slot, resourceId, minutes }), [date, slot, resourceId, minutes]);
+  useEffect(() => sessionStore.set(KEY, { date, slot, resourceId, minutes, family }), [date, slot, resourceId, minutes, family]);
 
   const tz = day?.club?.timezone ?? 'Europe/Moscow';
   const today = workday ?? localDate(now, tz);
   const days = useMemo(() => Array.from({ length: Math.min((day?.max_days ?? 6) + 1, 14) }, (_, i) => addDays(today, i)), [today, day?.max_days]);
   const ready = day && day.date === date;
-  const minLen = day?.min_minutes ?? 60;
-  const slots = ready ? boardSlots(day, { resourceId, now }) : [];
-  const free = ready && slot ? freeTables(day, slot, minLen) : new Set();
-  const durations = ready && slot && resourceId ? durationsFor(day, resourceId, slot) : [];
+  // Семьи ресурсов клуба (M5.8): столы и корты бронируются по отдельности — у корта блоки слота
+  const families = FAMILY_ORDER.filter((f) => (day?.resources ?? []).some((r) => familyOf(r) === f));
+  const fam = families.includes(family) ? family : (families[0] ?? 'table');
+  const w = nounOf(fam);
+  const court = fam === 'court';
+  // Корт без тарифа слотов (slot_minutes null) не бронируется
+  const fday = day ? { ...day, resources: (day.resources ?? []).filter((r) => familyOf(r) === fam && (!court || r.slot_minutes)) } : null;
+  const courtSlot = court ? Math.min(...fday.resources.map((r) => r.slot_minutes).filter(Boolean)) : null;
+  const minLen = court ? (Number.isFinite(courtSlot) ? courtSlot : 90) : (day?.min_minutes ?? 60);
+  const slots = ready ? boardSlots(fday, { resourceId, now, minMinutes: minLen }) : [];
+  const free = ready && slot ? freeTables(fday, slot, minLen) : new Set();
+  const resource = fday?.resources?.find((r) => r.id === resourceId);
+  const durations = ready && slot && resource ? (court ? slotDurations(day, resource, slot) : durationsFor(day, resourceId, slot)) : [];
   const chosenMinutes = durations.includes(minutes) ? minutes : (durations[0] ?? null);
-  const resource = day?.resources?.find((r) => r.id === resourceId);
   // Цена по тарифу стола (availability.resources[].rates); окончательную считает сервер при брони
   const price = ready && slot && chosenMinutes && resource ? bookingPrice(resource.rates ?? day.rates, slot, chosenMinutes) : null;
   const prepay = price ? prepayFor(day.rules, price.amount_kopecks) : 0;
@@ -180,7 +195,7 @@ export function BookScreen({ clubId }) {
     if (!s || s.state !== 'free') {
       setSlot(null);
       setResourceId(null);
-    } else if (resourceId && !free.has(resourceId) && !durationsFor(day, resourceId, slot).length) setResourceId(null);
+    } else if (resourceId && !free.has(resourceId) && !durations.length) setResourceId(null);
   }, [ready, day]);
 
   const pickDate = (d) => {
@@ -192,7 +207,14 @@ export function BookScreen({ clubId }) {
   const pickSlot = (at) => {
     setSlot(at);
     setError(null);
-    if (resourceId && !freeTables(day, at, minLen).has(resourceId)) setResourceId(null);
+    if (resourceId && !freeTables(fday, at, minLen).has(resourceId)) setResourceId(null);
+  };
+  const pickFamily = (f) => {
+    setFamily(f);
+    setSlot(null);
+    setResourceId(null);
+    setMinutes(null);
+    setError(null);
   };
 
   const book = async () => {
@@ -239,7 +261,7 @@ export function BookScreen({ clubId }) {
       <Header back={{ href: `${BASE}book`, label: 'К выбору клуба' }} />
       <main class="wrap content book">
         <div class="book__head">
-          <h1 class="page-title display">Бронь стола</h1>
+          <h1 class="page-title display">{families.length > 1 ? 'Бронь стола или корта' : `Бронь ${w.gen}`}</h1>
           {day?.club?.name ? <p class="muted">{day.club.name}</p> : null}
         </div>
 
@@ -267,30 +289,58 @@ export function BookScreen({ clubId }) {
           </div>
         </section>
 
+        {ready && families.length > 1 ? (
+          <section class="book__step" aria-labelledby="b-family">
+            <h2 class="step__label" id="b-family">
+              Что бронируем
+            </h2>
+            <div class="choice choice--grid" role="radiogroup" aria-labelledby="b-family">
+              {families.map((f) => {
+                const n = (day.resources ?? []).filter((r) => familyOf(r) === f).length;
+                return (
+                  <label class="choice__item" key={f}>
+                    <input type="radio" name="book-family" checked={fam === f} onChange={() => pickFamily(f)} />
+                    <span class="choice__box">
+                      <span class="choice__title">{f === 'court' ? 'Падел-корт' : 'Бильярдный стол'}</span>
+                      <span class="choice__sub">{f === 'court' ? `${countText(n, f)}, игра слотами` : countText(n, f)}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+
         <section class="book__step" aria-labelledby="b-time">
           <h2 class="step__label" id="b-time">
             Время начала
-            {resource ? <span class="step__aside">для стола {resource.number}</span> : null}
+            {resource ? <span class="step__aside">для {resourceName(resource, resource.number, { case: 'gen', capital: false })}</span> : null}
           </h2>
-          {!ready ? <p class="muted loading">Загружаем свободное время…</p> : <BoardScale slots={slots} selected={slot} minutes={chosenMinutes ?? minLen} onPick={pickSlot} tz={tz} date={date} tableChosen={Boolean(resource)} total={day.resources.length} />}
+          {!ready ? (
+            <p class="muted loading">Загружаем свободное время…</p>
+          ) : court && !fday.resources.length ? (
+            <p class="empty">Корты клуба пока не бронируются: у них нет цены за слот. Спросите в клубе.</p>
+          ) : (
+            <BoardScale slots={slots} selected={slot} minutes={chosenMinutes ?? minLen} onPick={pickSlot} tz={tz} date={date} tableChosen={Boolean(resource)} total={fday.resources.length} family={fam} />
+          )}
         </section>
 
         {ready && slot ? (
           <section class="book__step" aria-labelledby="b-table">
             <h2 class="step__label" id="b-table">
-              Стол
+              {w.Nom}
               <span class="step__aside">
-                с {formatTime(slot, tz)}: свободно {free.size} {plural(free.size, TABLES)}
+                с {formatTime(slot, tz)}: свободно {countText(free.size, fam)}
               </span>
             </h2>
-            <BookPlan day={day} slot={slot} free={free} selected={resourceId} onPick={(id) => setResourceId(id)} tz={tz} />
+            <BookPlan day={fday} slot={slot} free={free} selected={resourceId} onPick={(id) => setResourceId(id)} tz={tz} family={fam} minLen={minLen} />
           </section>
         ) : null}
 
         {ready && slot && resource ? (
           <section class="book__step" aria-labelledby="b-len">
             <h2 class="step__label" id="b-len">
-              Сколько играете
+              {court ? `Сколько играете — слотами по ${slotLabel(minLen)}` : 'Сколько играете'}
             </h2>
             {durations.length ? (
               <div class="choice choice--grid">
@@ -298,7 +348,7 @@ export function BookScreen({ clubId }) {
                   <label class="choice__item" key={m}>
                     <input type="radio" name="book-len" checked={chosenMinutes === m} onChange={() => setMinutes(m)} />
                     <span class="choice__box">
-                      <span class="choice__title">{minutesWords(m)}</span>
+                      <span class="choice__title">{court ? slotLabel(m) : minutesWords(m)}</span>
                       <span class="choice__sub">
                         {formatTime(slot, tz)}–{formatTime(slot + m * MIN, tz)}
                       </span>
@@ -309,7 +359,11 @@ export function BookScreen({ clubId }) {
             ) : (
               <p class="note note--error">
                 <Icon name="alert" />
-                <span class="note__title">С {formatTime(slot, tz)} стол свободен меньше часа. Выберите другое время или стол.</span>
+                <span class="note__title">
+                  {court
+                    ? `С ${formatTime(slot, tz)} корт свободен меньше слота (${slotLabel(minLen)}). Выберите другое время или корт.`
+                    : `С ${formatTime(slot, tz)} стол свободен меньше часа. Выберите другое время или стол.`}
+                </span>
               </p>
             )}
           </section>
@@ -318,7 +372,7 @@ export function BookScreen({ clubId }) {
         {ready && slot && resource && chosenMinutes ? (
           <section class="book__sum" aria-labelledby="b-sum">
             <h2 class="book__what" id="b-sum">
-              {tableName(resource.number)} · {dayLong(date)}, {formatTime(slot, tz)}–{formatTime(slot + chosenMinutes * MIN, tz)}
+              {tableName(resource.number, resource)} · {dayLong(date)}, {formatTime(slot, tz)}–{formatTime(slot + chosenMinutes * MIN, tz)}
             </h2>
             <p class="muted">{typeLabel(resource.type, resource.title)}</p>
             {price ? (
@@ -330,7 +384,7 @@ export function BookScreen({ clubId }) {
                           <span class="mono">
                             {formatTime(p.from, tz)}–{formatTime(p.to, tz)}
                           </span>{' '}
-                          · {formatMoney(p.per_hour_kopecks)}/ч
+                          · {p.slot_minutes ? `${formatMoney(p.per_slot_kopecks)} за ${slotLabel(p.slot_minutes)}` : `${formatMoney(p.per_hour_kopecks)}/ч`}
                         </dt>
                         <dd class="receipt__sum">{formatMoney(p.amount_kopecks)}</dd>
                       </div>
@@ -351,7 +405,7 @@ export function BookScreen({ clubId }) {
             <ul class="rules">
               <li>
                 <Icon name="clock" />
-                Стол держим {minutesWords(holdMinutes(prepay, day.rules), { accusative: true })} после начала. Не пришли — бронь сгорает
+                {w.Nom} держим {minutesWords(holdMinutes(prepay, day.rules), { accusative: true })} после начала. Не пришли — бронь сгорает
                 {prepay ? ', предоплата — по правилам клуба' : ''}.
               </li>
               <li>
@@ -362,7 +416,7 @@ export function BookScreen({ clubId }) {
               </li>
               <li>
                 <Icon name="qr" />
-                Придёте — отсканируйте QR на столе: игра начнётся по брони{prepay >= (price?.amount_kopecks ?? 0) && prepay ? ' без повторной оплаты' : ''}.
+                Придёте — отсканируйте QR {court ? 'на корте' : 'на столе'}: игра начнётся по брони{prepay >= (price?.amount_kopecks ?? 0) && prepay ? ' без повторной оплаты' : ''}.
               </li>
             </ul>
             {prepay ? (
@@ -394,7 +448,7 @@ export function BookScreen({ clubId }) {
               </p>
             ) : (
               // Бронь в окне турнира — 409 table_busy {reason: 'tournament', busy_until}: «Стол занят турниром до 21:30»
-              <ErrorNote error={error} timeZone={tz} />
+              <ErrorNote error={error} timeZone={tz} resource={resource} />
             )}
           </section>
         ) : null}
@@ -403,7 +457,7 @@ export function BookScreen({ clubId }) {
           <div class="actionbar book__bar">
             <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={book}>
               <Icon name="calendar" />
-              {busy ? 'Бронируем…' : prepay ? `Забронировать и оплатить ${formatMoney(prepay)}` : 'Забронировать стол'}
+              {busy ? 'Бронируем…' : prepay ? `Забронировать и оплатить ${formatMoney(prepay)}` : `Забронировать ${w.acc}`}
             </button>
           </div>
         ) : null}
@@ -417,7 +471,9 @@ export function BookScreen({ clubId }) {
  * Занятые закрашены, выбранное подсвечено лампой. Каждое деление — переключатель с подписью для диктора;
  * стрелки двигают фокус, на узком экране шкала прокручивается внутри блока.
  */
-export function BoardScale({ slots, selected, minutes = 60, onPick, tz, date, tableChosen, total }) {
+export function BoardScale({ slots, selected, minutes = 60, onPick, tz, date, tableChosen, total, family = 'table' }) {
+  const forms = pluralForms(family);
+  const w = nounOf(family);
   const scroller = useRef(null);
   const refs = useRef(new Map());
   const firstFree = slots.find((s) => s.state === 'free')?.at ?? null;
@@ -451,7 +507,7 @@ export function BoardScale({ slots, selected, minutes = 60, onPick, tz, date, ta
             const on = s.at === selected;
             // Выбранный интервал целиком светится лампой: начало ярко, дальше — мягче
             const inRange = selected !== null && s.at > selected && s.at < selected + minutes * MIN;
-            const word = s.state === 'past' ? 'уже нельзя' : s.state === 'busy' ? (tableChosen ? 'стол занят' : 'все столы заняты') : tableChosen ? 'свободно' : `свободно ${s.free} ${plural(s.free, TABLES)}`;
+            const word = s.state === 'past' ? 'уже нельзя' : s.state === 'busy' ? (tableChosen ? `${w.nom} занят` : `все ${family === 'court' ? 'корты' : 'столы'} заняты`) : tableChosen ? 'свободно' : `свободно ${s.free} ${plural(s.free, forms)}`;
             return (
               <button
                 type="button"
@@ -491,7 +547,7 @@ export function BoardScale({ slots, selected, minutes = 60, onPick, tz, date, ta
       <ul class="board__legend" aria-hidden="true">
         <li>
           <span class="board__key board__key--free" />
-          Свободно{!tableChosen && total > 1 ? ', цифра — сколько столов' : ''}
+          Свободно{!tableChosen && total > 1 ? `, цифра — сколько ${forms[2]}` : ''}
         </li>
         <li>
           <span class="board__key board__key--busy" />
@@ -519,7 +575,8 @@ export function BoardScale({ slots, selected, minutes = 60, onPick, tz, date, ta
 }
 
 /** План зала для брони: свободные на выбранное время столы тёмные и нажимаются, занятые приглушены со словом «до 20:00». */
-function BookPlan({ day, slot, free, selected, onPick, tz }) {
+function BookPlan({ day, slot, free, selected, onPick, tz, family = 'table', minLen: planMin }) {
+  const court = family === 'court';
   // Подписи «Стол N / Свободен» не должны наезжать друг на друга: на узком плане — меньше столов в ряду
   // (на столбец нужно около 88 px ширины плана)
   const floor = useRef(null);
@@ -531,18 +588,20 @@ function BookPlan({ day, slot, free, selected, onPick, tz }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const perRow = floorWidth ? Math.max(2, Math.min(6, Math.floor(floorWidth / 88))) : undefined;
+  // Корт крупнее стола: на столбец около 120 px, не больше 4 в ряду
+  const perRow = floorWidth ? (court ? Math.max(1, Math.min(4, Math.floor(floorWidth / 120))) : Math.max(2, Math.min(6, Math.floor(floorWidth / 88)))) : undefined;
   const ids = day.resources.map((r) => r.id).join(',');
   const layout = useMemo(() => {
     const items = day.resources.map((r) => ({ id: r.id, number: r.number, type: r.type }));
+    if (court) return courtLayout(items, perRow ? { perRow } : {});
     const auto = planLayout(items);
     // Ряд по умолчанию шире, чем помещается, — переложить по ширине плана
     const cols = new Set(auto.items.map((i) => i.x)).size;
     return perRow && cols > perRow ? planLayout(items, { perRow }) : auto;
-  }, [ids, perRow]);
+  }, [ids, perRow, court]);
   const svgs = useMemo(() => new Map(layout.items.map((p) => [p.id, tableSvg(p.kind, { uid: `bk-${p.id}` })])), [layout]);
   const byId = new Map(day.resources.map((r) => [r.id, r]));
-  const minLen = day.min_minutes ?? 60;
+  const minLen = planMin ?? day.min_minutes ?? 60;
   return (
     <div class="hall book__hall" data-theme="dark">
       <div class="hall__head">
@@ -562,7 +621,7 @@ function BookPlan({ day, slot, free, selected, onPick, tz }) {
         </ul>
       </div>
       <div class="hall__floor" ref={floor}>
-        <div class="plan" role="group" aria-label={`План зала на ${formatTime(slot, tz)}`} style={{ aspectRatio: `${layout.width} / ${layout.height}` }}>
+        <div class="plan" role="group" aria-label={`${court ? 'Корты' : 'План зала'} на ${formatTime(slot, tz)}`} style={{ aspectRatio: `${layout.width} / ${layout.height}` }}>
           {layout.items.map((p) => {
             const r = byId.get(p.id);
             const ok = free.has(p.id) && r.bookable !== false;
@@ -579,13 +638,14 @@ function BookPlan({ day, slot, free, selected, onPick, tz }) {
                 data-kind={p.kind}
                 disabled={!ok}
                 aria-pressed={on ? 'true' : 'false'}
-                aria-label={`Стол ${p.number}, ${word.toLowerCase()}. ${typeLabel(r.type, r.title)}`}
+                // Имя начинается с видимой подписи («Корт 1 Выбран»): WCAG 2.5.3, голосовое управление
+                aria-label={`${resourceName(r, p.number)} ${on ? 'Выбран' : word}. ${typeLabel(r.type, r.title)}`}
                 style={{ left: pct(p.x / layout.width), top: pct(p.y / layout.height), width: pct(p.w / layout.width) }}
                 onClick={() => onPick(p.id)}
               >
                 <span class="tbl__art" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svgs.get(p.id) }} />
                 <span class="tbl__cap" aria-hidden="true">
-                  <span class="tbl__num">Стол {p.number}</span>
+                  <span class="tbl__num">{resourceName(r, p.number)}</span>{' '}
                   <span class="tbl__status">{on ? 'Выбран' : word}</span>
                 </span>
               </button>
@@ -656,7 +716,7 @@ function BookingList({ list, title, quiet = false }) {
                     {formatTime(b.starts_at, tz)}–{formatTime(b.ends_at, tz)}
                   </span>
                   <span class="blist__what">
-                    {tableName(b.resource?.number)}
+                    {tableName(b.resource?.number, b.resource)}
                     {b.club?.name ? ` · ${b.club.name}` : ''}
                   </span>
                 </span>
@@ -766,17 +826,20 @@ export function BookingScreen({ id }) {
 
   const waitingPay = b.status === 'pending_payment' && watching.current;
   const terms = cancelText(b, { formatMoney, formatTime: fmtT });
+  // Бронь корта (M5.8): слово — по виду ресурса брони
+  const bw = nounOf(b.resource);
+  const ft = (t) => familyText(t, b.resource);
   return (
     <div class="screen screen--paper">
       <Header back={{ href: `${BASE}bookings`, label: 'Мои брони' }} />
       <main class="wrap content book">
         <section class="bcard" aria-labelledby="bk-title">
-          <p class="bcard__code">{b.source === 'phone' ? 'Бронь по телефону' : 'Бронь стола'}</p>
+          <p class="bcard__code">{b.source === 'phone' ? 'Бронь по телефону' : `Бронь ${bw.gen}`}</p>
           <h1 class="bcard__time display" id="bk-title">
             {fmtT(b.starts_at)}–{fmtT(b.ends_at)}
           </h1>
           <p class="bcard__day">
-            {formatDate(b.starts_at, tz)} · {tableName(b.resource?.number)}
+            {formatDate(b.starts_at, tz)} · {tableName(b.resource?.number, b.resource)}
           </p>
           <p class="muted">
             {b.club?.name}
@@ -792,7 +855,7 @@ export function BookingScreen({ id }) {
           <p class="note note--free" role="status">
             <Icon name="check" />
             <span class="note__title">Бронь отменена</span>
-            <span class="note__body">{refund ? `Вернём ${formatMoney(refund)} тем же способом, которым вы платили: обычно это занимает до 3 рабочих дней.` : 'Стол освобождён для других гостей.'}</span>
+            <span class="note__body">{refund ? `Вернём ${formatMoney(refund)} тем же способом, которым вы платили: обычно это занимает до 3 рабочих дней.` : ft('Стол освобождён для других гостей.')}</span>
           </p>
         ) : null}
 
@@ -809,7 +872,7 @@ export function BookingScreen({ id }) {
               Предоплата {formatMoney(b.prepayment_kopecks)}
             </h2>
             <p class="hint">
-              Без предоплаты клуб не держит стол{b.pay_until ? `: оплатите до ${fmtT(b.pay_until)}, иначе бронь снимется` : ''}.
+              Без предоплаты клуб не держит {bw.acc}{b.pay_until ? `: оплатите до ${fmtT(b.pay_until)}, иначе бронь снимется` : ''}.
             </p>
             <div class="choice choice--methods">
               {PAY_METHODS.map(([m, icon, title, sub]) => (
@@ -837,11 +900,11 @@ export function BookingScreen({ id }) {
           <section class="note note--lamp" aria-labelledby="bk-how">
             <Icon name="qr" />
             <h2 class="note__title" id="bk-how">
-              {b.status === 'reserved' ? `${tableName(b.resource?.number)} ждёт вас` : 'Как начать игру'}
+              {b.status === 'reserved' ? `${tableName(b.resource?.number, b.resource)} ждёт вас` : 'Как начать игру'}
             </h2>
             <p class="note__body">
-              Отсканируйте QR на столе {b.resource?.number} и нажмите «Начать игру по брони»
-              {b.paid_kopecks >= b.amount_kopecks ? ' — без повторной оплаты' : ''}. Стол держим до {fmtT(b.hold_until)}.
+              Отсканируйте QR {ft('на столе')} {b.resource?.number} и нажмите «Начать игру по брони»
+              {b.paid_kopecks >= b.amount_kopecks ? ' — без повторной оплаты' : ''}. {bw.Nom} держим до {fmtT(b.hold_until)}.
             </p>
           </section>
         ) : null}
@@ -872,7 +935,7 @@ export function BookingScreen({ id }) {
           </div>
         </dl>
 
-        <ErrorNote error={error} timeZone={tz} />
+        <ErrorNote error={error} timeZone={tz} resource={b.resource} />
 
         {terms.allowed && bookingOpen(b) ? (
           <>
@@ -887,7 +950,7 @@ export function BookingScreen({ id }) {
       <Dialog open={cancelOpen} onClose={() => setCancelOpen(false)} title="Отменить бронь?" labelledBy="cancel-title">
         <div class="step">
           <p class="lead">
-            {tableName(b.resource?.number)}, {formatDate(b.starts_at, tz)}, {fmtT(b.starts_at)}–{fmtT(b.ends_at)}.
+            {tableName(b.resource?.number, b.resource)}, {formatDate(b.starts_at, tz)}, {fmtT(b.starts_at)}–{fmtT(b.ends_at)}.
           </p>
           <p class="hint">{terms.text}</p>
           <ErrorNote error={error} timeZone={tz} />
@@ -984,11 +1047,13 @@ export function WaitlistOffer({ id }) {
     }
   };
 
+  // Очередь на корт (M5.8): слово — по виду ресурса записи
+  const ft = (t) => familyText(t, entry?.resource);
   return (
     <div class="screen screen--paper">
       <Header back={{ href: BASE, label: 'На главную' }} />
       <main class="wrap content book">
-        {status === 'anon' ? <SignIn title="Войдите, чтобы занять стол" /> : null}
+        {status === 'anon' ? <SignIn title={ft('Войдите, чтобы занять стол')} /> : null}
         <ErrorNote error={error} timeZone={tz} />
         {entry === undefined && status === 'user' && !error ? <p class="muted loading">Проверяем стол…</p> : null}
         {entry === null ? <p class="empty"><Ill name="pocket" />Этой записи в очереди уже нет: стол заняли или вы вышли из очереди.</p> : null}
@@ -996,10 +1061,10 @@ export function WaitlistOffer({ id }) {
           <section class={`offer${v.state === 'offered' ? '' : ' offer--quiet'}`} aria-labelledby="wo-title">
             <p class="offer__kicker">
               <Icon name={v.state === 'offered' ? 'lamp' : 'hourglass'} />
-              {tableName(entry.resource?.number)}
+              {tableName(entry.resource?.number, entry.resource)}
             </p>
             <h1 class="offer__title display" id="wo-title">
-              {v.state === 'offered' ? 'Стол ваш на 5 минут' : v.state === 'waiting' ? v.text : v.state === 'accepted' ? 'Стол ваш' : 'Предложение закончилось'}
+              {v.state === 'offered' ? ft('Стол ваш на 5 минут') : v.state === 'waiting' ? v.text : v.state === 'accepted' ? ft('Стол ваш') : 'Предложение закончилось'}
             </h1>
             {v.state === 'offered' ? (
               <>
@@ -1007,7 +1072,7 @@ export function WaitlistOffer({ id }) {
                 <p class="hint">Не займёте за это время — предложим следующему в очереди.</p>
                 <div class="actionbar">
                   <button type="button" class="btn btn--primary btn--block btn--lg" disabled={busy} onClick={take}>
-                    {busy ? 'Занимаем…' : 'Занять стол'}
+                    {busy ? 'Занимаем…' : ft('Занять стол')}
                   </button>
                   <button type="button" class="btn btn--quiet btn--block" disabled={busy} onClick={leave}>
                     Не надо, выйти из очереди
@@ -1021,7 +1086,7 @@ export function WaitlistOffer({ id }) {
                 <span class="note__title">{v.note}</span>
               </p>
             ) : null}
-            {v.state === 'waiting' ? <p class="hint">Когда стол освободится, пришлём уведомление. Стол будет ваш 5 минут.</p> : null}
+            {v.state === 'waiting' ? <p class="hint">{ft('Когда стол освободится, пришлём уведомление. Стол будет ваш 5 минут.')}</p> : null}
             {v.state === 'missed' ? (
               <>
                 <p class="lead">{v.note}</p>
@@ -1033,11 +1098,11 @@ export function WaitlistOffer({ id }) {
             ) : null}
             {v.state === 'accepted' ? (
               <div class="held">
-                <p class="held__title">{entry.hold_until ? `Стол держим до ${formatTime(entry.hold_until, tz)}` : 'Стол держим 3 минуты'}</p>
+                <p class="held__title">{ft(entry.hold_until ? `Стол держим до ${formatTime(entry.hold_until, tz)}` : 'Стол держим 3 минуты')}</p>
                 <p class="held__body">
                   <Icon name="qr" />
                   <span>
-                    Отсканируйте QR-код на столе {entry.resource?.number}, выберите время и оплатите — свет включится сам.
+                    {ft('Отсканируйте QR-код на столе')} {entry.resource?.number}, выберите время и оплатите — свет включится сам.
                   </span>
                 </p>
               </div>
