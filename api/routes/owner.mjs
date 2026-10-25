@@ -68,11 +68,14 @@ async function now(ctx) {
     `select a.*, r.number as resource_number, r.type as resource_type from bl.alarms a left join bl.resources r on r.id = a.resource_id
       where a.state = 'open' order by case a.level when 'critical' then 0 when 'important' then 1 else 2 end, a.last_raised_at desc limit 50`,
   );
+  const total = METHODS.reduce((sum, m) => sum + revenue[m], 0);
   return {
     status: 200,
     json: {
       hall: await hall(ctx),
-      revenue_today_kopecks: revenue,
+      // Управляющему сети — без разбивки по способам оплаты (M5.5 №192, как …/dashboard/now): только итог.
+      revenue_today_kopecks: ctx.networkManager ? null : revenue,
+      revenue_today_total_kopecks: total,
       day_started_at: day ? iso(day.start) : null,
       alarms_open: alarms.rows.map(alarmJson),
     },
@@ -121,7 +124,7 @@ async function audit(ctx, req) {
   // Имя исполнителя — только у участников клуба (гостей журнал не называет).
   const { rows } = await ctx.db.query(
     `select a.seq, a.created_at, a.actor_type, a.actor_id, a.action, a.object_type, a.object_id, a.reason, a.data, a.hash,
-            m.role as actor_role, u.name as actor_name, r.id as resource_id, r.number as resource_number
+            m.role as actor_role, u.name as actor_name, r.id as resource_id, r.number as resource_number, r.type as resource_type
        from bl.audit_log a
        left join bl.club_members m on m.club_id = a.club_id and m.user_id = a.actor_id
        left join bl.users u on u.id = m.user_id
@@ -155,6 +158,8 @@ async function audit(ctx, req) {
     object_id: r.object_id,
     resource_id: r.resource_id ?? null,
     resource_number: r.resource_number ?? null,
+    // Вид ресурса (M5.8): «Стол 3» или «Корт 1» в журнале.
+    resource_type: r.resource_type ?? null,
     reason: r.reason,
     data: r.data,
     hash: r.hash,

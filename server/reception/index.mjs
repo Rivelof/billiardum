@@ -8,13 +8,14 @@
 // * Отклонить — с кодом причины, журнал reception.decline, pending снимается.
 // * Экран ресепшена узнаёт о заявках по SSE: событие reception_request в канале club:{id}.
 
-import { familyOf } from '../lib/resource-kinds.mjs';
+import { familyOf, isSlotType } from '../lib/resource-kinds.mjs';
 import { afterCommit } from '../lib/store.mjs';
 import { enterClub, enterObjectClub, isUuid, requireIdempotencyKey, requireStaff, requireUser } from '../payments/context.mjs';
 import { MoneyError, checkNeighborResult, fromNeighbor } from '../payments/errors.mjs';
 import { receiptItems } from '../payments/receipt.mjs';
 import { confirmedPayload, insertReceipt, sessionIdOf } from '../payments/records.mjs';
 import { loadPaymentSettings } from '../payments/settings.mjs';
+import { resourceBilling } from '../tariffs/index.mjs';
 
 export const STAFF_ROLES = Object.freeze(['reception', 'manager', 'owner']);
 /** Коды отклонения заявки (контракт §14). */
@@ -34,8 +35,18 @@ async function maskedPhone(db, userId) {
   }
 }
 
+/**
+ * Тарификация ресурса заявки (M5.8 №204): { billing: 'hourly'|'slot', slot_minutes } — длина слота корта
+ * нужна экрану ресепшена, чтобы показать «2 слота по 90 минут»; у стола запроса к тарифу нет.
+ */
+async function billingOf(db, resourceId, resourceType) {
+  if (!isSlotType(resourceType)) return { billing: 'hourly', slot_minutes: null };
+  const b = await resourceBilling(db, { resourceId });
+  return { billing: 'slot', slot_minutes: b?.slot_minutes ?? null };
+}
+
 /** Заявка для экрана ресепшена (без телефона целиком). */
-function staffView(r, { resourceNumber, resourceType = null, phoneMasked }) {
+function staffView(r, { resourceNumber, resourceType = null, phoneMasked, billing = { billing: 'hourly', slot_minutes: null } }) {
   return {
     id: r.id,
     status: r.status,
@@ -44,6 +55,9 @@ function staffView(r, { resourceNumber, resourceType = null, phoneMasked }) {
     // Вид ресурса (M5.8): «Стол 3» или «Корт 1» на экране ресепшена.
     resource_type: resourceType,
     resource_family: familyOf(resourceType),
+    // Тарификация (M5.8): у корта — slot_minutes (минуты заявки кратны слоту), у стола — hourly и null.
+    billing: billing.billing,
+    slot_minutes: billing.slot_minutes,
     kind: r.kind,
     minutes: r.minutes,
     amount_kopecks: Number(r.amount_kopecks),
@@ -83,7 +97,7 @@ export async function createReceptionRequest(db, deps, { quote, plan, settings, 
     [quote.club_id, quote.id, quote.resource_id, userId, quote.kind, quote.session_id, plan.minutes, plan.amount, key, expiresAt, now],
   );
   const r = rows[0];
-  await publish(db, deps, r, staffView(r, { resourceNumber, resourceType, phoneMasked: await maskedPhone(db, userId) }));
+  await publish(db, deps, r, staffView(r, { resourceNumber, resourceType, phoneMasked: await maskedPhone(db, userId), billing: await billingOf(db, r.resource_id, resourceType) }));
   deps.log?.info?.('reception_request_created', { request_id: r.id, club_id: r.club_id, amount_kopecks: plan.amount });
   return r;
 }
@@ -103,7 +117,7 @@ export async function listRequests(db, deps, info) {
     [clubId, now],
   );
   const out = [];
-  for (const r of rows) out.push(staffView(r, { resourceNumber: r.resource_number, resourceType: r.resource_type, phoneMasked: await maskedPhone(db, r.user_id) }));
+  for (const r of rows) out.push(staffView(r, { resourceNumber: r.resource_number, resourceType: r.resource_type, phoneMasked: await maskedPhone(db, r.user_id), billing: await billingOf(db, r.resource_id, r.resource_type) }));
   return out;
 }
 

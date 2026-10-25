@@ -246,6 +246,12 @@ export async function ack(db, alarmId, userId) {
   );
   if (rows.length === 0) return null;
   const alarm = rows[0];
+  // Стол и его вид — для SSE alarm и ответа (текст «Корт 1: …», resource_type), как у списка тревог.
+  if (alarm.resource_id) {
+    const r = await db.query('select number, type from bl.resources where id = $1', [alarm.resource_id]);
+    alarm.resource_number = r.rows[0]?.number ?? null;
+    alarm.resource_type = r.rows[0]?.type ?? null;
+  }
   await appendAudit(db, {
     action: 'alarm.ack',
     objectType: 'alarm',

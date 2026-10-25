@@ -34,7 +34,7 @@
 | `POST /api/quotes/{id}/pay` | гость, `idempotent` | `sbp`, `card` → `{payment_id, status, confirmation: {type: "redirect", url}}`; `reception` → `{reception_request_id, status: "waiting_reception"}` |
 | `GET /api/payments/{id}` | плательщик | `{payment_id, status, session_id}`; платёж дольше 10 с в `pending` сверяется по API ЮKassa |
 | `POST /api/webhooks/yookassa/{club_id}` | ЮKassa, `actor: system` | см. ниже |
-| `GET /api/clubs/{club}/reception/requests` | ресепшн и выше | `[{id, resource_number, minutes, amount_kopecks, created_at, expires_at, guest_masked_phone}]` |
+| `GET /api/clubs/{club}/reception/requests` | ресепшн и выше | `[{id, status, resource_id, resource_number, resource_type, resource_family, billing, slot_minutes, kind, minutes, amount_kopecks, created_at, expires_at, guest_masked_phone}]`; `billing` — `hourly` (стол) или `slot` (корт), `slot_minutes` — длина слота корта из тарифа клуба (у стола `null`); то же — в SSE `reception_request` |
 | `POST /api/reception/requests/{id}/accept` | ресепшн и выше, `idempotent` | `{method: cash \| card_terminal, received_kopecks?}` → `{payment_id, change_kopecks, session_id}` |
 | `POST /api/reception/requests/{id}/decline` | ресепшн и выше | `{reason_code}` — `guest_left`, `guest_cancelled`, `payment_failed`, `table_problem`, `other` (иное — `bad_request`, пусто — `reason_required`) → `{ok: true}` |
 | `GET /api/reception/requests/{id}` | гость, автор заявки | `{id, status, minutes, amount_kopecks, expires_at, payment_id, session_id, reason_code}` (`reason_code` — у отклонённой, иначе `null`) |

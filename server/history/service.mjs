@@ -113,7 +113,7 @@ async function clubRows(db, club, p, { take }) {
     );
     const { rows } = await db.query(
       `select o.id, o.number, o.source, o.status, o.created_at, o.canceled_at, o.cancel_reason, o.paid_at, o.subtotal_kopecks, o.user_id,
-              o.created_by, o.canceled_by, r.number as resource_number, coalesce(ps.method, pm.method) as method
+              o.created_by, o.canceled_by, r.number as resource_number, r.type as resource_type, coalesce(ps.method, pm.method) as method
          from bl.orders o
          left join bl.resources r on r.id = o.resource_id
          left join bl.pos_sales ps on ps.id = o.sale_id
@@ -142,6 +142,7 @@ async function clubRows(db, club, p, { take }) {
         paid_at: iso(r.paid_at),
         guest: r.user_id ? guests.get(r.user_id) ?? { nick: null, phone_masked: null } : null,
         resource_number: r.resource_number ?? null,
+        resource_type: r.resource_type ?? null,
         amount_kopecks: Number(r.subtotal_kopecks),
         method: r.method ?? null,
         created_by_name: names.get(r.created_by) ?? null,

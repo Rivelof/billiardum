@@ -55,6 +55,7 @@ describe('заказ со стола в счёт стола', { skip: SKIP }, ()
     assert.equal(o.status, 'new');
     assert.equal(o.paid, false);
     assert.equal(o.resource.number, 1);
+    assert.deepEqual([o.resource.type, o.resource.family], ['billiard_pyramid', 'table']);
     assert.equal(Math.round((before - (await h.stock(P.americano))) * 1000), 2600);
     const queue = await h.request('GET', `/api/clubs/${CLUB_A}/bar/queue`, { token: reception.token });
     assert.ok(queue.json.some((x) => x.id === o.id));

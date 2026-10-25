@@ -7,6 +7,7 @@ import { MENU_TEMPLATE_FIELDS } from '../lock.mjs';
 import { networkDbError, networkInviteMessage } from '../service.mjs';
 import { MAX_TEMPLATE_PRODUCTS, normalizeProducts, storedRule } from '../templates.mjs';
 import { applyTemplate, normalizeRules } from '../../setup/tariffs.mjs';
+import { withoutMethods } from '../../reports/shift-report.mjs';
 
 describe('шаблон меню сети: разбор', () => {
   it('значения по умолчанию: шт, алкоголь — подакцизный предмет расчёта, активен', () => {
@@ -84,5 +85,49 @@ describe('приглашение управляющего сети и ошибк
     assert.doesNotThrow(() => createRouter({ config: {} }, { routes: [{ ...base, path: '/api/clubs/{club}/x', auth: 'staff', roles: ['owner'], networkManager: false }] }));
     assert.throws(() => createRouter({ config: {} }, { routes: [{ ...base, path: '/api/clubs/{club}/x', auth: 'staff', roles: ['owner'], networkManager: true }] }), /networkManager/);
     assert.throws(() => createRouter({ config: {} }, { routes: [{ ...base, path: '/api/x', auth: 'guest', networkManager: false }] }), /networkManager/);
+  });
+});
+
+describe('отчёт смены управляющему сети (№192): без денег по способам оплаты', () => {
+  const zero = () => ({ cash: 0, card_terminal: 0, sbp: 0, card: 0 });
+  const report = () => ({
+    shift: { number: 1 },
+    revenue: {
+      total_kopecks: 150000,
+      by_method: { ...zero(), sbp: 100000, cash: 50000 },
+      tables: { total_kopecks: 150000, by_method: { ...zero(), sbp: 100000, cash: 50000 } },
+      bar: { total_kopecks: 0, by_method: zero() },
+      refunds: { total_kopecks: 0, by_method: zero(), tables_kopecks: 0, bar_kopecks: 0, count: 0 },
+      late_returned: { total_kopecks: 0, by_method: zero(), count: 0 },
+    },
+    cash: { float_kopecks: 100, cash_sales_kopecks: 50000 },
+    reconciliation: {
+      kkt: {
+        ok: false, system_kopecks: 50000, kkt_kopecks: 0, diff_kopecks: 50000,
+        by_method: { cash: { sales_kopecks: 50000 }, card_terminal: { sales_kopecks: 0 } },
+        receipts: { printed: { count: 0, amount_kopecks: 0 }, pending: { count: 1, amount_kopecks: 50000 } },
+        missing: [{ payment_id: 'p', method: 'cash', amount_kopecks: 50000 }], missing_refunds: [], missing_count: 1,
+      },
+      online: { ok: true, status: 'checked', system_kopecks: 100000, system_refunds_kopecks: 0, yookassa_kopecks: 100000, yookassa_refunds_kopecks: 0, diff_kopecks: 0, payments: 1 },
+    },
+  });
+
+  it('способы обнуляются (null) на всех уровнях выручки и сверки, итоги, статусы и счётчики остаются', () => {
+    const src = report();
+    const r = withoutMethods(src);
+    assert.equal(r.methods_hidden, true);
+    assert.equal(r.revenue.total_kopecks, 150000);
+    for (const k of ['tables', 'bar', 'refunds', 'late_returned']) assert.equal(r.revenue[k].by_method, null, k);
+    assert.equal(r.revenue.by_method, null);
+    assert.equal(r.revenue.tables.total_kopecks, 150000);
+    assert.equal(r.revenue.refunds.count, 0);
+    const k = r.reconciliation.kkt;
+    assert.deepEqual([k.ok, k.diff_kopecks, k.missing_count, k.system_kopecks, k.kkt_kopecks, k.by_method], [false, 50000, 1, null, null, null]);
+    assert.deepEqual(k.missing, [{ payment_id: 'p', method: null, amount_kopecks: 50000 }]);
+    assert.deepEqual(k.receipts.pending, { count: 1, amount_kopecks: null });
+    const o = r.reconciliation.online;
+    assert.deepEqual([o.ok, o.status, o.diff_kopecks, o.payments, o.system_kopecks, o.yookassa_kopecks], [true, 'checked', 0, 1, null, null]);
+    assert.deepEqual(r.cash, src.cash, 'касса смены — как в смене');
+    assert.equal(src.revenue.by_method.sbp, 100000, 'исходный отчёт не меняется');
   });
 });

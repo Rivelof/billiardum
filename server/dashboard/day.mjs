@@ -393,7 +393,7 @@ export async function computeDay(db, { club, day, now }) {
 
   // Тревоги и реакция на них (№178).
   const al = await db.query(
-    `select a.id, a.type, a.level, a.raised_at, a.acked_at, a.acked_by, r.number as resource_number
+    `select a.id, a.type, a.level, a.raised_at, a.acked_at, a.acked_by, r.number as resource_number, r.type as resource_type
        from bl.alarms a left join bl.resources r on r.id = a.resource_id
       where a.club_id = $1 and a.raised_at >= $2 and a.raised_at <= $3
       order by a.raised_at`,
@@ -424,6 +424,7 @@ export async function computeDay(db, { club, day, now }) {
         type: a.type,
         level: a.level,
         resource_number: a.resource_number ?? null,
+        resource_type: a.resource_type ?? null,
         raised_at: iso(a.raised_at),
         acked_at: iso(a.acked_at),
         acked_by: a.acked_by ?? null,
@@ -593,6 +594,7 @@ export async function computeDay(db, { club, day, now }) {
         // Причина — текст сотрудника: номера телефонов маскируются.
         reason: it.reason ? maskPhones(it.reason) : null,
         resource_number: it.resource_number,
+        resource_type: it.resource_type ?? null,
         amount_kopecks: it.amount_kopecks,
       })),
     },

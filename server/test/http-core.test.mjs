@@ -178,6 +178,12 @@ describe('роутер', () => {
       extend_limit_until: null,
     });
     assert.equal(safeErrorData({ phone: '+79991234567' }), null);
+    // 409 duplicate шаблона меню сети: что совпало — field 'sku' | 'name' и value; value без field не отдаётся.
+    assert.deepEqual(safeErrorData({ club_id: '11111111-1111-4111-8111-111111111111', field: 'sku', value: 'OWN-1' }), { club_id: '11111111-1111-4111-8111-111111111111', field: 'sku', value: 'OWN-1' });
+    assert.deepEqual(safeErrorData({ field: 'name', value: 'Агат' }), { field: 'name', value: 'Агат' });
+    assert.equal(safeErrorData({ value: 'секрет' }), null);
+    assert.equal(safeErrorData({ field: 'phone', value: '+79991234567' }), null);
+    assert.deepEqual(safeErrorData({ field: 'sku', value: 'a\nb' }), { field: 'sku' }, 'значение с управляющими символами не отдаётся');
     assert.equal(safeErrorData('booking_id'), null);
   });
 

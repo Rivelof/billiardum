@@ -13,6 +13,8 @@ import { cache as dashboardCache } from '../../../../api/routes/dashboard.mjs';
 import { CLUB_B, OWNER_B, seedClubB, tryQuery } from '../../../../supabase/tests/helpers.mjs';
 import { withContext } from '../../../lib/store.mjs';
 import { amountFor } from '../../../tariffs/index.mjs';
+import { tick as summariesTick } from '../../../summaries/index.mjs';
+import { addDays, workingDayOf, zonedTime } from '../../../dashboard/time.mjs';
 import { applyTemplate } from '../../../setup/tariffs.mjs';
 import { CLUB_A, OWNER_A, startTestApp } from '../../../test/db/helpers.mjs';
 
@@ -26,7 +28,7 @@ const A_PYR = 'e1000000-0000-4000-8000-000000000001';
 const A_POOL = 'e1000000-0000-4000-8000-000000000006';
 const RECEPTION_A = 'a1000000-0000-4000-8000-000000000004';
 const NM_PHONE = '+70000000020';
-const ROUTES = ['auth.mjs', 'owner.mjs', 'stream.mjs', 'staff.mjs', 'setup.mjs', 'catalog.mjs', 'dashboard.mjs', 'history.mjs', 'shifts.mjs', 'cashbook.mjs', 'networks.mjs'];
+const ROUTES = ['auth.mjs', 'owner.mjs', 'stream.mjs', 'staff.mjs', 'setup.mjs', 'catalog.mjs', 'dashboard.mjs', 'history.mjs', 'shifts.mjs', 'cashbook.mjs', 'networks.mjs', 'reports.mjs'];
 
 let t;
 const tok = {};
@@ -185,6 +187,11 @@ describe('T41. Шаблон тарифов сети (№191)', { skip: SKIP }, (
     const court = (await t.admin.query("select slot_minutes, price_per_slot from bl.tariff_rules where club_id = $1 and active and resource_type = 'padel_court'", [CLUB_A])).rows;
     assert.deepEqual(court.map((x) => [x.slot_minutes, Number(x.price_per_slot)]), [[90, 300000]]);
     const g = await api('GET', `/api/networks/${net}/tariffs`, 'owner');
+    // Виды ресурсов клуба в работе — экрану не нужен запрос на каждый клуб.
+    const kindsOf = (club) => g.json.clubs.find((c) => c.club_id === club).kinds;
+    assert.deepEqual(kindsOf(CLUB_K), ['pool']);
+    assert.deepEqual(kindsOf(CLUB_T), ['pyramid']);
+    assert.ok(kindsOf(CLUB_A).includes('padel_court') && kindsOf(CLUB_A).includes('pool'), JSON.stringify(kindsOf(CLUB_A)));
     const cr = g.json.rules.find((x) => x.kind === 'padel_court');
     assert.deepEqual([cr.slot_minutes, cr.price_per_slot_kopecks, cr.price_per_hour_kopecks], [90, 300000, undefined]);
     // Один и тот же момент 2026-10-26 14:00 UTC (понедельник): в Екатеринбурге 19:00 — вечер, в Калининграде 16:00 — день.
@@ -475,8 +482,8 @@ describe('T42. Вкладка «Сеть»: сравнение и рейтинг
       assert.equal(tile(CLUB_T, 'revenue'), 0, 'тестовые деньги не входят');
       assert.deepEqual([row(CLUB_A).ranked, row(CLUB_K).ranked, row(CLUB_T).ranked], [true, true, false]);
       // Выручка со стола: K (60 000 / 3 стола) выше A (100 000 / 8 столов).
-      assert.deepEqual(r.json.ranking.revenue_per_table.map((x) => x.club_id), [CLUB_K, CLUB_A]);
-      assert.deepEqual([row(CLUB_K).place_revenue_per_table, row(CLUB_A).place_revenue_per_table, row(CLUB_T).place_revenue_per_table], [1, 2, null]);
+      assert.deepEqual(r.json.ranking.revenue_per_table_day.map((x) => x.club_id), [CLUB_K, CLUB_A]);
+      assert.deepEqual([row(CLUB_K).place_revenue_per_table_day, row(CLUB_A).place_revenue_per_table_day, row(CLUB_T).place_revenue_per_table_day], [1, 2, null]);
       assert.equal(r.json.ranking.utilization.length, 2);
       assert.equal(r.json.totals.tiles.find((x) => x.id === 'revenue').value, 160000);
       // Совпадает с дашбордом клуба (те же агрегаты и сутки клуба): общее — без фильтра, загрузка и
@@ -495,6 +502,52 @@ describe('T42. Вкладка «Сеть»: сравнение и рейтинг
       assert.equal(row(CLUB_K).timezone, 'Europe/Kaliningrad');
     }
     assert.equal((await api('GET', `/api/networks/${net}/dashboard?from=2026-01-01&to=2027-12-31`, 'owner')).status, 400);
+  });
+
+  it('управляющий сети: «Сейчас», отчёт смены и утренняя сводка — без денег по способам оплаты (№192, как №166)', async () => {
+    // «Сейчас»: итог есть, способов нет; управляющий клуба и владелец — со способами.
+    const nm = await api('GET', `/api/clubs/${CLUB_A}/now`, 'nm');
+    assert.equal(nm.status, 200, nm.text);
+    assert.deepEqual([nm.json.revenue_today_kopecks, nm.json.revenue_today_total_kopecks], [null, 100000]);
+    assert.ok(!JSON.stringify(nm.json).includes('"sbp"'), 'способов оплаты в ответе нет');
+    for (const who of ['owner', 'manager']) {
+      const r = await api('GET', `/api/clubs/${CLUB_A}/now`, who);
+      assert.deepEqual([r.json.revenue_today_kopecks.sbp, r.json.revenue_today_total_kopecks], [100000, 100000], who);
+    }
+    // Отчёт смены: смена клуба A с платежом на 100 000 (СБП).
+    const opened = new Date(Date.now() - 3 * 3600_000);
+    const { rows } = await t.admin.query('insert into bl.shifts (club_id, number, opened_by, opened_at, float_kopecks) values ($1, 1, $2, $3, 0) returning id', [CLUB_A, OWNER_A, opened]);
+    const shift = rows[0].id;
+    const full = await api('GET', `/api/shifts/${shift}/report?online=0`, 'manager');
+    assert.equal(full.status, 200, full.text);
+    assert.equal(full.json.revenue.by_method.sbp, 100000);
+    assert.equal(full.json.methods_hidden, undefined);
+    const hidden = await api('GET', `/api/shifts/${shift}/report?online=0`, 'nm');
+    assert.equal(hidden.status, 200, hidden.text);
+    const h = hidden.json;
+    assert.equal(h.methods_hidden, true);
+    assert.equal(h.revenue.total_kopecks, 100000, 'итог остаётся');
+    assert.equal(h.revenue.tables.total_kopecks, full.json.revenue.tables.total_kopecks);
+    assert.equal(h.revenue.by_method, null);
+    for (const k of ['tables', 'bar', 'packages', 'tournaments', 'other', 'refunds', 'late_returned']) assert.equal(h.revenue[k].by_method, null, k);
+    assert.equal(h.reconciliation.kkt.by_method, null);
+    assert.equal(h.reconciliation.kkt.system_kopecks, null);
+    assert.equal(typeof h.reconciliation.kkt.ok, 'boolean');
+    assert.ok(!/"(sbp|card_terminal|cash)":\s*\d/.test(JSON.stringify(h.revenue)), 'в выручке нет сумм по способам');
+    // Касса смены (размен, наличные) — как в смене у управляющего клуба: остаётся.
+    assert.equal(h.cash.float_kopecks, full.json.cash.float_kopecks);
+    // Список и карточка смены (GET /api/shifts/{id}) — без способов и у управляющего клуба.
+    assert.equal((await api('GET', `/api/shifts/${shift}`, 'nm')).status, 200);
+    // Утренняя сводка: управляющему сети — текст без способов, остальным — со способами.
+    const day = workingDayOf(new Date(Date.now() - 2 * 3600_000), 'Asia/Yekaterinburg', '06:00');
+    const clock = { now: () => zonedTime(addDays(day, 1), '12:00', 'Asia/Yekaterinburg') };
+    await summariesTick({ pool: t.pool, clock, log: t.log });
+    const notes = (await t.admin.query("select user_id, text from bl.notifications where club_id = $1 and kind = 'summary.morning' order by created_at", [CLUB_A])).rows;
+    const text = (uid) => notes.find((n) => n.user_id === uid)?.text.replace(/[\u00a0\u202f]/g, ' ');
+    assert.match(text(OWNER_A), /выручка 1 000 ₽ \(СБП 1 000 ₽\)/, text(OWNER_A));
+    assert.ok(text(nmUser), 'управляющему сети сводка приходит');
+    assert.match(text(nmUser), /выручка 1 000 ₽;/);
+    assert.doesNotMatch(text(nmUser), /СБП|наличные|терминал|карта/);
   });
 
   it('изоляция чужой сети: владелец и управляющий другой сети не видят ни сеть, ни сравнение, ни клубы', async () => {
@@ -572,5 +625,83 @@ describe('RLS таблиц сети', { skip: SKIP }, () => {
     const me = await api('GET', '/api/me', 'nm');
     assert.deepEqual([me.json.clubs, me.json.networks], [[], []]);
     assert.equal((await audit(CLUB_A, 'network.manager_revoked')).length, 1);
+  });
+});
+
+describe('Добавление клуба в сеть: действующие шаблоны применяются сразу (п. 6)', { skip: SKIP }, () => {
+  const CLUB_G = 'c5500000-0000-4000-8000-000000000011'; // test, снукер
+  const CLUB_H = 'c5500000-0000-4000-8000-000000000012'; // test, пул
+  const mkClub = async (id, name, mode, type) => {
+    await t.admin.query('insert into bl.clubs (id, name, city, timezone, mode) values ($1, $2, $3, $4, $5)', [id, name, 'Пермь', 'Asia/Yekaterinburg', mode]);
+    await t.admin.query("insert into bl.club_members (club_id, user_id, role) values ($1, $2, 'owner')", [id, OWNER_A]);
+    await t.admin.query('insert into bl.resources (id, club_id, type, number, title) values ($1, $2, $3, 1, $4)', [randomUUID(), id, type, 'Стол 1']);
+  };
+  let n2;
+
+  it('клуб в live: без причины — 400 reason_required, клуб не добавлен; с причиной — тарифы и меню сети в клубе, журнал manual.* и тревога', async () => {
+    // Сеть из прошлых тестов (жёсткие тарифы и меню): CLUB_K вышел из сети и ведёт свои тарифы.
+    assert.equal((await api('GET', `/api/clubs/${CLUB_K}/network`, 'owner')).json.network, null);
+    const no = await api('POST', `/api/networks/${net}/clubs`, 'owner', { club_id: CLUB_K });
+    assert.deepEqual([no.status, no.json], [400, { error: 'reason_required' }]);
+    assert.equal((await api('GET', `/api/clubs/${CLUB_K}/network`, 'owner')).json.network, null, 'откат целиком: клуб не добавлен');
+    assert.equal((await audit(CLUB_K, 'network.club_added')).length, 1, 'журнал прежнего добавления, нового нет');
+    const ok = await api('POST', `/api/networks/${net}/clubs`, 'owner', { club_id: CLUB_K, reason: 'Возвращаем клуб в сеть' });
+    assert.equal(ok.status, 201, ok.text);
+    // Тарифы клуба — как в шаблоне (до этого были свои, 41 000).
+    assert.ok((await tableRules(CLUB_K)).every((x) => [55000, 75000].includes(Number(x.price_per_hour))));
+    const st = (await api('GET', `/api/clubs/${CLUB_K}/network`, 'owner')).json.network;
+    assert.deepEqual([st.tariffs.override, st.tariffs.applied_version, st.menu.applied_version], [false, st.tariffs.version, st.menu.version]);
+    const [m] = (await audit(CLUB_K, 'manual.network_tariff_change')).slice(-1);
+    assert.deepEqual([m.reason, m.data.added, m.actor_id], ['Возвращаем клуб в сеть', true, OWNER_A]);
+    const alarm = (await alarmsFor(CLUB_K, 'manual.network_tariff_change')).at(-1);
+    assert.ok((await notesFor(alarm.id)).some((x) => x.user_id === OWNER_A && x.text.includes('Клуб добавлен в сеть')));
+    assert.equal((await audit(CLUB_K, 'network.club_added')).length, 2);
+    // Меню: товар шаблона в клубе есть и привязан.
+    assert.ok((await product(CLUB_K, 'Чай')).network_product_id);
+    // Повтор — без изменений (200), новых записей нет.
+    const before = (await audit(CLUB_K, 'manual.network_tariff_change')).length;
+    assert.equal((await api('POST', `/api/networks/${net}/clubs`, 'owner', { club_id: CLUB_K })).status, 200);
+    assert.equal((await audit(CLUB_K, 'manual.network_tariff_change')).length, before);
+  });
+
+  it('клуб в test: причина не нужна, журнал network.tariffs_applied с added; дыра у клуба — 400 tariff_gap {club_id}, клуб не добавляется', async () => {
+    await mkClub(CLUB_G, 'Клуб Снукер', 'test', 'billiard_snooker');
+    await mkClub(CLUB_H, 'Клуб Пул', 'test', 'billiard_pool');
+    const created = await api('POST', '/api/networks', 'owner', { name: 'Сеть только пул' });
+    n2 = created.json.id;
+    // Шаблон только на пул: сеть пока пустая, проверять нечего.
+    const put = await api('PUT', `/api/networks/${n2}/tariffs`, 'owner', { rules: applyTemplate('single', { price: 33000 }, { kind: 'pool' }) });
+    assert.equal(put.status, 200, put.text);
+    const gap = await api('POST', `/api/networks/${n2}/clubs`, 'owner', { club_id: CLUB_G });
+    assert.deepEqual([gap.status, gap.json.error, gap.json.club_id, gap.json.kind], [400, 'tariff_gap', CLUB_G, 'snooker'], gap.text);
+    assert.equal((await api('GET', `/api/clubs/${CLUB_G}/network`, 'owner')).json.network, null, 'клуб не добавлен');
+    assert.equal((await rulesOf(CLUB_G)).length, 0, 'правил не записано');
+    const ok = await api('POST', `/api/networks/${n2}/clubs`, 'owner', { club_id: CLUB_H });
+    assert.equal(ok.status, 201, ok.text);
+    assert.deepEqual((await rulesOf(CLUB_H)).map((x) => [x.resource_type, Number(x.price_per_hour)]), [['billiard_pool', 33000]]);
+    const [rec] = await audit(CLUB_H, 'network.tariffs_applied');
+    assert.equal(rec.data.added, true);
+    assert.equal((await audit(CLUB_H, 'manual.network_tariff_change')).length, 0);
+  });
+
+  it('GET …/tariffs: problem для дыры на весь день (нет цены ни на один час) — from = to = начало суток клуба', async () => {
+    // В клубе H появился снукер, которого шаблон не покрывает вовсе.
+    await t.admin.query("insert into bl.resources (id, club_id, type, number, title) values ($1, $2, 'billiard_snooker', 2, 'Стол 2')", [randomUUID(), CLUB_H]);
+    const g = await api('GET', `/api/networks/${n2}/tariffs`, 'owner');
+    const club = g.json.clubs.find((c) => c.club_id === CLUB_H);
+    assert.deepEqual(club.kinds, ['pool', 'snooker']);
+    assert.deepEqual(club.problem, { type: 'gap', kind: 'snooker', weekday: 1, from: '06:00', to: '06:00' });
+  });
+
+  it('409 duplicate шаблона меню: что совпало — field и value (artikul), club_id клуба', async () => {
+    // Свой товар клуба «Агат» с артикулом OWN-1; шаблон: «Агат» (привяжется к нему) и «Бета» с тем же артикулом.
+    const cat = null;
+    await t.admin.query("insert into bl.products (club_id, category_id, name, sku, price_kopecks, unit) values ($1, $2, 'Агат', 'OWN-1', 10000, 'шт')", [CLUB_H, cat]);
+    const r = await api('PUT', `/api/networks/${n2}/menu`, 'owner', {
+      products: [{ name: 'Агат', price_kopecks: 11000 }, { name: 'Бета', price_kopecks: 12000, sku: 'OWN-1' }],
+    });
+    assert.equal(r.status, 409, r.text);
+    assert.deepEqual([r.json.error, r.json.club_id, r.json.field, r.json.value], ['duplicate', CLUB_H, 'sku', 'OWN-1']);
+    assert.equal((await t.admin.query('select count(*)::int as n from bl.network_products where network_id = $1', [n2])).rows[0].n, 0, 'откат целиком');
   });
 });

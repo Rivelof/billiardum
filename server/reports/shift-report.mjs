@@ -84,6 +84,54 @@ export async function buildShiftReport(db, { shiftId, now, online = true, moneyC
   };
 }
 
+/**
+ * Отчёт смены для управляющего сети (M5.5 №192): без денег по способам оплаты.
+ * * revenue — итоги по видам (столы, бар, пакеты, турниры, прочее, возвраты) остаются, каждое
+ *   by_method — null;
+ * * сверка: суммы, сложенные по способу или группе способов (наличные и терминал у ККТ, СБП и карта
+ *   у ЮKassa: by_method, system_kopecks, kkt_kopecks, суммы чеков по состояниям, yookassa_*), — null;
+ *   признак ok, статус, расхождение diff_kopecks, счётчики и списки платежей без чека и расхождений
+ *   (без способа) — остаются;
+ * * касса смены (размен, наличные, ожидалось, факт, расхождение) — как в смене (GET /api/shifts/{id}).
+ * Поле methods_hidden: true — экрану скрыть блоки способов.
+ */
+export function withoutMethods(report) {
+  if (!report) return report;
+  const hideRevenue = (v) => {
+    if (!v || typeof v !== 'object') return v;
+    const out = Array.isArray(v) ? v.map(hideRevenue) : {};
+    if (Array.isArray(v)) return out;
+    for (const [k, x] of Object.entries(v)) out[k] = k === 'by_method' ? null : hideRevenue(x);
+    return out;
+  };
+  const noMethod = (list) => (Array.isArray(list) ? list.map((x) => ({ ...x, method: null })) : list);
+  const kkt = report.reconciliation?.kkt;
+  const online = report.reconciliation?.online;
+  const hiddenOnline = online
+    ? Object.fromEntries(Object.entries(online).map(([k, x]) => [k, ['system_kopecks', 'system_refunds_kopecks', 'yookassa_kopecks', 'yookassa_refunds_kopecks'].includes(k) ? null : x]))
+    : online;
+  return {
+    ...report,
+    methods_hidden: true,
+    revenue: hideRevenue(report.revenue),
+    reconciliation: {
+      ...report.reconciliation,
+      kkt: kkt
+        ? {
+            ...kkt,
+            system_kopecks: null,
+            kkt_kopecks: null,
+            by_method: null,
+            receipts: Object.fromEntries(Object.entries(kkt.receipts ?? {}).map(([state, x]) => [state, { ...x, amount_kopecks: null }])),
+            missing: noMethod(kkt.missing),
+            missing_refunds: noMethod(kkt.missing_refunds),
+          }
+        : kkt,
+      online: hiddenOnline,
+    },
+  };
+}
+
 /** Текст отчёта владельцу (без персональных данных: имена персонала не нужны). */
 export function reportText(r) {
   const tz = r.shift.timezone;

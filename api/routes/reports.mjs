@@ -2,13 +2,14 @@
 //   GET /api/shifts/{id}/report?online=0 — владелец, управляющий: выручка столов и бара по способам оплаты,
 //       часы игры, загрузка, ручные действия, сервисный свет по сотрудникам и столам, касса и сверка
 //       (чеки ККТ против продаж, онлайн против ЮKassa; online=0 — без запросов к ЮKassa).
+//       Управляющему сети (M5.5 №192) — без разбивки по способам оплаты (withoutMethods, methods_hidden: true).
 // Открытая смена — отчёт «на сейчас» (period.live = true).
 
 import { ROLES } from '../router.mjs';
 import { HttpError } from '../../server/http/errors.mjs';
 import { reportsMoneyConfig } from '../../server/kkt/index.mjs';
 import { loadMoneyConfig } from '../../server/payments/config.mjs';
-import { buildShiftReport } from '../../server/reports/shift-report.mjs';
+import { buildShiftReport, withoutMethods } from '../../server/reports/shift-report.mjs';
 
 async function shiftInClub(db, req) {
   const { rowCount } = await db.query('select 1 from bl.shifts where id = $1', [req.params.id]);
@@ -37,7 +38,8 @@ export const routes = [
       const online = req.query.online !== '0';
       const report = await buildShiftReport(ctx.db, { shiftId: req.params.id, now: ctx.clock.now(), online, moneyConfig: moneyConfigOf(ctx), fetch: ctx.kkt?.fetch });
       if (!report) throw new HttpError(404, 'not_found');
-      return { json: report };
+      // Управляющему сети — без денег по способам оплаты (M5.5 №192): withoutMethods.
+      return { json: ctx.networkManager ? withoutMethods(report) : report };
     },
   },
 ];

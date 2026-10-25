@@ -29,6 +29,7 @@
 import { plural } from '@billiardum/shared/format';
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
+import { RESOURCE_TYPES } from '../lib/resource-kinds.mjs';
 import { KIND_OF_TYPE } from '../setup/hall.mjs';
 import { cleanReason, clubLive } from '../setup/mode.mjs';
 import { checkClubRules, checkWeek, compactRules, getTariffs, normalizeRules, replaceClubRules } from '../setup/tariffs.mjs';
@@ -75,10 +76,21 @@ export async function loadTariffTemplate(db, networkId) {
   return rows.map((r) => r.rule);
 }
 
-/** Проблема недели шаблона в клубе из контекста (для экрана сети), null — покрыто. */
-async function clubProblem(db, clubId, rules, dayStart) {
+/** Виды ресурсов клуба в работе (коды API: pyramid … padel_court), по порядку видов; контекст — клуб. */
+async function clubKinds(db, clubId) {
   const { rows } = await db.query('select distinct type from bl.resources where club_id = $1 and active', [clubId]);
-  const p = checkWeek(rules, { dayStart, activeKinds: rows.map((r) => KIND_OF_TYPE[r.type]).filter(Boolean) });
+  const have = new Set(rows.map((r) => r.type));
+  return RESOURCE_TYPES.filter((t) => have.has(t)).map((t) => KIND_OF_TYPE[t]).filter(Boolean);
+}
+
+/**
+ * Проблема недели шаблона в клубе (для экрана сети), null — покрыто. Первая по порядку (пересечение
+ * важнее дыры): {type, kind, weekday, from, to}. Дыра на все рабочие сутки (у вида нет цены ни на один
+ * час) — from === to === day_start_local клуба (с 00:00 — from '00:00', to '24:00'), weekday — первый
+ * такой день (1 — понедельник, если цены нет совсем).
+ */
+function clubProblem(rules, dayStart, kinds) {
+  const p = checkWeek(rules, { dayStart, activeKinds: kinds });
   return p ? { type: p.type, kind: p.kind, weekday: p.weekday, from: p.from, to: p.to } : null;
 }
 
@@ -93,6 +105,7 @@ export async function getTariffTemplate(ctx, networkId) {
   for (const c of clubs) {
     await enterNetworkClub(ctx, c.club_id);
     const { live } = await clubLive(ctx.db, c.club_id, ctx);
+    const kinds = await clubKinds(ctx.db, c.club_id);
     out.push({
       club_id: c.club_id,
       name: c.name,
@@ -102,8 +115,10 @@ export async function getTariffTemplate(ctx, networkId) {
       live,
       override: n.tariffs_template && c.tariffs_override,
       applied_version: c.tariffs_version,
-      // Покрывает ли шаблон неделю этого клуба (его сутки и типы столов) — null, если покрывает.
-      problem: rules.length ? await clubProblem(ctx.db, c.club_id, rules, dayStartOf(c.settings)) : null,
+      // Виды ресурсов в работе (столы по типам, корты) — экрану не нужен запрос на каждый клуб.
+      kinds,
+      // Покрывает ли шаблон неделю этого клуба (его сутки и виды ресурсов) — null, если покрывает.
+      problem: rules.length ? clubProblem(rules, dayStartOf(c.settings), kinds) : null,
     });
   }
   await ctx.useClub(null);
@@ -122,7 +137,7 @@ export async function getTariffTemplate(ctx, networkId) {
  * Записать правила в клубы targets (проверка недели каждого клуба, затем запись).
  * reset — клуб сам вернулся к шаблону (POST …/network/reset).
  */
-async function applyTariffs(ctx, { n, rules, version, targets, body, reset = false }) {
+async function applyTariffs(ctx, { n, rules, version, targets, body, reset = false, added = false }) {
   const now = ctx.clock.now();
   // Проход 1: неделя каждого клуба и боевой режим (в live нужна причина).
   const live = new Map();
@@ -137,7 +152,7 @@ async function applyTariffs(ctx, { n, rules, version, targets, body, reset = fal
     await enterNetworkClub(ctx, c.club_id, ['owner', ...(reset ? ['manager'] : [])]);
     const before = await replaceClubRules(ctx.db, c.club_id, rules, now);
     await ctx.db.query('update bl.network_clubs set tariffs_override = false, tariffs_version = $2, updated_at = $3 where club_id = $1 and active', [c.club_id, version, now]);
-    const data = { network_id: n.id, version, mode: n.tariffs_mode, reset, before: compactRules(before.rules), before_resource_rules: before.resourceRules.length, after: compactRules(rules) };
+    const data = { network_id: n.id, version, mode: n.tariffs_mode, reset, ...(added ? { added: true } : {}), before: compactRules(before.rules), before_resource_rules: before.resourceRules.length, after: compactRules(rules) };
     if (live.get(c.club_id)) {
       await ctx.manual({
         action: 'manual.network_tariff_change',
@@ -145,7 +160,9 @@ async function applyTariffs(ctx, { n, rules, version, targets, body, reset = fal
         objectType: 'club',
         objectId: c.club_id,
         data,
-        text: reset ? `Клуб вернулся к тарифу сети «${n.name}» (${ruleWord(rules.length)})` : `Изменён тариф сети «${n.name}» (${ruleWord(rules.length)})`,
+        text: added
+          ? `Клуб добавлен в сеть «${n.name}»: тарифы клуба заменены тарифом сети (${ruleWord(rules.length)})`
+          : reset ? `Клуб вернулся к тарифу сети «${n.name}» (${ruleWord(rules.length)})` : `Изменён тариф сети «${n.name}» (${ruleWord(rules.length)})`,
       });
     } else {
       await appendAudit(ctx.db, { action: 'network.tariffs_applied', objectType: 'club', objectId: c.club_id, actorType: 'user', actorId: ctx.user.id, reason, data });
@@ -301,6 +318,18 @@ async function loadMenuTemplate(db, networkId) {
 }
 
 /**
+ * 409 duplicate при записи товара шаблона в клуб: что совпало — field ('sku' | 'name') и value (артикул
+ * или название товара шаблона), club_id клуба. Не уникальность — исходная ошибка.
+ */
+function duplicateError(err, clubId, t) {
+  if (err?.code !== '23505') return err;
+  const byName = /name/.test(err.constraint ?? '');
+  const field = byName ? 'name' : 'sku';
+  const value = byName ? t.name : t.sku;
+  return new HttpError(409, 'duplicate', { detail: `club ${clubId}: ${err.constraint}`, data: { club_id: clubId, field, ...(value ? { value } : {}) } });
+}
+
+/**
  * Применить шаблон меню к клубу из контекста. force — переопределённые клубом товары тоже
  * возвращаются к шаблону («жёсткий» шаблон, сброс клуба).
  * @returns {Promise<{ created: number, updated: number, deactivated: number, price_changes: number, skipped_override: number }>}
@@ -343,8 +372,7 @@ export async function applyMenuToClub(db, clubId, template, { force, now }) {
           [clubId, catId, t.name, t.description, t.sku, t.price_kopecks, t.unit, t.is_alcohol, t.vat_code, t.payment_subject, t.sort, now, t.id],
         );
       } catch (err) {
-        if (err?.code === '23505') throw new HttpError(409, 'duplicate', { detail: `club ${clubId}: ${err.constraint}`, data: { club_id: clubId } });
-        throw err;
+        throw duplicateError(err, clubId, t);
       }
       stats.created += 1;
       continue;
@@ -383,8 +411,7 @@ export async function applyMenuToClub(db, clubId, template, { force, now }) {
           next.active, next.network_product_id, next.network_override, now],
       );
     } catch (err) {
-      if (err?.code === '23505') throw new HttpError(409, 'duplicate', { detail: `club ${clubId}: ${err.constraint}`, data: { club_id: clubId } });
-      throw err;
+      throw duplicateError(err, clubId, t);
     }
     if (changed.includes('price_kopecks')) stats.price_changes += 1;
     if (cur.active && !next.active) stats.deactivated += 1;
@@ -396,7 +423,7 @@ export async function applyMenuToClub(db, clubId, template, { force, now }) {
 const touched = (s) => s.created + s.updated + s.deactivated > 0;
 
 /** Применить шаблон меню к клубам targets; журнал в каждом. */
-async function applyMenu(ctx, { n, template, version, targets, body, force, reset = false }) {
+async function applyMenu(ctx, { n, template, version, targets, body, force, reset = false, added = false }) {
   const now = ctx.clock.now();
   const results = [];
   for (const c of targets) {
@@ -409,7 +436,7 @@ async function applyMenu(ctx, { n, template, version, targets, body, force, rese
   const reason = await reasonFor(results.some((r) => r.live && touched(r.stats)), body);
   for (const r of results) {
     await enterNetworkClub(ctx, r.club_id, ['owner', ...(reset ? ['manager'] : [])]);
-    const data = { network_id: n.id, version, mode: n.menu_mode, reset, ...r.stats };
+    const data = { network_id: n.id, version, mode: n.menu_mode, reset, ...(added ? { added: true } : {}), ...r.stats };
     if (r.live && touched(r.stats)) {
       await ctx.manual({
         action: 'manual.network_menu_change',
@@ -417,7 +444,9 @@ async function applyMenu(ctx, { n, template, version, targets, body, force, rese
         objectType: 'club',
         objectId: r.club_id,
         data,
-        text: reset
+        text: added
+          ? `Клуб добавлен в сеть «${n.name}»: меню сети — новых ${r.stats.created}, изменено ${r.stats.updated}, снято ${r.stats.deactivated}, цен ${r.stats.price_changes}`
+          : reset
           ? `Меню клуба возвращено к меню сети «${n.name}»`
           : `Изменено меню сети «${n.name}»: новых ${r.stats.created}, изменено ${r.stats.updated}, снято ${r.stats.deactivated}, цен ${r.stats.price_changes}`,
       });
@@ -553,4 +582,33 @@ export async function resetClub(ctx, clubId, body) {
   if (scope === 'tariffs') return { scope, tariffs: await resetClubTariffs(ctx, clubId, body) };
   if (scope === 'menu') return resetClubMenu(ctx, clubId, body);
   throw bad('scope');
+}
+
+/**
+ * Клуб добавлен в сеть (POST /api/networks/{id}/clubs): действующие шаблоны сети — сразу в клуб, по
+ * тем же правилам, что и новая версия шаблона: тарифы — с проверкой недели клуба (дыра или пересечение —
+ * 400 tariff_gap | tariff_overlap {club_id, …}, вызывающий откатывает и добавление), меню — в режиме
+ * сети (жёсткий — переопределения клуба снимаются). Клуб в live (или приостановленный бывший live) —
+ * ручное действие: причина из запроса добавления (400 reason_required), журнал manual.network_tariff_change
+ * и manual.network_menu_change с data.added и тревога владельцу; клуб в test — network.*_applied.
+ * @returns {Promise<{ tariffs: boolean, menu: object|null }>}
+ */
+export async function applyTemplatesToNewClub(ctx, networkId, clubId, body) {
+  await lockTemplate(ctx.db, networkId, 'tariffs');
+  await lockTemplate(ctx.db, networkId, 'menu');
+  const n = await loadNetwork(ctx.db, networkId);
+  const out = { tariffs: false, menu: null };
+  const stored = n.tariffs_template ? await loadTariffTemplate(ctx.db, networkId) : [];
+  const template = n.menu_template ? await loadMenuTemplate(ctx.db, networkId) : [];
+  const targets = [{ club_id: clubId }];
+  if (stored.length) {
+    await applyTariffs(ctx, { n, rules: normalizeRules(stored), version: n.tariffs_version, targets, body, added: true });
+    out.tariffs = true;
+  }
+  if (n.menu_template) {
+    const [r] = await applyMenu(ctx, { n, template, version: n.menu_version, targets, body, force: false, added: true });
+    out.menu = r.stats;
+  }
+  await ctx.useClub(null);
+  return out;
 }

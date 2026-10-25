@@ -220,7 +220,7 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
 /** Минуты сервисного света по сотрудникам и столам (№71). */
 export async function serviceLight(db, { clubId, from, to }) {
   const { rows } = await db.query(
-    `select h.user_id, h.resource_id, r.number as resource_number, u.name as user_name,
+    `select h.user_id, h.resource_id, r.number as resource_number, r.type as resource_type, u.name as user_name,
             greatest(0, extract(epoch from (least(coalesce(h.released_at, h.until), $3) - greatest(h.created_at, $2))))::float8 as secs
        from bl.resource_holds h
        join bl.resources r on r.id = h.resource_id
@@ -237,7 +237,7 @@ export async function serviceLight(db, { clubId, from, to }) {
     s.secs += r.secs;
     s.count += 1;
     byStaff.set(r.user_id, s);
-    const t = byResource.get(r.resource_id) ?? { resource_id: r.resource_id, number: r.resource_number, secs: 0, count: 0 };
+    const t = byResource.get(r.resource_id) ?? { resource_id: r.resource_id, number: r.resource_number, type: r.resource_type, secs: 0, count: 0 };
     t.secs += r.secs;
     t.count += 1;
     byResource.set(r.resource_id, t);
@@ -353,7 +353,7 @@ const detailOf = (r) => DETAIL_ACTIONS[r.action](r.data ?? {});
 export async function manualActions(db, { clubId, from, to, limit = 100 }) {
   const { rows } = await db.query(
     `select a.created_at, a.action, a.actor_type, a.reason, a.actor_id, a.object_type, a.object_id, a.data, u.name as actor_name,
-            r.id as res_id, r.number as resource_number,
+            r.id as res_id, r.number as resource_number, r.type as resource_type,
             case when a.action like 'manual.%' then 'manual'
                  when a.actor_type <> 'user' then 'automatic'
                  when (a.data ->> 'actor_role') = any($6::text[])
@@ -390,6 +390,7 @@ export async function manualActions(db, { clubId, from, to, limit = 100 }) {
         reason: r.reason ?? null,
         resource_id: r.res_id ?? null,
         resource_number: r.resource_number ?? null,
+        resource_type: r.resource_type ?? null,
         amount_kopecks: Number.isSafeInteger(r.data?.amount_kopecks) ? r.data.amount_kopecks : null,
         linked,
         ...(DETAIL_ACTIONS[r.action] ? { data: detailOf(r) } : {}),

@@ -225,7 +225,11 @@ async function staffNames(db, ids) {
 
 const EVENT_SELECT = `select e.*, e.occurred_on::text as day, r.number as resource_number,
        (select c.id from bl.maintenance_events c where c.club_id = e.club_id and c.corrects_id = e.id) as corrected_by,
-       (select x.id from bl.cashbook_entries x where x.club_id = e.club_id and x.maintenance_event_id = e.id and x.reverses_id is null) as cashbook_entry_id
+       -- Действующий расход события: не сторно и сам не сторнирован (исправлением или вручную из кассы).
+       (select x.id from bl.cashbook_entries x
+         where x.club_id = e.club_id and x.maintenance_event_id = e.id and x.reverses_id is null
+           and not exists (select 1 from bl.cashbook_entries s where s.reverses_id = x.id and s.club_id = x.club_id)
+         order by x.created_at desc limit 1) as cashbook_entry_id
   from bl.maintenance_events e join bl.resources r on r.id = e.resource_id and r.club_id = e.club_id`;
 
 /** События клуба, новые сверху: resourceId, kind, limit (до 200). */

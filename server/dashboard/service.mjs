@@ -12,6 +12,7 @@ import { addDays, dayBounds, daysBetween, isDay, isoDow, workingDayOf } from './
 import { cashbookTotals } from './cashbook.mjs';
 import { clubForecast } from './forecast.mjs';
 import { counters as maintenanceCounters } from '../maintenance/service.mjs';
+import { familyOf } from '../lib/resource-kinds.mjs';
 
 export const TABS = ['summary', 'money', 'hall', 'guests', 'control'];
 export const MAX_PERIOD_DAYS = 366;
@@ -575,12 +576,18 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
     out.series.forecast = null;
     out.hints = [];
     const cloth = new Map();
+    // Таблица «Столы» (Н1 после M5.8): все ресурсы клуба в работе — с нулями, если за период не было
+    // ёмкости, игр и выручки (например, «Сегодня» до открытия клуба), иначе с ними пропадали бы
+    // часы с замены сукна и cloth_due (№198). Выведенные из работы — только если в периоде что-то было.
+    const activeRes = new Map();
     for (const c of clubs) {
       await enter(c);
       const f = await clubForecast(db, c, { now, kind });
       if (!all) out.series.forecast = f.forecast;
       out.hints.push(...f.hints.map((h) => (all ? { club_id: c.id, club_name: c.name, ...h } : h)));
       for (const row of await maintenanceCounters(db, c, { now, kinds: ['cloth'] })) cloth.set(row.resource_id, row.kinds.cloth);
+      const { rows: act } = await db.query('select id, number, title, type from bl.resources where club_id = $1 and active', [c.id]);
+      for (const r of act) activeRes.set(`${c.id}|${r.id}`, { club_id: c.id, resource_id: r.id, number: r.number, title: r.title, type: r.type });
     }
     out.series.ring = { capacity_minutes: m.capacity_minutes, played_minutes: m.play_minutes, service_minutes: m.service_minutes, unrealized_minutes: m.unrealized_minutes };
     const byDayType = new Map();
@@ -605,9 +612,16 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
       const x = cur.agg.types.get(t);
       return { type: t, tables: x.resources.size, games: x.games, play_minutes: x.play_minutes, capacity_minutes: x.capacity_minutes, service_minutes: x.service_minutes, utilization_pct: pct(x.play_minutes, x.capacity_minutes), revenue_kopecks: x.revenue_kopecks - x.refunds_kopecks };
     });
-    out.tables.by_resource = [...cur.agg.resources.values()]
-      .filter((r) => matchKind(r.type, kind) && (r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0))
-      .sort((x, y) => (x.club_id === y.club_id ? x.number - y.number : x.club_id < y.club_id ? -1 : 1))
+    const zeroRes = { games: 0, play_minutes: 0, service_minutes: 0, booking_minutes: 0, capacity_minutes: 0, revenue_kopecks: 0, refunds_kopecks: 0, days_in_operation: 0 };
+    const byRes = new Map([...cur.agg.resources].filter(([key, r]) => activeRes.has(key) || r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0));
+    for (const [key, r] of activeRes) {
+      // Номер, название и вид — текущие (стол могли переименовать после агрегата).
+      byRes.set(key, { ...zeroRes, ...byRes.get(key), ...r });
+    }
+    const famRank = (type) => (familyOf(type) === 'table' ? 0 : 1);
+    out.tables.by_resource = [...byRes.values()]
+      .filter((r) => matchKind(r.type, kind))
+      .sort((x, y) => (x.club_id !== y.club_id ? (x.club_id < y.club_id ? -1 : 1) : famRank(x.type) - famRank(y.type) || x.number - y.number))
       .map((r) => ({
         ...(all ? { club_id: r.club_id } : {}),
         resource_id: r.resource_id,
@@ -667,7 +681,7 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
     out.tables.manual_items = a.manual.items
       .sort((x, y) => (x.at < y.at ? 1 : -1))
       .slice(0, 100)
-      .map((i) => ({ ...(all ? { club_id: i.club_id } : {}), at: i.at, action: i.action, kind: i.kind, actor_id: i.actor_id, actor_name: nm(i.club_id, i.actor_id), reason: i.reason, resource_number: i.resource_number, amount_kopecks: i.amount_kopecks }));
+      .map((i) => ({ ...(all ? { club_id: i.club_id } : {}), at: i.at, action: i.action, kind: i.kind, actor_id: i.actor_id, actor_name: nm(i.club_id, i.actor_id), reason: i.reason, resource_number: i.resource_number, resource_type: i.resource_type ?? null, amount_kopecks: i.amount_kopecks }));
     out.tables.automatic = a.manual.automatic;
     out.tables.shifts = a.shifts.filter((s) => s.closed_here).map((s) => shiftRow(s, names));
     out.tables.alarms = {

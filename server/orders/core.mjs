@@ -2,6 +2,7 @@
 // заказа и строк, номер заказа за день, публикация SSE после коммита.
 
 
+import { familyOf } from '../lib/resource-kinds.mjs';
 import { afterCommit } from '../lib/store.mjs';
 import { PosError } from './errors.mjs';
 
@@ -181,7 +182,8 @@ export function orderView(o, { staff = false } = {}) {
     paid: Boolean(o.paid_at),
     awaiting_payment: !o.committed_at && o.status !== 'canceled',
     session_id: o.session_id,
-    resource: o.resource_id ? { id: o.resource_id, number: o.resource_number ?? null } : null,
+    // Вид ресурса (M5.8): стол или корт — type (тип в базе) и family ('table' | 'court') для слова в интерфейсе.
+    resource: o.resource_id ? { id: o.resource_id, number: o.resource_number ?? null, type: o.resource_type ?? null, family: familyOf(o.resource_type) } : null,
     items: (o.items ?? []).map((i) => ({
       id: i.id,
       product_id: i.product_id,

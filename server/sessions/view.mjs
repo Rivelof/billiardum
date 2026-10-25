@@ -59,7 +59,7 @@ function extendLimit(s, bookingLimit) {
 }
 
 /** Короткое представление сессии в зале и в SSE hall. */
-export function sessionSummary(s, now) {
+export function sessionSummary(s, now, { billing = null } = {}) {
   const paidUntil = new Date(s.paid_until);
   return {
     id: s.id,
@@ -70,5 +70,8 @@ export function sessionSummary(s, now) {
     remaining_ms: OPEN_STATUSES.includes(s.status) ? Math.max(0, paidUntil.getTime() - now.getTime()) : 0,
     unlimited: Boolean(s.unlimited),
     deposit_kopecks: s.deposit_kopecks ?? null,
+    // Тарификация (M5.8): длина слота корта (шаг продления) для ресепшена; у стола — hourly и null.
+    billing: billing?.billing ?? 'hourly',
+    slot_minutes: billing?.slot_minutes ?? null,
   };
 }

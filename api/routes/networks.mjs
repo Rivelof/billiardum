@@ -6,7 +6,8 @@
 //   GET    /api/networks/{network_id}                     → сеть (владелец, управляющий)
 //   PATCH  /api/networks/{network_id} {name?, tariffs_mode?, menu_mode?, reason?} → сеть (владелец)
 //   DELETE /api/networks/{network_id}                     → { ok, clubs_removed } (владелец, архив)
-//   POST   /api/networks/{network_id}/clubs {club_id}     → 201 сеть; 403 не свой клуб; 409 club_in_network
+//   POST   /api/networks/{network_id}/clubs {club_id, reason?} → 201 сеть (шаблоны сети — сразу в клуб; live — с причиной);
+//                                                         403 не свой клуб; 409 club_in_network; 400 tariff_gap|tariff_overlap {club_id}, reason_required
 //   DELETE /api/networks/{network_id}/clubs/{club_id}     → сеть
 //   GET    /api/networks/{network_id}/managers            → { items } (владелец)
 //   POST   /api/networks/{network_id}/managers {phone}    → 201 { id, status, phone_masked, expires_at, invite_url, invite_text }
@@ -42,6 +43,7 @@ import {
   updateNetwork,
 } from '../../server/networks/service.mjs';
 import {
+  applyTemplatesToNewClub,
   deleteMenuTemplate,
   deleteTariffTemplate,
   enforceTemplates,
@@ -83,7 +85,7 @@ export const routes = [
     handler: async (ctx, req) => ({ json: await updateNetwork(ctx, id(req), req.body, { enforceTemplates }) }),
   },
   { method: 'DELETE', path: '/api/networks/{network_id}', auth: 'guest', rateLimit: WRITE, handler: async (ctx, req) => ({ json: await archiveNetwork(ctx, id(req)) }) },
-  { method: 'POST', path: '/api/networks/{network_id}/clubs', auth: 'guest', rateLimit: WRITE, handler: async (ctx, req) => addClub(ctx, id(req), req.body) },
+  { method: 'POST', path: '/api/networks/{network_id}/clubs', auth: 'guest', rateLimit: WRITE, handler: async (ctx, req) => addClub(ctx, id(req), req.body, { applyTemplates: applyTemplatesToNewClub }) },
   {
     method: 'DELETE',
     path: '/api/networks/{network_id}/clubs/{club_id}',

@@ -84,6 +84,13 @@ describe('падел-корт: свет по слотам, продление с
     assert.deepEqual([v.resource.kind, v.resource.family, v.resource.max_players, v.resource.title], ['padel_court', 'court', 4, 'Корт 1']);
     // Шаг продления — слот из тарифа клуба (сид: 90 минут); у стола — почасово.
     assert.deepEqual([v.resource.billing, v.resource.slot_minutes], ['slot', 90]);
+    // Зал для ресепшена (п. 9): kind у ресурса, billing и slot_minutes в session; у стола — hourly и null.
+    const hall = await h.asUser(RECEPTION, (db) => svc.hall(db, { clubId: CLUB, userId: RECEPTION }));
+    const item = hall.find((x) => x.resource.id === COURT);
+    assert.deepEqual([item.resource.kind, item.resource.family, item.session.billing, item.session.slot_minutes], ['padel_court', 'court', 'slot', 90]);
+    const table = hall.find((x) => x.resource.id === 'e1000000-0000-4000-8000-000000000001');
+    assert.equal(table.resource.kind, 'pyramid');
+    assert.equal(table.session, null);
     // SSE session — те же поля.
     await h.until(() => h.sse.events.some((e) => e.channel === `session:${sid}` && e.event === 'session'), 'SSE session');
     const ev = h.sse.events.filter((e) => e.channel === `session:${sid}` && e.event === 'session').at(-1);

@@ -137,7 +137,7 @@ export async function networkDashboard(ctx, networkId, query) {
     await ctx.useClub(null);
     const today = workingDayOf(now, 'Europe/Moscow', '06:00');
     const q = parseQuery({ ...query, tab: 'summary', kind: undefined }, { today });
-    return { network: { id: n.id, name: n.name }, role: access, period: { from: q.from, to: q.to, days: q.days }, compare_period: null, clubs: [], totals: null, ranking: { utilization: [], revenue_per_table: [] }, missing_days: [], generated_at: now.toISOString() };
+    return { network: { id: n.id, name: n.name }, role: access, period: { from: q.from, to: q.to, days: q.days }, compare_period: null, clubs: [], totals: null, ranking: { utilization: [], revenue_per_table_day: [] }, missing_days: [], generated_at: now.toISOString() };
   }
   const today = workingDayOf(now, clubs[0].timezone, clubs[0].day_start_local);
   const q = parseQuery({ ...query, tab: 'summary', kind: undefined }, { today });
@@ -155,7 +155,8 @@ export async function networkDashboard(ctx, networkId, query) {
     const numbersPrev = p ? numbers(p, p.guests) : null;
     return { club, today: clubToday, numbers: numbersNow, prev: numbersPrev, ranked: isLiveClub(club.mode, club.mode_before_suspend) };
   });
-  const ranking = { utilization: rank(rows, 'utilization'), revenue_per_table: rank(rows, 'revenue_per_table_day') };
+  // Рейтинг выручки — по выручке на столо-день (сравнимо между клубами разного размера и периодами).
+  const ranking = { utilization: rank(rows, 'utilization'), revenue_per_table_day: rank(rows, 'revenue_per_table_day') };
   const placeOf = (list, id) => list.find((x) => x.club_id === id)?.place ?? null;
   const totalNow = numbers(cur, cur.guests);
   const totalPrev = prev ? numbers(prev, prev.guests) : null;
@@ -177,7 +178,7 @@ export async function networkDashboard(ctx, networkId, query) {
       tiles: tiles(r.numbers, r.prev),
       courts: r.numbers.courts,
       place_utilization: placeOf(ranking.utilization, r.club.id),
-      place_revenue_per_table: placeOf(ranking.revenue_per_table, r.club.id),
+      place_revenue_per_table_day: placeOf(ranking.revenue_per_table_day, r.club.id),
     })),
     totals: { tables_avg: totalNow.tables_avg, tiles: tiles(totalNow, totalPrev), courts: totalNow.courts },
     ranking,

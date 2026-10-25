@@ -104,6 +104,7 @@ describe('тревоги', () => {
     const ev = await stream.next('alarm');
     assert.equal(ev.id, res.id);
     assert.equal(ev.text, 'Стол 1: Свет горит без игры — проверьте стол');
+    assert.deepEqual([ev.resource_number, ev.resource_type], [1, 'billiard_pyramid'], 'SSE alarm: вид ресурса');
     stream.close();
     const journal = await t.admin.query("select data from bl.audit_log where action = 'alarm.raised' and object_id = $1", [res.id]);
     assert.deepEqual(journal.rows[0].data, { alarm_id: res.id, type: 'bypass_detected', level: 'critical', resource_id: RESOURCE_1 });
@@ -209,10 +210,22 @@ describe('тревоги', () => {
     const id = (await inClub((db) => raise(db, CLUB_A, { type: 'device_offline', level: 'critical', resourceId: RESOURCE_1 }))).id;
     const list = await t.request('GET', `/api/clubs/${CLUB_A}/alarms?state=open`, { token: manager.token });
     assert.ok(list.json.some((a) => a.id === id && a.state === 'open'));
+    assert.deepEqual([list.json.find((a) => a.id === id).resource_number, list.json.find((a) => a.id === id).resource_type], [1, 'billiard_pyramid']);
+    // Корт (M5.8): resource_type в списке тревог и «Корт 1» в тексте.
+    const courtId = (await inClub((db) => raise(db, CLUB_A, { type: 'device_offline', level: 'critical', resourceId: 'e1000000-0000-4000-8000-000000000101' }))).id;
+    const court = (await t.request('GET', `/api/clubs/${CLUB_A}/alarms?state=open`, { token: manager.token })).json.find((a) => a.id === courtId);
+    assert.deepEqual([court.resource_type, court.resource_number, court.text.startsWith('Корт 1:')], ['padel_court', 1, true]);
     assert.equal((await t.request('POST', `/api/alarms/${id}/ack`, { token: reception.token })).status, 403);
+    const stream = await openStream(`/api/stream?club=${CLUB_A}`, manager.token);
+    await stream.next('ready');
     const ack = await t.request('POST', `/api/alarms/${id}/ack`, { token: manager.token });
     assert.equal(ack.status, 200);
     assert.equal(ack.json.alarm.state, 'acked');
+    assert.deepEqual([ack.json.alarm.resource_number, ack.json.alarm.resource_type], [1, 'billiard_pyramid']);
+    // SSE alarm после подтверждения — тоже с видом ресурса и текстом «Стол 1: …».
+    const ackEv = await stream.next('alarm');
+    assert.deepEqual([ackEv.id, ackEv.state, ackEv.resource_type, ackEv.text.startsWith('Стол 1:')], [id, 'acked', 'billiard_pyramid', true]);
+    stream.close();
     assert.equal((await t.request('POST', `/api/alarms/${id}/ack`, { token: manager.token })).status, 200);
     assert.equal((await t.request('POST', `/api/alarms/${randomUUID()}/ack`, { token: manager.token })).status, 404);
     const journal = await t.admin.query("select actor_id from bl.audit_log where action = 'alarm.ack' and object_id = $1", [id]);
@@ -338,6 +351,7 @@ describe('маршруты владельца', () => {
     const res = await t.request('GET', `/api/clubs/${CLUB_A}/now`, { token: manager.token });
     assert.equal(res.status, 200);
     assert.deepEqual(res.json.revenue_today_kopecks, { sbp: 160000, card: 0, cash: 80000, card_terminal: 0 });
+    assert.equal(res.json.revenue_today_total_kopecks, 240000);
     assert.equal(res.json.hall.length, 8);
     assert.ok(Array.isArray(res.json.alarms_open));
     assert.equal((await t.request('GET', `/api/clubs/${CLUB_A}/now`, { token: reception.token })).status, 403);
@@ -362,19 +376,19 @@ describe('маршруты владельца', () => {
     assert.ok(byActor.json.items.every((i) => i.actor_id === MANAGER_A));
     assert.equal(byActor.json.items[0].actor_name, 'Управляющий (тест)');
     assert.equal(byActor.json.items[0].actor_type, 'user');
-    for (const k of ['actor_type', 'actor_id', 'actor_name', 'resource_number', 'reason', 'hash']) assert.ok(k in byActor.json.items[0], k);
+    for (const k of ['actor_type', 'actor_id', 'actor_name', 'resource_number', 'resource_type', 'reason', 'hash']) assert.ok(k in byActor.json.items[0], k);
     // Стол записи: объект-ресурс, data.resource_id и стол устройства (команды контроллеру).
     await inClub((db) =>
       appendAudit(db, { action: 'device.cmd', objectType: 'device', objectId: 'd1000000-0000-4000-8000-000000000001', data: { seq: 1, type: 'ping' }, actorType: 'system' }),
     );
     const byTable = await t.request('GET', `/api/clubs/${CLUB_A}/audit?resource=${RESOURCE_1}&limit=200`, { token: owner.token });
     assert.ok(byTable.json.items.length >= 3);
-    assert.ok(byTable.json.items.every((i) => i.resource_number === 1 && i.resource_id === RESOURCE_1));
+    assert.ok(byTable.json.items.every((i) => i.resource_number === 1 && i.resource_id === RESOURCE_1 && i.resource_type === 'billiard_pyramid'));
     assert.ok(byTable.json.items.some((i) => i.action === 'device.cmd'), 'команда устройства стола 1');
     assert.ok(byTable.json.items.some((i) => i.action === 'test.one'), 'объект — ресурс');
     assert.ok(byTable.json.items.some((i) => i.action === 'alarm.raised'), 'data.resource_id');
     const system = (await t.request('GET', `/api/clubs/${CLUB_A}/audit?action=test.two`, { token: owner.token })).json.items[0];
-    assert.deepEqual([system.actor_name, system.resource_number], [null, null]);
+    assert.deepEqual([system.actor_name, system.resource_number, system.resource_type], [null, null, null]);
     assert.equal((await t.request('GET', `/api/clubs/${CLUB_A}/audit?action=a.*b`, { token: owner.token })).status, 400);
     const page1 = await t.request('GET', `/api/clubs/${CLUB_A}/audit?limit=2`, { token: owner.token });
     assert.equal(page1.json.items.length, 2);

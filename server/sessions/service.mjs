@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
 import { afterCommit } from '../lib/store.mjs';
-import { familyOf, isSlotType, maxPlayers, resourceName } from '../lib/resource-kinds.mjs';
+import { familyOf, isSlotType, maxPlayers, resourceName, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
 import { resourceBilling } from '../tariffs/index.mjs';
 import { normalizeCode } from './codes.mjs';
 import { fail, LightError } from './errors.mjs';
@@ -1697,9 +1697,10 @@ export function createLightService(opts) {
     else if (h) status = h.kind;
     else if (info?.mode === 'fault') status = 'fault';
     return {
-      resource: { id: r.id, number: r.number, type: r.type, family: familyOf(r.type), title: r.title, code: r.code, plan_x: r.plan_x, plan_y: r.plan_y, plan_rotation: r.plan_rotation },
+      // kind — код вида для API, как у resources (pyramid | pool | snooker | mixed | padel_court).
+      resource: { id: r.id, number: r.number, type: r.type, kind: TYPE_TO_KIND[r.type] ?? null, family: familyOf(r.type), title: r.title, code: r.code, plan_x: r.plan_x, plan_y: r.plan_y, plan_rotation: r.plan_rotation },
       status,
-      session: s && withSession ? sessionSummary(s, t) : null,
+      session: s && withSession ? sessionSummary(s, t, { billing: await billingOf(db, { resource_id: r.id, resource_type: r.type }) }) : null,
       busy_until: s ? iso(s.paid_until) : null,
       until: h ? iso(h.until) : null,
       hold: h ? holdView(h) : null,

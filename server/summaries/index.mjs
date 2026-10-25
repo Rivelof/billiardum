@@ -4,7 +4,8 @@
 // сутки (с clubs.settings.day_start_local, по умолчанию 06:00): выручка по способам оплаты
 // и возвраты, часы игры и загрузка, тревоги по уровням, ручные действия (и автоматические действия
 // системы, если были) и хеш головы журнала.
-// Получатели — владелец и управляющий (уведомление по цепочке каналов). Отправка один раз:
+// Получатели — владелец и управляющий (уведомление по цепочке каналов); управляющему сети (M5.5
+// №192) — без разбивки выручки по способам оплаты. Отправка один раз:
 // строка bl.club_summaries (клуб, вид, рабочие сутки) пишется в той же транзакции.
 // Планировщик раз в минуту на ctx.clock — тесты двигают часы.
 // M5.1 (№153): клубу в тестовом режиме сводка не отправляется; тестовые записи (is_test) в сводку
@@ -12,7 +13,7 @@
 
 import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
 import { withContext as storeWithContext } from '../lib/store.mjs';
-import { sendToClubStaff } from '../notify/index.mjs';
+import { send } from '../notify/index.mjs';
 import { manualActions, playStats, revenueOf, shiftPayments, shiftRefunds } from '../reports/queries.mjs';
 
 export const TICK_MS = 60_000;
@@ -86,9 +87,9 @@ export async function buildMorningSummary(db, { clubId, day, timezone, dayStartL
 }
 
 /** Текст сводки (без персональных данных). */
-export function summaryText(s) {
+export function summaryText(s, { methods: withMethods = true } = {}) {
   const dayDate = new Date(`${s.day}T12:00:00Z`);
-  const methods = Object.keys(METHOD_TITLES)
+  const methods = (withMethods ? Object.keys(METHOD_TITLES) : [])
     .filter((m) => s.revenue.by_method[m] > 0)
     .map((m) => `${METHOD_TITLES[m]} ${formatMoney(s.revenue.by_method[m])}`);
   const parts = [
@@ -132,12 +133,21 @@ export async function tick({ pool, withContext = storeWithContext, clock, log })
           [c.club_id, day, JSON.stringify(data), now],
         );
         if (ins.rowCount === 0) return false;
-        await sendToClubStaff(db, c.club_id, ROLES, {
-          kind: 'summary.morning',
-          level: 'info',
-          text: summaryText(data),
-          data: { day, head_hash: data.journal.head_hash, url: '/club/' },
-        });
+        // Управляющему сети (членство через сеть, M5.5 №192) — без разбивки по способам оплаты.
+        const { rows: to } = await db.query(
+          `select user_id, bool_and(network_id is not null) as via_network
+             from bl.club_members where club_id = $1 and role = any($2::text[]) and active
+            group by user_id order by user_id`,
+          [c.club_id, ROLES],
+        );
+        for (const r of to) {
+          await send(db, r.user_id, {
+            kind: 'summary.morning',
+            level: 'info',
+            text: summaryText(data, { methods: !r.via_network }),
+            data: { day, head_hash: data.journal.head_hash, url: '/club/' },
+          });
+        }
         return true;
       });
       if (done) {

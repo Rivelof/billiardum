@@ -63,6 +63,22 @@ describe('цепочка и сводка', () => {
     assert.doesNotMatch(summaryText({ ...base, manual_actions: { count: 1, automatic: { count: 0, by_action: {} } } }), /автоматических/);
   });
 
+  it('текст сводки управляющему сети (№192): выручка без разбивки по способам оплаты', () => {
+    const base = {
+      day: '2026-10-21',
+      revenue: { by_method: { sbp: 100000, card: 0, cash: 50000, card_terminal: 0 }, net_kopecks: 150000, refunds_kopecks: 0 },
+      play: { hours: 1, utilization_percent: 10 },
+      alarms: { total: 0, critical: 0 },
+      manual_actions: { count: 0 },
+      journal: { head_seq: 0, head_hash: null },
+    };
+    const full = summaryText(base).replace(/[\u00a0\u202f]/g, ' ');
+    const hidden = summaryText(base, { methods: false }).replace(/[\u00a0\u202f]/g, ' ');
+    assert.match(full, /выручка 1 500 ₽ \(СБП 1 000 ₽, наличные 500 ₽\);/);
+    assert.match(hidden, /выручка 1 500 ₽;/);
+    assert.doesNotMatch(hidden, /СБП|наличные|терминал|карта/);
+  });
+
   it('текст сводки: турниры N ₽ — только при N > 0 (M4)', () => {
     const base = {
       day: '2026-10-21',

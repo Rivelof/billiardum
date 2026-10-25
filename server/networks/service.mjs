@@ -238,8 +238,13 @@ export async function archiveNetwork(ctx, networkId) {
 
 // Клубы сети -----------------------------------------------------------------------------------------
 
-/** POST /api/networks/{id}/clubs {club_id} — владелец: только свой клуб, клуб — не больше чем в одной сети. */
-export async function addClub(ctx, networkId, body) {
+/**
+ * POST /api/networks/{id}/clubs {club_id, reason?} — владелец: только свой клуб, клуб — не больше чем в
+ * одной сети. Действующие шаблоны тарифов и меню сети применяются к клубу сразу (applyTemplates —
+ * templates.applyTemplatesToNewClub): клуб в live — с причиной, ошибка шаблона — клуб не добавляется
+ * (транзакция запроса откатывается целиком). Повтор (клуб уже в сети) — 200 без изменений.
+ */
+export async function addClub(ctx, networkId, body, { applyTemplates = null } = {}) {
   await networkAccess(ctx, networkId, { want: 'owner' });
   const clubId = body?.club_id;
   if (typeof clubId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(clubId)) throw new HttpError(400, 'bad_request', { detail: 'club_id' });
@@ -251,6 +256,7 @@ export async function addClub(ctx, networkId, body) {
   if (!before) {
     const n = await loadNetwork(ctx.db, networkId);
     await auditClubs(ctx, [clubId], { action: 'network.club_added', objectId: networkId, data: { network_id: networkId, name: n.name, tariffs_mode: n.tariffs_mode, menu_mode: n.menu_mode } });
+    if (applyTemplates) await applyTemplates(ctx, networkId, clubId, body);
   }
   return { status: before ? 200 : 201, json: await networkJson(ctx, networkId, 'owner') };
 }

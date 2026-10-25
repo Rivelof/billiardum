@@ -49,7 +49,7 @@
 | `GET /api/clubs/{club}/resources/{id}/sessions?from&to` | владелец, управляющий | «Кто играл за столом» (№179) |
 | `POST /api/clubs/{club}/sessions/{id}/guest-phone` | только владелец | `{reason}` → `{session_id, phone}`; журнал `guest.lookup` (без номера), уведомление владельцу (тревога `manual_action`) |
 
-**Управляющий сети** (M5.5 №192, членство в клубе выдано сетью — `ctx.networkManager`): как управляющий, но `tab=money` — `403` (у «всех клубов» такие клубы выпадают из выборки, нет других — `403`), экспорт — `403` (`clubScope(…, { allowNetwork: false })`, у маршрутов клуба — опция `networkManager: false`), в `…/dashboard/now` — `revenue_today.by_method: null`; ключ кэша — отдельный. Вкладка «Сеть» (сравнение клубов сети, №193) — `GET /api/networks/{id}/dashboard`, `server/networks/README.md`.
+**Управляющий сети** (M5.5 №192, членство в клубе выдано сетью — `ctx.networkManager`): как управляющий, но `tab=money` — `403` (у «всех клубов» такие клубы выпадают из выборки, нет других — `403`), экспорт — `403` (`clubScope(…, { allowNetwork: false })`, у маршрутов клуба — опция `networkManager: false`), в `…/dashboard/now` — `revenue_today.by_method: null`, в `GET /api/clubs/{club}/now` — `revenue_today_kopecks: null`, в отчёте смены и утренней сводке — без способов (`server/networks/README.md`); ключ кэша — отдельный. Вкладка «Сеть» (сравнение клубов сети, №193) — `GET /api/networks/{id}/dashboard`, `server/networks/README.md`.
 
 **Кэш** ответа дашборда в процессе — 60 с на (клуб или пользователь «всех клубов», период, вкладка, тип, сравнение), период с текущими сутками — 15 с, статус зала — 15 с. Кэш — после проверки прав; ответ из кэша — заголовок `X-Cache: hit`. Ограничение частоты — 60 запросов в минуту с IP на маршрут.
 
@@ -146,7 +146,7 @@
 }
 ```
 
-Тепловая карта — 7 × 24: строки — ISO день недели суток (1 = пн), столбцы — местный час; `pct` — загрузка в % (до 100; `null` — клуб закрыт или столов нет), рядом минуты для таблицы-дубля. Минуты игры лежат в часах и сутках своего фактического времени (№187). M5.6: рядом с картой — `series.forecast` (прогноз 7 × 24, медиана за 8 недель) и `hints` (подсказки по цене); в `by_resource` — `cloth_hours` (часы игры с замены сукна, текущий счётчик), `cloth_since`, `cloth_threshold_hours`, `cloth_due`. Формы и правила — `server/maintenance/README.md`.
+Тепловая карта — 7 × 24: строки — ISO день недели суток (1 = пн), столбцы — местный час; `pct` — загрузка в % (до 100; `null` — клуб закрыт или столов нет), рядом минуты для таблицы-дубля. Минуты игры лежат в часах и сутках своего фактического времени (№187). M5.6: рядом с картой — `series.forecast` (прогноз 7 × 24, медиана за 8 недель) и `hints` (подсказки по цене); в `by_resource` — все ресурсы клуба в работе (столы и корты, с нулями — даже без ёмкости, игр и выручки за период, например «Сегодня» до открытия клуба; выведенный из работы — только если в периоде что-то было; столы раньше кортов, затем по номеру) и `cloth_hours` (часы игры с замены сукна, текущий счётчик), `cloth_since`, `cloth_threshold_hours`, `cloth_due`. Формы и правила — `server/maintenance/README.md`.
 
 ### `tab=guests`
 
@@ -173,7 +173,7 @@
   "manual_by_action": [ { "action": "service.start", "count": 1 } ],
   "manual_by_staff": [ { "user_id": "…", "name": "Ресепшн Анна", "count": 1, "by_action": { "service.start": 1 } } ],
   "manual_items": [ { "at": "…", "action": "service.start", "kind": "staff", "actor_id": "…", "actor_name": "Ресепшн Анна", "reason": "клиент *** пролил",
-                      "resource_number": 4, "amount_kopecks": null } ],
+                      "resource_number": 4, "resource_type": "billiard_pool", "amount_kopecks": null } ],
   "automatic": { "count": 0, "by_action": {} },
   "shifts": [ { "number": 2, "closed_at": "…", "discrepancy_kopecks": -50000, "status": "discrepancy", … } ],
   "alarms": {

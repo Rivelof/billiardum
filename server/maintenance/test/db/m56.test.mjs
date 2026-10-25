@@ -342,6 +342,22 @@ describe('T44: обслуживание столов', () => {
     assert.equal(await linkedSum([x.event_id, y.event_id, z.event_id]), -250_000);
   });
 
+  it('п. 11: сторнированный расход у события не показывается «в кассе» (ручное сторно из кассы, исправление со стоимостью 0)', async () => {
+    const eventOf = async (id) => (await req('GET', `/api/clubs/${CLUB}/maintenance?resource_id=${T(3)}`, 'owner')).json.events.find((e) => e.event_id === id);
+    const a = (await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { resource_id: T(3), kind: 'balls', cost_kopecks: 120_000 })).json;
+    assert.ok(a.cashbook_entry_id);
+    assert.equal((await eventOf(a.event_id)).cashbook_entry_id, a.cashbook_entry_id);
+    assert.equal((await post(`/api/clubs/${CLUB}/cashbook/${a.cashbook_entry_id}/storno`, 'owner', { reason: 'не та сумма' })).status, 201);
+    assert.equal((await eventOf(a.event_id)).cashbook_entry_id, null, 'после ручного сторно из кассы');
+    const b = (await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { resource_id: T(3), kind: 'cloth', cost_kopecks: 90_000 })).json;
+    assert.ok(b.cashbook_entry_id);
+    const c = await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { corrects_id: b.event_id, reason: 'бесплатно по гарантии', cost_kopecks: 0 });
+    assert.equal(c.status, 201, c.text);
+    assert.equal(c.json.cashbook_entry_id, null);
+    assert.equal((await eventOf(b.event_id)).cashbook_entry_id, null, 'расход сторнирован исправлением');
+    assert.equal((await eventOf(c.json.event_id)).cashbook_entry_id, null);
+  });
+
   it('Н-2: не больше 5 уведомлений о пороге на клуб в сутки, сверх — свёрнутое «ещё у K столов»; смена порогов управляющим — владельцу', async () => {
     const ownerNotes = async (kind) => (await t.admin.query('select text from bl.notifications where club_id = $1 and user_id = $2 and kind = $3 order by created_at', [CLUB, 'a1000000-0000-4000-8000-000000000001', kind])).rows;
     const thrBefore = (await ownerNotes('maintenance.thresholds')).length;

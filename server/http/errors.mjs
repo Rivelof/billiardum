@@ -147,7 +147,15 @@ export const SAFE_ERROR_FIELDS = new Set([
   'network_id',
   // M5.1 (409 checklist_incomplete): невыполненные пункты чек-листа запуска — только из SAFE_CHECKLIST.
   'failed',
+  // M5.5 (409 duplicate шаблона меню сети): что совпало — field из SAFE_DUPLICATE_FIELDS и значение
+  // (артикул или название товара, текст владельца — не ПДн гостя; до 128 символов, без управляющих).
+  'field',
+  'value',
 ]);
+/** Допустимые значения field в ошибке duplicate: поле товара, по которому совпало. */
+export const SAFE_DUPLICATE_FIELDS = new Set(['sku', 'name']);
+/** Значение рядом с field: 1–128 символов без управляющих (код < 32 и 127). */
+const safeValue = (v) => typeof v === 'string' && v.length >= 1 && v.length <= 128 && ![...v].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 /** Допустимые значения reason в ошибке: закрытый список кодов, не свободный текст. */
 export const SAFE_REASONS = new Set(['tournament', 'booking', 'service', 'pending', 'offline', 'busy', 'reserved', 'waitlist', 'session', 'maintenance', 'closed']);
 /** Допустимые значения status в ошибке: статус закрытой заявки гостя в клуб (T25). */
@@ -178,6 +186,15 @@ export function safeErrorData(data) {
     }
     if (k === 'kind') {
       if (typeof v === 'string' && SAFE_KINDS.has(v)) out[k] = v;
+      continue;
+    }
+    if (k === 'field') {
+      if (typeof v === 'string' && SAFE_DUPLICATE_FIELDS.has(v)) out[k] = v;
+      continue;
+    }
+    if (k === 'value') {
+      // Только рядом с field (ошибка duplicate): иначе свободный текст не отдаётся.
+      if (safeValue(v) && typeof data.field === 'string' && SAFE_DUPLICATE_FIELDS.has(data.field)) out[k] = v;
       continue;
     }
     if (k === 'failed') {
