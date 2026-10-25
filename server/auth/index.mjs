@@ -141,7 +141,7 @@ export async function userJson(db, userId, { consentVersion = DEFAULT_CONSENT_VE
 /** Членства пользователя во всех клубах (личный контекст: app.club_id пуст). */
 export async function myMemberships(db, userId) {
   const { rows } = await db.query(
-    `select m.club_id, m.role, c.name as club_name, c.timezone, c.mode as club_mode
+    `select m.club_id, m.role, m.network_id, c.name as club_name, c.timezone, c.mode as club_mode
        from bl.club_members m
        left join bl.clubs c on c.id = m.club_id
       where m.user_id = $1 and m.active
@@ -186,6 +186,9 @@ export async function completeLogin(ctx, userId, { via }) {
   // Приглашения персонала на этот номер (M3 §1 п. 9) — до записи о входе персонала.
   const { acceptInvites } = await import('../staff/index.mjs');
   await acceptInvites(db, userId);
+  // Приглашения управляющим сети (M5.5 №192): доступ ко всем клубам сети.
+  const { acceptNetworkInvites } = await import('../networks/service.mjs');
+  await acceptNetworkInvites(db, userId);
   await auditStaffLogin(db, userId, { via });
   const user = await userJson(db, userId, { consentVersion: ctx.config.consentVersion, configured: ctx.notify?.configured?.() ?? null });
   ctx.setCookie(sessionCookie(issued.token, issued.expiresAt, now));

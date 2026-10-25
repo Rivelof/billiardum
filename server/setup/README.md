@@ -59,6 +59,10 @@
   `{kind?, weekday, from, to}` (`weekday` — день рабочих суток: ночь пятницы до 06:00 — пятница; `from/to` — местное время).
 - Сохранение заменяет все правила клуба: прежние гаснут (`active = false`), новые — строка на каждый тип.
   `test` — журнал `tariff.update` (`before`, `after`); `live` — `manual.tariff_change` с причиной и тревогой (инвариант 8).
+- Сеть (M5.5 №191, `server/networks/README.md`): клуб сети с шаблоном тарифов — «жёсткий» шаблон: `409 network_locked {network_id}`;
+  «мягкий» — сохраняется и отмечается переопределением (`network_clubs.tariffs_override`, в журнале `network_override: true`).
+  Шаблон сети пишется в клубы тем же путём: `checkClubRules(db, clubId, rules, extra)` (неделя клуба, ошибка с `extra`, например
+  `{club_id}`) и `replaceClubRules(db, clubId, rules, now)` (замена правил, возвращает прежние); `compactRules` — вид для журнала.
 
 ## Наклейки столов (№159) — `stickers.mjs`
 

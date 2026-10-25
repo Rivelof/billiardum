@@ -99,6 +99,11 @@ export const ERROR_CODES = new Set([
   'url_invalid',
   'url_forbidden',
   'webhook_disabled',
+  // M5.5 (m5-5-8.md №190–192): шаблон сети «жёсткий» — клуб не меняет тарифы или товар шаблона (409),
+  // клуб уже в другой сети (409), больше 5 сетей или 100 клубов в сети (409), уже управляющий сети — duplicate.
+  'network_locked',
+  'club_in_network',
+  'networks_limit',
   // Служебные: метод не тот (M0 /health), канал не настроен (MAX до документации),
   // внутренняя ошибка сервера.
   'method_not_allowed',
@@ -137,6 +142,9 @@ export const SAFE_ERROR_FIELDS = new Set([
   'from',
   'to',
   'kind',
+  // M5.5: клуб и сеть в ошибке шаблона сети (400 tariff_gap {club_id, …}, 409 network_locked {network_id}).
+  'club_id',
+  'network_id',
   // M5.1 (409 checklist_incomplete): невыполненные пункты чек-листа запуска — только из SAFE_CHECKLIST.
   'failed',
 ]);

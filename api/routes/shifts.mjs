@@ -98,6 +98,8 @@ export const routes = [
     method: 'GET',
     path: '/api/clubs/{club}/shifts/export.csv',
     auth: 'staff',
+    // Экспорт — не управляющему сети (M5.5 №192).
+    networkManager: false,
     roles: [...ROLES.MANAGER_UP],
     handler: async (ctx, req) => {
       const f = await shiftFilters(ctx, req, { limit: 500 });

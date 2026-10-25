@@ -322,6 +322,8 @@ describe('узкие функции SECURITY DEFINER', () => {
         ['club_go_live', 'bl_definer'],
         ['club_mode', 'bl_definer'],
         ['club_resume', 'bl_definer'],
+        // M5.5 (1350, №194): новая подписка клуба сети — план «Сеть» (триггер)
+        ['club_subscriptions_network_plan', 'bl_definer'],
         ['club_suspend', 'bl_definer'],
         // M5.7 (1200): действующий ключ API клуба по HMAC — клуб, права, режим
         ['clubapi_key_auth', 'bl_definer'],
@@ -348,6 +350,22 @@ describe('узкие функции SECURITY DEFINER', () => {
         // M3 money (0654): гость с партиями пакета по точному телефону — управляющему (№118)
         ['money_lot_guest', 'bl_definer'],
         ['money_object_club', 'bl_definer'],
+        // M5.5 (1350, №190–194): сети — доступ из контекста, создание, состав (владение проверяет база),
+        // управляющие сети (приглашение, привязка при входе, отзыв, список), архив, доступ и план клубов сети
+        ['network_accept_invites', 'bl_definer'],
+        ['network_access', 'bl_definer'],
+        ['network_add_club', 'bl_definer'],
+        ['network_archive', 'bl_definer'],
+        ['network_create', 'bl_definer'],
+        ['network_invite', 'bl_definer'],
+        ['network_me', 'bl_definer'],
+        ['network_members_list', 'bl_definer'],
+        ['network_owned', 'bl_definer'],
+        ['network_plan_for', 'bl_definer'],
+        ['network_remove_club', 'bl_definer'],
+        ['network_revoke_member', 'bl_definer'],
+        ['network_sync_access', 'bl_definer'],
+        ['network_sync_billing', 'bl_definer'],
         // M1 core
         ['notify_route', 'bl_definer'],
         // M5.1 backend-A (1002): проверочные платежи и тревога «вебхук не настроен»

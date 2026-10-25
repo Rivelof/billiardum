@@ -26,6 +26,7 @@ import { HttpError } from '../../server/http/errors.mjs';
 import { parseCookies, serializeCookie } from '../../server/http/request.mjs';
 import { appendAudit } from '../../server/lib/audit.mjs';
 import { isUuid, setContext } from '../../server/lib/store.mjs';
+import { myNetworks } from '../../server/networks/service.mjs';
 
 const PHONE = /^\+[1-9][0-9]{7,14}$/;
 const MINUTE = 60_000;
@@ -165,14 +166,25 @@ async function me(ctx) {
   await setContext(ctx.db, { clubId: null });
   const user = await userJson(ctx.db, userId, { consentVersion: ctx.config.consentVersion, configured: ctx.notify?.configured?.() ?? null });
   // mode — режим клуба (M5.1 №153): test | live | suspended (плашка «Тестовый режим» в программе клуба).
-  let clubs = (await myMemberships(ctx.db, userId)).map((m) => ({ club_id: m.club_id, role: m.role, name: m.club_name, timezone: m.timezone, mode: m.club_mode ?? null }));
+  // network_id (M5.5 №192) — только у членства, выданного сетью (управляющий сети, роль manager).
+  let clubs = (await myMemberships(ctx.db, userId)).map((m) => ({
+    club_id: m.club_id,
+    role: m.role,
+    name: m.club_name,
+    timezone: m.timezone,
+    mode: m.club_mode ?? null,
+    ...(m.network_id ? { network_id: m.network_id } : {}),
+  }));
   // Токен PIN действует только в клубе терминала.
   if (ctx.principal.kind === 'pin') clubs = clubs.filter((c) => c.club_id === ctx.principal.clubId);
+  // Сети пользователя (M5.5): владелец или управляющий сети; у PIN — нет.
+  const networks = ctx.principal.kind === 'pin' ? [] : await myNetworks(ctx.db, userId);
   return {
     status: 200,
     json: {
       user,
       clubs,
+      networks,
       session: { kind: ctx.principal.kind, terminal_id: ctx.principal.terminalId ?? null, expires_at: new Date(ctx.principal.expiresAt).toISOString() },
     },
   };
