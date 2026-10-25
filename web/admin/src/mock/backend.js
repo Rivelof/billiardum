@@ -83,7 +83,7 @@ function freshState(scenario, t) {
   });
   const empty = scenario === 'empty' || scenario === 'dashboard-empty';
   const court = (n, status, extra = {}) => ({
-    resource: { id: COURT_IDS[n - 1], number: n, type: 'padel_court', family: 'court', title: `Корт ${n}`, code: COURT_CODES[n - 1], plan_x: 650 + (n - 1) * 1150, plan_y: 2600, plan_rotation: 0 },
+    resource: { id: COURT_IDS[n - 1], number: n, type: 'padel_court', family: 'court', title: `Корт ${n}`, code: COURT_CODES[n - 1], ...(scenario === 'court-small' ? { plan_x: 300, plan_y: 700 + (n - 1) * 100 } : { plan_x: 650 + (n - 1) * 1150, plan_y: 2600 }), plan_rotation: 0 },
     status,
     session: null,
     until: null,
