@@ -140,11 +140,13 @@
   "utilization_daily": [ { "date": "2026-10-21", "pct": 4.3, "by_type": { "billiard_pyramid": 5.6, "billiard_pool": 2.1, "billiard_snooker": null } } ]
 },
 "tables": {
-  "by_type": [ { "type": "billiard_pyramid", "tables": 5, "games": 4, "play_minutes": 340, "capacity_minutes": 14400, "service_minutes": 20, "utilization_pct": 2.4, "revenue_kopecks": 265000 } ],
-  "by_resource": [ { "resource_id": "e1000000-…", "number": 1, "title": "Стол 1", "type": "billiard_pyramid", "games": 1, "play_minutes": 90, "play_hours": 1.5,
+  "by_type": [ { "type": "billiard_pyramid", "family": "table", "resources": 5, "tables": 5, "games": 4, "play_minutes": 340, "capacity_minutes": 14400, "service_minutes": 20, "utilization_pct": 2.4, "revenue_kopecks": 265000 } ],
+  "by_resource": [ { "resource_id": "e1000000-…", "number": 1, "title": "Стол 1", "type": "billiard_pyramid", "family": "table", "games": 1, "play_minutes": 90, "play_hours": 1.5,
                      "service_minutes": 0, "revenue_kopecks": 75000, "utilization_pct": 3.1, "cloth_hours": 1.5, "cloth_since": null, "cloth_threshold_hours": 1500, "cloth_due": false } ]
 }
 ```
+
+`by_type[].resources` — число ресурсов вида в периоде (столов или кортов; `tables` — прежнее имя того же числа, оставлено для совместимости, у корта называть его «столами» нельзя), `family` — `table` | `court`; у `by_resource` — `type` и `family`.
 
 Тепловая карта — 7 × 24: строки — ISO день недели суток (1 = пн), столбцы — местный час; `pct` — загрузка в % (до 100; `null` — клуб закрыт или столов нет), рядом минуты для таблицы-дубля. Минуты игры лежат в часах и сутках своего фактического времени (№187). M5.6: рядом с картой — `series.forecast` (прогноз 7 × 24, медиана за 8 недель) и `hints` (подсказки по цене); в `by_resource` — все ресурсы клуба в работе (столы и корты, с нулями — даже без ёмкости, игр и выручки за период, например «Сегодня» до открытия клуба; выведенный из работы — только если в периоде что-то было; столы раньше кортов, затем по номеру) и `cloth_hours` (часы игры с замены сукна, текущий счётчик), `cloth_since`, `cloth_threshold_hours`, `cloth_due`. Формы и правила — `server/maintenance/README.md`.
 

@@ -11,7 +11,7 @@ insert into bl.clubs (id, name, city, timezone, settings) values (
   'Тестовый клуб',
   'Екатеринбург',
   'Asia/Yekaterinburg',
-  '{"plan": {"width_cm": 1800, "height_cm": 1400}}'
+  '{"plan": {"width_cm": 3900, "height_cm": 2350}}'
 ) on conflict (id) do nothing;
 
 -- Владелец: синтетический телефон.
@@ -28,7 +28,9 @@ insert into bl.club_members (id, club_id, user_id, role) values (
 ) on conflict (id) do nothing;
 
 -- 8 столов: 1–5 пирамида (12 футов), 6–8 пул (9 футов).
--- План: центр стола в сантиметрах от левого верхнего угла зала 18 × 14 м.
+-- План: центр стола в сантиметрах от левого верхнего угла зала 39 × 23,5 м: столы 1–8 слева (до 17 м),
+-- справа два падел-корта (seed.d/1300_padel.sql) — корт 10,6 × 20,6 м, повёрнутый на 90°, занимает 20,6 × 10,6 м.
+-- Зал 18 × 14 м корты не вмещал (приёмка M5.8, Д6).
 insert into bl.resources (id, club_id, type, number, title, plan_x, plan_y, plan_rotation) values
   ('e1000000-0000-4000-8000-000000000001', 'c1000000-0000-4000-8000-000000000001', 'billiard_pyramid', 1, 'Стол 1', 400, 300, 0),
   ('e1000000-0000-4000-8000-000000000002', 'c1000000-0000-4000-8000-000000000001', 'billiard_pyramid', 2, 'Стол 2', 950, 300, 0),

@@ -83,7 +83,7 @@ describe('столы и план зала (№155)', { skip: SKIP }, () => {
   it('позиция и размер зала — журнал; список с выведенными столами', async () => {
     const list = await api('GET', `/api/clubs/${CLUB_A}/resources`, manager.token);
     assert.equal(list.status, 200);
-    assert.deepEqual(list.json.plan, { width_cm: 1800, height_cm: 1400 });
+    assert.deepEqual(list.json.plan, { width_cm: 3900, height_cm: 2350 });
     const nine = list.json.resources.find((x) => x.number === 9);
     const p = await api('PATCH', `/api/clubs/${CLUB_A}/resources/${nine.id}`, manager.token, { plan_x: 1600, plan_rotation: 45, title: '  Стол   у окна ' });
     assert.equal(p.status, 200);

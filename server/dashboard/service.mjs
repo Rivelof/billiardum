@@ -610,7 +610,7 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
     }));
     out.tables.by_type = TYPES.filter((t) => cur.agg.types.has(t)).map((t) => {
       const x = cur.agg.types.get(t);
-      return { type: t, tables: x.resources.size, games: x.games, play_minutes: x.play_minutes, capacity_minutes: x.capacity_minutes, service_minutes: x.service_minutes, utilization_pct: pct(x.play_minutes, x.capacity_minutes), revenue_kopecks: x.revenue_kopecks - x.refunds_kopecks };
+      return { type: t, family: familyOf(t), resources: x.resources.size, tables: x.resources.size, games: x.games, play_minutes: x.play_minutes, capacity_minutes: x.capacity_minutes, service_minutes: x.service_minutes, utilization_pct: pct(x.play_minutes, x.capacity_minutes), revenue_kopecks: x.revenue_kopecks - x.refunds_kopecks };
     });
     const zeroRes = { games: 0, play_minutes: 0, service_minutes: 0, booking_minutes: 0, capacity_minutes: 0, revenue_kopecks: 0, refunds_kopecks: 0, days_in_operation: 0 };
     const byRes = new Map([...cur.agg.resources].filter(([key, r]) => activeRes.has(key) || r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0));
@@ -628,6 +628,7 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
         number: r.number,
         title: r.title,
         type: r.type,
+        family: familyOf(r.type),
         games: r.games,
         play_minutes: r.play_minutes,
         play_hours: hours(r.play_minutes),

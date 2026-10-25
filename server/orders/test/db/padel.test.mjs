@@ -49,6 +49,19 @@ describe('корт в заказах бара и заявках ресепшен
     assert.deepEqual([t.resource_family, t.billing, t.slot_minutes], ['table', 'hourly', null]);
   });
 
+  it('Д1 приёмки: статус заявки для гостя несёт вид ресурса (корт и стол), чужой гость — 404', async () => {
+    const court = await h.receptionRequest({ resourceId: COURT_1, userId: g1.id, amount: 240000, minutes: 90 });
+    const table = await h.receptionRequest({ resourceId: TABLE_1, userId: g1.id, amount: 50000, minutes: 60 });
+    const c = await h.request('GET', `/api/reception/requests/${court}`, { token: g1.token });
+    assert.equal(c.status, 200, JSON.stringify(c.json));
+    assert.deepEqual([c.json.resource_number, c.json.resource_type, c.json.resource_family], [1, 'padel_court', 'court']);
+    const t = await h.request('GET', `/api/reception/requests/${table}`, { token: g1.token });
+    assert.deepEqual([t.json.resource_number, t.json.resource_type, t.json.resource_family], [1, 'billiard_pyramid', 'table']);
+    assert.ok(!JSON.stringify(c.json).includes('phone'), 'без ПДн');
+    const stranger = await h.login('+79990000199');
+    assert.equal((await h.request('GET', `/api/reception/requests/${court}`, { token: stranger.token })).status, 404);
+  });
+
   it('Н-2 pentester M5.8: копеечный тариф не даёт игру за 0 ₽ — котировка и оплата котировки на 0 ₽ — 400 bad_request', async () => {
     // Тариф стола 1 копейка в час (прямой UPDATE: через мастер такую цену уже не сохранить) → 0 ₽ после округления.
     await h.q("update bl.tariff_rules set price_per_hour = 1 where club_id = $1 and resource_type = 'billiard_pyramid'", [CLUB_A]);

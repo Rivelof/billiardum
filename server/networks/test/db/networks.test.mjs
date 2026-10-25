@@ -384,7 +384,9 @@ describe('T42. Управляющий сети (№192)', { skip: SKIP }, () => 
 
   it('управляет клубами сети как управляющий; шаблоны и состав сети — нет', async () => {
     assert.equal((await api('GET', `/api/clubs/${CLUB_K}/resources`, 'nm')).status, 200);
-    const add = await api('POST', `/api/clubs/${CLUB_K}/resources`, 'nm', { number: 3, kind: 'pool', reason: 'Новый стол' });
+    // Стол добавляется в клубе сети в режиме test: в боевом клубе журнал фиксирует добавление «секунды назад», и ёмкость
+    // нового стола то округлялась в 0, то в 1 минуту между запросами сравнения (нестабильный тест, Н1 приёмки M5.8).
+    const add = await api('POST', `/api/clubs/${CLUB_T}/resources`, 'nm', { number: 2, kind: 'pool', reason: 'Новый стол' });
     assert.equal(add.status, 201, add.text);
     assert.equal((await api('GET', `/api/clubs/${CLUB_A}/catalog`, 'nm')).status, 200);
     assert.equal((await api('GET', `/api/clubs/${CLUB_A}/staff`, 'nm')).status, 403, 'персонал — владелец');

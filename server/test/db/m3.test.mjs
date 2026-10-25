@@ -295,7 +295,7 @@ describe('запросы frontend (№120)', () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('cache-control'), 'public, max-age=60');
     const a = res.json.find((c) => c.id === CLUB_A);
-    assert.deepEqual(a, { id: CLUB_A, name: 'Тестовый клуб', city: 'Екатеринбург', address: 'ул. Тестовая, 1', timezone: 'Asia/Yekaterinburg', plan: { width_cm: 1800, height_cm: 1400 } });
+    assert.deepEqual(a, { id: CLUB_A, name: 'Тестовый клуб', city: 'Екатеринбург', address: 'ул. Тестовая, 1', timezone: 'Asia/Yekaterinburg', plan: { width_cm: 3900, height_cm: 2350 } });
     assert.ok(res.json.some((c) => c.id === CLUB_B));
     await t.admin.query('update bl.clubs set active = false where id = $1', [CLUB_B]);
     assert.ok(!(await t.request('GET', '/api/clubs')).json.some((c) => c.id === CLUB_B), 'неактивный клуб скрыт');

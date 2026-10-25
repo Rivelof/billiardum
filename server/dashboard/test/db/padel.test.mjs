@@ -106,8 +106,12 @@ describe('T47: дашборд по видам ресурсов', () => {
     const padel = r.json.tables.by_type.find((x) => x.type === 'padel_court');
     assert.ok(padel, JSON.stringify(r.json.tables.by_type.map((x) => x.type)));
     assert.deepEqual([padel.tables, padel.games, padel.play_minutes, padel.revenue_kopecks], [2, 1, 90, 240000]);
+    // Приёмка M5.8: число ресурсов вида — resources (tables — прежнее имя), семья вида — family.
+    assert.deepEqual([padel.resources, padel.family], [2, 'court']);
+    assert.deepEqual(r.json.tables.by_type.filter((x) => x.family === 'table').map((x) => x.resources === x.tables), [true, true]);
     const c = r.json.tables.by_resource.find((x) => x.resource_id === COURT_1);
-    assert.deepEqual([c.type, c.games, c.play_minutes], ['padel_court', 1, 90]);
+    assert.deepEqual([c.type, c.family, c.games, c.play_minutes], ['padel_court', 'court', 1, 90]);
+    assert.ok(r.json.tables.by_resource.filter((x) => x.type !== 'padel_court').every((x) => x.family === 'table'));
     const onlyCourts = await get(`/api/clubs/${CLUB}/dashboard?from=${DAY}&to=${DAY}&tab=hall&kind=court`);
     assert.ok(onlyCourts.json.tables.by_resource.every((x) => x.type === 'padel_court'));
   });

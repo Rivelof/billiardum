@@ -284,9 +284,14 @@ export async function guestRequestStatus(db, deps, info) {
   const status = r.status === 'waiting' && new Date(r.expires_at).getTime() <= now.getTime() ? 'expired' : r.status;
   let sessionId = r.session_id ?? null;
   if (status === 'accepted' && r.payment_id && !sessionId) sessionId = await sessionIdOf(db, { id: r.payment_id, session_id: null });
+  // Вид ресурса (M5.8): экран гостя пишет «Корт 1», а не «Стол» и после открытия заявки в новой вкладке.
+  const res = (await db.query('select number, type from bl.resources where id = $1', [r.resource_id])).rows[0];
   return {
     id: r.id,
     status,
+    resource_number: res?.number ?? null,
+    resource_type: res?.type ?? null,
+    resource_family: familyOf(res?.type),
     kind: r.kind,
     minutes: r.minutes,
     amount_kopecks: Number(r.amount_kopecks),
