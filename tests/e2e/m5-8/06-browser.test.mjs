@@ -361,7 +361,9 @@ for (const pass of PASSES) {
       } finally {
         await ctx1.close();
       }
-      const ctx2 = await newCtx(browser, { ...pass, phone: G.g2.phone });
+      // Новый гость на каждый проход: игра одна на файл, и гость прошлого прохода уже в ней («Я играю» нажат).
+      const joiner = await newGuest();
+      const ctx2 = await newCtx(browser, { ...pass, phone: joiner.phone });
       try {
         const busy = await open(ctx2, `/t/${COURTS[101].code}`, `${tag}-g-busy`);
         let txt = await bodyText(busy);
