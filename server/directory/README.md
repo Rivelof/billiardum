@@ -25,6 +25,8 @@
 { "items": [{ "slug": "ekaterinburg", "name": "Екатеринбург", "name_in": "в Екатеринбурге", "region": "Свердловская область", "clubs": 2, "online_clubs": 1, "free_now": 8 }] }
 ```
 
+Каталог города (маршрут ниже): с фильтром только `disciplines=padel` `price_max` и `sort=price` сравнивают цену корта (`court_price_from_kopecks`, слот), а `free_now` и сортировка `recommended`/`free` — свободные корты (`courts_free_now`); клуб только с кортами не отсекается ценой стола. В остальных случаях — цена часа стола.
+
 `GET /api/public/cities/{slug}?disciplines=pyramid,pool&free_now=1&online=1&around_the_clock=1&price_max=60000&sort=recommended|free|price|rating|name` →
 ```json
 { "city": { "slug", "name", "region", "timezone" },

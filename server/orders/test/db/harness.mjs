@@ -100,8 +100,8 @@ async function startQrProxy(emuBase) {
   return { server, base: `http://127.0.0.1:${server.address().port}`, faults, created };
 }
 
-/** @param {{ poolMax?: number }} [options] poolMax — размер пула app_api (тест R-1 — маленький пул) */
-export async function setup({ poolMax = 20 } = {}) {
+/** @param {{ poolMax?: number, extraRoutes?: string[] }} [options] poolMax — размер пула app_api (тест R-1 — маленький пул); extraRoutes — ещё файлы маршрутов */
+export async function setup({ poolMax = 20, extraRoutes = [] } = {}) {
   const db = await createTestDatabase();
   await seedClubB(db.pool);
   const config = testConfig();
@@ -154,7 +154,7 @@ export async function setup({ poolMax = 20 } = {}) {
   };
   const routes = await loadRoutes({
     config,
-    only: ['auth.mjs', 'catalog.mjs', 'orders.mjs', 'pos.mjs', 'stock.mjs', 'reception.mjs', 'webhooks.mjs', 'payments.mjs'],
+    only: ['auth.mjs', 'catalog.mjs', 'orders.mjs', 'pos.mjs', 'stock.mjs', 'reception.mjs', 'webhooks.mjs', 'payments.mjs', ...extraRoutes],
   });
   const app = await createApp({
     config,

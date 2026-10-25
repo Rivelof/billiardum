@@ -8,6 +8,7 @@
 // * Подтверждение (вебхук, сверка по API, опрос гостя) — confirmPayment: в одной транзакции
 //   статус, confirmed_at (ровно один раз), журнал payment.succeeded и outbox payment.confirmed.
 
+import { resourceName } from '../lib/resource-kinds.mjs';
 import { formatDuration } from '../tariffs/engine.mjs';
 import { enterObjectClub, isUuid, requireGuestReady, requireIdempotencyKey, requireUser } from './context.mjs';
 import { MoneyError, fromNeighbor } from './errors.mjs';
@@ -135,6 +136,9 @@ export async function payQuote(db, deps, info, config) {
   // Доплата при старте по брони (№116) — СБП или картой; на ресепшене бронь начинает «гость пришёл».
   if (quote.kind === 'booking_start' && method === 'reception') throw new MoneyError('bad_request', 'доплата по брони — СБП или картой');
   if (balanceMinutes > 0 && Number(quote.amount_kopecks) === 0) throw new MoneyError('bad_request', 'всё время покрыто балансом: method balance');
+  // Платная игра стоит больше нуля: 0 ₽ после округления (копеечный тариф) — не оплата, бесплатная игра
+  // только ручным действием персонала (№163, инвариант 8).
+  if (!(Number(plan.amount) > 0)) throw new MoneyError('bad_request', 'сумма к оплате 0');
   const debit = balanceMinutes > 0 ? await planDebit(db, { clubId, userId, minutes: balanceMinutes, now }) : null;
 
   if (method === 'reception') {
@@ -162,7 +166,8 @@ export async function payQuote(db, deps, info, config) {
     capture: plan.capture,
     receipt,
     confirmation: { type: 'redirect', returnUrl: returnUrl(config, paymentId) },
-    description: `${quote.kind === 'booking_start' ? 'Бронь, стол' : 'Стол'} ${number}, ${plan.unlimited && !plan.capture ? 'без лимита' : formatDuration(plan.minutes)}`,
+    // «Стол 3» или «Корт 1» по виду ресурса (M5.8): слово — из справочника видов.
+    description: `${quote.kind === 'booking_start' ? `Бронь, ${resourceName(resourceType, number, { capital: false })}` : resourceName(resourceType, number)}, ${plan.unlimited && !plan.capture ? 'без лимита' : formatDuration(plan.minutes)}`,
     metadata: { quote_id: quoteId, ...(quote.booking_id ? { booking_id: quote.booking_id } : {}) },
     bookingId: quote.booking_id ?? null,
     quoteId,

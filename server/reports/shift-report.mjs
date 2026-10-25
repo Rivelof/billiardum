@@ -92,7 +92,8 @@ export async function buildShiftReport(db, { shiftId, now, online = true, moneyC
  *   у ЮKassa: by_method, system_kopecks, kkt_kopecks, суммы чеков по состояниям, yookassa_*), — null;
  *   признак ok, статус, расхождение diff_kopecks, счётчики и списки платежей без чека и расхождений
  *   (без способа) — остаются;
- * * касса смены (размен, наличные, ожидалось, факт, расхождение) — как в смене (GET /api/shifts/{id}).
+ * * касса смены: наличные продажи и возвраты (cash_sales_kopecks, cash_refunds_kopecks) — null, размен,
+ *   ожидалось, факт и расхождение остаются (сверка кассы — не разбивка по способам, как у управляющего клуба, №94).
  * Поле methods_hidden: true — экрану скрыть блоки способов.
  */
 export function withoutMethods(report) {
@@ -113,7 +114,9 @@ export function withoutMethods(report) {
   return {
     ...report,
     methods_hidden: true,
+    shift: report.shift && { ...report.shift, cash_sales_kopecks: null, cash_refunds_kopecks: null },
     revenue: hideRevenue(report.revenue),
+    cash: report.cash && { ...report.cash, cash_sales_kopecks: null, cash_refunds_kopecks: null },
     reconciliation: {
       ...report.reconciliation,
       kkt: kkt

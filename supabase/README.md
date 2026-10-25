@@ -305,7 +305,7 @@ alter event trigger bl_audit_guard_drop enable always;
 
 Узкие функции читают контекст через `bl.billing_ctx()` (без SECURITY DEFINER, владелец `bl_definer`): у `bl_definer` нет права на `bl.ctx_*`.
 
-## Сети клубов (M5.5, 1350–1351)
+## Сети клубов (M5.5, 1350–1352)
 
 Подробно — `server/networks/README.md`, решения №190–194. Все таблицы — ENABLE и FORCE RLS, владелец `bl_owner`; кто видит — через `bl.network_access(network)`: `owner` / `manager` в личном контексте (`app.club_id` пуст), `club` — в контексте клуба этой сети, иначе `NULL` (без контекста — ничего).
 
@@ -329,7 +329,7 @@ alter event trigger bl_audit_guard_drop enable always;
 | `bl.network_accept_invites()` | пользователь из контекста (при входе) | привязать приглашения на его номер и выдать доступ |
 | `bl.network_members_list(network)` | владелец сети | управляющие и приглашения: телефон (сервер маскирует), имя |
 | `bl.network_archive(network) → integer` | владелец сети | архив: клубы выходят, управляющие отзываются |
-| `bl.network_sync_access(network)`, `bl.network_sync_billing(network)`, `bl.network_plan_for(club)`, `bl.network_me()`, `bl.network_owned(network)` | только узкие функции (у `app_api` нет `EXECUTE`) | строки `club_members` управляющих сети; план «Сеть» клубам сети из 2+ клубов; проверки контекста и владения |
+| `bl.network_sync_access(network)` (1352), `bl.network_sync_billing(network)`, `bl.network_plan_for(club)`, `bl.network_me()`, `bl.network_owned(network)` | только узкие функции (у `app_api` нет `EXECUTE`) | строки `club_members` управляющих сети; план «Сеть» клубам сети из 2+ клубов; проверки контекста и владения; с 1352 вывод клуба, отзыв управляющего и архив сети отзывают и терминалы клуба, заведённые этим управляющим (`bl_definer`: `select (created_by)` и `update (revoked_at)` на `staff_terminals`), прямое членство не трогается |
 
 ## Деньги
 

@@ -53,9 +53,14 @@ describe('правила слота', () => {
     assert.deepEqual(badDetail(() => normalizeRules([{ ...slot(ALL, '06:00', '06:00'), min_minutes: 30 }])), [400, 'bad_request', 'rules[0].min_minutes: slot']);
     assert.deepEqual(badDetail(() => normalizeRules([{ ...hourly(ALL, '06:00', '06:00', 1, 'pool'), slot_minutes: 60 }])), [400, 'bad_request', 'rules[0].slot_minutes: hourly kind']);
     assert.deepEqual(
-      badDetail(() => normalizeRules([slot([1, 2, 3, 4, 5], '06:00', '06:00', 1, 90), slot([6, 7], '06:00', '06:00', 1, 60)])),
+      badDetail(() => normalizeRules([slot([1, 2, 3, 4, 5], '06:00', '06:00', 240000, 90), slot([6, 7], '06:00', '06:00', 240000, 60)])),
       [400, 'bad_request', 'slot_minutes: one per kind'],
     );
+  });
+
+  it('Н-2 pentester M5.8: цена слота 49 коп. → 0 ₽ после округления — 400 с полем; 50 коп. → 1 ₽ — можно', () => {
+    assert.deepEqual(badDetail(() => normalizeRules([slot(ALL, '06:00', '06:00', 49)])), [400, 'bad_request', 'rules[0].price_per_slot_kopecks: below 1 RUB after rounding']);
+    assert.equal(normalizeRules([slot(ALL, '06:00', '06:00', 50)])[0].price_per_slot_kopecks, 50);
   });
 
   it('неделя корта: «все типы» (kind null) корт не покрывает; свои правила — покрывают', () => {

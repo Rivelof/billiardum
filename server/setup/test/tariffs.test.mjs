@@ -7,7 +7,7 @@ import { compileRules, createCalendar, ruleAt } from '../../tariffs/engine.mjs';
 import { applyTemplate, checkWeek, normalizeRules, TEMPLATES, templatesJson, weekProblem } from '../tariffs.mjs';
 import { KINDS } from '../hall.mjs';
 
-const rule = (days, from, to, price = 50000, kind = null) => ({ kind, days, from, to, price_per_hour_kopecks: price, min_minutes: 30, step_minutes: 1 });
+const rule = (days, from, to, price = 50000, kind = null) => ({ kind, days, from, to, price_per_hour_kopecks: price >= 1 && price <= 9 ? price * 50000 : price, min_minutes: 30, step_minutes: 1 });
 const check = (rules, opts = {}) => checkWeek(normalizeRules(rules), { dayStart: '06:00', activeKinds: ['pyramid'], ...opts });
 
 describe('шаблоны', () => {
@@ -85,7 +85,26 @@ describe('разбор правил', () => {
         (e) => e.status === 400 && e.code === 'bad_request' && e.message.includes('rules[1].price_per_hour_kopecks'),
       );
     }
-    assert.equal(normalizeRules([rule([1], '06:00', '07:00', 1)])[0].price_per_hour_kopecks, 1);
+    assert.equal(normalizeRules([rule([1], '06:00', '07:00', 3000)])[0].price_per_hour_kopecks, 3000);
+  });
+
+  it('Н-2 pentester M5.8: цена, дающая 0 ₽ после округления для наименьшей единицы, — 400 с полем цены', () => {
+    const msg = (r) => {
+      try {
+        normalizeRules(r);
+      } catch (e) {
+        return [e.status, e.code, e.message];
+      }
+      return null;
+    };
+    // Час при шаге 1 минута: минута стоит 3000/60 = 50 коп. → 1 ₽ после округления; 2999 → 0 ₽.
+    assert.equal(msg([rule([1], '06:00', '07:00', 3000)]), null);
+    assert.deepEqual(msg([rule([1], '06:00', '07:00', 2999)]).slice(0, 2), [400, 'bad_request']);
+    assert.match(msg([{ ...rule([1], '06:00', '07:00'), price_per_hour_kopecks: 1 }])[2], /rules\[0\]\.price_per_hour_kopecks: below 1 RUB/);
+    // Шаг 30 минут: 30 мин при 99 коп./ч = 49,5 коп. → 0 ₽; при 100 коп./ч — 50 коп. → 1 ₽.
+    const step30 = (price) => ({ ...rule([1], '06:00', '07:00', price), step_minutes: 30 });
+    assert.equal(msg([step30(99)])?.[0], 400);
+    assert.equal(msg([step30(100)]), null);
   });
 
   it('ошибки формы — 400 bad_request; 24:00 и from = to — сутки', () => {

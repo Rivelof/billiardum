@@ -293,6 +293,11 @@ export async function createQuote(db, deps, info, config) {
     }
   }
 
+  // Платное время стоит больше нуля: 0 ₽ после округления (копеечный тариф) — не котировка. Ноль — только
+  // когда всё время покрыто балансом пакетов (№112). Бесплатная игра — ручным действием (№163, инвариант 8).
+  const coveredByBalance = balanceMinutes > 0 && balanceMinutes === priced.minutes;
+  if (!(priced.amount_kopecks > 0) && !coveredByBalance) throw new MoneyError('bad_request', 'сумма котировки 0');
+
   if (req.kind === 'start') {
     try {
       checkNeighborResult(await deps.sessions.holdPending(db, { resourceId: req.resourceId, userId, until: validUntil }));

@@ -33,7 +33,7 @@ import { plural } from '@billiardum/shared/format';
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
 import { clubTariffSettings } from '../tariffs/index.mjs';
-import { formatLocalTime, parseLocalTime } from '../tariffs/engine.mjs';
+import { formatLocalTime, parseLocalTime, roundAmount } from '../tariffs/engine.mjs';
 import { KIND_OF_TYPE, KINDS } from './hall.mjs';
 import { isSlotType, SLOT_MINUTES, TABLE_KINDS } from '../lib/resource-kinds.mjs';
 import { cleanReason, clubLive, manualAction } from './mode.mjs';
@@ -163,6 +163,17 @@ export function hourlyOfSlot(pricePerSlot, slotMinutes) {
 /** Минута 'HH:MM' (24:00 → 0). */
 const minuteOf = (hhmm) => parseLocalTime(hhmm);
 
+/** Наименьшая оплачиваемая сумма: 1 ₽ (округление цен клуба — до рубля и крупнее, price_rounding_kopecks). */
+export const MIN_PAYABLE_KOPECKS = 100;
+
+/**
+ * Цена должна давать сумму не меньше 1 ₽ после округления «половина вверх» (№44) для наименьшей
+ * оплачиваемой единицы: слот — целиком, час — на шаг (продление). Иначе копеечная цена даёт игру за 0 ₽.
+ */
+function payableUnit(where, field, numerator, denominator) {
+  if (roundAmount(numerator, MIN_PAYABLE_KOPECKS, denominator) < MIN_PAYABLE_KOPECKS) throw bad(`${where}.${field}: below 1 RUB after rounding`);
+}
+
 /** Разбор правил из тела запроса → нормализованные правила; ошибка формы — 400 bad_request. */
 export function normalizeRules(input) {
   if (!Array.isArray(input) || input.length === 0) throw bad('rules');
@@ -194,6 +205,7 @@ export function normalizeRules(input) {
       const price = r.price_per_slot_kopecks;
       if (!Number.isSafeInteger(price) || price > MAX_PRICE_KOPECKS) throw bad(`${where}.price_per_slot_kopecks`);
       if (price <= 0) throw bad(`${where}.price_per_slot_kopecks: must be > 0`);
+      payableUnit(where, 'price_per_slot_kopecks', price * slot, slot);
       if (r.min_minutes !== undefined && r.min_minutes !== slot) throw bad(`${where}.min_minutes: slot`);
       if (r.step_minutes !== undefined && r.step_minutes !== slot) throw bad(`${where}.step_minutes: slot`);
       return { ...base, price_per_hour_kopecks: hourlyOfSlot(price, slot), price_per_slot_kopecks: price, slot_minutes: slot, min_minutes: slot, step_minutes: slot };
@@ -205,6 +217,7 @@ export function normalizeRules(input) {
     if (price <= 0) throw bad(`${where}.price_per_hour_kopecks: must be > 0`);
     if (!Number.isInteger(r.min_minutes) || r.min_minutes < 0 || r.min_minutes > DAY) throw bad(`${where}.min_minutes`);
     if (!Number.isInteger(r.step_minutes) || r.step_minutes < 1 || r.step_minutes > 60) throw bad(`${where}.step_minutes`);
+    payableUnit(where, 'price_per_hour_kopecks', price * r.step_minutes, 60);
     return { ...base, price_per_hour_kopecks: price, price_per_slot_kopecks: null, slot_minutes: null, min_minutes: r.min_minutes, step_minutes: r.step_minutes };
   });
   // Одна длина слота на вид в клубе: продление слотом и сетка брони не смешивают длины.

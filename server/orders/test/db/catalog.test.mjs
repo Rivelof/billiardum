@@ -110,8 +110,9 @@ describe('управление каталогом', { skip: SKIP }, () => {
     assert.ok(full.json.products.some((p) => p.id === productId && p.active === false));
     const mod = await req('POST', `/api/catalog/modifier-groups/${groupId}/modifiers`, manager.token, { name: 'Без льда', is_default: true });
     assert.equal(mod.status, 201);
-    const modUpd = await req('PATCH', `/api/catalog/modifiers/${mod.json.id}`, manager.token, { price_delta_kopecks: -500, stock_factor: 0.5 });
+    const modUpd = await req('PATCH', `/api/catalog/modifiers/${mod.json.id}`, manager.token, { price_delta_kopecks: 500, stock_factor: 0.5 });
     assert.equal(modUpd.json.stock_factor, 0.5);
+    assert.equal(modUpd.json.price_delta_kopecks, 500);
     const missing = await req('PATCH', '/api/catalog/products/cb999999-0000-4000-8000-000000000001', manager.token, { price_kopecks: 1 });
     assert.equal(missing.status, 404);
   });

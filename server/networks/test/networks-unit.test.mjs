@@ -8,6 +8,7 @@ import { networkDbError, networkInviteMessage } from '../service.mjs';
 import { MAX_TEMPLATE_PRODUCTS, normalizeProducts, storedRule } from '../templates.mjs';
 import { applyTemplate, normalizeRules } from '../../setup/tariffs.mjs';
 import { withoutMethods } from '../../reports/shift-report.mjs';
+import { hideMoneyMethods, MONEY_METHOD_KEYS } from '../../lib/network-view.mjs';
 
 describe('шаблон меню сети: разбор', () => {
   it('значения по умолчанию: шт, алкоголь — подакцизный предмет расчёта, активен', () => {
@@ -91,7 +92,6 @@ describe('приглашение управляющего сети и ошибк
 describe('отчёт смены управляющему сети (№192): без денег по способам оплаты', () => {
   const zero = () => ({ cash: 0, card_terminal: 0, sbp: 0, card: 0 });
   const report = () => ({
-    shift: { number: 1 },
     revenue: {
       total_kopecks: 150000,
       by_method: { ...zero(), sbp: 100000, cash: 50000 },
@@ -100,7 +100,8 @@ describe('отчёт смены управляющему сети (№192): бе
       refunds: { total_kopecks: 0, by_method: zero(), tables_kopecks: 0, bar_kopecks: 0, count: 0 },
       late_returned: { total_kopecks: 0, by_method: zero(), count: 0 },
     },
-    cash: { float_kopecks: 100, cash_sales_kopecks: 50000 },
+    shift: { number: 1, cash_sales_kopecks: 50000, cash_refunds_kopecks: 0, expected_cash_kopecks: 50100 },
+    cash: { float_kopecks: 100, cash_sales_kopecks: 50000, cash_refunds_kopecks: 0, expected_cash_kopecks: 50100, actual_cash_kopecks: 50100, discrepancy_kopecks: 0 },
     reconciliation: {
       kkt: {
         ok: false, system_kopecks: 50000, kkt_kopecks: 0, diff_kopecks: 50000,
@@ -127,7 +128,33 @@ describe('отчёт смены управляющему сети (№192): бе
     assert.deepEqual(k.receipts.pending, { count: 1, amount_kopecks: null });
     const o = r.reconciliation.online;
     assert.deepEqual([o.ok, o.status, o.diff_kopecks, o.payments, o.system_kopecks, o.yookassa_kopecks], [true, 'checked', 0, 1, null, null]);
-    assert.deepEqual(r.cash, src.cash, 'касса смены — как в смене');
+    // Касса смены: наличные продажи и возвраты скрыты, сверка кассы (ожидалось, факт, расхождение) остаётся.
+    assert.deepEqual(r.cash, { ...src.cash, cash_sales_kopecks: null, cash_refunds_kopecks: null });
+    assert.deepEqual([r.shift.cash_sales_kopecks, r.shift.expected_cash_kopecks], [null, 50100]);
     assert.equal(src.revenue.by_method.sbp, 100000, 'исходный отчёт не меняется');
+  });
+});
+
+describe('ответы управляющему сети: hideMoneyMethods (Н-3)', () => {
+  it('поля способов и наличных по способам — null на любой глубине, итоги и сверка кассы остаются, исходное не меняется', () => {
+    const src = {
+      shift: { id: 's', cash_sales_kopecks: 500, cash_refunds_kopecks: 100, expected_cash_kopecks: 1000, actual_cash_kopecks: 1000, discrepancy_kopecks: 0, revenue_total_kopecks: 700 },
+      items: [{ sale_id: 'a', method: 'cash', total_kopecks: 500, received_kopecks: 1000, change_kopecks: 500, items: [{ name: 'Чай', amount_kopecks: 500 }] }],
+      data: { method: 'card_terminal', payment_id: 'p' },
+      who: { methods: ['cash', 'sbp'], count: 2 },
+      date: new Date('2026-10-25T00:00:00Z'),
+    };
+    const copy = structuredClone(src);
+    const out = hideMoneyMethods(src);
+    assert.deepEqual(src, copy, 'исходный объект не изменён');
+    assert.deepEqual([out.shift.cash_sales_kopecks, out.shift.cash_refunds_kopecks], [null, null]);
+    assert.deepEqual([out.shift.expected_cash_kopecks, out.shift.actual_cash_kopecks, out.shift.discrepancy_kopecks, out.shift.revenue_total_kopecks], [1000, 1000, 0, 700]);
+    assert.deepEqual(out.items[0], { sale_id: 'a', method: null, total_kopecks: 500, received_kopecks: null, change_kopecks: null, items: [{ name: 'Чай', amount_kopecks: 500 }] });
+    assert.deepEqual(out.data, { method: null, payment_id: 'p' });
+    assert.deepEqual(out.who, { methods: null, count: 2 });
+    assert.ok(out.date instanceof Date, 'не простые объекты (Date) не трогаются');
+    assert.ok(MONEY_METHOD_KEYS.includes('by_method'));
+    assert.equal(hideMoneyMethods(null), null);
+    assert.equal(hideMoneyMethods('cash'), 'cash');
   });
 });

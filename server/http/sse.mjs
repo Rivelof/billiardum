@@ -116,15 +116,16 @@ export function createSseHub({
      * Подключить ответ HTTP как поток событий. Заголовки пишет сам.
      * @param {import('node:http').ServerResponse} res
      * @param {{ channels: string[], userId?: string|null, revalidate?: () => Promise<boolean>, revalidateMs?: number,
-     *           only?: Record<string, string[]> }} options
+     *           only?: Record<string, string[]>, transform?: (data: unknown) => unknown }} options
      * revalidate — периодическая проверка (токен не отозван, права на канал не отняты);
      * false — поток закрывается. only — канал → разрешённые события (бармену из club:{id}
-     * только события бара, decisions №97); каналы без записи — все события.
+     * только события бара, decisions №97); каналы без записи — все события. transform — данные события
+     * этого клиента (управляющему сети — без денег по способам оплаты, M5.5 №192).
      * Без userId поток анонимный: общий предел анонимных (maxAnon, четверть хаба) и предел на
      * источник key (ip:… — IPv4 адрес или IPv6 сеть /64) и на сеть IPv6 /56 (maxAnonPerNet, M4-I6).
      * @returns {{ ok: true, client: object } | { ok: false, reason: string }}
      */
-    attach(res, { channels, userId = null, key = null, revalidate = null, revalidateMs = 60_000, only = null }) {
+    attach(res, { channels, userId = null, key = null, revalidate = null, revalidateMs = 60_000, only = null, transform = null }) {
       if (!channels.every(isChannel)) throw new Error('bad channel');
       if (clients.size >= maxClients) return { ok: false, reason: 'too_many_clients' };
       // Анонимные потоки — не больше своей доли хаба (M4-7): вошедшим всегда остаётся место.
@@ -169,6 +170,7 @@ export function createSseHub({
         limitKey,
         channels: new Set(channels),
         only: only ? new Map(Object.entries(only).map(([ch, evs]) => [ch, new Set(evs)])) : null,
+        transform,
         close() {
           if (!clients.delete(client)) return;
           timers.clearInterval(keepAlive);
@@ -205,7 +207,7 @@ export function createSseHub({
         if (!c.channels.has(channel)) continue;
         const allowed = c.only?.get(channel);
         if (allowed && !allowed.has(event)) continue;
-        write(c, text);
+        write(c, c.transform ? formatEvent(event, c.transform(data)) : text);
         n += 1;
       }
       return n;

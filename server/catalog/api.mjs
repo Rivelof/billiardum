@@ -184,6 +184,9 @@ export async function resolveItems(db, { clubId, items, audience, defaultVat }) 
     const p = products.get(w.product_id);
     if (unavailable(p, { stopAtZero: settings.stop_at_zero, stock })) throw new PosError('stop_list', `product ${p.id}`);
     const mods = pickModifiers(p, groups.get(p.id) ?? [], w.modifier_ids);
+    // Отрицательная надбавка (остаток от времён, когда она была допустима) не уменьшает цену мимо механизма
+    // скидок (лимит, причина, уведомление, инвариант 8): продажа отклоняется 400, владелец исправляет модификатор.
+    if (mods.some((m) => Number(m.price_delta_kopecks) < 0)) throw new PosError('bad_request', `отрицательная надбавка ${p.id}`);
     const unit = Number(p.price_kopecks) + mods.reduce((s, m) => s + m.price_delta_kopecks, 0);
     if (!Number.isSafeInteger(unit) || unit < 1) throw new PosError('bad_request', `цена ${p.id}`);
     let factor = 1000n;

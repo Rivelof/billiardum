@@ -6,7 +6,7 @@
 // Пересечения броней стола запрещает база (exclude using gist), гонки — блокировка строки
 // стола (SELECT … FOR UPDATE) до проверки и вставки.
 
-import { noun, resourceName } from '../lib/resource-kinds.mjs';
+import { isSlotType, noun, resourceName } from '../lib/resource-kinds.mjs';
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { afterCommit } from '../lib/store.mjs';
 import { BookingError, fail, isConflict } from './errors.mjs';
@@ -285,9 +285,13 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     }
   }
 
-  async function priceOf(db, resourceId, from, minutes, minimum = true) {
+  /**
+   * exact — минуты как есть, без шага и минимума: неполный слот корта по минутам (цена слота
+   * пропорционально минутам, одно округление) — ранний приход и опоздание по брони (№113, №44).
+   */
+  async function priceOf(db, resourceId, from, minutes, minimum = true, exact = false) {
     try {
-      const r = await deps.tariffs.amountFor(db, { resourceId, from, minutes, minimum });
+      const r = await deps.tariffs.amountFor(db, { resourceId, from, minutes, minimum, exact });
       return Number(r.amount_kopecks);
     } catch (err) {
       if (err?.code === 'no_tariff') fail('no_tariff');
@@ -718,12 +722,13 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       if ((await overlapping(db, b.resource_id, t, b.starts_at, b.id)).length > 0) fail('booking_conflict', 'ранний приход');
       const busyUntil = await tournamentBusyUntil(db, b.resource_id, t, b.starts_at);
       if (busyUntil) fail('table_busy', 'турнир, ранний приход', 409, { reason: 'tournament', busy_until: new Date(busyUntil).toISOString() });
-      extra = await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((startMs - ms(t)) / MIN)), false);
+      // Корт: неполный слот — по минутам (находка pentester M5.8 Н-1); бронь и обычный старт — целыми слотами.
+      extra = await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((startMs - ms(t)) / MIN)), false, isSlotType(res.type));
     }
     // Опоздал (пришёл после начала) — цена только с прихода до конца брони (№113); иначе цена брони.
     const late = ms(t) > startMs;
     // Минуты — вниз, в пользу гостя (№123, как №73).
-    const base = late ? await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((ms(b.ends_at) - ms(t)) / MIN)), false) : b.amount_kopecks;
+    const base = late ? await priceOf(db, b.resource_id, t, Math.max(1, Math.floor((ms(b.ends_at) - ms(t)) / MIN)), false, isSlotType(res.type)) : b.amount_kopecks;
     const due = Math.max(0, base - b.prepaid_kopecks) + extra;
     if (due === 0) {
       const sessionId = await doStart(db, b, { userId, paymentIds: b.prepayment_id && b.prepaid_kopecks > 0 ? [b.prepayment_id] : [] });

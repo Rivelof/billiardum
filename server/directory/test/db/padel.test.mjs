@@ -44,6 +44,18 @@ describe('каталог: падел', { skip }, () => {
     assert.equal(city.free_now, 8);
   });
 
+  it('Н-4 pentester M5.8: с фильтром «падел» price_max сравнивается с ценой корта (слот), без него — с ценой часа стола', async () => {
+    const ids = async (query) => (await h.request('GET', `/api/public/cities/ekaterinburg?${query}`)).json.items.map((x) => x.id);
+    // Стол 500 ₽/ч, слот корта 2 400 ₽: «до 1 000 ₽» — стол подходит, корт нет.
+    assert.deepEqual(await ids('price_max=100000'), [CARD_A]);
+    assert.deepEqual(await ids('disciplines=padel&price_max=100000'), [], 'корт дороже 1 000 ₽ — раньше клуб проходил по цене стола');
+    assert.deepEqual(await ids('disciplines=padel&price_max=240000'), [CARD_A]);
+    assert.deepEqual(await ids('disciplines=padel&price_max=239999'), []);
+    // Сортировка по цене при «падел» — по цене корта: карточка без цены корта (без программы) — в конце.
+    await h.admin.query("update bl.club_public set disciplines = '{padel}' where id = $1", [CARD_DEMO]);
+    assert.deepEqual(await ids('disciplines=padel&sort=price'), [CARD_A, CARD_DEMO]);
+  });
+
   it('карточка без программы с дисциплиной padel — тоже в фильтре; неверная дисциплина — 400', async () => {
     await h.admin.query("update bl.club_public set disciplines = '{padel}' where id = $1", [CARD_DEMO]);
     const r = await h.request('GET', '/api/public/cities/ekaterinburg?disciplines=padel&sort=name');

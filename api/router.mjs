@@ -59,6 +59,7 @@ import { clientIp, ipInCidrs, originAllowed, parseCookies, readJsonBody, readRaw
 import { createRateLimiter, DEFAULT_LIMIT } from '../server/http/rate-limit.mjs';
 import { afterCommit, contextClubMode, isUuid, setContext, withContext } from '../server/lib/store.mjs';
 import { recordManual } from '../server/lib/manual.mjs';
+import { hideMoneyMethods } from '../server/lib/network-view.mjs';
 import { API_PREFIX, handleApiKeyRoute } from '../server/clubapi/auth.mjs';
 import { SCOPES as API_SCOPES } from '../server/clubapi/keys.mjs';
 
@@ -459,6 +460,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
             clubMode: null,
             roles: [],
             networkManager: null,
+            sawNetworkManager: false,
             idempotencyKey,
             setCookie: (header) => cookies.push(header),
             afterCommit: (fn) => afterCommit(db, fn),
@@ -473,6 +475,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
               const m = principal?.clubId && principal.clubId !== clubId ? { roles: [], networkId: null } : await membershipIn(db, clubId, userId);
               const roles = m.roles;
               ctx.networkManager = m.networkId;
+              if (m.networkId) ctx.sawNetworkManager = true;
               ctx.club = clubId;
               ctx.clubMode = clubId ? await contextClubMode(db) : null;
               ctx.roles = roles;
@@ -495,6 +498,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
             const m = principal?.clubId && principal.clubId !== club ? { roles: [], networkId: null } : await membershipIn(db, club, userId);
             ctx.roles = m.roles;
             ctx.networkManager = m.networkId;
+            if (m.networkId) ctx.sawNetworkManager = true;
           } else if (route.auth === 'staff') {
             // Клуб не указан: единственный клуб пользователя с подходящей ролью.
             const { rows } = await db.query('select club_id, role, network_id from bl.club_members where user_id = $1 and active', [userId]);
@@ -517,6 +521,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
             ctx.club = chosen.club_id;
             ctx.roles = [chosen.role];
             ctx.networkManager = chosen.network_id ?? null;
+            if (chosen.network_id) ctx.sawNetworkManager = true;
           }
           reqInfo.club = ctx.club;
           reqInfo.roles = ctx.roles;
@@ -546,11 +551,14 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
               );
               const p = prev.rows[0];
               if (!p || p.request_hash !== idem.hash || p.response_status === null) throw new HttpError(409, 'idempotency_conflict');
+              reqInfo.hideMethods = Boolean(ctx.sawNetworkManager);
               return { status: p.response_status, json: p.response_body, headers: { 'idempotent-replayed': 'true' }, replayed: true };
             }
           }
 
           const out = (await route.handler(ctx, reqInfo)) ?? { status: 204 };
+          // Управляющему сети (хотя бы в одном клубе запроса) — ответ без денег по способам оплаты (№192, Н-3).
+          reqInfo.hideMethods = Boolean(ctx.sawNetworkManager);
           const normalized = { status: out.status ?? 200, json: out.json, headers: out.headers ?? {}, body: out.body, stream: out.stream };
           if (idem && !normalized.stream && normalized.body === undefined) {
             await db.query(
@@ -586,7 +594,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
         res.writeHead(result.status, h);
         res.end();
       } else {
-        send(res, result.status, result.json, result.headers, cookies);
+        send(res, result.status, reqInfo.hideMethods ? hideMoneyMethods(result.json) : result.json, result.headers, cookies);
       }
       return true;
     } catch (err) {

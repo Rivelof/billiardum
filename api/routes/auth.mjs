@@ -464,7 +464,9 @@ export const routes = [
   { method: 'POST', path: '/api/auth/logout', auth: 'any', handler: logout },
   { method: 'GET', path: '/api/me', auth: 'guest', handler: me },
   { method: 'PATCH', path: '/api/me', auth: 'guest', rateLimit: { max: 30, windowMs: MINUTE }, handler: updateMe },
-  { method: 'POST', path: '/api/staff/terminal', auth: 'staff', roles: ['owner', 'manager'], clubFromBody: true, handler: registerTerminal },
+  // Терминал ресепшена заводят владелец и управляющий клуба; управляющий сети — нет (M5.5 №192, находка Н-2):
+  // его доступ к клубу может прекратиться, а токен терминала живёт 365 дней.
+  { method: 'POST', path: '/api/staff/terminal', auth: 'staff', roles: ['owner', 'manager'], networkManager: false, clubFromBody: true, handler: registerTerminal },
   { method: 'GET', path: '/api/clubs/{club}/terminals', auth: 'staff', roles: ['owner'], handler: listTerminals },
   { method: 'DELETE', path: '/api/clubs/{club}/terminals/{id}', auth: 'staff', roles: ['owner'], handler: revokeTerminal },
   { method: 'POST', path: '/api/clubs/{club}/terminals/{id}/unlock', auth: 'staff', roles: ['owner'], handler: unlockTerminal },

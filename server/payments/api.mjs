@@ -22,6 +22,7 @@
 
 import { createHash } from 'node:crypto';
 import { formatMoney as formatMoneyRu } from '../../shared/format.mjs';
+import { resourceName } from '../lib/resource-kinds.mjs';
 import { moneyConfig } from './config.mjs';
 import { resolveDeps } from './deps.mjs';
 import { MoneyError } from './errors.mjs';
@@ -497,7 +498,7 @@ export async function refund(db, args, injected) {
       {
         payment_id: p.provider_payment_id,
         amount: { value: formatValue(amountKopecks), currency: 'RUB' },
-        description: String(args.description ?? (p.kind === 'bar' ? 'Возврат: бар' : `Возврат: стол ${number}`)).slice(0, 128),
+        description: String(args.description ?? (p.kind === 'bar' ? 'Возврат: бар' : `Возврат: ${resourceName(resourceType, number, { capital: false })}`)).slice(0, 128),
         receipt,
       },
       key,

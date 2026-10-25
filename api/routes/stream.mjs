@@ -10,6 +10,7 @@
 import { HttpError } from '../../server/http/errors.mjs';
 import { hub, TOURNAMENT_EVENTS } from '../../server/http/sse.mjs';
 import { streamTarget, streamTokens as defaultTokens } from '../../server/http/stream-tokens.mjs';
+import { hideMoneyMethods } from '../../server/lib/network-view.mjs';
 import { isUuid, withContext } from '../../server/lib/store.mjs';
 import { publicTournamentExists } from '../../server/tournaments/api.mjs';
 
@@ -70,10 +71,12 @@ async function stream(ctx, req) {
     });
   };
   const sse = ctx.sse ?? hub;
+  // Управляющему сети — события без денег по способам оплаты (M5.5 №192, находка Н-3).
+  const transform = ctx.sawNetworkManager ? hideMoneyMethods : null;
   return {
     status: 200,
     stream: async (res) => {
-      const attached = sse.attach(res, { channels, userId, revalidate, only });
+      const attached = sse.attach(res, { channels, userId, revalidate, only, transform });
       if (!attached.ok) {
         const text = JSON.stringify({ error: 'rate_limited' });
         res.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(text) });

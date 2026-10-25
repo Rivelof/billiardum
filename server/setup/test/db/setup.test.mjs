@@ -197,11 +197,14 @@ describe('тарифы (№156)', { skip: SKIP }, () => {
     assert.deepEqual(gap.json, { error: 'tariff_gap', weekday: 1, from: '06:00', to: '10:00', kind: 'pyramid' });
     const seedRules = (await t.admin.query('select count(*)::int as n from bl.tariff_rules where club_id = $1 and active', [CLUB_A])).rows[0].n;
     const overlap = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, {
-      rules: [...applyTemplate('single', { price: 50000 }), { kind: 'pool', days: [6], from: '12:00', to: '14:00', price_per_hour_kopecks: 1, min_minutes: 30, step_minutes: 1 }],
+      rules: [...applyTemplate('single', { price: 50000 }), { kind: 'pool', days: [6], from: '12:00', to: '14:00', price_per_hour_kopecks: 50000, min_minutes: 30, step_minutes: 1 }],
     });
     assert.deepEqual(overlap.json, { error: 'tariff_overlap', weekday: 6, from: '12:00', to: '14:00', kind: 'pool' });
     assert.equal((await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: [{ days: [1], from: '06:00', to: '06:00', price_per_hour_kopecks: 1 }] })).status, 400);
-    assert.equal((await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, reception.token, { rules: applyTemplate('single', { price: 1 }) })).status, 403);
+    assert.equal((await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, reception.token, { rules: applyTemplate('single', { price: 50000 }) })).status, 403);
+    // M5.8 Н-2: 1 копейка в час даёт 0 ₽ после округления — 400, как и 0.
+    const penny = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: applyTemplate('single', { price: 1 }), reason: 'Копейка' });
+    assert.deepEqual([penny.status, penny.json], [400, { error: 'bad_request' }]);
     // №163 (pentester Н-1): тариф 0 ₽/ч — 400 bad_request; бесплатная игра — только ручным действием.
     const zero = await api('PUT', `/api/clubs/${CLUB_A}/tariffs`, owner.token, { rules: applyTemplate('single', { price: 0 }), reason: 'Бесплатно' });
     assert.deepEqual([zero.status, zero.json], [400, { error: 'bad_request' }]);

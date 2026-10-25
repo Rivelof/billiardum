@@ -15,6 +15,7 @@ import { httpRequest } from '../lib/http-client.mjs';
 import { createTelegramBot } from '../lib/telegram-bot.mjs';
 import { createHttpHandler } from '../http/server.mjs';
 import { ERROR_CODES, HttpError, safeErrorData } from '../http/errors.mjs';
+import { hideMoneyMethods } from '../lib/network-view.mjs';
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const CLUB = 'c1000000-0000-4000-8000-000000000001';
@@ -361,6 +362,18 @@ describe('хаб SSE', () => {
     assert.equal(hub.publish(`club:${CLUB}`, 'bar', { id: 1 }), 1);
     assert.equal(hub.publish(`user:${USER}`, 'reception_request', {}), 1, 'другие каналы — без фильтра');
     assert.ok(!a.chunks.some((c) => c.includes('pos_sale')));
+  });
+
+  it('transform: управляющему сети событие без денег по способам оплаты, остальным — как есть (№192, Н-3)', () => {
+    const hub = createSseHub({ timers: { setInterval: () => ({ unref() {} }), clearInterval() {} } });
+    const owner = fakeRes();
+    const network = fakeRes();
+    hub.attach(owner, { channels: [`club:${CLUB}`], userId: USER });
+    hub.attach(network, { channels: [`club:${CLUB}`], userId: 'u2', transform: hideMoneyMethods });
+    hub.publish(`club:${CLUB}`, 'pos_sale', { sale_id: 's1', method: 'cash', amount_kopecks: 500, received_kopecks: 1000, change_kopecks: 500 });
+    const data = (res) => JSON.parse(res.chunks.at(-1).split('data: ')[1]);
+    assert.deepEqual(data(owner), { sale_id: 's1', method: 'cash', amount_kopecks: 500, received_kopecks: 1000, change_kopecks: 500 });
+    assert.deepEqual(data(network), { sale_id: 's1', method: null, amount_kopecks: 500, received_kopecks: null, change_kopecks: null });
   });
 
   it('медленный клиент с большим хвостом отключается', () => {

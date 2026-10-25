@@ -244,12 +244,16 @@ export function createPublicService({ deps, log, clock }) {
       if (f.free_now) items = items.filter((x) => ((padelOnly ? x.courts_free_now : x.free_now) ?? 0) > 0);
       if (f.online) items = items.filter((x) => x.booking === 'online');
       if (f.around_the_clock) items = items.filter((x) => x.around_the_clock);
-      if (f.price_max !== undefined) items = items.filter((x) => x.price_from_kopecks !== null && x.price_from_kopecks <= f.price_max);
+      // С фильтром только «падел» цена и свободные места — корта (цена слота «от»), а не стола: клуб только с
+      // кортами не отсекается ценой стола (M5.8, находка pentester Н-4).
+      const priceOf = (x) => (padelOnly ? x.court_price_from_kopecks : x.price_from_kopecks);
+      const freeOf = (x) => (padelOnly ? x.courts_free_now : x.free_now) ?? -1;
+      if (f.price_max !== undefined) items = items.filter((x) => priceOf(x) !== null && priceOf(x) <= f.price_max);
       const byName = (a, b) => a.name.localeCompare(b.name, 'ru');
       const sorters = {
-        recommended: (a, b) => (b.booking === 'online') - (a.booking === 'online') || (b.free_now ?? -1) - (a.free_now ?? -1) || byName(a, b),
-        free: (a, b) => (b.free_now ?? -1) - (a.free_now ?? -1) || byName(a, b),
-        price: (a, b) => (a.price_from_kopecks ?? Infinity) - (b.price_from_kopecks ?? Infinity) || byName(a, b),
+        recommended: (a, b) => (b.booking === 'online') - (a.booking === 'online') || freeOf(b) - freeOf(a) || byName(a, b),
+        free: (a, b) => freeOf(b) - freeOf(a) || byName(a, b),
+        price: (a, b) => (priceOf(a) ?? Infinity) - (priceOf(b) ?? Infinity) || byName(a, b),
         rating: (a, b) => (b.rating.avg ?? 0) - (a.rating.avg ?? 0) || b.rating.count - a.rating.count || byName(a, b),
         name: byName,
       };

@@ -104,6 +104,18 @@ async function networkProductCheck(db, cur, changes) {
   return { override: !cur.network_override };
 }
 
+/**
+ * Состав модификаторов товара шаблона меню в «жёстком» режиме клуб не меняет: от него зависит итоговая
+ * цена строки (M5.5, находка pentester Н-1). 409 network_locked; товар клуба и «мягкий» режим — можно.
+ */
+async function networkModifiersLock(db, cur) {
+  if (!cur.network_product_id) return;
+  const net = await clubNetwork(db, cur.club_id);
+  if (!net?.menu_template || net.menu_mode !== 'hard') return;
+  const tpl = await db.query('select 1 from bl.network_products where id = $1 and network_id = $2', [cur.network_product_id, net.network_id]);
+  if (tpl.rowCount > 0) throw new PosError('network_locked', 'menu modifier_group_ids', 409);
+}
+
 export function groupView(g) {
   return { id: g.id, name: g.name, min_select: g.min_select, max_select: g.max_select, sort: g.sort, active: g.active };
 }
@@ -324,6 +336,8 @@ export async function updateProduct(db, deps, info) {
   if ('modifier_group_ids' in b) {
     groupIds = b.modifier_group_ids;
     const before = (await db.query('select group_id from bl.product_modifier_groups where product_id = $1 and active order by sort', [id])).rows.map((r) => r.group_id);
+    // «Жёсткое» меню сети: привязка групп модификаторов к товару шаблона — под замком, как цена (№191).
+    if (JSON.stringify(before) !== JSON.stringify(groupIds)) await networkModifiersLock(db, cur);
     await linkGroups(db, cur.club_id, id, groupIds);
     if (JSON.stringify(before) !== JSON.stringify(groupIds)) changes.modifier_group_ids = [before, groupIds];
   } else {
@@ -375,7 +389,9 @@ function modifierFields(b, { partial }) {
     out.name = b.name;
   }
   if (has('price_delta_kopecks')) {
-    if (!int(b.price_delta_kopecks, -10_000_000, 10_000_000)) throw bad('price_delta_kopecks');
+    // Только надбавка (0…10 000 000): уменьшить цену модификатором нельзя — скидка идёт через механизм
+    // скидок с лимитом, причиной и уведомлением владельцу (инвариант 8, №82); 400 bad_request.
+    if (!int(b.price_delta_kopecks, 0, 10_000_000)) throw bad('price_delta_kopecks');
     out.price_delta_kopecks = b.price_delta_kopecks;
   }
   if (has('stock_factor')) {
@@ -489,6 +505,9 @@ export async function updateModifier(db, deps, info) {
   const changes = diff({ ...cur, stock_factor: Number(cur.stock_factor) }, { ...next, stock_factor: Number(next.stock_factor) },
     ['name', 'price_delta_kopecks', 'stock_factor', 'is_default', 'sort', 'active']);
   if (Object.keys(changes).length === 0) return modifierView(cur);
+  // Старая отрицательная надбавка (до запрета скидок модификатором): выключить её можно, оставить действующей
+  // при любой правке — нет, надбавку нужно задать заново (0 или больше).
+  if (next.active && Number(next.price_delta_kopecks) < 0) throw bad('price_delta_kopecks');
   const row = (await db.query(
     `update bl.modifiers set name = $2, price_delta_kopecks = $3, stock_factor = $4::numeric, is_default = $5, sort = $6, active = $7, updated_at = $8
       where id = $1 returning *, stock_factor::text as stock_factor`,

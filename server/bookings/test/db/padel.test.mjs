@@ -103,4 +103,77 @@ describe('бронь корта по слотам', { skip }, () => {
     const offered = h.sseEvents.find((e) => e.channel === `user:${waiter.id}` && e.event === 'waitlist' && e.data.type === 'waitlist.offered');
     assert.deepEqual([offered.data.resource.type, offered.data.resource.family], ['padel_court', 'court']);
   });
+  // Н-1 pentester M5.8: неполный слот корта при раннем приходе и опоздании — по минутам (№113, №44),
+  // сама бронь и обычный старт — целыми слотами. Слот 90 минут за 2 400 ₽ днём, округление до рубля.
+  async function paidBooking(court, startMin, who) {
+    const r = await book(who, { resource_id: court, starts_at: h.at(startMin), minutes: 90 });
+    assert.equal(r.status, 201, r.text);
+    const pay = await h.request('POST', `/api/bookings/${r.json.id}/pay`, { token: who.token, key: crypto.randomUUID(), body: { method: 'sbp' } });
+    assert.equal(pay.status, 200, pay.text);
+    await h.succeed(pay.json.payment_id);
+    await h.drain();
+    return r.json.id;
+  }
+
+  it('ранний приход по брони корта: 61 минута до начала — 61/90 слота (1 627 ₽), 20 минут — 533 ₽, а не целый слот', async () => {
+    const day = 24 * 60; // вторник, 12:00 местного
+    h.clock.set(T0 + day * MIN);
+    const g1 = await h.login('+79996000021');
+    const g2 = await h.login('+79996000022');
+    const a = await paidBooking(COURT_2, day + 120, g1);
+    h.clock.set(T0 + (day + 60) * MIN);
+    const b = await paidBooking(COURT_2, day + 24 * 60 + 120, g2);
+    // 14:00 бронь; приходим в 12:59 — раньше на 61 минуту (раньше 5 бесплатных).
+    h.clock.set(T0 + (day + 59) * MIN);
+    const early61 = await h.request('POST', `/api/bookings/${a}/start`, { token: g1.token, body: { code: await h.code(COURT_2) } });
+    assert.equal(early61.status, 200, early61.text + JSON.stringify(early61.json));
+    assert.equal(early61.json.status, 'payment_required');
+    // 2 400 ₽ × 61/90 = 1 626,67 ₽ → 1 627 ₽ (одно округление до рубля); раньше — целый слот 2 400 ₽.
+    assert.equal(early61.json.amount_kopecks, 162700);
+    assert.equal(early61.json.quote.amount_kopecks, 162700);
+    h.clock.set(T0 + (day + 24 * 60 + 100) * MIN);
+    const early20 = await h.request('POST', `/api/bookings/${b}/start`, { token: g2.token, body: { code: await h.code(COURT_2) } });
+    assert.equal(early20.json.status, 'payment_required', early20.text);
+    // 2 400 ₽ × 20/90 = 533,33 ₽ → 533 ₽.
+    assert.equal(early20.json.amount_kopecks, 53300);
+  });
+});
+
+describe('опоздание по брони корта с предоплатой-депозитом: цена оставшихся минут', { skip }, () => {
+  let h;
+  let guest;
+
+  before(async () => {
+    h = await setup({ settings: { booking_prepayment: 'deposit', booking_deposit_kopecks: 50000 } });
+    guest = await h.login('+79996000011');
+  });
+  after(async () => {
+    await h?.close();
+  });
+
+  async function paid(court, startMin) {
+    const r = await h.request('POST', '/api/bookings', { token: guest.token, body: { resource_id: court, starts_at: h.at(startMin), minutes: 90 } });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(r.json.amount_kopecks, 240000, 'бронь — целым слотом');
+    const pay = await h.request('POST', `/api/bookings/${r.json.id}/pay`, { token: guest.token, key: crypto.randomUUID(), body: { method: 'sbp' } });
+    assert.equal(pay.status, 200, pay.text);
+    await h.succeed(pay.json.payment_id);
+    await h.drain();
+    return r.json.id;
+  }
+
+  it('пришёл через 10 минут после начала: 80 минут из 90 — 2 133 ₽ минус депозит 500 ₽ = 1 633 ₽; пришёл вовремя — 2 400 ₽ минус депозит', async () => {
+    h.clock.set(T0);
+    const late = await paid(COURT_1, 120);
+    const onTime = await paid(COURT_2, 120);
+    h.clock.set(T0 + 120 * MIN);
+    const r2 = await h.request('POST', `/api/bookings/${onTime}/start`, { token: guest.token, body: { code: await h.code(COURT_2) } });
+    assert.equal(r2.json.status, 'payment_required', r2.text);
+    assert.equal(r2.json.amount_kopecks, 190000);
+    h.clock.set(T0 + 130 * MIN);
+    const r = await h.request('POST', `/api/bookings/${late}/start`, { token: guest.token, body: { code: await h.code(COURT_1) } });
+    assert.equal(r.json.status, 'payment_required', r.text);
+    // 2 400 ₽ × 80/90 = 2 133,33 ₽ → 2 133 ₽; раньше — целый слот 2 400 ₽ − 500 ₽ = 1 900 ₽.
+    assert.equal(r.json.amount_kopecks, 163300);
+  });
 });

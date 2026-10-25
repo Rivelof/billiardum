@@ -154,6 +154,8 @@ export async function acceptRequest(db, deps, info) {
   if (r.status !== 'waiting' || new Date(r.expires_at).getTime() <= now.getTime()) throw new MoneyError('quote_expired', 'заявка сгорела или отклонена');
 
   const amount = Number(r.amount_kopecks);
+  // Приём денег на ресепшене — сумма больше нуля (копеечный тариф не даёт игру за 0 ₽, №163).
+  if (!(amount > 0)) throw new MoneyError('bad_request', 'сумма заявки 0');
   let receivedKopecks = null;
   let change = 0;
   if (method === 'cash') {
