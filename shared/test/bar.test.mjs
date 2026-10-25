@@ -165,6 +165,8 @@ test('очередь бара: порядок, ожидание, статусы 
   assert.equal(orderTable({ resource: null }), null, 'заказ кассы — без стола');
   assert.equal(orderTotal({ subtotal_kopecks: 44000 }), 44000);
   assert.equal(orderPayWord({ pay_mode: 'tab' }), 'В счёт стола');
+  assert.equal(orderPayWord({ pay_mode: 'tab', resource: { family: 'court', number: 1 } }), 'В счёт корта', 'вид — из ресурса заказа');
+  assert.equal(orderPayWord({ pay_mode: 'tab' }, { type: 'padel_court' }), 'В счёт корта', 'или из ресурса игры');
   assert.equal(orderPayWord({ pay_mode: 'online', awaiting_payment: true }), 'Ждёт оплаты');
   assert.equal(orderPayWord({ pay_mode: 'pos', source: 'pos' }), 'Оплачен на кассе');
   const merged = mergeOrder([{ id: 'a', status: 'new', items: [1] }], { id: 'a', status: 'preparing' });

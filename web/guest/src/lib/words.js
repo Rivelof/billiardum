@@ -1,5 +1,5 @@
 import { plural, formatMoney } from '@billiardum/shared/format';
-import { isSlot, resourceName, slotLabel } from '@billiardum/shared/resource';
+import { isSlot, resourceName, slotLabel, slotOptions } from '@billiardum/shared/resource';
 
 const HOURS = ['час', 'часа', 'часов'];
 const MINUTES = ['минута', 'минуты', 'минут'];
@@ -65,4 +65,12 @@ export function perHour(kopecks) {
  */
 export function tableName(number, resource) {
   return resourceName(resource ?? 'table', number === undefined ? null : number);
+}
+
+/** Корт играют слотами — 1…4 слота (сервер принимает столько же); остальное из ответа отбрасываем. Стол — как пришло. */
+export function startOptions(options, slot) {
+  const list = Array.isArray(options) ? options : [];
+  if (!slot) return list;
+  const ok = slotOptions(slot);
+  return list.filter((o) => ok.includes(optionMinutes(o)));
 }

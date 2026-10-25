@@ -13,6 +13,7 @@ import { BASE } from '../lib/env.js';
 import { getFlow, setFlow, clubTimeZone } from '../lib/flow.js';
 import { minutesWords, tableName } from '../lib/words.js';
 import { familyText } from '@billiardum/shared/resource';
+import { requestResource } from '../lib/reception.js';
 
 const LIGHT_DELAY = 1100; // лампа загорается 0,6 с, затем экран «Игра»
 
@@ -139,7 +140,7 @@ export function WaitPayment({ paymentId }) {
  * Ожидание «Оплачу на ресепшене» (/app/r/{request_id}). Заявка живёт 15 минут (контракт §5).
  * Статус — GET /api/reception/requests/{id} (запрошен у backend); если маршрута нет — ищем свою сессию.
  */
-export function WaitReception({ requestId }) {
+export function WaitReception({ requestId, search = '' }) {
   const flow = getFlow();
   const tz = clubTimeZone(flow.timeZone);
   const [req, setReq] = useState(null);
@@ -183,18 +184,20 @@ export function WaitReception({ requestId }) {
 
   useGoToGame(sessionId, flow.kind);
 
+  // Вид и номер ресурса: сервер → адрес заявки → эта вкладка (в новой вкладке flow пуст)
+  const rr = requestResource({ req, search, flow });
   const expiresAt = req?.expires_at ? Date.parse(req.expires_at) : createdAt.current + 15 * 60 * 1000;
   const amount = req?.amount_kopecks ?? flow.amount;
   const minutes = req?.minutes ?? flow.minutes;
   const back = backToTable(flow);
   const extend = flow.kind === 'extend';
-  const what = `${tableName(flow.number, flow.family)}${minutes ? ` · ${minutesWords(minutes)}` : ' · без лимита'}`;
+  const what = `${tableName(rr.number, rr.family)}${minutes ? ` · ${minutesWords(minutes)}` : ' · без лимита'}`;
 
   if (req?.status === 'declined' || req?.status === 'expired') {
     const reason = DECLINE_REASONS.find((r) => r.code === req.reason_code)?.guest;
     return (
       <div class="screen">
-        <Stage kind={flow.family === 'court' ? 'court' : undefined} label={tableName(flow.number, flow.family)}>
+        <Stage kind={rr.family === 'court' ? 'court' : undefined} label={tableName(rr.number, rr.family)}>
           <p class="stage__kicker">{what}</p>
           <h1 class="stage__title display">{req.status === 'expired' ? 'Заявка сгорела' : 'Заявку отклонили'}</h1>
         </Stage>
@@ -202,7 +205,7 @@ export function WaitReception({ requestId }) {
           <div class="step">
             <p class="lead">
               {req.status === 'expired'
-                ? familyText('Ресепшн не принял оплату за 15 минут, и стол снова свободен. Если всё ещё хотите играть, выберите время заново.', flow.family)
+                ? familyText('Ресепшн не принял оплату за 15 минут, и стол снова свободен. Если всё ещё хотите играть, выберите время заново.', rr.family)
                 : `Ресепшн отклонил заявку${reason ? `: ${reason}` : ''}. Деньги не списаны. Можно выбрать время заново или оплатить онлайн.`}
             </p>
             <a class="btn btn--primary btn--block btn--lg" href={back.href} onClick={linkHandler}>
@@ -216,7 +219,7 @@ export function WaitReception({ requestId }) {
 
   return (
     <div class="screen">
-      <Stage kind={flow.family === 'court' ? 'court' : undefined} lit={sessionId ? 'true' : 'false'} tone={sessionId ? 'play' : 'idle'} label={tableName(flow.number, flow.family)}>
+      <Stage kind={rr.family === 'court' ? 'court' : undefined} lit={sessionId ? 'true' : 'false'} tone={sessionId ? 'play' : 'idle'} label={tableName(rr.number, rr.family)}>
         <p class="stage__kicker">{what}</p>
         <h1 class="stage__title display" aria-live="polite">
           {sessionId ? (extend ? 'Игра продлена' : 'Свет включён') : req?.status === 'accepted' ? 'Включаем свет…' : 'Подойдите на ресепшн'}
@@ -227,14 +230,14 @@ export function WaitReception({ requestId }) {
           <p class="lead">{extend ? 'Возвращаемся к таймеру.' : 'Хорошей игры! Открываем таймер.'}</p>
         ) : req?.status === 'accepted' ? (
           <p class="lead" role="status">
-            {familyText('Ресепшн принял оплату. Лампа над столом загорится через секунду.', flow.family)}
+            {familyText('Ресепшн принял оплату. Лампа над столом загорится через секунду.', rr.family)}
           </p>
         ) : (
           <div class="step">
             <div class="say">
               <p class="say__label">Скажите администратору</p>
               <p class="say__phrase">
-                «{tableName(flow.number, flow.family)}, {minutes ? minutesWords(minutes) : 'без лимита'}»
+                «{tableName(rr.number, rr.family)}, {minutes ? minutesWords(minutes) : 'без лимита'}»
               </p>
               {amount ? (
                 <p class="say__sum">
@@ -247,7 +250,7 @@ export function WaitReception({ requestId }) {
               {extend ? 'Таймер продлится, как только ресепшн примет оплату' : 'Свет включится, как только ресепшн примет оплату'}
             </p>
             <p class="hint">
-              Заявка действует до <span class="mono">{formatTime(expiresAt, tz)}</span>. {familyText('Стол до этого времени за вами.', flow.family)}
+              Заявка действует до <span class="mono">{formatTime(expiresAt, tz)}</span>. {familyText('Стол до этого времени за вами.', rr.family)}
             </p>
             <ErrorNote error={error} />
           </div>

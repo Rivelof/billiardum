@@ -1,7 +1,7 @@
-import { formatMoney, plural } from '@billiardum/shared/format';
+import { formatMoney } from '@billiardum/shared/format';
 import { html } from '../html.mjs';
 import { ClubRow, Crumbs, Empty } from '../components.mjs';
-import { CATALOG_DISCIPLINES, PRICE_CAPS, SORTS, applyFilters, clubsWord, courtsWord, hasFilters, padelOnly, parseFilters, tablesWord } from '../lib.mjs';
+import { CATALOG_DISCIPLINES, applyFilters, clubsWord, courtsWord, hasFilters, padelOnly, parseFilters, priceCapsFor, sortsFor, tablesWord } from '../lib.mjs';
 import { breadcrumbsLd, clubListLd } from '../seo.mjs';
 
 function Chip({ type = 'checkbox', name, value = '1', checked, children }) {
@@ -24,17 +24,17 @@ function Filters({ city, f, total, shown }) {
       </div>
     </fieldset>
     <fieldset class="filters__group">
-      <legend>Цена часа стола</legend>
+      <legend>${padelOnly(f) ? 'Цена слота корта' : 'Цена часа стола'}</legend>
       <div class="chips">
         <${Chip} type="radio" name="max" value="" checked=${!f.max}>Любая<//>
-        ${PRICE_CAPS.map((p) => html`<${Chip} type="radio" name="max" value=${p} checked=${f.max === p}>до ${formatMoney(p * 100)}<//>`)}
+        ${priceCapsFor(f).map((p) => html`<${Chip} type="radio" name="max" value=${p} checked=${f.max === p}>до ${formatMoney(p * 100)}<//>`)}
       </div>
     </fieldset>
     <div class="filters__row">
       <label class="field filters__sort">
         <span class="field__label">Сортировка</span>
         <select name="sort" class="field__input">
-          ${Object.entries(SORTS).map(([k, v]) => html`<option value=${k} selected=${f.sort === k}>${v}</option>`)}
+          ${Object.entries(sortsFor(f)).map(([k, v]) => html`<option value=${k} selected=${f.sort === k}>${v}</option>`)}
         </select>
       </label>
       ${f.h ? html`<input type="hidden" name="h" value=${f.h} />` : null}
@@ -66,7 +66,9 @@ export async function cityPage({ api, cfg, params, url }) {
       <h1 class="display page__title">Бильярдные клубы ${city.name_in}</h1>
       <p class="page__lead">${clubs.length
         ? html`${clubs.length} ${clubsWord(clubs.length)}${platform.length
-          ? html`, ${platform.length} из них на программе Бильярдума: там видно свободные столы, а играть можно по QR-коду. Сейчас свободно <b>${freeTotal} ${tablesWord(freeTotal)}</b>${courtsTotal ? html` и <b>${courtsFree} ${courtsWord(courtsFree)}</b> для падела` : ''}.`
+          ? onlyPadel
+            ? html`, ${platform.length} из них на программе Бильярдума: там видно свободные корты, а играть можно по QR-коду. Сейчас свободно <b>${courtsFree} ${courtsWord(courtsFree)}</b> для падела.`
+            : html`, ${platform.length} из них на программе Бильярдума: там видно свободные столы, а играть можно по QR-коду. Сейчас свободно <b>${freeTotal} ${tablesWord(freeTotal)}</b>${courtsTotal ? html` и <b>${courtsFree} ${courtsWord(courtsFree)}</b> для падела` : ''}.`
           : '. Клубы на программе Бильярдума здесь пока не работают: бронь — по заявке.'}`
         : 'Клубов в каталоге пока нет.'}</p>
     </header>
@@ -89,7 +91,7 @@ export async function cityPage({ api, cfg, params, url }) {
 
   return {
     path: `/${city.slug}/`,
-    title: `Бильярдные клубы ${city.name_in}${platform.length ? `: свободно ${freeTotal} ${plural(freeTotal, ['стол', 'стола', 'столов'])} сейчас` : ''} — Бильярдум`,
+    title: `Бильярдные клубы ${city.name_in}${platform.length ? `: свободно ${onlyPadel ? `${courtsFree} ${courtsWord(courtsFree)}` : `${freeTotal} ${tablesWord(freeTotal)}`} сейчас` : ''} — Бильярдум`,
     description: `${clubs.length} ${clubsWord(clubs.length)} ${city.name_in}: русская пирамида, пул, снукер${padel ? ', падел' : ''}. Свободные столы${padel ? ' и корты' : ''} сейчас, цены, онлайн-бронь и круглосуточные клубы.`,
     body,
     islands: [],

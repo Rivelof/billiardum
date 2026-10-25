@@ -156,7 +156,7 @@ export function App({ extra }) {
     case 'wait':
       return <WaitPayment key={params.paymentId} paymentId={params.paymentId} />;
     case 'reception':
-      return <WaitReception key={params.requestId} requestId={params.requestId} />;
+      return <WaitReception key={params.requestId} requestId={params.requestId} search={search} />;
     case 'game':
       return <GameScreen key={params.id} id={params.id} />;
     case 'receipt':

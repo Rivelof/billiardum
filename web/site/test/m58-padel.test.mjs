@@ -1,7 +1,7 @@
 // M5.8 «Падел-корт» (№203–205, T48): фильтр «Падел», корты отдельно от столов, цена корта за слот, план зала
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyFilters, courtPriceText, filtersQuery, hallKey, hallLabel, padelOnly, parseFilters, priceGrid, publicTableState } from '../src/lib.mjs';
+import { PRICE_CAPS_PADEL, applyFilters, courtPriceText, filtersQuery, hallKey, hallLabel, padelOnly, parseFilters, priceCapsFor, priceGrid, publicTableState, sortsFor } from '../src/lib.mjs';
 import { site } from './helpers.mjs';
 
 const CLUBS = [
@@ -68,4 +68,35 @@ test('сайт: город с фильтром «Падел», клуб с ко�
   assert.match(club.body, /Падел, ₽ за 1,5\u00a0ч/);
   assert.match(club.body, /aria-label="Корт 1 /);
   assert.doesNotMatch(club.body, /Стол 5/, 'корты не нумеруются как столы');
+});
+
+test('фильтр «Падел»: цена слота корта, шаги и сортировка по кортам; смешанные дисциплины — как раньше', async () => {
+  assert.deepEqual(priceCapsFor(parseFilters('?d=padel')), PRICE_CAPS_PADEL);
+  assert.deepEqual([...PRICE_CAPS_PADEL], [2500, 3000, 4000]);
+  assert.equal(sortsFor(parseFilters('?d=padel')).free, 'Больше свободных кортов');
+  assert.equal(sortsFor(parseFilters('?d=padel&d=pyramid')).free, 'Больше свободных столов');
+  // шаг слота в адресе падела живёт, шаг часа стола — отбрасывается (и наоборот)
+  assert.equal(parseFilters('?d=padel&max=3000').max, 3000);
+  assert.equal(parseFilters('?d=padel&max=800').max, null);
+  assert.equal(parseFilters('?max=800').max, 800);
+  assert.equal(parseFilters('?max=3000').max, null);
+  const courts = [
+    { name: 'А', status: 'platform', disciplines: ['padel'], courts_free_now: 1, court_price_from_kopecks: 240000, price_from_kopecks: 50000 },
+    { name: 'Б', status: 'platform', disciplines: ['padel'], courts_free_now: 2, court_price_from_kopecks: 390000, price_from_kopecks: 40000 },
+  ];
+  assert.deepEqual(applyFilters(courts, parseFilters('?d=padel&max=2500')).map((c) => c.name), ['А'], 'цена — слот корта, а не час стола');
+  assert.deepEqual(applyFilters(courts, parseFilters('?d=padel&sort=free')).map((c) => c.name), ['Б', 'А']);
+
+  const { get } = site();
+  const padel = await get('/perm/?d=padel');
+  assert.match(padel.body, /свободно \d+ (корт|корта|кортов) сейчас — Бильярдум<\/title>/);
+  assert.match(padel.body, /<legend>Цена слота корта<\/legend>/);
+  assert.match(padel.body, /до 2\u00a0500\u00a0₽/);
+  assert.match(padel.body, /Больше свободных кортов/);
+  assert.doesNotMatch(padel.body, /Цена часа стола|Больше свободных столов/);
+  assert.match(padel.body, /<link rel="canonical" href="https:\/\/billiardum\.test\/perm\/">/);
+  const all = await get('/perm/');
+  assert.match(all.body, /<legend>Цена часа стола<\/legend>/);
+  assert.match(all.body, /Больше свободных столов/);
+  assert.match(all.body, /свободно \d+ (стол|стола|столов) сейчас — Бильярдум<\/title>/);
 });

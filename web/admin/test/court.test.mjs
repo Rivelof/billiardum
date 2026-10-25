@@ -19,12 +19,12 @@ import {
   weekCoverage,
   weekSummary,
 } from '../src/lib/tariffs.js';
-import { familyChange, fitRotation, fitsHall, footprint, kindOf, kindsOfFamily, nextNumber, numberError, planTables, retireBusyText, tableAria } from '../src/lib/hallEditor.js';
+import { familyChange, fitRotation, fitScale, fitsHall, oversizeHint, footprint, kindOf, kindsOfFamily, nextNumber, numberError, planTables, retireBusyText, tableAria } from '../src/lib/hallEditor.js';
 import { courtFreeOptions, courtPlayers, needsSessionDetail, requestFamily, requestHallItem, requestLength, requestLine, requestSlot, sessionSlot } from '../src/lib/court.js';
 import { dashboardQuery, familyTotals, kindCards, kindFamily, kindOptions, readFilters, tileViews } from '../src/lib/dashboard.js';
 import { familyLine } from '../src/lib/shift.js';
 import { placeColumnLabel, requestTitle, rowPlace, rowResource } from '../src/lib/words.js';
-import { requestLine as posRequestLine, tabLine } from '../src/lib/pos.js';
+import { requestLine as posRequestLine, tabLine, tabsTitle } from '../src/lib/pos.js';
 import { alarmView } from '../src/lib/alarms.js';
 import { auditView } from '../src/lib/audit.js';
 import { problemText } from '../src/lib/networks.js';
@@ -169,6 +169,17 @@ test('тревоги и журнал: «Корт 1» и слово «корт» 
   assert.equal(alarmView({ type: 'lamp_fault', resource_number: 4 }).table, 'Стол 4');
   const tables = new Map([['c1', { number: 1, family: 'court' }], ['t1', 1]]);
   assert.equal(auditView({ action: 'session.start', resource_id: 'c1', created_at: '2026-10-24T12:00:00Z' }, 'Asia/Yekaterinburg', { tables }).table, 'Корт 1');
+  // Д4: подпись действия — по виду ресурса записи
+  const cmd = (id, action) => auditView({ action, resource_id: id, created_at: '2026-10-24T12:00:00Z' }, 'Asia/Yekaterinburg', { tables }).title;
+  assert.equal(cmd('c1', 'device.cmd'), 'Команда корту');
+  assert.equal(cmd('c1', 'order.create'), 'Заказ с корта');
+  assert.equal(cmd('t1', 'device.cmd'), 'Команда столу');
+  assert.equal(cmd('t1', 'order.create'), 'Заказ со стола');
+  assert.equal(cmd(undefined, 'order.create'), 'Заказ со стола', 'без ресурса — как раньше');
+  // Д3: заголовок открытых счетов кассы
+  assert.equal(tabsTitle([{ resource: { family: 'court' } }]), 'Счета кортов');
+  assert.equal(tabsTitle([{ resource: { family: 'court' } }, { resource: { family: 'table' } }]), 'Счета столов и кортов');
+  assert.equal(tabsTitle([{ resource: { family: 'table' } }]), 'Счета столов');
   assert.equal(auditView({ action: 'session.start', resource_id: 't1', created_at: '2026-10-24T12:00:00Z' }, 'Asia/Yekaterinburg', { tables }).table, 'Стол 1');
 });
 
@@ -376,4 +387,20 @@ test('дашборд «Контроль»: тревога и ручное дей
   const v = reactionView({ problems: [{ alarm_id: 'a1', type: 'lamp_fault', level: 'important', resource_number: 1, resource_type: 'padel_court', raised_at: '2026-10-22T15:00:00Z', acked_at: null, react_sec: null }] });
   assert.equal(v.rows[0].resource_type, 'padel_court');
   assert.equal(rowPlace(v.rows[0]), 'Корт 1');
+});
+
+test('план зала: корт больше зала уменьшается до стен, подсказка «увеличьте зал»', () => {
+  const hall = { width: 1800, height: 1400 };
+  // корт 10,6 × 20,6 м в зале 18 × 14 м: по высоте 1400 / 2060
+  assert.ok(Math.abs(fitScale('padel_court', 0, hall) - 1400 / 2060) < 1e-9);
+  // повёрнутый: 20,6 м по ширине 18 м — ещё меньше
+  assert.ok(Math.abs(fitScale('padel_court', 90, hall) - 1800 / 2060) < 1e-9);
+  assert.equal(fitScale('padel_court', 90, { width: 2400, height: 1200 }), 1, 'поперёк в широком зале помещается');
+  assert.equal(fitScale('pyramid', 0, hall), 1, 'стол помещается — без уменьшения');
+  assert.equal(fitScale('padel_court', 0, { width: 2200, height: 2200 }), 1);
+  assert.equal(oversizeHint([{ kind: 'pyramid', number: 1 }], hall), null);
+  assert.equal(
+    oversizeHint([{ kind: 'padel_court', number: 2, plan_rotation: 0 }], hall),
+    'Корт 2 не помещается в зал 18 м на 14 м, поэтому на плане уменьшен. Увеличьте зал: нужно не меньше 10,6 м на 20,6 м.',
+  );
 });

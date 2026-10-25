@@ -61,7 +61,7 @@
 .board__scroll {
   overflow-x: auto;
   margin-inline: calc(-1 * var(--gutter));
-  padding: 4px var(--gutter) 8px;
+  padding: 6px var(--gutter) 10px;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;
@@ -151,8 +151,9 @@
 }
 .slot--on .slot__free { color: var(--lamp); font-weight: 700; }
 .slot--on .slot__time { color: var(--ink); }
-.slot:focus-visible { outline: none; }
-.slot:focus-visible .slot__cell { outline: 2px solid var(--hall-text); outline-offset: 2px; z-index: 2; }
+/* Фокус — двухцветное кольцо на самой кнопке: тёмное/светлое по теме (--ink) с зазором цвета фона. Кольцо над
+   соседними делениями (z-index) и внутри полей прокрутки борта (padding), поэтому не обрезается и видно в обеих темах. */
+.slot:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 2px var(--paper); z-index: 3; }
 
 .board__legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: var(--fs-13); color: var(--ink-2); }
 .board__legend li { display: inline-flex; align-items: center; gap: 8px; }

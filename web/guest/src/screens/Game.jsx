@@ -152,7 +152,7 @@ export function GameScreen({ id }) {
       <main class="wrap content content--game">
         {isTestClub(session) || (getFlow().testMode && getFlow().resourceId === session.resource?.id) ? <TestModeNote /> : null}
         <ExtendPending session={session} tz={tz} />
-        <BarStrip sessionId={session.id} bar={bar} />
+        <BarStrip sessionId={session.id} bar={bar} resource={session.resource} />
         <Participants session={session} />
         <MatchSlot session={session} />
         <PushOffer />
@@ -623,7 +623,7 @@ function Closed({ session, kind, tab }) {
             <div class="note note--lamp" role="status">
               <Icon name="cup" />
               <p class="note__title">Счёт бара не оплачен: {formatMoney(t.total)}</p>
-              <p class="note__body">{t.count ? `${ordersWord(t.count)} в счёте стола. ` : ''}Оплатите онлайн или на ресепшене перед уходом.</p>
+              <p class="note__body">{t.count ? familyText(`${ordersWord(t.count)} в счёте стола. `, session.resource) : ''}Оплатите онлайн или на ресепшене перед уходом.</p>
               <div class="note__actions">
                 <a class="btn btn--primary btn--sm" href={`${BASE}s/${encodeURIComponent(session.id)}/bar#tab`} onClick={linkHandler}>
                   Оплатить счёт бара
@@ -642,7 +642,7 @@ function Closed({ session, kind, tab }) {
 }
 
 /** Полоса бара на экране «Игра»: текущий заказ и счёт стола (M2). Ничего не заказано — ничего не показываем. */
-function BarStrip({ sessionId, bar }) {
+function BarStrip({ sessionId, bar, resource }) {
   const order = currentOrder(bar.orders);
   const t = tabSummary(bar.tab);
   if (!order && !t.open) return null;
@@ -657,7 +657,7 @@ function BarStrip({ sessionId, bar }) {
         ) : null}
         {t.open ? (
           <span class="barstrip__sub">
-            Счёт стола <b class="mono">{formatMoney(t.total)}</b>
+            {familyText('Счёт стола', resource)} <b class="mono">{formatMoney(t.total)}</b>
             {t.count ? `, ${ordersWord(t.count)}` : ''}
           </span>
         ) : null}

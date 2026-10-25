@@ -70,6 +70,12 @@ export const SORTS = Object.freeze({
 });
 
 export const PRICE_CAPS = Object.freeze([500, 800, 1200]);
+/** Шаги цены при фильтре только «Падел»: цена слота корта (2 400–3 900 ₽ за 1,5 ч), а не часа стола. */
+export const PRICE_CAPS_PADEL = Object.freeze([2500, 3000, 4000]);
+/** Шаги цены под текущие фильтры: слот корта — у «только падел», час стола — у остальных. */
+export const priceCapsFor = (f) => (padelOnly(f) ? PRICE_CAPS_PADEL : PRICE_CAPS);
+/** Подписи сортировки под фильтры: «Больше свободных кортов» при фильтре только «Падел». */
+export const sortsFor = (f) => (padelOnly(f) ? { ...SORTS, free: 'Больше свободных кортов' } : SORTS);
 export const HOURS = Object.freeze([1, 2, 3]);
 
 /**
@@ -82,12 +88,14 @@ export function parseFilters(params) {
   const max = Number(sp.get('max'));
   const h = Number(sp.get('h'));
   const sort = sp.get('sort');
+  // Шаги цены зависят от фильтра «Падел»: цена слота корта и цена часа стола в одном адресе не смешиваются
+  const caps = padelOnly({ d }) ? PRICE_CAPS_PADEL : PRICE_CAPS;
   return {
     d,
     free: sp.get('free') === '1',
     online: sp.get('online') === '1',
     h24: sp.get('h24') === '1',
-    max: PRICE_CAPS.includes(max) ? max : null,
+    max: caps.includes(max) ? max : null,
     sort: sort in SORTS ? sort : 'recommended',
     h: HOURS.includes(h) ? h : null,
   };
@@ -111,9 +119,10 @@ export function hasFilters(f) {
   return Boolean(f.d.length || f.free || f.online || f.h24 || f.max);
 }
 
-/** Минимальная цена часа клуба — для фильтра «цена» и сортировки. null — цен нет. */
-export function priceFrom(club) {
-  return Number.isInteger(club.price_from_kopecks) ? club.price_from_kopecks : null;
+/** Минимальная цена часа клуба (courts — слота корта) — для фильтра «цена» и сортировки. null — цен нет. */
+export function priceFrom(club, courts = false) {
+  const v = courts ? club.court_price_from_kopecks : club.price_from_kopecks;
+  return Number.isInteger(v) ? v : null;
 }
 
 /**
@@ -123,14 +132,15 @@ export function priceFrom(club) {
  */
 export function applyFilters(clubs, f) {
   // «Свободно сейчас» с фильтром только «Падел» — свободные корты, иначе — столы (M5.8)
-  const freeOf = padelOnly(f) ? (c) => c.courts_free_now : (c) => c.free_now;
+  const courts = padelOnly(f);
+  const freeOf = courts ? (c) => c.courts_free_now : (c) => c.free_now;
   const out = clubs.filter((c) => {
     if (f.d.length && !f.d.every((d) => c.disciplines?.includes(d))) return false;
     if (f.free && !(freeOf(c) > 0)) return false;
     if (f.online && !c.online_booking) return false;
     if (f.h24 && !c.open_24h) return false;
     if (f.max) {
-      const p = priceFrom(c);
+      const p = priceFrom(c, courts);
       if (p === null || p > f.max * 100) return false;
     }
     return true;
@@ -139,7 +149,7 @@ export function applyFilters(clubs, f) {
   const sorts = {
     recommended: (a, b) => Number(b.online_booking) - Number(a.online_booking) || (freeOf(b) ?? -1) - (freeOf(a) ?? -1) || byName(a, b),
     free: (a, b) => (freeOf(b) ?? -1) - (freeOf(a) ?? -1) || byName(a, b),
-    price: (a, b) => (priceFrom(a) ?? Infinity) - (priceFrom(b) ?? Infinity) || byName(a, b),
+    price: (a, b) => (priceFrom(a, courts) ?? Infinity) - (priceFrom(b, courts) ?? Infinity) || byName(a, b),
     rating: (a, b) => (b.rating?.avg ?? -1) - (a.rating?.avg ?? -1) || (b.rating?.count ?? 0) - (a.rating?.count ?? 0) || byName(a, b),
     name: byName,
   };

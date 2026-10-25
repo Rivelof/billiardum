@@ -108,9 +108,10 @@
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.tbl:focus-visible { outline: none; }
-.tbl:focus-visible .tbl__art,
+/* Выбран — кольцо вокруг рисунка. Фокус с клавиатуры — кольцо на самой кнопке (его видит и проверка фокуса):
+   светлое снаружи, тёмный зазор внутри — читается и на тёмном полу, и в янтарном свете лампы. */
 .tbl[aria-pressed='true'] .tbl__art { outline: 2px solid var(--hall-text); outline-offset: 5px; }
+.tbl:focus-visible { outline: 3px solid var(--hall-text); outline-offset: 6px; box-shadow: 0 0 0 6px var(--hall-bg); z-index: 3; }
 .tbl__glow {
   position: absolute;
   z-index: 0;

@@ -97,6 +97,9 @@
   background-size: var(--gx) var(--gy);
   touch-action: none;
   user-select: none;
+  /* Объекты не выходят за поле плана: ни корт больше зала, ни повёрнутый стол (Д6); кольцо фокуса — внутри кнопки */
+  overflow: clip;
+  max-width: 100%;
 }
 .pe__tbl {
   position: absolute;
@@ -109,6 +112,9 @@
   transform-origin: 50% 50%;
 }
 .pe__tbl:active { cursor: grabbing; }
+/* Столы поверх кортов: если корт не помещается и закрывает столы, столы остаются видны и нажимаются */
+.pe__tbl { z-index: 1; }
+.pe__tbl--court { z-index: 0; }
 .pe__art { display: block; pointer-events: none; }
 .pe__num {
   position: absolute;
@@ -127,9 +133,10 @@
   font-size: var(--fs-15);
   pointer-events: none;
 }
-.pe__tbl:focus-visible { outline: none; }
-.pe__tbl:focus-visible .pe__art,
-.pe__tbl[aria-pressed='true'] .pe__art { outline: 3px solid var(--lamp); outline-offset: 4px; border-radius: 4px; }
+.pe__tbl[aria-pressed='true'] { outline: 3px solid var(--lamp); outline-offset: -3px; border-radius: 4px; z-index: 2; }
+/* Фокус с клавиатуры (Д7): два кольца внутри кнопки — светлое снаружи, янтарное внутри; поле плана обрезает, поэтому наружу не рисуем */
+.pe__tbl:focus-visible { outline: 3px solid var(--hall-text); outline-offset: -3px; border-radius: 4px; z-index: 2; }
+.pe__tbl:focus-visible::after { content: ''; position: absolute; inset: 3px; border: 3px solid var(--lamp); border-radius: 2px; pointer-events: none; }
 .pe__tbl[aria-pressed='true'] .pe__num { background: var(--lamp); color: var(--on-lamp); }
 
 .pe-panel { justify-items: stretch; }

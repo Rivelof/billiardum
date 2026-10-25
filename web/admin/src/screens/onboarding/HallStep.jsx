@@ -12,7 +12,9 @@ import {
   familyChange,
   familyOfKind,
   fitRotation,
+  fitScale,
   fitsHall,
+  oversizeHint,
   hallSize,
   kindsOfFamily,
   retireBusyText,
@@ -186,6 +188,13 @@ export function HallStep({ ctx, ob, reload, live }) {
           reload();
         }}
       />
+
+      {tables?.length && oversizeHint(tables, hall) ? (
+        <p class="note note--lamp" role="note">
+          <Icon name="info" />
+          <span class="note__title">{oversizeHint(tables, hall)}</span>
+        </p>
+      ) : null}
 
       <div class="hall-ed__bar">
         <p class="hall-ed__count">
@@ -412,7 +421,9 @@ function PlanEditor({ tables, hall, selected, onSelect, onMove, onCommitLater, o
         style={{ aspectRatio: `${hall.width} / ${hall.height}`, '--gx': pct(100 / hall.width), '--gy': pct(100 / hall.height) }}
       >
         {tables.map((t) => {
+          // Корт больше зала — рисуем уменьшенным, до стен (подсказка «увеличьте зал» над планом)
           const size = footprint(t.kind, 0);
+          const scale = fitScale(t.kind, t.plan_rotation, hall);
           return (
             <button
               type="button"
@@ -424,7 +435,7 @@ function PlanEditor({ tables, hall, selected, onSelect, onMove, onCommitLater, o
               style={{
                 left: pct(t.plan_x / hall.width),
                 top: pct(t.plan_y / hall.height),
-                width: pct(size.w / hall.width),
+                width: pct((size.w * scale) / hall.width),
                 transform: `translate(-50%, -50%) rotate(${t.plan_rotation}deg)`,
               }}
               onPointerDown={(e) => down(e, t)}

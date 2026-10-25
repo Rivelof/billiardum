@@ -19,7 +19,8 @@ import { auth, needsConsent } from '../lib/auth.js';
 import { useStore } from '../lib/store.js';
 import { navigate } from '../lib/router.js';
 import { BASE } from '../lib/env.js';
-import { optionLabel, optionMinutes, tableName } from '../lib/words.js';
+import { requestSearch } from '../lib/reception.js';
+import { optionLabel, optionMinutes, startOptions, tableName } from '../lib/words.js';
 import { getFlow, rememberClub, setFlow } from '../lib/flow.js';
 import { MyBooking, Waitlist, startableBooking, useMyWaitlist } from '../components/TableExtras.jsx';
 import { waitlistView } from '@billiardum/shared/booking';
@@ -296,7 +297,7 @@ export function TableScreen({ code, search }) {
             onError={handleFlowError}
             onReception={(res) => {
               setFlow({ requestId: res.reception_request_id, amount: quote.amount_kopecks, minutes: quote.minutes ?? null });
-              navigate(`${BASE}r/${encodeURIComponent(res.reception_request_id)}`, { replace: true });
+              navigate(`${BASE}r/${encodeURIComponent(res.reception_request_id)}${requestSearch({ family: nounOf(table?.resource).family, number: table?.resource?.number })}`, { replace: true });
             }}
           />
         ) : null}
@@ -339,7 +340,7 @@ function Choose({ table, option, setOption, busy, error, onNext }) {
       <fieldset>
         <legend class="step__label">{slot ? `Сколько играем? Слот — ${slotLabel(slot)}` : 'Сколько играем?'}</legend>
         <div class="choice choice--grid">
-          {(table.options ?? []).map((o) => {
+          {startOptions(table.options, slot).map((o) => {
             const m = optionMinutes(o);
             const blocked = limit !== null && (m === null || now + m * 60000 > limit);
             const sub = blocked ? `${w.Nom} забронирован` : m === null ? 'Платите за фактическое время' : `До ${formatTime(now + m * 60000, tz)}`;

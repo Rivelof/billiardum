@@ -8,7 +8,7 @@
  * M3 (mock/m3.js): book | mybooking | early | waitlist | balance; limit — продление ограничено бронью в 21:00 (№106)
  * M5.1: testclub — клуб в тестовом режиме (плашка на столе, оплате и игре), testgame — то же с идущей игрой
  * M5.8 (падел-корт, слоты по 90 минут): court — корт 1 свободен (/app/t/TESTC00001), корт 2 занят;
- *   courtgame — идёт игра на корте 1 (продление слотом); courtfull — на корте 2 уже 4 игрока (пятый «Я играю» — limit_exceeded);
+ *   courtgame — идёт игра на корте 1 (продление слотом); courtbar — то же и заказы бара «в счёт корта»; courtfull — на корте 2 уже 4 игрока (пятый «Я играю» — limit_exceeded);
  *   courtbook — бронь в клубе со столами и кортами
  */
 
@@ -323,7 +323,7 @@ export function createBackend(storage) {
       state.sessions[SESSION_ID].payments.push({ payment_id: uuid(), method: 'cash', amount_kopecks: 40000, minutes: 30, at: t - 30 * MIN });
       Object.assign(state.tables['4K7P9QW2XM'], { status: 'free', session_id: null, busy_until: null });
     }
-    if (name === 'courtgame' || name === 'courtfull') {
+    if (name === 'courtgame' || name === 'courtfull' || name === 'courtbar') {
       const court = state.tables.TESTC00001;
       const s = {
         id: SESSION_ID,
@@ -531,6 +531,8 @@ export function createBackend(storage) {
         status: r.status,
         amount_kopecks: q.amount_kopecks,
         minutes: q.minutes,
+        // Вид ресурса заявки (Д1): так заявка читается и в новой вкладке
+        ...(state.tables[q.code] ? { resource_type: state.tables[q.code].type, resource_family: isCourtT(state.tables[q.code]) ? 'court' : 'table', resource_number: state.tables[q.code].number } : {}),
         expires_at: new Date(r.created + 15 * MIN).toISOString(),
         ...(r.session_id ? { session_id: r.session_id } : {}),
         ...(r.reason_code ? { reason_code: r.reason_code } : {}),

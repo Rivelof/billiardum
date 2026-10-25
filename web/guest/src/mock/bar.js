@@ -51,7 +51,7 @@ function line(product, qty, modIds) {
 }
 
 /** Заказ для сценариев: [название, кол-во, [модификаторы]]. */
-function seedOrder(state, { number, session, table, status, minAgo, pay, items, t }) {
+function seedOrder(state, { number, session, table, status, minAgo, pay, items, t, court = false }) {
   const lines = items.map(([name, qty, mods = []]) => line(BY_NAME.get(name), qty, mods.map((m) => MOD_BY_NAME.get(m).id)));
   const at = new Date(t - minAgo * MIN).toISOString();
   const o = {
@@ -63,7 +63,7 @@ function seedOrder(state, { number, session, table, status, minAgo, pay, items, 
     paid: pay !== 'tab',
     awaiting_payment: false,
     session_id: session,
-    resource: { id: id('00000000', table), number: table },
+    resource: { id: id('00000000', table), number: table, ...(court ? { type: 'padel_court', family: 'court' } : {}) },
     items: lines,
     subtotal_kopecks: lines.reduce((s, l) => s + l.amount_kopecks, 0),
     comment: null,
@@ -86,6 +86,11 @@ export function barSeed(state, name, t, sessionId) {
     seedOrder(state, { number: 39, session: sessionId, table: 4, status: 'served', minAgo: 41, pay: 'tab', items: [['Кола, 0,33 л', 2], ['Орешки солёные', 1]], t });
     seedOrder(state, { number: 41, session: sessionId, table: 4, status: 'preparing', minAgo: 4, pay: 'tab', items: [['Капучино', 2, ['0,4 л', 'Овсяное', 'Без сахара']]], t });
     seedOrder(state, { number: 40, session: sessionId, table: 4, status: 'ready', minAgo: 9, pay: 'online', items: [['Чай чёрный', 1, ['1 л']], ['Сэндвич с курицей', 1]], t });
+  }
+  if (name === 'courtbar') {
+    // Корт 1: заказы «в счёт корта» (Д2) — полоса бара в игре, счёт и корзина говорят «корт»
+    seedOrder(state, { number: 39, session: sessionId, table: 1, status: 'served', minAgo: 41, pay: 'tab', items: [['Кола, 0,33 л', 2]], t, court: true });
+    seedOrder(state, { number: 41, session: sessionId, table: 1, status: 'preparing', minAgo: 4, pay: 'tab', items: [['Капучино', 2, ['0,4 л', 'Овсяное', 'Без сахара']]], t, court: true });
   }
   if (name === 'closedtab') {
     seedOrder(state, { number: 33, session: sessionId, table: 4, status: 'served', minAgo: 70, pay: 'tab', items: [['Пицца «Маргарита»', 1], ['Вода без газа, 0,5 л', 2]], t });

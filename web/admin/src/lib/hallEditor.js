@@ -155,6 +155,31 @@ export function fitRotation(kind, hall) {
   return a.w <= hall.width && a.h <= hall.height ? 0 : fitsHall(kind, hall) ? 90 : 0;
 }
 
+/**
+ * Масштаб ресурса на плане, чтобы он целиком влез в зал при своём повороте: 1 — помещается, меньше 1 — рисуем
+ * уменьшенным (корт 10,6 × 20,6 м в зале 18 × 14 м), а владельцу подсказываем увеличить зал. Объект не выходит за стены.
+ */
+export function fitScale(kind, rotation, hall) {
+  const f = footprint(kind, rotation);
+  if (!(f.w > 0) || !(f.h > 0) || !(hall?.width > 0) || !(hall?.height > 0)) return 1;
+  return Math.min(1, hall.width / f.w, hall.height / f.h);
+}
+
+/**
+ * Подсказка «увеличьте зал» для ресурсов, которые на плане уменьшены (fitScale < 1); пусто, если всё помещается.
+ * @param {{ kind: string, number?: number, plan_rotation?: number }[]} tables
+ * @param {{ width: number, height: number }} hall
+ */
+export function oversizeHint(tables, hall) {
+  const big = (tables ?? []).filter((t) => fitScale(t.kind, t.plan_rotation, hall) < 1);
+  if (!big.length) return null;
+  const names = [...new Set(big.map((t) => resourceName(familyOfKind(t.kind), t.number)))];
+  const f = footprint(big[0].kind, 0);
+  const need = `${metres(Math.min(f.w, f.h))} на ${metres(Math.max(f.w, f.h))}`;
+  const who = names.length === 1 ? `${names[0]} не помещается` : `${names.join(', ')} не помещаются`;
+  return `${who} в зал ${metres(hall.width)} на ${metres(hall.height)}, поэтому на плане уменьшен${names.length === 1 ? '' : 'ы'}. Увеличьте зал: нужно не меньше ${need}.`;
+}
+
 /** Сантиметры → «4,5 м». */
 export function metres(cm) {
   const m = Math.round(Number(cm) / 10) / 10;

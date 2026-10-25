@@ -155,6 +155,13 @@ export function requestLine(r) {
 /** Название открытого счёта: «Стол 3», «Корт 1» (M5.8: resource.family). */
 export const tabName = (t, opts) => resourceName(t.resource ?? 'table', t.resource?.number ?? t.resource_number, opts);
 
+/** Заголовок списка открытых счетов: «Счета столов», «Счета кортов», у клуба с обоими — «Счета столов и кортов». */
+export function tabsTitle(tabs) {
+  const courts = (tabs ?? []).filter((t) => familyOf(t.resource ?? { type: t.resource_type }) === 'court').length;
+  if (!courts) return 'Счета столов';
+  return courts === tabs.length ? 'Счета кортов' : 'Счета столов и кортов';
+}
+
 /** Счёт стола в корзину: «Счёт стола 3 · 2 заказа бара». Сервер: { session_id, resource: { number, type, family }, orders: N, total_kopecks }. */
 export function tabLine(t) {
   const n = typeof t.orders === 'number' ? t.orders : Array.isArray(t.orders) ? t.orders.length : (t.orders_count ?? 0);

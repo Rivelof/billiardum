@@ -1,4 +1,5 @@
 import { plural } from '@billiardum/shared/format';
+import { familyText } from '@billiardum/shared/resource';
 
 /**
  * Бар со стола для гостя (контракт m2 §4, решения №76, №79): что можно делать с заказом и счётом стола.
@@ -56,7 +57,8 @@ export function currentOrder(orders) {
  * Кнопка заказа говорит, что произойдёт.
  * @param {'tab' | 'online'} pay
  * @param {string} amount «840 ₽»
+ * @param {object | string} [resource] ресурс из API или семья: у корта «в счёт корта»
  */
-export function orderCta(pay, amount) {
-  return pay === 'tab' ? `Заказать за ${amount} в счёт стола` : `Оплатить ${amount} и заказать`;
+export function orderCta(pay, amount, resource) {
+  return pay === 'tab' ? familyText(`Заказать за ${amount} в счёт стола`, resource) : `Оплатить ${amount} и заказать`;
 }

@@ -1,6 +1,6 @@
 import { formatMoney, formatTime, formatDate } from '@billiardum/shared/format';
 import { DECLINE_REASONS, SERVICE_REASONS, lateRefundLabel, reasonLabel } from '@billiardum/shared/reasons';
-import { familyOf, resourceName } from '@billiardum/shared/resource';
+import { familyOf, familyText, resourceName } from '@billiardum/shared/resource';
 import { METHOD_LABEL, ROLE_LABEL, minutesWords } from './words.js';
 
 /** Действия журнала M1 (контракт §8) словами. */
@@ -236,7 +236,8 @@ export function auditView(raw, timeZone, ctx = {}) {
     time: at ? formatTime(at, timeZone) : '',
     date: at ? formatDate(at, timeZone) : '',
     action: raw.action,
-    title: ACTION_LABEL[raw.action] ?? raw.action ?? 'Действие',
+    // «Команда столу» у корта — «Команда корту»: слово по виду ресурса записи (M5.8, Д4)
+    title: familyText(ACTION_LABEL[raw.action] ?? raw.action ?? 'Действие', family),
     actor: actorName,
     table: number !== null && number !== undefined ? resourceName(family, number) : null,
     reason: raw.reason ?? null,

@@ -9,6 +9,8 @@
  *   orderItems(cart)          → [{ product_id, qty: 1, modifier_ids: [...] }]
  */
 
+import { familyText } from './resource.mjs';
+
 /** Статусы заказа по контракту §3. */
 export const ORDER_STATUSES = Object.freeze(['new', 'preparing', 'ready', 'served', 'canceled']);
 
@@ -358,10 +360,14 @@ export function orderTotal(order) {
   return Number.isSafeInteger(v) ? v : 0;
 }
 
-/** Как оплачен заказ — словом для бара и гостя: в счёт стола, онлайн (оплачен или ждёт оплаты), на кассе. */
-export function orderPayWord(order) {
+/**
+ * Как оплачен заказ — словом для бара и гостя: в счёт стола (корта — по виду ресурса), онлайн (оплачен или ждёт оплаты), на кассе.
+ * @param {object} order заказ; у него resource ({ number, family | type }) — вид ресурса
+ * @param {object | string} [resource] ресурс игры, если он известен экрану лучше, чем заказу
+ */
+export function orderPayWord(order, resource) {
   const mode = order?.pay_mode ?? order?.pay;
-  if (mode === 'tab') return order?.paid ? 'Счёт оплачен' : 'В счёт стола';
+  if (mode === 'tab') return order?.paid ? 'Счёт оплачен' : familyText('В счёт стола', resource ?? order?.resource);
   if (mode === 'pos' || order?.source === 'pos') return 'Оплачен на кассе';
   if (order?.awaiting_payment) return 'Ждёт оплаты';
   return 'Оплачен онлайн';

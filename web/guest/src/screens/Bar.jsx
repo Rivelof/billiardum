@@ -58,6 +58,8 @@ export function BarScreen({ sessionId }) {
   const [announce, setAnnounce] = useState('');
   const cartRef = useRef(cart);
   cartRef.current = cart;
+  const resRef = useRef(null);
+  resRef.current = session?.resource;
 
   useEffect(() => sessionStore.set(cartKey(sessionId), cart.lines.length ? cart : null), [cart, sessionId]);
 
@@ -96,7 +98,7 @@ export function BarScreen({ sessionId }) {
       onEvent: (name, data) => {
         if (name === 'order' && data?.id) {
           setOrders((list) => mergeOrder(list ?? [], data));
-          if (data.status === 'ready') setAnnounce(`Заказ № ${data.number} готов, несём к столу.`);
+          if (data.status === 'ready') setAnnounce(familyText(`Заказ № ${data.number} готов, несём к столу.`, resRef.current));
           else if (data.status === 'served') setAnnounce(`Заказ № ${data.number} выдан. Приятного отдыха!`);
           loadTab();
         } else if (name === 'session' && data?.id === sessionId) setSession((s) => ({ ...s, ...data }));
@@ -160,7 +162,7 @@ export function BarScreen({ sessionId }) {
           <div class="note note--free" role="status">
             <Icon name="check" />
             <p class="note__title">Заказ № {placed.number} принят</p>
-            <p class="note__body">{placed.pay_mode === 'tab' ? 'Он в счёте стола. Статус обновится здесь сам.' : 'Статус обновится здесь сам.'}</p>
+            <p class="note__body">{placed.pay_mode === 'tab' ? familyText('Он в счёте стола. Статус обновится здесь сам.', session?.resource) : 'Статус обновится здесь сам.'}</p>
           </div>
         ) : null}
 
@@ -172,7 +174,7 @@ export function BarScreen({ sessionId }) {
             <ul class="orders__list">
               {active.map((o) => (
                 <li key={o.id}>
-                  <OrderCard order={o} />
+                  <OrderCard order={o} resource={session?.resource} />
                 </li>
               ))}
             </ul>
@@ -236,7 +238,7 @@ export function BarScreen({ sessionId }) {
           </p>
         ) : null}
 
-        {t.open || t.pending ? <TabBlock sessionId={sessionId} tab={tab} summary={t} onPaid={loadTab} /> : null}
+        {t.open || t.pending ? <TabBlock sessionId={sessionId} tab={tab} summary={t} resource={session?.resource} onPaid={loadTab} /> : null}
 
         {list.some((o) => o.status === 'served') ? (
           <section class="orders orders--done" aria-labelledby="done-title">
@@ -252,7 +254,7 @@ export function BarScreen({ sessionId }) {
                       Заказ № {o.number}, {itemsWord(o.items?.reduce((s, i) => s + i.qty, 0) ?? 0)}
                     </span>
                     <span class="receipt__sum">{formatMoney(orderTotal(o))}</span>
-                    <span class="receipt__sub">{orderPayWord(o)}</span>
+                    <span class="receipt__sub">{orderPayWord(o, session?.resource)}</span>
                   </li>
                 ))}
             </ul>
@@ -283,6 +285,7 @@ export function BarScreen({ sessionId }) {
         open={cartOpen}
         cart={cart}
         sessionId={sessionId}
+        resource={session?.resource}
         onCart={setCart}
         onClose={() => setCartOpen(false)}
         onStale={() => session?.club?.id && loadMenu(session.club.id)}
@@ -300,7 +303,7 @@ export function BarScreen({ sessionId }) {
 }
 
 /** Карточка заказа: шкала статуса — настоящая последовательность «Принят → Готовится → Готов → Выдан». */
-function OrderCard({ order }) {
+function OrderCard({ order, resource }) {
   const step = stepIndex(order.status);
   const waitingPay = order.awaiting_payment;
   return (
@@ -330,7 +333,7 @@ function OrderCard({ order }) {
       )}
       <p class="ocard__items">{itemsLine(order.items)}</p>
       <p class="ocard__meta">
-        <span>{orderPayWord(order)}</span>
+        <span>{orderPayWord(order, resource)}</span>
         <span class="mono">{formatMoney(orderTotal(order))}</span>
       </p>
     </article>
@@ -340,7 +343,7 @@ function OrderCard({ order }) {
 /** Счёт стола: заказы «в счёт стола», оплата онлайн — сейчас или после игры (№79). */
 const tabPayKey = (sessionId) => `bl-tab-pay:${sessionId}`;
 
-function TabBlock({ sessionId, tab, summary, onPaid }) {
+function TabBlock({ sessionId, tab, summary, resource, onPaid }) {
   const [method, setMethod] = useState('sbp');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -366,7 +369,7 @@ function TabBlock({ sessionId, tab, summary, onPaid }) {
     <section class="tabblock" id="tab" aria-labelledby="tab-title">
       <div class="tabblock__top">
         <h2 class="tabblock__title" id="tab-title">
-          Счёт стола
+          {familyText('Счёт стола', resource)}
         </h2>
         <p class="tabblock__sum display">{formatMoney(summary.total)}</p>
       </div>
@@ -386,7 +389,7 @@ function TabBlock({ sessionId, tab, summary, onPaid }) {
       ) : (
         <>
           <p class="hint">
-            {summary.count ? `${ordersWord(summary.count)} бара. ` : ''}Оплатите сейчас или после игры — на свет над столом счёт не влияет.
+            {summary.count ? `${ordersWord(summary.count)} бара. ` : ''}{familyText('Оплатите сейчас или после игры — на свет над столом счёт не влияет.', resource)}
           </p>
           <fieldset class="paychoice">
             <legend class="visually-hidden">Способ оплаты счёта</legend>
@@ -495,7 +498,7 @@ function Stepper({ value, onChange, labelledBy, label, min = 1 }) {
 }
 
 /** Корзина: позиции, пожелание бару, «в счёт стола» или оплата сейчас (СБП, карта). */
-function CartSheet({ open, cart, sessionId, onCart, onClose, onStale, onPlaced }) {
+function CartSheet({ open, cart, sessionId, resource, onCart, onClose, onStale, onPlaced }) {
   const [pay, setPay] = useState('tab');
   const [method, setMethod] = useState('sbp');
   const [comment, setComment] = useState('');
@@ -567,7 +570,7 @@ function CartSheet({ open, cart, sessionId, onCart, onClose, onStale, onPlaced }
               <label class="choice__item">
                 <input type="radio" name="pay" checked={pay === 'tab'} onChange={() => setPay('tab')} />
                 <span class="choice__box">
-                  <span class="choice__title">В счёт стола</span>
+                  <span class="choice__title">{familyText('В счёт стола', resource)}</span>
                   <span class="choice__sub">Оплатите одним счётом в конце игры</span>
                 </span>
               </label>
@@ -602,7 +605,7 @@ function CartSheet({ open, cart, sessionId, onCart, onClose, onStale, onPlaced }
           <ErrorNote error={error} />
           <div class="actionbar">
             <button type="submit" class="btn btn--primary btn--block btn--lg" disabled={busy || !totals.count}>
-              {busy ? 'Отправляем…' : orderCta(pay, amount)}
+              {busy ? 'Отправляем…' : orderCta(pay, amount, resource)}
             </button>
           </div>
         </form>
@@ -668,6 +671,7 @@ export function OrderPaid({ orderId }) {
 export function TabPaid({ sessionId }) {
   const [tab, setTab] = useState(null);
   const [error, setError] = useState(null);
+  const [resource, setResource] = useState(null);
   const [tried] = useState(() => {
     const at = sessionStore.get(tabPayKey(sessionId));
     return Number.isFinite(at) && Date.now() - at < 30 * 60_000;
@@ -690,6 +694,14 @@ export function TabPaid({ sessionId }) {
     1500,
     [sessionId],
   );
+  // Вид ресурса (стол или корт) — из игры; не загрузилась, остаётся «стол»
+  useEffect(() => {
+    let alive = true;
+    api.session(sessionId).then((x) => alive && setResource(x?.resource ?? null)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
   const s = tabSummary(tab);
   const settled = tab && !s.pending;
   useEffect(() => {
@@ -701,7 +713,7 @@ export function TabPaid({ sessionId }) {
       <Header back={{ href: `${BASE}s/${encodeURIComponent(sessionId)}`, label: 'К игре' }} />
       <main class="wrap content bar">
         <h1 class="page-title display" aria-live="polite">
-          {!tab ? 'Счёт стола' : s.pending ? 'Ждём подтверждения оплаты' : s.open ? 'Оплата счёта' : tried ? 'Счёт стола оплачен' : 'Счёт стола пуст'}
+          {familyText(!tab ? 'Счёт стола' : s.pending ? 'Ждём подтверждения оплаты' : s.open ? 'Оплата счёта' : tried ? 'Счёт стола оплачен' : 'Счёт стола пуст', resource)}
         </h1>
         <ErrorNote error={error} />
         {tab && s.pending ? (
@@ -723,6 +735,7 @@ export function TabPaid({ sessionId }) {
             sessionId={sessionId}
             tab={tab}
             summary={s}
+            resource={resource}
             onPaid={() => {
               done.current = false;
               load();

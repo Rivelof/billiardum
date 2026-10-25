@@ -1,7 +1,9 @@
 // M5.8 «Падел-корт»: слова по виду ресурса, варианты слотов, ориентир цены корта, заглушка
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { optionLabel, tableName } from '../src/lib/words.js';
+import { optionLabel, startOptions, tableName } from '../src/lib/words.js';
+import { requestResource, requestSearch } from '../src/lib/reception.js';
+import { orderCta } from '../src/lib/bar.js';
 import { optionPrice, slotOptionPrice } from '../src/lib/prices.js';
 import { zonedMs } from '@billiardum/shared/booking';
 import { createBackend } from '../src/mock/backend.js';
@@ -60,4 +62,29 @@ test('заглушка: корт по QR — слоты без «Без лими
   const join = await b.handle('POST', `/api/sessions/${full.session_id}/join`, { code: 'TESTC00002' });
   assert.equal(join.status, 400);
   assert.equal(join.body.error, 'limit_exceeded');
+});
+
+test('заявка ресепшену (Д1): вид и номер — из ответа сервера, адреса или вкладки; в новой вкладке «Корт 2»', () => {
+  const court = { family: 'court', number: 2 };
+  assert.deepEqual(requestResource({ req: { resource_family: 'court', resource_number: 2 } }), court);
+  assert.deepEqual(requestResource({ req: { resource_type: 'padel_court', resource_number: 2 } }), court);
+  // сервер вид не несёт — читаем адрес заявки, которого нет во flow новой вкладки
+  assert.deepEqual(requestResource({ req: { status: 'waiting' }, search: '?f=court&n=2', flow: {} }), court);
+  assert.deepEqual(requestResource({ search: '?f=table&n=4' }), { family: 'table', number: 4 });
+  assert.deepEqual(requestResource({ flow: { family: 'court', number: 1 } }), { family: 'court', number: 1 });
+  assert.deepEqual(requestResource({}), { family: 'table', number: null });
+  // сервер важнее адреса; мусор в адресе отбрасывается
+  assert.deepEqual(requestResource({ req: { resource_family: 'table', resource_number: 5 }, search: '?f=court&n=2' }), { family: 'table', number: 5 });
+  assert.deepEqual(requestResource({ search: '?f=boat&n=-3' }), { family: 'table', number: null });
+  assert.equal(requestSearch(court), '?f=court&n=2');
+  assert.equal(requestSearch({ family: 'table' }), '?f=table');
+  assert.equal(requestSearch({}), '');
+});
+
+test('«в счёт корта» (Д2) и 1–4 слота корта (бонус)', () => {
+  assert.equal(orderCta('tab', '180 ₽', { family: 'court' }), 'Заказать за 180 ₽ в счёт корта');
+  assert.equal(orderCta('tab', '180 ₽'), 'Заказать за 180 ₽ в счёт стола');
+  assert.deepEqual(startOptions([90, 180, 270], 90), [90, 180, 270]);
+  assert.deepEqual(startOptions([90, 180, 270, 360, 450, 'unlimited', 60], 90), [90, 180, 270, 360], 'не больше 4 слотов, «без лимита» корту не нужен');
+  assert.deepEqual(startOptions([60, 120, 180, 'unlimited'], null), [60, 120, 180, 'unlimited'], 'у стола — как пришло');
 });

@@ -9,7 +9,7 @@ import { ModifierDialog, DiscountDialog, PackageGuestDialog, PayDialog, StopList
 import { api, streamClub } from '../lib/api.js';
 import { can } from '../lib/auth.js';
 import { session } from '../lib/store.js';
-import { DEFAULT_DISCOUNT_LIMIT, discountPercent, kktState, requestLine, saleTotals, tabLine, tabName } from '../lib/pos.js';
+import { DEFAULT_DISCOUNT_LIMIT, discountPercent, kktState, requestLine, saleTotals, tabLine, tabName, tabsTitle } from '../lib/pos.js';
 import { requestName } from '../lib/words.js';
 import { requestLength } from '../lib/court.js';
 import { currentOf } from '../lib/shift.js';
@@ -564,7 +564,7 @@ export function Pos({ ctx }) {
 function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
   const inCart = new Set(cart.lines.map((l) => l.key));
   if (!requests.length && !tabs.length) {
-    return <p class="hint">Заявок и открытых счетов нет. Когда гость выберет «Оплачу на ресепшене» или закажет бар «в счёт стола», он появится здесь.</p>;
+    return <p class="hint">Заявок и открытых счетов нет. Когда гость выберет «Оплачу на ресепшене» или закажет бар «в счёт стола» или «в счёт корта», он появится здесь.</p>;
   }
   return (
     <div class="tables">
@@ -599,7 +599,7 @@ function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
       ) : null}
       {tabs.length ? (
         <>
-          <h3 class="tables__title">Счета столов</h3>
+          <h3 class="tables__title">{tabsTitle(tabs)}</h3>
           <ul class="tiles tiles--tables">
             {tabs.map((t) => {
               const line = tabLine(t);
@@ -616,7 +616,7 @@ function TableTiles({ requests, tabs, cart, timeZone, onAdd }) {
                     </span>
                   </button>
                   <span class="visually-hidden" id={`pos-tab-${t.session_id}`}>
-                    {added ? 'Счёт стола уже в чеке' : 'Открытый счёт стола, добавить в чек'}
+                    {added ? `Счёт ${tabName(t, { case: 'gen', capital: false })} уже в чеке` : `Открытый счёт ${tabName(t, { case: 'gen', capital: false })}, добавить в чек`}
                   </span>
                 </li>
               );
