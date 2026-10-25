@@ -135,11 +135,12 @@ test('app_api по DATABASE_URL (рабочие данные): свой клуб
     const a = await countsByClub(app);
     t.diagnostic(`контекст A: ${JSON.stringify(Object.fromEntries(Object.entries(a).map(([k, v]) => [k, Array.isArray(v) ? v.length : v])))}`);
     for (const tbl of Object.keys(CLUB_TABLES)) assert.deepEqual(Object.keys(a[tbl]), [CLUB_A], tbl);
-    assert.equal(a.resources[CLUB_A], 8, '8 столов сида');
-    assert.equal(a.devices[CLUB_A], 8, '8 устройств сида');
+    // С M5.8 (сид 1300_padel.sql): 8 столов и 2 корта, у каждого контроллер.
+    assert.equal(a.resources[CLUB_A], 10, '10 ресурсов сида: столы 1–8 и 2 корта');
+    assert.equal(a.devices[CLUB_A], 10, '10 устройств сида');
     // Расшифровка ключей в базе невозможна: device_key_enc — шифртекст v1:.
     const { rows: keys } = await app.query("select count(*)::int as n from bl.devices where device_key_enc like 'v1:%'");
-    assert.equal(keys[0].n, 8);
+    assert.equal(keys[0].n, 10);
     const r = await attempt(app, "insert into bl.resources (club_id, type, number, title) values ($1, 'billiard_pool', 77, 'x')", [foreign]);
     t.diagnostic(`вставка с чужим club_id: ${r.code} ${r.message}`);
     assert.equal(r.ok, false);

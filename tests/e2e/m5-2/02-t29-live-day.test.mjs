@@ -544,7 +544,9 @@ test('T29: закрытие сегодняшних суток с подстав�
     // Агрегат = живой расчёт после набора (если после среза не было новых оплат и игр).
     const later = live ? (await db.query("select count(*)::int as n from bl.payments where club_id = $1 and confirmed_at > $2 and not is_test and status = 'succeeded'", [CLUB_A, live.at])).rows[0].n : -1;
     if (later === 0) assert.equal(Number(row.net_kopecks), tv(live.money, 'revenue'), 'агрегат = дашборд на лету');
-    assert.equal(Number(row.capacity_minutes), 8 * 24 * 60, 'ёмкость закрытых суток = 8 столов × 24 ч');
+    // С M5.8 в сиде ещё 2 корта (ёмкость — тоже ресурсы в работе): число ресурсов в работе × 24 ч.
+    const nRes = (await db.query('select count(*)::int as n from bl.resources where club_id = $1 and active', [CLUB_A])).rows[0].n;
+    assert.equal(Number(row.capacity_minutes), nRes * 24 * 60, `ёмкость закрытых суток = ${nRes} ресурсов × 24 ч`);
     t.diagnostic(`агрегат ${S.today} с часами ${fakeClose.toISOString()}: выручка ${row.net_kopecks}, игр ${row.games}, минут ${row.play_minutes}, ёмкость ${row.capacity_minutes}; сводка: ${sum.revenue.net_kopecks}, ${sum.play.sessions}, ${sum.play.minutes}`);
   } finally {
     await app.query('rollback');

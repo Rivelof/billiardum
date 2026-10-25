@@ -1,27 +1,31 @@
-// Критерий 1: симулятор показывает 8 столов онлайн в логе сервера:
-// строка devices_online 8/8 и cmd_ack ok на ping от каждого из 8 устройств.
+// Критерий 1: симулятор показывает все устройства сида онлайн в логе сервера:
+// строка devices_online N/N и cmd_ack ok на ping от каждого из N устройств.
+// С M5.8 (сид 1300_padel.sql) N = 10: столы 1–8 и 2 корта (в devices.json — table_number 101, 102).
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { adminClient, containerLog, loadDevices, SERVER_CONTAINER, SIM_CONTAINER } from './helpers.mjs';
 
 const devices = loadDevices();
+/** Устройства сида: столы 1–8 и корты M5.8 (101, 102). */
+const SEED_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 101, 102];
+const N = SEED_NUMBERS.length;
 
-test('devices.json: 8 устройств сида, столы 1–8, у каждого свой ключ', () => {
-  assert.equal(devices.length, 8);
+test(`devices.json: ${N} устройств сида (столы 1–8, корты 101–102), у каждого свой ключ`, () => {
+  assert.equal(devices.length, N);
   assert.deepEqual(
     devices.map((d) => d.table_number),
-    [1, 2, 3, 4, 5, 6, 7, 8],
+    SEED_NUMBERS,
   );
   for (const d of devices) {
     assert.equal(d.mqtt_username, d.device_id);
     assert.equal(Buffer.from(d.device_key, 'base64').length, 32);
   }
-  assert.equal(new Set(devices.map((d) => d.device_key)).size, 8, 'ключи устройств разные');
-  assert.equal(new Set(devices.map((d) => d.mqtt_password)).size, 8, 'пароли MQTT разные');
+  assert.equal(new Set(devices.map((d) => d.device_key)).size, N, 'ключи устройств разные');
+  assert.equal(new Set(devices.map((d) => d.mqtt_password)).size, N, 'пароли MQTT разные');
 });
 
-test('лог сервера: devices_online 8/8 (свежая строка, total = число устройств в базе)', async (t) => {
+test(`лог сервера: devices_online ${N}/${N} (свежая строка, total = число устройств в базе)`, async (t) => {
   const db = await adminClient();
   let dbTotal;
   try {
@@ -31,19 +35,19 @@ test('лог сервера: devices_online 8/8 (свежая строка, tota
   }
   const lines = containerLog(SERVER_CONTAINER).filter((l) => l.msg === 'devices_online');
   assert.ok(lines.length > 0, 'нет строк devices_online');
-  const reached = lines.find((l) => l.online === 8 && l.total === 8);
+  const reached = lines.find((l) => l.online === N && l.total === N);
   const last = lines.at(-1);
-  t.diagnostic(`первая 8/8: ${JSON.stringify(reached)}`);
+  t.diagnostic(`первая ${N}/${N}: ${JSON.stringify(reached)}`);
   t.diagnostic(`последняя: ${JSON.stringify(last)}; устройств в bl.devices: ${dbTotal}`);
-  assert.ok(reached, 'в логе нет devices_online 8/8');
-  assert.equal(dbTotal, 8);
-  assert.equal(last.online, 8);
+  assert.ok(reached, `в логе нет devices_online ${N}/${N}`);
+  assert.equal(dbTotal, N);
+  assert.equal(last.online, N);
   assert.equal(last.total, dbTotal);
   // Сервер повторяет строку раз в 60 с — последняя не старше 70 с.
   assert.ok(Date.now() - Date.parse(last.t) < 70_000, `последняя devices_online старая: ${last.t}`);
 });
 
-test('лог сервера: cmd_ack ok для ping от всех 8 устройств', (t) => {
+test(`лог сервера: cmd_ack ok для ping от всех ${N} устройств`, (t) => {
   const acks = containerLog(SERVER_CONTAINER).filter((l) => l.msg === 'cmd_ack');
   const okPing = acks.filter((l) => l.ok === true && l.type === 'ping');
   const bad = acks.filter((l) => l.ok !== true);
@@ -58,7 +62,7 @@ test('лог сервера: cmd_ack ok для ping от всех 8 устрой
   assert.equal(bad.length, 0, `cmd_ack с ошибкой: ${JSON.stringify(bad)}`);
 });
 
-test('лог симулятора: 8 столов подключены, ping исполнен у каждого', (t) => {
+test(`лог симулятора: ${N} устройств подключены, ping исполнен у каждого`, (t) => {
   const lines = containerLog(SIM_CONTAINER);
   const start = lines.filter((l) => l.msg === 'sim_start').at(-1);
   t.diagnostic(`sim_start: ${JSON.stringify(start)}`);

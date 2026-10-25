@@ -108,7 +108,7 @@ test('живая команда: подписана ключом из devices.js
     () => observer.messages.find((m, i) => i >= mark && m.topic === topic(D8.club_id, D8.device_id, 'ack') && m.payload.includes(cmd8.id)),
     { timeoutMs: 20_000, what: 'ack стола 8' },
   );
-  const recovered = await waitAllOnline(since, 8, { timeoutMs: 75_000 });
+  const recovered = await waitAllOnline(since, devices.length, { timeoutMs: 75_000 }); // с M5.8 — 10 (столы и корты)
   await sleep(3500); // повторы без ack (3 с) успели бы прийти
 
   const window = observer.messages.slice(mark).filter((m) => m.topic.endsWith('/cmd'));
