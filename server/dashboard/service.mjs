@@ -489,6 +489,30 @@ export async function collect(db, clubs, { fromDay, toDay, now, kind, enter, wan
  * @param {{ clubs: object[], enter: (club) => Promise<void>, q: ReturnType<typeof parseQuery>, now: Date, all: boolean }} args
  *   enter(club) — выставить контекст клуба в транзакции (RLS) перед его запросами
  */
+/**
+ * Таблица «Столы» вкладки «Зал» и CSV tables: все ресурсы клуба в работе (столы и корты, с нулями — даже без ёмкости,
+ * игр и выручки за период), выведенные из работы — только если в периоде что-то было. Столы раньше кортов, затем по
+ * номеру; у строки family и текущие номер, название и вид. Один источник для экрана и экспорта.
+ * @returns {Promise<object[]>} строки агрегата ресурса (club_id, resource_id, number, title, type, family, games, …)
+ */
+export async function tableRows(db, { clubs, enter, agg, kind }) {
+  const activeRes = new Map();
+  for (const c of clubs) {
+    await enter(c);
+    const { rows: act } = await db.query('select id, number, title, type from bl.resources where club_id = $1 and active', [c.id]);
+    for (const r of act) activeRes.set(`${c.id}|${r.id}`, { club_id: c.id, resource_id: r.id, number: r.number, title: r.title, type: r.type });
+  }
+  const zeroRes = { games: 0, play_minutes: 0, service_minutes: 0, booking_minutes: 0, capacity_minutes: 0, revenue_kopecks: 0, refunds_kopecks: 0, days_in_operation: 0 };
+  const byRes = new Map([...agg.resources].filter(([key, r]) => activeRes.has(key) || r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0));
+  // Номер, название и вид — текущие (стол могли переименовать после агрегата).
+  for (const [key, r] of activeRes) byRes.set(key, { ...zeroRes, ...byRes.get(key), ...r });
+  const famRank = (type) => (familyOf(type) === 'table' ? 0 : 1);
+  return [...byRes.values()]
+    .filter((r) => matchKind(r.type, kind))
+    .map((r) => ({ ...r, family: familyOf(r.type) }))
+    .sort((x, y) => (x.club_id !== y.club_id ? (x.club_id < y.club_id ? -1 : 1) : famRank(x.type) - famRank(y.type) || x.number - y.number));
+}
+
 export async function buildDashboard(db, { clubs, enter, q, now, all }) {
   const { tab, kind } = q;
   const wantHourly = tab === 'hall';
@@ -579,16 +603,14 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
     // Таблица «Столы» (Н1 после M5.8): все ресурсы клуба в работе — с нулями, если за период не было
     // ёмкости, игр и выручки (например, «Сегодня» до открытия клуба), иначе с ними пропадали бы
     // часы с замены сукна и cloth_due (№198). Выведенные из работы — только если в периоде что-то было.
-    const activeRes = new Map();
     for (const c of clubs) {
       await enter(c);
       const f = await clubForecast(db, c, { now, kind });
       if (!all) out.series.forecast = f.forecast;
       out.hints.push(...f.hints.map((h) => (all ? { club_id: c.id, club_name: c.name, ...h } : h)));
       for (const row of await maintenanceCounters(db, c, { now, kinds: ['cloth'] })) cloth.set(row.resource_id, row.kinds.cloth);
-      const { rows: act } = await db.query('select id, number, title, type from bl.resources where club_id = $1 and active', [c.id]);
-      for (const r of act) activeRes.set(`${c.id}|${r.id}`, { club_id: c.id, resource_id: r.id, number: r.number, title: r.title, type: r.type });
     }
+    const resourceRows = await tableRows(db, { clubs, enter, agg: cur.agg, kind });
     out.series.ring = { capacity_minutes: m.capacity_minutes, played_minutes: m.play_minutes, service_minutes: m.service_minutes, unrealized_minutes: m.unrealized_minutes };
     const byDayType = new Map();
     for (const d of cur.agg.days) {
@@ -612,16 +634,7 @@ export async function buildDashboard(db, { clubs, enter, q, now, all }) {
       const x = cur.agg.types.get(t);
       return { type: t, family: familyOf(t), resources: x.resources.size, tables: x.resources.size, games: x.games, play_minutes: x.play_minutes, capacity_minutes: x.capacity_minutes, service_minutes: x.service_minutes, utilization_pct: pct(x.play_minutes, x.capacity_minutes), revenue_kopecks: x.revenue_kopecks - x.refunds_kopecks };
     });
-    const zeroRes = { games: 0, play_minutes: 0, service_minutes: 0, booking_minutes: 0, capacity_minutes: 0, revenue_kopecks: 0, refunds_kopecks: 0, days_in_operation: 0 };
-    const byRes = new Map([...cur.agg.resources].filter(([key, r]) => activeRes.has(key) || r.capacity_minutes > 0 || r.games > 0 || r.revenue_kopecks > 0));
-    for (const [key, r] of activeRes) {
-      // Номер, название и вид — текущие (стол могли переименовать после агрегата).
-      byRes.set(key, { ...zeroRes, ...byRes.get(key), ...r });
-    }
-    const famRank = (type) => (familyOf(type) === 'table' ? 0 : 1);
-    out.tables.by_resource = [...byRes.values()]
-      .filter((r) => matchKind(r.type, kind))
-      .sort((x, y) => (x.club_id !== y.club_id ? (x.club_id < y.club_id ? -1 : 1) : famRank(x.type) - famRank(y.type) || x.number - y.number))
+    out.tables.by_resource = resourceRows
       .map((r) => ({
         ...(all ? { club_id: r.club_id } : {}),
         resource_id: r.resource_id,

@@ -14,6 +14,8 @@
 import { formatDate, formatMoney, plural } from '@billiardum/shared/format';
 import { withContext as storeWithContext } from '../lib/store.mjs';
 import { send } from '../notify/index.mjs';
+import { computeDay } from '../dashboard/day.mjs';
+import { loadClub } from '../dashboard/store.mjs';
 import { manualActions, playStats, revenueOf, shiftPayments, shiftRefunds } from '../reports/queries.mjs';
 
 export const TICK_MS = 60_000;
@@ -44,7 +46,7 @@ export function shiftDate(date, days) {
 }
 
 /** Сводка за рабочие сутки day клуба из контекста транзакции. */
-export async function buildMorningSummary(db, { clubId, day, timezone, dayStartLocal = '06:00' }) {
+export async function buildMorningSummary(db, { clubId, day, timezone, dayStartLocal = '06:00', now = new Date() }) {
   const { rows } = await db.query(
     `select ($1::date + $2::time) at time zone $3 as from_at, ($1::date + 1 + $2::time) at time zone $3 as to_at`,
     [day, dayStartLocal, timezone],
@@ -55,7 +57,18 @@ export async function buildMorningSummary(db, { clubId, day, timezone, dayStartL
   const payments = await shiftPayments(db, { clubId, from, to });
   const refunds = await shiftRefunds(db, { clubId, from, to });
   const revenue = revenueOf(payments, refunds);
-  const play = await playStats(db, { clubId, from, to });
+  // Незаконченные сутки (свежая сводка «за сегодня» в сверке с дашбордом): идущая игра считается до «сейчас», а не до конца суток.
+  const play = await playStats(db, { clubId, from, to: new Date(Math.min(to.getTime(), Math.max(from.getTime(), now.getTime()))) });
+  // Загрузка суток — по формуле дашборда (№170, №187): ёмкость — ресурсы «в работе» в эти сутки (по созданию и журналу
+  // вывода: корт, которого ещё не было, не входит) в часы работы клуба; игра — фактические минуты суток. Сводка и дашборд
+  // не расходятся ни до копейки, ни до процента (приёмка M5.8, T29).
+  const club = await loadClub(db, clubId);
+  if (club) {
+    const { daily } = await computeDay(db, { club, day, now });
+    const cap = daily.totals.capacity_minutes;
+    play.utilization_percent = cap > 0 ? Math.round(((daily.totals.play_minutes / cap) * 100) * 10) / 10 : 0;
+    play.resources = Object.values(daily.resources).filter((r) => r.capacity_minutes > 0).length;
+  }
   const alarms = { critical: 0, important: 0, info: 0, total: 0 };
   const a = await db.query('select level, count(*)::int as n from bl.alarms where raised_at >= $1 and raised_at < $2 group by level', [from, toExclusive]);
   for (const r of a.rows) {
@@ -126,7 +139,7 @@ export async function tick({ pool, withContext = storeWithContext, clock, log })
         if ((await db.query('select bl.ctx_club_mode() as m')).rows[0].m === 'test') return false;
         const exists = await db.query("select 1 from bl.club_summaries where club_id = $1 and kind = 'morning' and day = $2", [c.club_id, day]);
         if (exists.rowCount > 0) return false;
-        const data = await buildMorningSummary(db, { clubId: c.club_id, day, timezone: c.timezone, dayStartLocal: c.day_start_local });
+        const data = await buildMorningSummary(db, { clubId: c.club_id, day, timezone: c.timezone, dayStartLocal: c.day_start_local, now });
         const ins = await db.query(
           `insert into bl.club_summaries (club_id, kind, day, data, sent_at) values ($1, 'morning', $2, $3::jsonb, $4)
            on conflict (club_id, kind, day) do nothing returning id`,

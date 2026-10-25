@@ -15,6 +15,7 @@
 // Все запросы — в транзакции с контекстом клуба (RLS отсекает чужое).
 
 import { familyOf, RESOURCE_TYPES } from '../lib/resource-kinds.mjs';
+import { operationIntervals } from '../lib/resource-operation.mjs';
 import { maskPhones } from '../notify/index.mjs';
 import { manualActions, revenueOf, shiftLateRefunds, shiftPayments, shiftRefunds } from '../reports/queries.mjs';
 import { dayBounds, localParts, openWindows, overlapMs, sliceByHour } from './time.mjs';
@@ -39,35 +40,13 @@ export const LIGHT_CMDS = ['session.start', 'session.resume', 'session.extend', 
 export const SLOW_ACK_MS = 10 * 60_000;
 const MINUTE = 60_000;
 const ITEMS_LIMIT = 200;
-const ACTIVATE = new Set(['resource.activate', 'manual.resource_add']);
-const DEACTIVATE = new Set(['resource.deactivate', 'manual.resource_remove']);
 const STAFF_ROLES = ['owner', 'manager', 'reception', 'bar', 'installer'];
 
 const min = (ms) => Math.round(ms / MINUTE);
 const zero = (keys) => Object.fromEntries(keys.map((k) => [k, 0]));
 const iso = (d) => (d ? new Date(d).toISOString() : null);
 
-/**
- * Интервалы «в работе» стола [{from, to}] (мс) с создания до horizon.
- * events — записи журнала стола по порядку (action, created_at).
- */
-export function operationIntervals(resource, events, horizon) {
-  const out = [];
-  const start = new Date(resource.created_at).getTime();
-  const list = events.filter((e) => ACTIVATE.has(e.action) || DEACTIVATE.has(e.action));
-  // Состояние до первого события — противоположное ему; без событий — текущее.
-  let active = list.length ? DEACTIVATE.has(list[0].action) : Boolean(resource.active);
-  let since = start;
-  for (const e of list) {
-    const t = Math.max(start, new Date(e.created_at).getTime());
-    const next = ACTIVATE.has(e.action);
-    if (active && !next && t > since) out.push({ from: since, to: t });
-    if (!active && next) since = t;
-    active = next;
-  }
-  if (active && horizon > since) out.push({ from: since, to: horizon });
-  return out;
-}
+export { operationIntervals };
 
 function intersect(a, b) {
   const out = [];

@@ -21,6 +21,7 @@
 //   взноса — обычный возврат (refunds.kind = 'refund'), отдельной строкой не выводится.
 
 import { familyOf, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
+import { capacityMs, operationIntervals, resourceEventsByResource } from '../lib/resource-operation.mjs';
 
 export const METHODS = ['cash', 'card_terminal', 'sbp', 'card'];
 
@@ -147,11 +148,19 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
       group by s.resource_id`,
     [clubId, from, to],
   );
-  const res = await db.query('select id, number, title, type, active from bl.resources where club_id = $1 order by bl.resource_family(type) desc, number', [clubId]);
+  const res = await db.query('select id, number, title, type, active, created_at from bl.resources where club_id = $1 order by bl.resource_family(type) desc, number', [clubId]);
+  const events = await resourceEventsByResource(db, clubId);
+  const fromMs = new Date(from).getTime();
+  const toMs = new Date(to).getTime();
+  // Ёмкость окна — ресурсы «в работе» в нём по создании и журналу вывода (№170, M5.8): корт, которого ещё не было в эти
+  // сутки или смену, в ёмкость не входит; в тех же формулах считает дашборд (server/dashboard/day.mjs).
   const byId = new Map(
     res.rows.map((r) => [
       r.id,
-      { resource_id: r.id, number: r.number, title: r.title ?? null, type: r.type, family: familyOf(r.type), sessions: 0, secs: 0, revenue_kopecks: 0, refunds_kopecks: 0, active: r.active },
+      {
+        resource_id: r.id, number: r.number, title: r.title ?? null, type: r.type, family: familyOf(r.type), sessions: 0, secs: 0, revenue_kopecks: 0, refunds_kopecks: 0, active: r.active,
+        capacity_ms: capacityMs(operationIntervals(r, events.get(r.id) ?? [], toMs), fromMs, toMs),
+      },
     ]),
   );
   let secs = 0;
@@ -167,28 +176,29 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
   }
   for (const p of payments) if (p.resource_id && byId.has(p.resource_id)) byId.get(p.resource_id).revenue_kopecks += p.counted_kopecks;
   for (const f of refunds) if (f.resource_id && byId.has(f.resource_id)) byId.get(f.resource_id).refunds_kopecks += f.amount_kopecks;
-  const active = res.rows.filter((r) => r.active).length;
+  const inOperation = [...byId.values()].filter((t) => t.capacity_ms > 0).length;
   const minutes = Math.round(secs / 60);
-  const shiftMinutes = Math.max(0, (new Date(to).getTime() - new Date(from).getTime()) / 60_000);
-  const capacity = active * shiftMinutes;
+  const shiftMinutes = Math.max(0, (toMs - fromMs) / 60_000);
+  const capacity = [...byId.values()].reduce((a, t) => a + t.capacity_ms / 60_000, 0);
   // Разрез по видам ресурсов (M5.8 T47): по типу (пирамида, пул, падел-корт…) и по семье (столы, корты).
   const group = (keyOf) => {
     const m = new Map();
     for (const t of byId.values()) {
       const k = keyOf(t);
-      const g = m.get(k) ?? { key: k, resources: 0, sessions: 0, secs: 0, revenue_kopecks: 0, refunds_kopecks: 0 };
-      if (t.active) g.resources += 1;
+      const g = m.get(k) ?? { key: k, resources: 0, sessions: 0, secs: 0, capacity_ms: 0, revenue_kopecks: 0, refunds_kopecks: 0 };
+      if (t.capacity_ms > 0) g.resources += 1;
       g.sessions += t.sessions;
       g.secs += t.secs;
+      g.capacity_ms += t.capacity_ms;
       g.revenue_kopecks += t.revenue_kopecks;
       g.refunds_kopecks += t.refunds_kopecks;
       m.set(k, g);
     }
     return [...m.values()]
       .filter((g) => g.resources > 0 || g.sessions > 0 || g.secs > 0 || g.revenue_kopecks > 0 || g.refunds_kopecks > 0)
-      .map(({ key, secs: gSecs, ...g }) => {
+      .map(({ key, secs: gSecs, capacity_ms: gCap, ...g }) => {
         const m2 = Math.round(gSecs / 60);
-        const cap = g.resources * shiftMinutes;
+        const cap = gCap / 60_000;
         return { key, ...g, minutes: m2, hours: Math.round((m2 / 60) * 10) / 10, utilization_percent: cap > 0 ? Math.round((gSecs / 60 / cap) * 1000) / 10 : 0 };
       });
   };
@@ -198,20 +208,21 @@ export async function playStats(db, { clubId, from, to, payments = [], refunds =
     sessions,
     minutes,
     hours: Math.round((minutes / 60) * 10) / 10,
-    resources: active,
+    resources: inOperation,
     shift_minutes: Math.round(shiftMinutes),
+    capacity_minutes: Math.round(capacity),
     utilization_percent: capacity > 0 ? Math.round((secs / 60 / capacity) * 1000) / 10 : 0,
     by_type: byType,
     by_family: byFamily,
     by_resource: [...byId.values()]
-      .filter((t) => t.active || t.sessions > 0 || t.secs > 0 || t.revenue_kopecks > 0 || t.refunds_kopecks > 0)
-      .map(({ secs: tSecs, active: _active, ...t }) => {
+      .filter((t) => t.active || t.capacity_ms > 0 || t.sessions > 0 || t.secs > 0 || t.revenue_kopecks > 0 || t.refunds_kopecks > 0)
+      .map(({ secs: tSecs, active: _active, capacity_ms: tCap, ...t }) => {
         const m = Math.round(tSecs / 60);
         return {
           ...t,
           minutes: m,
           hours: Math.round((m / 60) * 10) / 10,
-          utilization_percent: shiftMinutes > 0 ? Math.round((tSecs / 60 / shiftMinutes) * 1000) / 10 : 0,
+          utilization_percent: tCap > 0 ? Math.round((tSecs / 60 / (tCap / 60_000)) * 1000) / 10 : 0,
         };
       }),
   };
