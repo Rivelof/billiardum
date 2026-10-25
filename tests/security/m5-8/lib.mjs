@@ -1,7 +1,7 @@
 // Общий помощник PoC M5.8 (pentester). Только то, что доступно атакующему и тестовой обвязке:
 // HTTP API через Caddy (https://localhost:8443), управление эмулятором ЮKassa через `docker exec`
 // (как в tests/e2e/m1/helpers.mjs), состояние симулятора контроллера по HTTP (127.0.0.1:18080).
-// К базе стенда, .env и секретам не обращается. Телефоны гостей — +7999674xxxx.
+// К базе стенда, .env и секретам не обращается. Телефоны гостей — +7999676xxxx.
 
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
@@ -57,12 +57,12 @@ export async function ok(promise, expected = 200) {
   return r.json;
 }
 
-/** Телефоны +7999674NNNN: уникальны на прогон (минуты и счётчик). */
+/** Телефоны +7999676NNNN (заход 2; заход 1 — +7999674NNNN): уникальны на прогон (минуты и счётчик). */
 let seq = 0;
 export function phone() {
   seq += 1;
   const n = (Math.floor(Date.now() / 1000) % 9000) + seq;
-  return `+7999674${String(n % 10000).padStart(4, '0')}`;
+  return `+7999676${String(n % 10000).padStart(4, '0')}`;
 }
 
 /** Вход для разработки; гостю принимается согласие. → { token, user, phone } */

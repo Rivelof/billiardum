@@ -38,7 +38,7 @@ x = await put([tableRule, courtRule()]);
 r.check('столы + корт — 200, покрытие ok', x.status === 200 && x.json?.coverage?.ok === true && x.json?.slots?.padel_court === 90, `${x.status} slots=${JSON.stringify(x.json?.slots)}`);
 x = await put([tableRule, courtRule({ to: '23:00' })]);
 r.check('корт с дырой 23:00–06:00 — tariff_gap', x.status === 400 && x.json?.error === 'tariff_gap', `${x.status} ${x.json?.error}`);
-x = await put([tableRule, courtRule(), courtRule({ days: [1], price_per_slot_kopecks: 1 })]);
+x = await put([tableRule, courtRule(), courtRule({ days: [1], price_per_slot_kopecks: 100 })]);
 r.check('два правила корта на одну минуту — tariff_overlap', x.status === 400 && x.json?.error === 'tariff_overlap', `${x.status} ${x.json?.error}`);
 await put([tableRule, courtRule()]); // вернуть рабочий набор
 

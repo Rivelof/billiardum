@@ -106,9 +106,9 @@ const put = (token, rules, extra = {}) => api('PUT', `/api/networks/${NA}/tariff
   check(results, 'PATCH tariffs_mode=hard → 200', hard.status === 200, `status=${hard.status} ${hard.text.slice(0, 120)}`);
   const e = await api('GET', `/api/clubs/${clubEkb}/tariffs`, { token: A.token });
   check(results, 'жёсткий режим: переопределивший клуб возвращён к шаблону', e.json?.rules?.[0]?.price_per_hour_kopecks === 17000, `ekb=${e.json?.rules?.[0]?.price_per_hour_kopecks}`);
-  const direct = await api('PUT', `/api/clubs/${clubEkb}/tariffs`, { token: A.token, body: { rules: [rule(1)] } });
+  const direct = await api('PUT', `/api/clubs/${clubEkb}/tariffs`, { token: A.token, body: { rules: [rule(5000)] } });
   check(results, 'жёсткий режим: прямой PUT тарифов клуба → 409 network_locked', direct.status === 409 && direct.json?.error === 'network_locked', `status=${direct.status} ${direct.json?.error ?? ''}`);
-  const direct2 = await api('PUT', `/api/clubs/${clubKgd}/tariffs`, { token: A.token, body: { rules: [rule(1)] } });
+  const direct2 = await api('PUT', `/api/clubs/${clubKgd}/tariffs`, { token: A.token, body: { rules: [rule(5000)] } });
   check(results, 'жёсткий режим: прямой PUT во втором клубе → 409', direct2.status === 409, `status=${direct2.status}`);
   const e2 = await api('GET', `/api/clubs/${clubEkb}/tariffs`, { token: A.token });
   check(results, 'после отказов тариф клуба = шаблон', e2.json?.rules?.[0]?.price_per_hour_kopecks === 17000, `ekb=${e2.json?.rules?.[0]?.price_per_hour_kopecks}`);
@@ -116,7 +116,7 @@ const put = (token, rules, extra = {}) => api('PUT', `/api/networks/${NA}/tariff
 
 // 7. Чужой владелец не меняет шаблон и не читает его.
 {
-  const p = await api('PUT', `/api/networks/${NA}/tariffs`, { token: B.token, body: { rules: [rule(1)] } });
+  const p = await api('PUT', `/api/networks/${NA}/tariffs`, { token: B.token, body: { rules: [rule(5000)] } });
   const g = await api('GET', `/api/networks/${NA}/tariffs`, { token: B.token });
   const d = await api('DELETE', `/api/networks/${NA}/tariffs`, { token: B.token });
   check(results, 'чужой владелец: PUT/GET/DELETE шаблона тарифов → 404', p.status === 404 && g.status === 404 && d.status === 404, `${p.status}/${g.status}/${d.status}`);

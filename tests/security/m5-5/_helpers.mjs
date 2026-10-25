@@ -16,6 +16,12 @@ export function phone() {
   return `+7999673${String(1000 + ((BASE_N + seq) % 9000)).padStart(4, '0')}`;
 }
 
+/** Заход 2 (повторная проверка после bc51e24): телефон из диапазона +7999676xxxx. */
+export function phone2() {
+  seq += 1;
+  return `+7999676${String(1000 + ((BASE_N + seq * 7) % 9000)).padStart(4, '0')}`;
+}
+
 /** Вход для разработки с паузой на 429 (лимит 30/мин). → { token, user, phone } */
 export async function login(p, { tries = 6 } = {}) {
   for (let i = 0; ; i += 1) {

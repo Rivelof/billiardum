@@ -8,8 +8,8 @@
 //  * граница расписания внутри слота делит слот по минутам, дешевле «честной» цены не получить;
 //  * слот в окне одной цены = цене слота; 4 слота = 4 × цена; больше и дробные минуты — ошибка;
 //  * нет «дыры» между правилами, пояс клуба определяет тип дня (ночь с пятницы на субботу — пятничная);
-//  * находки: опоздание/ранний приход по брони (minimum=false при шаге = слот), копеечная цена слота
-//    округляется до 0 ₽.
+//  * находки Н-1/Н-2 (заход 1) и их исправление (заход 2): опоздание/ранний приход считаются с exact, а копеечный
+//    тариф останавливается выше движка.
 //
 // Запуск: node tests/security/m5-8/05-engine-pricing.mjs
 
@@ -116,28 +116,31 @@ const holey = fakeDb({ rules: [rule('only-day', { from: '06:00', to: '17:00', pe
 const noTariff = await price(holey, local(MON, 16, 30), 90).then(() => false, (e) => e.code === 'no_tariff');
 r.check('слот выходит за последнее правило — no_tariff (минуты без правила не бесплатны)', noTariff);
 
-// --- Находки -----------------------------------------------------------------------------------------
-// Н-1. Старт по брони корта: опоздавший гость. bookings/service.mjs:741 считает цену с прихода до конца
-// брони `amountFor(..., minutes: остаток, minimum: false)`. У правила слота шаг = слот, поэтому остаток
-// округляется ВВЕРХ до целого слота: 60 оставшихся минут стоят как 90 (решение №113: «цена только с прихода»).
+// --- Находки (заход 1) и их исправление (заход 2, bc51e24) ----------------------------------------------------
+// Н-1. Старт по брони корта: опоздавший гость и ранний приход. Движок без exact округляет остаток ВВЕРХ до слота
+// (шаг = минимум = слот) — это поведение движка осталось (обычный старт и продление — целыми слотами). Исправление
+// — в bookings/service.mjs: priceOf(..., exact = isSlotType) передаёт exact: минуты как есть. Здесь оба вызова.
 x = await price(db, local(MON, 10, 30), 60, false);
 const prorata = Math.round((60 * 240000) / 90);
-r.finding('опоздание: 60 оставшихся минут корта оплачиваются как целый слот', x.minutes === 90 && x.amount_kopecks === 240000, `оплачено ${x.minutes} мин за ${x.amount_kopecks / 100} ₽ вместо ${prorata / 100} ₽ по минутам`);
-// Ранний приход (bookings/service.mjs:739): extra за минуты до начала брони тоже округляется до слота.
-x = await price(db, local(MON, 9, 40), 20, false);
-r.finding('ранний приход за 20 минут до брони стоит как целый слот', x.minutes === 90 && x.amount_kopecks === 240000, `оплачено ${x.minutes} мин за ${x.amount_kopecks / 100} ₽ (20 мин по минутам ≈ ${Math.round((20 * 240000) / 90) / 100} ₽)`);
+r.check('движок без exact: 60 оставшихся минут корта = целый слот (обычное поведение движка, для брони не используется)', x.minutes === 90 && x.amount_kopecks === 240000, `${x.minutes} мин, ${x.amount_kopecks / 100} ₽`);
+x = await amountFor(db, { resourceId: RID, from: local(MON, 10, 30), minutes: 60, minimum: false, exact: true });
+r.check('Н-1 исправлено: опоздание на 30 минут из 90 — 60 минут по минутам = 1 600 ₽ (exact)', x.minutes === 60 && x.amount_kopecks === prorata, `${x.minutes} мин, ${x.amount_kopecks / 100} ₽ (ждали ${prorata / 100} ₽)`);
+x = await amountFor(db, { resourceId: RID, from: local(MON, 9, 40), minutes: 20, minimum: false, exact: true });
+r.check('Н-1 исправлено: ранний приход за 20 минут = 533 ₽ по минутам, не целый слот', x.minutes === 20 && x.amount_kopecks === Math.round((20 * 240000) / 90 / 100) * 100, `${x.minutes} мин, ${x.amount_kopecks / 100} ₽`);
 // Для сравнения — стол: тот же вызов даёт цену по минутам с шагом тарифа.
 const tableRules = [{ id: 't', resource_type: 'billiard_pool', resource_id: null, days: ALL, start_local: '06:00:00', end_local: '06:00:00', price_per_hour: 60000, step_minutes: 15, min_minutes: 30, priority: 0, active: true, created_at: '2026-10-01T00:00:00Z', slot_minutes: null, price_per_slot: null }];
 const tdb = fakeDb({ rules: tableRules, type: 'billiard_pool' });
 x = await price(tdb, local(MON, 10, 30), 60, false);
 r.check('контроль: стол, остаток 60 минут = 600 ₽ по минутам (шаг 15)', x.minutes === 60 && x.amount_kopecks === 60000, `${x.minutes} мин, ${x.amount_kopecks}`);
 
-// Н-2. Копеечная цена слота: принимается мастером (> 0, №163), но округление до рубля (№44) даёт 0 ₽.
+// Н-2. Копеечная цена слота: движок по-прежнему считает 0 ₽ (округление до рубля, №44), но мастер и шаблон сети
+// такой тариф больше не принимают (12-min-price-validation.mjs), а котировка и приём на ресепшене отклоняют 0 ₽
+// (13-zero-amount-legacy.test.mjs). Тут — только факт: защита стоит выше движка.
 const tiny = fakeDb({ rules: [rule('tiny', { from: '06:00', to: '06:00', perSlot: 49 })] });
 x = await price(tiny, local(MON, 10, 0), 90);
-r.finding('слот за 49 коп. после округления до рубля стоит 0 ₽ (бесплатная игра без ручного действия)', x.amount_kopecks === 0, `${x.amount_kopecks} коп.`);
+r.check('движок на старом тарифе 49 коп.: 0 ₽ (защита выше — мастер, котировка, ресепшн)', x.amount_kopecks === 0, `${x.amount_kopecks} коп.`);
 const tinyHourly = fakeDb({ rules: [{ ...tableRules[0], price_per_hour: 49 }], type: 'billiard_pool' });
 x = await price(tinyHourly, local(MON, 10, 0), 60);
-r.finding('то же у стола (49 коп. в час): общий дефект, не только корт', x.amount_kopecks === 0, `${x.amount_kopecks} коп.`);
+r.check('движок на старом тарифе стола 49 коп./ч: 0 ₽ (то же)', x.amount_kopecks === 0, `${x.amount_kopecks} коп.`);
 
 r.done();

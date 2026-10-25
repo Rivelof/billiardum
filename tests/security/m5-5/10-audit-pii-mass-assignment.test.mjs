@@ -96,7 +96,7 @@ const actions = (items) => items.map((i) => i.action);
   const cat3 = await api('GET', `/api/clubs/${club3}/catalog`, { token: A.token });
   const price = t3.json?.rules?.[0]?.price_per_hour_kopecks;
   const hasTea = (cat3.json?.products ?? []).some((p) => p.name === 'Чай' && p.price_kopecks === 15000);
-  const lock = await api('PUT', `/api/clubs/${club3}/tariffs`, { token: A.token, body: { rules: [rule(1)] } });
+  const lock = await api('PUT', `/api/clubs/${club3}/tariffs`, { token: A.token, body: { rules: [rule(5000)] } });
   check(results, 'клуб, добавленный в жёсткую сеть: тарифы клуба = шаблон сети сразу', add.status === 201 && price === 15000, `add=${add.status} price=${price} (шаблон 15000, свои были 5000)`);
   check(results, 'клуб, добавленный в жёсткую сеть: меню клуба = шаблон сразу', hasTea, `has Чай 150 ₽=${hasTea}`);
   check(results, 'клуб в жёсткой сети под замком (409)', lock.status === 409, `status=${lock.status}`);
