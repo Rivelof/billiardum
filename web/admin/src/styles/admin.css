@@ -57,6 +57,9 @@
  * иначе от него остаётся одна буква (Д2 M5.3).
  */
 @media (max-width: 639px) {
+  /* Название клуба не сжимается до нуля при длинном бейдже: минимум 6rem, дальше — многоточие (M5.6) */
+  .bar { grid-template-columns: minmax(6rem, 1fr) minmax(0, auto); }
+  .bar__tools { min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
   .bar__tools .badge, .bar__tools .bar__live { min-width: 0; white-space: normal; line-height: 1.25; }
   .shell--wide .bar { grid-template-areas: 'club tools' 'title title'; }
 }

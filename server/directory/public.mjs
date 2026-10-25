@@ -5,6 +5,7 @@
 // (сайт тоже кэширует 60 с, №131).
 
 import { DISCIPLINES, enterClub, fail, iso, RESOURCE_DISCIPLINE, safely } from './common.mjs';
+import { familyOf, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
 import { SLUG } from './slug.mjs';
 
 const SORTS = ['recommended', 'free', 'price', 'rating', 'name'];
@@ -23,7 +24,7 @@ export function createPublicService({ deps, log, clock }) {
   /** Столы клуба: план и статус без ПДн. Вызывается в контексте клуба. */
   async function liveTables(db, clubId) {
     const { rows: res } = await db.query(
-      `select id, number, type, title, plan_x, plan_y, plan_rotation from bl.resources where club_id = $1 and active order by number`,
+      `select id, number, type, title, plan_x, plan_y, plan_rotation from bl.resources where club_id = $1 and active order by bl.resource_family(type) desc, number`,
       [clubId],
     );
     const tables = [];
@@ -40,6 +41,9 @@ export function createPublicService({ deps, log, clock }) {
         number: r.number,
         title: r.title,
         discipline: RESOURCE_DISCIPLINE[r.type] ?? null,
+        // Вид ресурса (M5.8 T48): «Стол 3» или «Корт 1» на плане зала сайта.
+        kind: TYPE_TO_KIND[r.type] ?? null,
+        family: familyOf(r.type),
         plan: { x: r.plan_x, y: r.plan_y, rotation: r.plan_rotation },
         status,
         busy_until: status === 'busy' ? iso(st.busy_until) : null,
@@ -52,7 +56,7 @@ export function createPublicService({ deps, log, clock }) {
   async function clubPrices(db, clubId) {
     const { rows } = await db.query(
       `select r.resource_type, r.days, r.start_local::text as start_local, r.end_local::text as end_local, r.price_per_hour,
-              r.min_minutes
+              r.min_minutes, r.slot_minutes, r.price_per_slot
          from bl.tariff_rules r
         where r.club_id = $1 and r.active and r.resource_type is not null
           and exists (select 1 from bl.resources x where x.club_id = r.club_id and x.active and x.type = r.resource_type)
@@ -66,6 +70,8 @@ export function createPublicService({ deps, log, clock }) {
       to: hhmm(r.end_local),
       price_per_hour_kopecks: Number(r.price_per_hour),
       min_minutes: r.min_minutes,
+      // Корт (M5.8 №204): цена за слот; price_per_hour_kopecks у него справочная.
+      ...(r.slot_minutes === null ? {} : { slot_minutes: r.slot_minutes, price_per_slot_kopecks: Number(r.price_per_slot) }),
     }));
   }
 
@@ -80,10 +86,14 @@ export function createPublicService({ deps, log, clock }) {
       const tables = await liveTables(db, clubId);
       const { rows } = await db.query('select settings from bl.clubs where id = $1', [clubId]);
       const plan = rows[0]?.settings?.plan;
+      // Столы и корты (M5.8): free_now и total — как раньше по столам бильярда; корты — отдельно.
+      const isTable = (x) => x.family !== 'court';
       return {
         updated_at: iso(clock.now()),
-        free_now: tables.filter((x) => x.status === 'free').length,
-        total: tables.length,
+        free_now: tables.filter((x) => isTable(x) && x.status === 'free').length,
+        total: tables.filter(isTable).length,
+        courts_free_now: tables.filter((x) => !isTable(x) && x.status === 'free').length,
+        courts_total: tables.filter((x) => !isTable(x)).length,
         plan: plan && typeof plan === 'object' ? { width_cm: plan.width_cm ?? null, height_cm: plan.height_cm ?? null } : null,
         tables,
       };
@@ -114,12 +124,21 @@ export function createPublicService({ deps, log, clock }) {
     let live = null;
     let priceFrom = card.price_from_kopecks === null ? null : Number(card.price_from_kopecks);
     let disciplines = card.disciplines;
+    let courtPriceFrom = null;
+    let slotMinutes = null;
     if (onPlatform(card)) {
       live = await clubLiveStatus(db, { clubId: card.club_id });
       await enterClub(db, card.club_id);
       try {
         const prices = await clubPrices(db, card.club_id);
-        if (prices.length > 0) priceFrom = Math.min(...prices.map((p) => p.price_per_hour_kopecks));
+        // «Цена от» — за час стола; у кортов — своя «от» за слот (M5.8).
+        const hourly = prices.filter((p) => !p.slot_minutes);
+        const slots = prices.filter((p) => p.slot_minutes);
+        if (hourly.length > 0) priceFrom = Math.min(...hourly.map((p) => p.price_per_hour_kopecks));
+        if (slots.length > 0) {
+          courtPriceFrom = Math.min(...slots.map((p) => p.price_per_slot_kopecks));
+          slotMinutes = slots[0].slot_minutes;
+        }
         const ds = [...new Set(live.tables.map((x) => x.discipline).filter(Boolean))];
         if (ds.length > 0) disciplines = ds;
       } finally {
@@ -140,9 +159,14 @@ export function createPublicService({ deps, log, clock }) {
       hours_text: card.hours_text,
       around_the_clock: card.around_the_clock,
       disciplines,
+      // Столы и корты отдельно (M5.8): tables_count — столы бильярда, courts_count — падел-корты.
       tables_count: live ? live.total : card.tables_count,
+      courts_count: live ? live.courts_total : null,
       free_now: live ? live.free_now : null,
+      courts_free_now: live ? live.courts_free_now : null,
       price_from_kopecks: priceFrom,
+      court_price_from_kopecks: courtPriceFrom,
+      slot_minutes: slotMinutes,
       rating: rating ?? { avg: null, count: 0 },
     };
   }
@@ -178,7 +202,7 @@ export function createPublicService({ deps, log, clock }) {
     const f = {};
     if (q.disciplines !== undefined) {
       const list = String(q.disciplines).split(',').map((s) => s.trim()).filter(Boolean);
-      if (list.length > 3 || !list.every((d) => DISCIPLINES.includes(d))) fail('bad_request', 'disciplines');
+      if (list.length > DISCIPLINES.length || !list.every((d) => DISCIPLINES.includes(d))) fail('bad_request', 'disciplines');
       f.disciplines = [...new Set(list)].sort();
     }
     for (const k of ['free_now', 'online', 'around_the_clock']) {
@@ -215,7 +239,9 @@ export function createPublicService({ deps, log, clock }) {
       let items = [];
       for (const card of cards) items.push(await summary(db, card, ratings.get(card.id)));
       if (f.disciplines) items = items.filter((x) => f.disciplines.every((d) => x.disciplines.includes(d)));
-      if (f.free_now) items = items.filter((x) => (x.free_now ?? 0) > 0);
+      // «Свободно сейчас» с фильтром только «падел» — свободные корты, иначе — столы (M5.8).
+      const padelOnly = f.disciplines?.length > 0 && f.disciplines.every((d) => d === 'padel');
+      if (f.free_now) items = items.filter((x) => ((padelOnly ? x.courts_free_now : x.free_now) ?? 0) > 0);
       if (f.online) items = items.filter((x) => x.booking === 'online');
       if (f.around_the_clock) items = items.filter((x) => x.around_the_clock);
       if (f.price_max !== undefined) items = items.filter((x) => x.price_from_kopecks !== null && x.price_from_kopecks <= f.price_max);

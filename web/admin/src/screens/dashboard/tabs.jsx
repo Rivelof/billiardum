@@ -6,6 +6,7 @@ import { useMedia } from '../../components/hooks.js';
 import { DataTable } from '../../components/DataTable.jsx';
 import { TableDialog } from '../TableDialog.jsx';
 import { api } from '../../lib/api.js';
+import { can } from '../../lib/auth.js';
 import { BASE } from '../../lib/env.js';
 import { linkHandler } from '../../lib/router.js';
 import { METHOD_LABEL } from '../../lib/words.js';
@@ -31,7 +32,9 @@ import {
   TAB_TILES,
   tileViews,
 } from '../../lib/dashboard.js';
-import { ChartCard, Heatmap, Legend, Lines, Ring, Shares, StackedBars } from './charts.jsx';
+import { ChartCard, Legend, Lines, Ring, Shares, StackedBars } from './charts.jsx';
+import { HeatSection } from './forecast.jsx';
+import { clothView } from '../../lib/maintenance.js';
 
 const EMPTY_TEXT = 'За этот период игр не было. Цифры появятся после первой оплаченной игры.';
 const GUESTS = ['гость', 'гостя', 'гостей'];
@@ -538,28 +541,7 @@ export function HallTab({ view, now, busy, ctx }) {
       <MissingNote view={view} />
       <EmptyNote view={view} />
       <Tiles view={view} tab="hall" ctx={ctx} busy={busy} />
-      <div class="dsec--wide">
-        <ChartCard
-          id="heat"
-          title="Загрузка по дням недели и часам"
-          sub={matrix.peak ? `Пик — ${matrix.rows[matrix.peak.dow - 1].long}, ${String(matrix.peak.hour).padStart(2, '0')}:00: ${Math.round(matrix.peak.pct)} %` : 'Часы — от начала рабочих суток клуба'}
-          busy={busy}
-          empty={matrix.empty}
-          emptyText={EMPTY_TEXT}
-          onExport={ctx.exportTable ? () => ctx.exportTable('hourly') : null}
-          exporting={ctx.exporting === 'hourly'}
-          table={() => (
-            <DataTable
-              caption="Загрузка по дням недели и часам"
-              columns={[{ key: 'hour', label: 'Час', head: true, render: (r) => `${String(r.hour).padStart(2, '0')}:00` }, ...matrix.rows.map((row) => ({ key: `d${row.dow}`, label: row.label, num: true, render: (r) => (row.cells[r.ci].pct === null ? 'нет часов' : `${Math.round(row.cells[r.ci].pct)} %`) }))]}
-              rows={matrix.hours.map((hour, ci) => ({ hour, ci }))}
-              rowKey={(r) => r.hour}
-            />
-          )}
-        >
-          <Heatmap matrix={matrix} label="Тепловая карта загрузки: дни недели по строкам, часы по столбцам. Стрелками можно пройти по ячейкам; значения — в таблице «Показать таблицей»." />
-        </ChartCard>
-      </div>
+      <HeatSection view={view} ctx={ctx} busy={busy} emptyText={EMPTY_TEXT} />
       <ChartCard
         id="cap"
         title="Загрузка в часах"
@@ -637,7 +619,8 @@ export function HallTab({ view, now, busy, ctx }) {
               { key: 'play', label: 'Часы игры', num: true, sortValue: (r) => r.play_minutes, render: (r) => formatHours(r.play_minutes) },
               { key: 'revenue', label: 'Выручка', num: true, sortValue: (r) => r.revenue ?? 0, render: (r) => money(r.revenue) },
               { key: 'load', label: 'Загрузка', num: true, sortValue: (r) => r.load ?? -1, render: (r) => pctText(r.load) },
-              { key: 'cloth', label: 'С замены сукна', num: true, render: (r) => (Number.isFinite(r.cloth_hours) ? formatHours(r.cloth_hours * 60) : 'не отмечено') },
+              // M5.6 (№198): часы игры с последней замены сукна; порог достигнут — словом, не только цветом
+              { key: 'cloth', label: 'С замены сукна, ч', num: true, sortValue: (r) => r.cloth_hours ?? -1, render: (r) => <ClothCell r={r} /> },
             ]}
             rows={h.resources}
             rowKey={(r) => r.id}
@@ -645,9 +628,34 @@ export function HallTab({ view, now, busy, ctx }) {
         ) : (
           <p class="muted">Столов в работе пока нет.</p>
         )}
-        <p class="small muted">Замену сукна можно будет отметить в M5.6 — тогда здесь появятся часы с последней замены.</p>
+        {single && can.reportsView(ctx.role) ? (
+          <p class="small">
+            <a class="dlink" href={`${BASE}c/${encodeURIComponent(ctx.club.club_id)}/reports/maintenance`} onClick={linkHandler}>
+              <Icon name="wrench" />
+              Обслуживание столов: замены, счётчики и пороги
+            </a>
+          </p>
+        ) : null}
       </section>
     </div>
+  );
+}
+
+/** Часы с замены сукна (текущий счётчик, не за период): «1 629» и «порог 1 500» словом, если достигнут. */
+function ClothCell({ r }) {
+  const c = clothView(r);
+  if (!c) return <span class="muted">не отмечено</span>;
+  return (
+    <span class={c.due ? 'dcloth dcloth--reached' : 'dcloth'}>
+      {formatNumber(c.hours)}
+      {c.due ? (
+        <span class="dcloth__flag">
+          <Icon name="wrench" />
+          {c.threshold ? `порог ${formatNumber(c.threshold)}` : 'пора менять'}
+        </span>
+      ) : null}
+      <span class="dcloth__since">{c.since ? `с ${dayLong(c.since)}` : 'с начала учёта'}</span>
+    </span>
   );
 }
 

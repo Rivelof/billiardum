@@ -1,0 +1,41 @@
+/*
+ * M5.6 «Обслуживание столов» (чанк maintenance): счётчики часов с замены, полоса к порогу, история событий.
+ * Состояние счётчика — словом и значком, полоса только дублирует (DESIGN §2: статус не только цветом).
+ * Порог — янтарь лампы, а не красный шар: это не тревога (№198).
+ */
+
+.maint { display: grid; gap: 14px; }
+.maint .dsec { gap: 12px; }
+.maint__filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
+.maint__table { display: grid; gap: 4px; }
+.maint__flag { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-13); font-weight: 600; color: var(--ink); }
+.maint__flag .icon { width: 16px; height: 16px; color: var(--lamp); }
+.maint__kinds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.maint__kinds .seg__box { min-height: 48px; text-align: center; }
+.rtable tr.is-reached > th:first-child, .rtable tr.is-reached > td:first-child { box-shadow: inset 3px 0 0 var(--lamp); padding-left: 8px; }
+
+.mcount { display: grid; gap: 3px; min-width: 9rem; text-align: left; }
+.mcount__value { font-variant-numeric: tabular-nums; }
+.mcount__bar { display: block; height: 8px; border-radius: 4px; background: var(--card-2); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.mcount__fill { display: block; height: 100%; border-radius: 4px; background: var(--cloth); }
+.mcount--near .mcount__fill { background: var(--brass); }
+.mcount--reached .mcount__fill { background: var(--lamp); }
+.mcount__state { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-13); font-weight: 600; color: var(--ink-2); }
+.mcount--reached .mcount__state, .mcount--near .mcount__state { color: var(--ink); }
+.mcount__state .icon { width: 16px; height: 16px; color: var(--lamp); }
+.mcount--near .mcount__state .icon { color: var(--brass); }
+
+@media (min-width: 640px) {
+  .maint__filters { grid-template-columns: repeat(2, minmax(0, 16rem)); }
+  .maint__kinds { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (forced-colors: active) {
+  .mcount__fill { forced-color-adjust: none; background: Highlight; }
+}
+.maint__body { display: grid; gap: 14px; }
+.maint__ev { display: grid; gap: 2px; }
+.maint__struck { text-decoration: line-through; color: var(--ink-2); }
+.maint__state { font-size: var(--fs-13); color: var(--ink-2); }
+.maint__state--correction { color: var(--ink); font-weight: 600; }
+.maint .dlink--inline { display: inline; min-height: 0; }
+.rtable tr.is-muted > th, .rtable tr.is-muted > td { color: var(--ink-2); }

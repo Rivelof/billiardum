@@ -8,6 +8,7 @@ import { getSubscription } from '../../service.mjs';
 import { handlePlatformWebhook } from '../../webhook.mjs';
 import { loadBillingConfig } from '../../config.mjs';
 import { CLUB_A, CLUB_B, CLUB_SHOP, PHONES, PLAN_CLUB, PLATFORM_SHOP, setup } from './harness.mjs';
+import { deactivateSeedCourts } from '../../../../supabase/tests/helpers.mjs';
 
 let h;
 const MIN = 60_000;
@@ -16,6 +17,8 @@ const EMAIL_A = 'owner-a@club.test';
 
 before(async () => {
   h = await setup();
+  // Счёт — «столы в работе × цена» клуба сида на 8 столах; корты сида (M5.8) вне работы.
+  await deactivateSeedCourts(h.admin);
 });
 after(async () => {
   await h?.stop();

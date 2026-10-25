@@ -158,6 +158,9 @@ begin
   return new;
 end
 $$;
+-- Владелец — bl_owner, как у таблиц и прочих защитных триггеров (payments_guard, orders_guard).
+alter function bl.club_members_network_guard() owner to bl_owner;
+revoke all on function bl.club_members_network_guard() from public;
 create trigger club_members_network_guard before insert or update on bl.club_members
   for each row execute function bl.club_members_network_guard();
 

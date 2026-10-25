@@ -249,3 +249,12 @@ UTF-8 с BOM, `;`, строки CRLF, даты ДД.ММ.ГГГГ, время Ч
 ```
 DATABASE_ADMIN_URL=postgres://… node --test --test-concurrency=1 server/dashboard/test/db/*.test.mjs
 ```
+
+## M5.8: разрез по видам ресурсов (T47)
+
+- `kind` дашборда и экспорта — тип ресурса (`billiard_pyramid`, `billiard_pool`, `billiard_snooker`, `billiard_mixed`, `padel_court`)
+  или семья: `table` — все столы, `court` — корты (`matchKind`). `by_type` вкладки зала и `now` — все типы, в том числе `padel_court`.
+- Отчёт смены (`reports/queries.mjs playStats`): `play.by_type` (`{type, kind, family, resources, sessions, minutes, hours, revenue_kopecks,
+  refunds_kopecks, utilization_percent}`) и `play.by_family` (то же по `table`/`court`); у `by_resource` — `type`, `family`. Сумма видов =
+  итог. В тексте владельцу при столах и кортах — строка «Столы — X ч, загрузка Y %, N ₽; корты — …».
+- CSV: подпись типа «Падел-корт».

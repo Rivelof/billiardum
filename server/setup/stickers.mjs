@@ -31,9 +31,9 @@ export async function printStickers(db, { clubId, userId, publicHost, resources,
   const club = (await db.query('select name from bl.clubs where id = $1', [clubId])).rows[0];
   if (!club) throw new HttpError(404, 'not_found');
   const { rows } = await db.query(
-    `select id, number, code from bl.resources
+    `select id, number, code, type from bl.resources
       where club_id = $1 and active and code is not null and ($2::uuid[] is null or id = any($2::uuid[]))
-      order by number`,
+      order by bl.resource_family(type) desc, number`,
     [clubId, ids],
   );
   if (ids && rows.length !== ids.length) throw new HttpError(404, 'not_found', { detail: 'resources' });

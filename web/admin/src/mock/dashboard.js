@@ -13,6 +13,7 @@ import { addDays, eachDay, spanDays, weekday, workDate, comparePeriod } from '..
 import { toCsv, csvMoney, csvDate } from '../lib/export.js';
 import { KIND_LABEL } from '../lib/dashboard.js';
 import { ACTION_LABEL } from '../lib/audit.js';
+import { FORECAST_MIN_DAYS, FORECAST_WEEKS, median, medianForecast } from '../lib/forecast.js';
 
 const MIN = 60_000;
 const DAY_START = '06:00';
@@ -73,7 +74,8 @@ function hourPrice(dow, hour) {
 
 export function createDashboardMock({ now, scenario }) {
   const empty = scenario === 'dashboard-empty';
-  const historyDays = scenario === 'dashboard-year' ? 400 : 90;
+  // M5.6: forecast-empty — клуб работает 10 дней, истории для прогноза мало
+  const historyDays = scenario === 'dashboard-year' ? 400 : scenario === 'forecast-empty' ? 10 : 90;
   const tz = 'Asia/Yekaterinburg';
   const cache = new Map();
   const today = () => workDate(now(), tz, DAY_START);
@@ -394,6 +396,109 @@ export function createDashboardMock({ now, scenario }) {
     );
   }
 
+  /**
+   * M5.6 (№196–197, server/maintenance/README.md): прогноз — медиана загрузки ячейки «день недели × час» по закрытым
+   * суткам последних 8 недель (по вчера), меньше 14 суток — insufficient_data; подсказки — пороги сервера (HINTS).
+   */
+  function forecastOf(club, kind) {
+    const t = today();
+    const samples = [];
+    const days = [];
+    for (let i = 1; i <= FORECAST_WEEKS * 7; i += 1) {
+      const date = addDays(t, -i);
+      const d = day(club, date);
+      if (!d.open) continue;
+      const tbl = d.tables.filter((x) => !kind || x.kind === kind);
+      const hours = [];
+      for (let h = 0; h < 24; h += 1) {
+        const open = OPEN_HOURS.includes(h) && tbl.length > 0;
+        const play = tbl.reduce((s, x) => s + x.play[h], 0);
+        const cap = open ? tbl.length * 60 : 0;
+        hours.push({ play, cap, queue: d.queueOffered > 0 && h >= 20 && h < 23 });
+        samples.push({ dow: d.dow, hour: h, pct: cap ? Math.min(100, (play / cap) * 100) : null });
+      }
+      days.push({ date, dow: d.dow, week: Math.floor((i - 1) / 7), hours });
+    }
+    const weeks = Math.min(FORECAST_WEEKS, Math.ceil(days.length / 7));
+    const base = { label: 'прогноз', weeks: FORECAST_WEEKS, from: addDays(t, -FORECAST_WEEKS * 7), to: addDays(t, -1), history_days: days.length, history_weeks: weeks, min_days: FORECAST_MIN_DAYS, holiday_iso_day: 7, rows: [1, 2, 3, 4, 5, 6, 7], cols: Array.from({ length: 24 }, (_, i) => i) };
+    if (days.length < FORECAST_MIN_DAYS) return { forecast: { ...base, status: 'insufficient_data', enough: false, pct: null, samples: null, days_pct: null }, hints: [] };
+    const m = medianForecast(samples);
+    return { forecast: { ...base, status: 'ok', enough: true, pct: m.pct, samples: m.samples, days_pct: [1, 2, 3, 4, 5, 6, 7].map((d) => r1(median(days.filter((x) => x.dow === d).map((x) => (x.hours.reduce((a, y) => a + y.play, 0) / Math.max(1, x.hours.reduce((a, y) => a + y.cap, 0))) * 100)))) }, hints: mockHints(days, weeks) };
+  }
+
+  /** Подсказки по порогам сервера: будни < 20 % подряд ≥ 3 ч; день недели > 85 % или очередь в половине дней — ≥ 2 ч. */
+  function mockHints(days, weeks) {
+    const order = Array.from({ length: 24 }, (_, i) => (6 + i) % 24);
+    const load = (list, h) => {
+      const play = list.reduce((a, d) => a + d.hours[h].play, 0);
+      const cap = list.reduce((a, d) => a + d.hours[h].cap, 0);
+      return cap ? (play / cap) * 100 : null;
+    };
+    const runs = (test, min) => {
+      const out = [];
+      let cur = [];
+      for (const h of [...order, null]) {
+        if (h !== null && test(h)) cur.push(h);
+        else {
+          if (cur.length >= min) out.push(cur);
+          cur = [];
+        }
+      }
+      return out;
+    };
+    const span = (list, run) => {
+      const play = run.reduce((a, h) => a + list.reduce((x, d) => x + d.hours[h].play, 0), 0);
+      const cap = run.reduce((a, h) => a + list.reduce((x, d) => x + d.hours[h].cap, 0), 0);
+      return cap ? r1((play / cap) * 100) : null;
+    };
+    const hints = [];
+    const weekdays = days.filter((d) => d.dow <= 5);
+    for (const run of runs((h) => (load(weekdays, h) ?? 100) < 20, 3)) {
+      const pct = span(weekdays, run);
+      const from = run[0];
+      const to = (run.at(-1) + 1) % 24;
+      hints.push({ id: `lower_price:1-5:${from}-${to}`, type: 'lower_price', days: [1, 2, 3, 4, 5], from_hour: from, to_hour: to, hours: run.length, utilization_pct: pct, queue_days: null, sample_days: null, weeks, text: `В будни ${from}–${to} загрузка ${String(pct).replace('.', ',')} % за ${weeks} недель — подумайте о дневной цене` });
+    }
+    for (const dow of [5, 6]) {
+      const list = days.filter((d) => d.dow === dow);
+      const queueDays = (h) => list.filter((d) => d.hours[h].queue).length;
+      for (const run of runs((h) => (load(list, h) ?? 0) > 85 || queueDays(h) >= list.length / 2, 2)) {
+        const pct = span(list, run);
+        const from = run[0];
+        const to = (run.at(-1) + 1) % 24;
+        const q = Math.min(...run.map(queueDays));
+        const word = dow === 5 ? 'В пятницу' : 'В субботу';
+        hints.unshift({ id: `raise_price:${dow}:${from}-${to}`, type: 'raise_price', days: [dow], from_hour: from, to_hour: to, hours: run.length, utilization_pct: pct, queue_days: q, sample_days: list.length, weeks, text: q >= list.length / 2 ? `${word} ${from}–${to} очередь в ${q} из ${list.length} дней (загрузка ${String(pct).replace('.', ',')} %) — можно поднять цену` : `${word} ${from}–${to} загрузка ${String(pct).replace('.', ',')} % за ${weeks} недель — можно поднять цену` });
+      }
+    }
+    return hints.slice(0, 10);
+  }
+
+  /** GET …/forecast?date&kind — прогноз на сутки (форма server/maintenance/README.md). */
+  function forecastDayResponse(clubId, q, user) {
+    const clubs = clubsFor(clubId, user);
+    if (!clubs || clubId === 'all') return { status: clubs ? 400 : 404, body: { error: clubs ? 'bad_request' : 'not_found' } };
+    const date = q.get('date') || today();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Math.abs(spanDays(date, today())) > 367) return { status: 400, body: { error: 'bad_request' } };
+    const { forecast: f } = forecastOf(clubs[0], q.get('kind') || null);
+    const dow = weekday(date);
+    const hours = WORK_ORDER.map((h) => ({ hour: h, pct: f.pct ? f.pct[dow - 1][h] : null, samples: f.samples ? f.samples[dow - 1][h] : 0 }));
+    return { status: 200, body: { club_id: clubs[0].id, kind: q.get('kind') || null, date, iso_dow: dow, basis_dow: dow, holiday: null, label: 'прогноз', status: f.status, enough: f.enough, history_days: f.history_days, history_weeks: f.history_weeks, min_days: f.min_days, window: { from: f.from, to: f.to }, day_pct: f.days_pct ? f.days_pct[dow - 1] : null, hours, generated_at: new Date(now()).toISOString() } };
+  }
+
+  /** Часы игры стола клуба разработки с даты from (включительно) по сегодня — для счётчиков обслуживания (M5.6). */
+  function playMinutesSince(resourceId, from) {
+    let total = 0;
+    const t = today();
+    const start = from && from > addDays(t, -(historyDays - 1)) ? from : addDays(t, -(historyDays - 1));
+    if (empty) return 0;
+    for (const date of eachDay(start, t)) {
+      const x = day(CLUBS[0], date).tables.find((y) => y.id === resourceId);
+      total += x?.playTotal ?? 0;
+    }
+    return total;
+  }
+
   /** Ответ в форме сервера (server/dashboard/README.md, «Формы ответов»). */
   function response(clubId, q, user) {
     const clubs = clubsFor(clubId, user);
@@ -519,6 +624,15 @@ export function createDashboardMock({ now, scenario }) {
         play_minutes: rows.map((d) => cols.map((h) => at(d, h).play)),
         capacity_minutes: rows.map((d) => cols.map((h) => at(d, h).cap)),
       };
+      // M5.6: прогноз (у «всех клубов» — null) и подсказки по цене (у «всех клубов» — с club_id и club_name)
+      if (all) {
+        base.series.forecast = null;
+        base.hints = clubs.flatMap((c) => forecastOf(c, kind).hints.map((h) => ({ ...h, club_id: c.id, club_name: c.name })));
+      } else {
+        const fc = forecastOf(clubs[0], kind);
+        base.series.forecast = fc.forecast;
+        base.hints = fc.hints;
+      }
       base.series.ring = { capacity_minutes: cur.capacity, played_minutes: cur.play, service_minutes: cur.service, unrealized_minutes: Math.max(0, cur.capacity - cur.play - cur.service) };
       const kk = kind ? [kind] : kinds;
       base.series.utilization_daily = cur.per.map(({ row }) => ({ date: row.date, pct: row.capacity ? r1((row.play / row.capacity) * 100) : null, by_type: Object.fromEntries(kk.map((k) => [`billiard_${k}`, row.byKind[k]?.capacity ? r1((row.byKind[k].play / row.byKind[k].capacity) * 100) : null])) }));
@@ -702,7 +816,7 @@ export function createDashboardMock({ now, scenario }) {
   }
 
   /** Для отчётов M5.2 (истории, касса управляющего): день клуба разработки. */
-  return { response, nowResponse, exportCsv, setDiscrepancyShift, day: (date) => day(CLUBS[0], date), today, tz, empty };
+  return { response, nowResponse, exportCsv, forecastDayResponse, playMinutesSince, setDiscrepancyShift, day: (date) => day(CLUBS[0], date), today, tz, empty, historyDays };
 }
 
 export const DASHBOARD_CLUBS = CLUBS;

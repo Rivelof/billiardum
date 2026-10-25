@@ -8,6 +8,7 @@
 // * Отклонить — с кодом причины, журнал reception.decline, pending снимается.
 // * Экран ресепшена узнаёт о заявках по SSE: событие reception_request в канале club:{id}.
 
+import { familyOf } from '../lib/resource-kinds.mjs';
 import { afterCommit } from '../lib/store.mjs';
 import { enterClub, enterObjectClub, isUuid, requireIdempotencyKey, requireStaff, requireUser } from '../payments/context.mjs';
 import { MoneyError, checkNeighborResult, fromNeighbor } from '../payments/errors.mjs';
@@ -34,12 +35,15 @@ async function maskedPhone(db, userId) {
 }
 
 /** Заявка для экрана ресепшена (без телефона целиком). */
-function staffView(r, { resourceNumber, phoneMasked }) {
+function staffView(r, { resourceNumber, resourceType = null, phoneMasked }) {
   return {
     id: r.id,
     status: r.status,
     resource_id: r.resource_id,
     resource_number: resourceNumber,
+    // Вид ресурса (M5.8): «Стол 3» или «Корт 1» на экране ресепшена.
+    resource_type: resourceType,
+    resource_family: familyOf(resourceType),
     kind: r.kind,
     minutes: r.minutes,
     amount_kopecks: Number(r.amount_kopecks),
@@ -62,7 +66,7 @@ async function publish(db, deps, r, data) {
 }
 
 /** Создать заявку по котировке (из POST /api/quotes/{id}/pay, method reception). */
-export async function createReceptionRequest(db, deps, { quote, plan, settings, resourceNumber, userId, key, now }) {
+export async function createReceptionRequest(db, deps, { quote, plan, settings, resourceNumber, resourceType = null, userId, key, now }) {
   const expiresAt = new Date(now.getTime() + settings.reception_request_minutes * 60_000);
   if (quote.kind === 'start') {
     try {
@@ -79,7 +83,7 @@ export async function createReceptionRequest(db, deps, { quote, plan, settings, 
     [quote.club_id, quote.id, quote.resource_id, userId, quote.kind, quote.session_id, plan.minutes, plan.amount, key, expiresAt, now],
   );
   const r = rows[0];
-  await publish(db, deps, r, staffView(r, { resourceNumber, phoneMasked: await maskedPhone(db, userId) }));
+  await publish(db, deps, r, staffView(r, { resourceNumber, resourceType, phoneMasked: await maskedPhone(db, userId) }));
   deps.log?.info?.('reception_request_created', { request_id: r.id, club_id: r.club_id, amount_kopecks: plan.amount });
   return r;
 }
@@ -92,14 +96,14 @@ export async function listRequests(db, deps, info) {
   await requireStaff(db, info, clubId, STAFF_ROLES);
   const now = deps.clock.now();
   const { rows } = await db.query(
-    `select rr.*, r.number as resource_number
+    `select rr.*, r.number as resource_number, r.type as resource_type
        from bl.reception_requests rr join bl.resources r on r.id = rr.resource_id
       where rr.club_id = $1 and rr.status = 'waiting' and rr.expires_at > $2
       order by rr.created_at`,
     [clubId, now],
   );
   const out = [];
-  for (const r of rows) out.push(staffView(r, { resourceNumber: r.resource_number, phoneMasked: await maskedPhone(db, r.user_id) }));
+  for (const r of rows) out.push(staffView(r, { resourceNumber: r.resource_number, resourceType: r.resource_type, phoneMasked: await maskedPhone(db, r.user_id) }));
   return out;
 }
 
@@ -153,8 +157,9 @@ export async function acceptRequest(db, deps, info) {
   if (!shift) throw new MoneyError('shift_closed');
 
   const settings = await loadPaymentSettings(db, clubId);
-  const { rows: res } = await db.query('select number from bl.resources where id = $1', [r.resource_id]);
+  const { rows: res } = await db.query('select number, type from bl.resources where id = $1', [r.resource_id]);
   const number = res[0]?.number;
+  const resourceType = res[0]?.type ?? null;
   const { rows: pay } = await db.query(
     `insert into bl.payments (club_id, resource_id, user_id, quote_id, session_id, kind, provider, method, idempotence_key,
                               request_key, status, amount_kopecks, capture, minutes, unlimited, received_kopecks, change_kopecks,
@@ -175,7 +180,7 @@ export async function acceptRequest(db, deps, info) {
     channel: 'kkt',
     status: 'receipt_pending',
     amountKopecks: amount,
-    items: receiptItems({ resourceNumber: number, minutes: r.minutes, amountKopecks: amount, vatCode: settings.vat_code }),
+    items: receiptItems({ resourceNumber: number, resourceType, minutes: r.minutes, amountKopecks: amount, vatCode: settings.vat_code }),
     taxSystemCode: settings.tax_system_code,
     userId: r.user_id,
     now,

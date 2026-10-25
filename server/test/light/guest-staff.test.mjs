@@ -95,7 +95,7 @@ describe('гость и персонал', { skip: SKIP }, () => {
     receipt = await h.asUser(GUEST(3), (db) => svc.receipt(db, { sessionId: sid, userId: GUEST(3) }));
     assert.equal(receipt.receipt_status, 'succeeded');
     assert.deepEqual(list[0].club, { id: CLUB, timezone: 'Asia/Yekaterinburg' });
-    assert.deepEqual(list[0].resource, { id: RES(3), number: 3, type: 'billiard_pyramid', title: 'Стол 3' });
+    assert.deepEqual(list[0].resource, { id: RES(3), number: 3, type: 'billiard_pyramid', title: 'Стол 3', kind: 'pyramid', family: 'table', max_players: 20 });
     await h.asUser(GUEST(3), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(3) }));
   });
 
@@ -296,8 +296,11 @@ describe('гость и персонал', { skip: SKIP }, () => {
   it('зал: статусы столов, устройство и сессия; монтажнику — без сессий; гостю — forbidden', async () => {
     const sid = await start(1, GUEST(2), 60);
     const hall = await h.asUser(OWNER, (db) => svc.hall(db, { clubId: CLUB, userId: OWNER }), { clubId: CLUB });
-    assert.equal(hall.length, 8);
-    const t1 = hall.find((x) => x.resource.number === 1);
+    // 8 столов и 2 корта сида (M5.8): у каждого семья вида; столы раньше кортов, у кортов своя нумерация.
+    assert.equal(hall.length, 10);
+    assert.deepEqual(hall.filter((x) => x.resource.family === 'court').map((x) => [x.resource.number, x.resource.type]), [[1, 'padel_court'], [2, 'padel_court']]);
+    assert.deepEqual(hall.slice(0, 8).map((x) => x.resource.family), Array(8).fill('table'));
+    const t1 = hall.find((x) => x.resource.number === 1 && x.resource.family === 'table');
     assert.equal(t1.status, 'active');
     assert.equal(t1.session.id, sid);
     assert.equal(t1.device.online, true);

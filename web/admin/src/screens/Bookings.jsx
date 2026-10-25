@@ -151,13 +151,16 @@ export function Bookings({ ctx }) {
                           key={b.id}
                           class={`tl__bk tl__bk--${b.status}`}
                           style={{ left: `${p.left}%`, width: `${p.width}%` }}
-                          aria-label={`Стол ${row.resource.number}, ${fmtT(b.starts_at)}–${fmtT(b.ends_at)}, ${b.guest?.name ?? 'гость приложения'}, ${BOOKING_STAFF_WORD[b.status] ?? b.status}`}
                           onClick={() => setOpen(b)}
                         >
+                          {/* Имя кнопки — из содержимого: видимое время и гость плюс скрытые стол и статус (axe label-content-name-mismatch, WCAG 2.5.3) */}
+                          <span class="visually-hidden">Стол {row.resource.number}, </span>
                           <span class="tl__bk-time mono">
                             {fmtT(b.starts_at)}–{fmtT(b.ends_at)}
                           </span>
+                          <span class="visually-hidden">, </span>
                           <span class="tl__bk-who">{b.guest?.name ?? 'Приложение'}</span>
+                          <span class="visually-hidden">, {BOOKING_STAFF_WORD[b.status] ?? b.status}</span>
                         </button>
                       );
                     })}

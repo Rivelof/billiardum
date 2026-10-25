@@ -13,6 +13,9 @@ const CHUNKS = {
   // M5.3: экран «Подписка» владельца и «Клубы и подписки» платформы — свои чанки; плашка подписки — в каркасе
   billing: () => import('../screens/billing/Subscription.jsx'),
   platformBilling: () => import('../screens/billing/PlatformBilling.jsx'),
+  // M5.6: обслуживание столов (внутри «Отчётов»); M5.7: «API и вебхуки» владельца
+  maintenance: () => import('../screens/maintenance/Maintenance.jsx'),
+  clubapi: () => import('../screens/clubapi/ClubApi.jsx'),
 };
 const loaded = {};
 

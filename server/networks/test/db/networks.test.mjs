@@ -43,6 +43,7 @@ const audit = async (club, action) => (await t.admin.query('select * from bl.aud
 const inClub = (club, fn) => withContext(t.pool, { clubId: club, actorType: 'system' }, fn);
 const rulesOf = async (club) =>
   (await t.admin.query('select resource_type, days, start_local::text, end_local::text, price_per_hour from bl.tariff_rules where club_id = $1 and active order by resource_type, start_local', [club])).rows;
+const tableRules = async (club) => (await rulesOf(club)).filter((x) => x.resource_type !== 'padel_court');
 const product = async (club, name) => (await t.admin.query('select * from bl.products where club_id = $1 and name = $2', [club, name])).rows[0];
 const alarmsFor = async (club, action) =>
   (await t.admin.query("select * from bl.alarms where club_id = $1 and type = 'manual_action' and data->>'action' = $2", [club, action])).rows;
@@ -140,9 +141,14 @@ describe('сеть: создание и состав (№190)', { skip: SKIP }, 
 });
 
 describe('T41. Шаблон тарифов сети (№191)', { skip: SKIP }, () => {
-  const dayEvening = applyTemplate('day_evening', { day: 50000, evening: 70000 });
+  // Столы — день и вечер; корты (M5.8, в клубе сида A — 2 корта) — слот 90 минут за 3 000 ₽.
+  const courts = applyTemplate('single', { price: 300000 }, { kind: 'padel_court', slot_minutes: 90 });
+  const dayEvening = [...applyTemplate('day_evening', { day: 50000, evening: 70000 }), ...courts];
 
   it('в live без причины — reason_required; цена 0 — 400; дыра в неделе клуба — 400 tariff_gap {club_id}', async () => {
+    // Клубу с кортами шаблон без правил корта не подходит: корты не остаются без цены.
+    const noCourts = await api('PUT', `/api/networks/${net}/tariffs`, 'owner', { rules: applyTemplate('day_evening', { day: 50000, evening: 70000 }), reason: 'x' });
+    assert.deepEqual([noCourts.status, noCourts.json.error, noCourts.json.kind, noCourts.json.club_id], [400, 'tariff_gap', 'padel_court', CLUB_A], noCourts.text);
     const r = await api('PUT', `/api/networks/${net}/tariffs`, 'owner', { rules: dayEvening });
     assert.deepEqual([r.status, r.json], [400, { error: 'reason_required' }]);
     const zero = await api('PUT', `/api/networks/${net}/tariffs`, 'owner', { rules: applyTemplate('single', { price: 0 }), reason: 'x' });
@@ -171,10 +177,16 @@ describe('T41. Шаблон тарифов сети (№191)', { skip: SKIP }, (
     assert.equal(r.json.template, true);
     assert.deepEqual(r.json.clubs.map((c) => [c.club_id, c.override, c.applied_version, c.problem]).sort(), [[CLUB_A, false, 1, null], [CLUB_K, false, 1, null], [CLUB_T, false, 1, null]].sort());
     for (const club of [CLUB_A, CLUB_K, CLUB_T]) {
-      const rules = await rulesOf(club);
+      const rules = await tableRules(club);
       assert.ok(rules.length >= 2, club);
       assert.ok(rules.every((x) => [50000, 70000].includes(Number(x.price_per_hour))), club);
     }
+    // Правило корта — слотом: длина и цена слота дошли до клуба; в шаблоне — как в мастере.
+    const court = (await t.admin.query("select slot_minutes, price_per_slot from bl.tariff_rules where club_id = $1 and active and resource_type = 'padel_court'", [CLUB_A])).rows;
+    assert.deepEqual(court.map((x) => [x.slot_minutes, Number(x.price_per_slot)]), [[90, 300000]]);
+    const g = await api('GET', `/api/networks/${net}/tariffs`, 'owner');
+    const cr = g.json.rules.find((x) => x.kind === 'padel_court');
+    assert.deepEqual([cr.slot_minutes, cr.price_per_slot_kopecks, cr.price_per_hour_kopecks], [90, 300000, undefined]);
     // Один и тот же момент 2026-10-26 14:00 UTC (понедельник): в Екатеринбурге 19:00 — вечер, в Калининграде 16:00 — день.
     const at = new Date('2026-10-26T14:00:00Z');
     const a = await inClub(CLUB_A, (db) => amountFor(db, { resourceId: A_POOL, from: at, minutes: 60 }));
@@ -212,11 +224,11 @@ describe('T41. Шаблон тарифов сети (№191)', { skip: SKIP }, (
     const [m] = await audit(CLUB_K, 'manual.tariff_change');
     assert.equal(m.data.network_override, true);
     // Версия 2: A и T меняются, K — нет (журнал network.tariffs_template, applied: false).
-    const v2 = applyTemplate('day_evening', { day: 55000, evening: 75000 });
+    const v2 = [...applyTemplate('day_evening', { day: 55000, evening: 75000 }), ...courts];
     const p = await api('PUT', `/api/networks/${net}/tariffs`, 'owner', { rules: v2, reason: 'Индексация' });
     assert.equal(p.status, 200, p.text);
-    assert.ok((await rulesOf(CLUB_K)).every((x) => Number(x.price_per_hour) === 40000));
-    assert.ok((await rulesOf(CLUB_A)).every((x) => [55000, 75000].includes(Number(x.price_per_hour))));
+    assert.ok((await tableRules(CLUB_K)).every((x) => Number(x.price_per_hour) === 40000));
+    assert.ok((await tableRules(CLUB_A)).every((x) => [55000, 75000].includes(Number(x.price_per_hour))));
     const [skip] = await audit(CLUB_K, 'network.tariffs_template');
     assert.deepEqual([skip.data.applied, skip.data.version], [false, 2]);
     assert.equal((await audit(CLUB_K, 'manual.network_tariff_change')).length, 1, 'K затронут только версией 1');
@@ -224,7 +236,7 @@ describe('T41. Шаблон тарифов сети (№191)', { skip: SKIP }, (
     assert.equal((await api('POST', `/api/clubs/${CLUB_K}/network/reset`, 'owner', { scope: 'tariffs' })).status, 400);
     const reset = await api('POST', `/api/clubs/${CLUB_K}/network/reset`, 'owner', { scope: 'tariffs', reason: 'Вернуться к сети' });
     assert.equal(reset.status, 200, reset.text);
-    assert.ok((await rulesOf(CLUB_K)).every((x) => [55000, 75000].includes(Number(x.price_per_hour))));
+    assert.ok((await tableRules(CLUB_K)).every((x) => [55000, 75000].includes(Number(x.price_per_hour))));
     const last = (await audit(CLUB_K, 'manual.network_tariff_change')).at(-1);
     assert.deepEqual([last.reason, last.data.reset, last.data.version], ['Вернуться к сети', true, 2]);
     assert.equal((await api('GET', `/api/clubs/${CLUB_K}/network`, 'owner')).json.network.tariffs.override, false);
@@ -238,7 +250,7 @@ describe('T41. Шаблон тарифов сети (№191)', { skip: SKIP }, (
     const hard = await api('PATCH', `/api/networks/${net}`, 'owner', { tariffs_mode: 'hard', reason: 'Единые цены во всех клубах' });
     assert.equal(hard.status, 200, hard.text);
     assert.equal(hard.json.tariffs_mode, 'hard');
-    assert.ok((await rulesOf(CLUB_K)).every((x) => [55000, 75000].includes(Number(x.price_per_hour))));
+    assert.ok((await tableRules(CLUB_K)).every((x) => [55000, 75000].includes(Number(x.price_per_hour))));
     const [upd] = await audit(CLUB_A, 'network.updated');
     assert.deepEqual(upd.data.changes.tariffs_mode, ['soft', 'hard']);
     for (const who of ['owner', 'manager']) {
@@ -467,10 +479,19 @@ describe('T42. Вкладка «Сеть»: сравнение и рейтинг
       assert.deepEqual([row(CLUB_K).place_revenue_per_table, row(CLUB_A).place_revenue_per_table, row(CLUB_T).place_revenue_per_table], [1, 2, null]);
       assert.equal(r.json.ranking.utilization.length, 2);
       assert.equal(r.json.totals.tiles.find((x) => x.id === 'revenue').value, 160000);
-      // Совпадает с дашбордом клуба (те же агрегаты и сутки клуба).
-      const dash = await api('GET', `/api/clubs/${CLUB_K}/dashboard?${period}`, who);
-      assert.equal(dash.json.tiles.find((x) => x.id === 'revenue').value, tile(CLUB_K, 'revenue'));
-      assert.equal(dash.json.tiles.find((x) => x.id === 'utilization').value, tile(CLUB_K, 'utilization'));
+      // Совпадает с дашбордом клуба (те же агрегаты и сутки клуба): общее — без фильтра, загрузка и
+      // выручка со стола — как с kind=table (в A есть корты сида).
+      for (const club of [CLUB_A, CLUB_K]) {
+        const dash = await api('GET', `/api/clubs/${club}/dashboard?${period}`, who);
+        const dashT = await api('GET', `/api/clubs/${club}/dashboard?${period}&kind=table`, who);
+        assert.equal(dash.json.tiles.find((x) => x.id === 'revenue').value, tile(club, 'revenue'), club);
+        assert.equal(dashT.json.tiles.find((x) => x.id === 'utilization').value, tile(club, 'utilization'), club);
+        assert.equal(dashT.json.tiles.find((x) => x.id === 'revenue_per_table_day').value, tile(club, 'revenue_per_table_day'), club);
+      }
+      assert.equal(row(CLUB_A).tables_avg, 8, 'корты — не столы');
+      assert.equal(row(CLUB_A).courts.courts_avg, 2);
+      assert.equal(row(CLUB_A).courts.revenue_kopecks, 0);
+      assert.equal(row(CLUB_K).courts, null);
       assert.equal(row(CLUB_K).timezone, 'Europe/Kaliningrad');
     }
     assert.equal((await api('GET', `/api/networks/${net}/dashboard?from=2026-01-01&to=2027-12-31`, 'owner')).status, 400);

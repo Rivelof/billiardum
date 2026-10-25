@@ -15,6 +15,8 @@ export const REPORTS = [
   { key: 'arrivals', label: 'Приходы', title: 'История приходов' },
   { key: 'cashbook', label: 'Касса управляющего', title: 'Касса управляющего' },
   { key: 'players', label: 'Кто играл', title: 'Кто играл за столом' },
+  // M5.6 (№198): обслуживание столов — отдельный чанк (screens/maintenance)
+  { key: 'maintenance', label: 'Обслуживание столов', title: 'Обслуживание столов' },
 ];
 export const REPORT_KEYS = new Set([...REPORTS.map((r) => r.key), 'audit-sheet']);
 

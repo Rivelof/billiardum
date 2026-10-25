@@ -98,6 +98,13 @@ export function reportText(r) {
   if (v.refunds.total_kopecks > 0) lines.push(`Возвраты ${formatMoney(v.refunds.total_kopecks)}.`);
   if (v.late_returned?.total_kopecks > 0) lines.push(`Поздняя оплата возвращена: ${formatMoney(v.late_returned.total_kopecks)} (в выручку не входила).`);
   lines.push(`Игра ${String(r.play.hours).replace('.', ',')} ч, загрузка ${String(r.play.utilization_percent).replace('.', ',')} %.`);
+  // Клуб со столами и кортами (M5.8 T47): часы, загрузка и выручка по семьям ресурсов.
+  const fam = r.play.by_family ?? [];
+  if (fam.length > 1) {
+    const word = { table: 'столы', court: 'корты' };
+    const parts = fam.map((f) => `${word[f.family] ?? f.family} — ${String(f.hours).replace('.', ',')} ч, загрузка ${String(f.utilization_percent).replace('.', ',')} %, ${formatMoney(f.revenue_kopecks - f.refunds_kopecks)}`);
+    lines.push(`${parts.join('; ').replace(/^./, (c) => c.toUpperCase())}.`);
+  }
   const m = r.manual_actions.count;
   lines.push(m > 0 ? `Ручных действий: ${m}.` : 'Ручных действий нет.');
   const auto = r.manual_actions.automatic?.count ?? 0;

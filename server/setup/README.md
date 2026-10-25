@@ -81,3 +81,19 @@
 - `node --test "setup/test/*.test.mjs"` — шаблоны и неделя, BLD1, заводские коды и наклейки, боевой режим (`mode.test.mjs`, П-2).
 - `setup/test/db/setup.test.mjs` (`npm run test:db` в корне) — столы, live/test, приостановленный после live (П-2), тарифы и движок, цена 0 отвергается базой (1054, П-1), наклейки, приглашение, `.xlsx`.
 - `test/light/setup-bind.test.mjs` — привязка по QR, реестр (5 неверных → 30 минут), лимиты claim, №162: в проде (`NODE_ENV=production`) bind и claim — только устройства из `bl.device_factory` (миграция 1053), в разработке — и без реестра.
+
+## M5.8: падел-корт (№203–205)
+
+- Вид ресурса `padel_court` (в интерфейсе «корт»): `POST …/resources {number, kind: 'padel_court', …}`. Справочник видов —
+  `server/lib/resource-kinds.mjs` и `GET /api/resource-kinds` (без входа): `{kinds: [{kind, type, family, label, billing, max_players,
+  noun: {one, few, many, nom, gen, dat, acc, ins, pre}}], families, slot_minutes: [60, 90, 120], default_slot_minutes: 90}`.
+- У ресурса в ответах — `family` (`table` | `court`): слово интерфейса «стол»/«корт». Название по умолчанию — «Корт N».
+- Нумерация своя у семьи (миграция 1300): «Стол 1…8» и «Корт 1…2»; дубль номера внутри семьи — `409 duplicate`.
+  Стол ↔ корт (`kind` другой семьи) — `400 bad_request`. Списки — столы, затем корты, по номеру.
+- Тариф корта — по слотам: правило `{kind: 'padel_court', days, from, to, slot_minutes: 60|90|120, price_per_slot_kopecks}`;
+  `min_minutes = step_minutes = slot_minutes`, `price_per_hour_kopecks` правила слота — справочная (цена слота × 60 / слот).
+  Длина слота — одна на вид в клубе (настройка клуба в мастере тарифов): разные — `400 bad_request`. `kind: null` — только столы;
+  у корта свои правила, без них неделя не покрыта (`400 tariff_gap {kind: 'padel_court', …}`). В `live` смена слота или цены — как
+  любое изменение тарифа: `manual.tariff_change` с причиной и тревогой. `GET/PUT …/tariffs` → `slots: {padel_court: 90}`.
+  `GET /api/tariff-templates` → `slot: {options, default_minutes}`; `applyTemplate(id, prices, {kind: 'padel_court', slot_minutes})`.
+- Наклейки: на наклейке корта — «КОРТ», столы раньше кортов.

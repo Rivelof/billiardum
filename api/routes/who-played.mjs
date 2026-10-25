@@ -6,6 +6,7 @@
 //        игры; причина обязательна, журнал guest.lookup (без номера) и уведомление владельцу, как у ручного
 //        действия (152‑ФЗ, инвариант 8). Ресепшн и бар — 403.
 
+import { resourceName } from '../../server/lib/resource-kinds.mjs';
 import { ROLES } from '../router.mjs';
 import { HttpError } from '../../server/http/errors.mjs';
 import { manualReason } from '../../server/lib/manual.mjs';
@@ -90,7 +91,7 @@ async function sessionsOfResource(ctx, req) {
 async function guestPhone(ctx, req) {
   const reason = manualReason(req.body?.reason);
   const club = await loadClub(ctx.db, ctx.club);
-  const s = (await ctx.db.query('select s.id, s.resource_id, s.started_at, s.payer_user_id, r.number from bl.sessions s join bl.resources r on r.id = s.resource_id where s.id = $1 and s.club_id = $2', [req.params.id, ctx.club])).rows[0];
+  const s = (await ctx.db.query('select s.id, s.resource_id, s.started_at, s.payer_user_id, r.number, r.type from bl.sessions s join bl.resources r on r.id = s.resource_id where s.id = $1 and s.club_id = $2', [req.params.id, ctx.club])).rows[0];
   if (!s) throw new HttpError(404, 'not_found');
   const phone = s.payer_user_id ? (await ctx.db.query('select bl.guest_phone($1, $2) as phone', [s.id, s.payer_user_id])).rows[0].phone : null;
   if (!phone) throw new HttpError(404, 'not_found');
@@ -110,7 +111,7 @@ async function guestPhone(ctx, req) {
     resourceId: s.resource_id,
     data: { action: 'guest.lookup', reason, staff_id: req.user.id, session_id: s.id },
     dedupeKey: `guest.lookup:${s.id}`,
-    text: `Просмотрен телефон гостя: стол ${s.number}, игра ${formatDate(s.started_at, club.timezone)} ${formatTime(s.started_at, club.timezone)}. Причина: ${reason}`,
+    text: `Просмотрен телефон гостя: ${resourceName(s.type, s.number, { capital: false })}, игра ${formatDate(s.started_at, club.timezone)} ${formatTime(s.started_at, club.timezone)}. Причина: ${reason}`,
   });
   return { session_id: s.id, phone };
 }

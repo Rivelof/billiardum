@@ -44,7 +44,7 @@ export function ruDateTime(at, timeZone) {
   return { date: ruDate(p.date), time: `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}` };
 }
 
-export const TYPE_LABELS = { billiard_pyramid: 'Пирамида', billiard_pool: 'Пул', billiard_snooker: 'Снукер' };
+export const TYPE_LABELS = { billiard_pyramid: 'Пирамида', billiard_pool: 'Пул', billiard_snooker: 'Снукер', billiard_mixed: 'Смешанный', padel_court: 'Падел-корт' };
 
 export const ACTION_LABELS = {
   'service.start': 'Сервисный свет',

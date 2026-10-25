@@ -701,7 +701,11 @@ export function dashboardView(res) {
         return o;
       }),
       byKind: byType.map((x) => ({ kind: kindOfType(x.type), tables: num(x.tables) ?? 0, games: num(x.games), play_minutes: num(x.play_minutes) ?? 0, revenue: num(x.revenue_kopecks), load: num(x.utilization_pct) })),
-      resources: arr(t.by_resource).map((r) => ({ id: r.resource_id, number: r.number, title: r.title ?? null, kind: kindOfType(r.type), club: r.club_name ?? null, games: num(r.games), play_minutes: num(r.play_minutes) ?? (num(r.play_hours) ?? 0) * 60, revenue: num(r.revenue_kopecks), load: num(r.utilization_pct), cloth_hours: num(r.cloth_hours) })),
+      resources: arr(t.by_resource).map((r) => ({ id: r.resource_id, number: r.number, title: r.title ?? null, kind: kindOfType(r.type), club: r.club_name ?? null, games: num(r.games), play_minutes: num(r.play_minutes) ?? (num(r.play_hours) ?? 0) * 60, revenue: num(r.revenue_kopecks), load: num(r.utilization_pct), cloth_hours: num(r.cloth_hours), cloth_since: r.cloth_since ?? null, cloth_threshold_hours: num(r.cloth_threshold_hours), cloth_due: r.cloth_due === true })),
+      // M5.6 (server/maintenance/README.md): прогноз 7 × 24 рядом с тепловой картой и подсказки по цене;
+      // у «всех клубов» forecast: null, подсказки — с club_id и club_name
+      forecast: s.forecast && typeof s.forecast === 'object' ? s.forecast : null,
+      hints: arr(res?.hints ?? s.hints ?? t.hints),
     },
     guests: {
       new: num(g.new) ?? 0,

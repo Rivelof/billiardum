@@ -8,12 +8,15 @@ import { after, before, describe, it } from 'node:test';
 import { appendAudit } from '../../../lib/audit.mjs';
 import { currentShift } from '../../../shifts/api.mjs';
 import { CLUB_A, CLUB_B, GUEST, RECEPTION_A, setupKkt, TABLE_1, TABLE_2, waitFor } from './harness.mjs';
+import { deactivateSeedCourts } from '../../../../supabase/tests/helpers.mjs';
 
 let t;
 let reception;
 
 before(async () => {
   t = await setupKkt();
+  // Отчёт смены M2 — на 8 столах сида; разрез по видам с кортами — dashboard/test/db/padel.test.mjs.
+  await deactivateSeedCourts(t.admin);
   reception = await t.login('reception');
   const reg = await t.registerBridge();
   t.startBridge(reg.token);

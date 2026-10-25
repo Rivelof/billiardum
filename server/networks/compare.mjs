@@ -7,9 +7,17 @@
 // во вкладке нет (управляющий сети их не видит, №192). Клубы в тестовом режиме показываются, но в
 // рейтинг не входят (у них нет боевых денег и игр).
 //
+// Столы и корты (M5.8): выручка, игры, часы, гости, доля без персонала, средний чек бара — по клубу
+// целиком (как дашборд клуба без фильтра). Плитки, которые зависят от числа столов (загрузка, средний
+// чек игры, выручка со стола и на столо-день, средняя цена часа), — только по столам: как дашборд
+// клуба с kind=table (выручка столов / столо-дни). Корты — отдельным блоком courts (свои загрузка,
+// игры, часы, выручка кортов и на корто-день) или null, если кортов в периоде не было; в рейтинг
+// корты не входят.
+//
 // Видят владелец сети и управляющие сети; в каждый клуб сервер входит ctx.useClub (RLS по club_id).
 
 import { isLiveClub } from '../lib/club-mode.mjs';
+import { familyOf } from '../lib/resource-kinds.mjs';
 import { collect, metrics, parseQuery } from '../dashboard/service.mjs';
 import { loadClub } from '../dashboard/store.mjs';
 import { workingDayOf } from '../dashboard/time.mjs';
@@ -38,24 +46,55 @@ function deltaPct(value, prev) {
   return r1(((value - prev) / Math.abs(prev)) * 100);
 }
 
-/** Числа клуба (или итога сети) по свёртке периода. */
-function numbers(agg, guests, days) {
-  const m = metrics(agg);
-  const avgTables = days > 0 ? agg.t.table_days / days : 0;
+/**
+ * Числа клуба (или итога сети): общие — по свёртке без фильтра, зависящие от числа столов — по
+ * свёртке столов (kind table), корты — по свёртке кортов.
+ */
+function numbers({ agg, byKind }, guests) {
+  const all = metrics(agg);
+  const tbl = metrics(byKind.table, { kind: 'table' });
+  // Среднее число в работе — по суткам с данными (у клуба — его прошедшие сутки периода; у итога сети —
+  // сумма по клубам): будущие сутки периода не занижают число столов.
+  const avgOf = (a, family) => {
+    const perClub = new Map();
+    for (const d of a.days) perClub.set(d.club_id, (perClub.get(d.club_id) ?? 0) + 1);
+    let sum = 0;
+    for (const [clubId, n] of perClub) {
+      let units = 0;
+      for (const r of a.resources.values()) if (r.club_id === clubId && familyOf(r.type) === family) units += r.days_in_operation;
+      sum += units / n;
+    }
+    return sum;
+  };
+  const avgTables = avgOf(byKind.table, 'table');
+  const court = byKind.court;
+  const crt = metrics(court, { kind: 'court' });
+  const avgCourts = avgOf(court, 'court');
   return {
-    revenue: m.revenue,
-    games: m.games,
-    play_hours: m.play_hours,
-    utilization: m.utilization,
-    avg_check_game: m.avg_check_game,
-    avg_check_bar: m.avg_check_bar,
-    revenue_per_table_day: m.revenue_per_table_day,
-    // Выручка со стола за период: выручка / среднее число столов в работе.
-    revenue_per_table: avgTables > 0 ? Math.round(m.revenue / avgTables) : null,
-    avg_hour_price: m.avg_hour_price,
+    revenue: all.revenue,
+    games: all.games,
+    play_hours: all.play_hours,
+    utilization: tbl.utilization,
+    avg_check_game: tbl.avg_check_game,
+    avg_check_bar: all.avg_check_bar,
+    revenue_per_table_day: tbl.revenue_per_table_day,
+    // Выручка со стола за период: выручка столов / среднее число столов в работе.
+    revenue_per_table: avgTables > 0 ? Math.round(tbl.revenue / avgTables) : null,
+    avg_hour_price: tbl.avg_hour_price,
     guests: guests.total,
-    no_staff_share: m.no_staff_share,
+    no_staff_share: all.no_staff_share,
     tables_avg: r1(avgTables),
+    courts:
+      avgCourts > 0
+        ? {
+            courts_avg: r1(avgCourts),
+            games: crt.games,
+            play_hours: crt.play_hours,
+            utilization: crt.utilization,
+            revenue_kopecks: crt.revenue,
+            revenue_per_court_day_kopecks: crt.revenue_per_table_day,
+          }
+        : null,
   };
 }
 
@@ -105,20 +144,21 @@ export async function networkDashboard(ctx, networkId, query) {
   const enter = async (club) => {
     await enterNetworkClub(ctx, club.id);
   };
-  const cur = await collect(ctx.db, clubs, { fromDay: q.from, toDay: q.to, now, kind: null, enter, wantHourly: false, light: true });
-  const prev = q.compare ? await collect(ctx.db, clubs, { fromDay: q.prevFrom, toDay: q.prevTo, now, kind: null, enter, wantHourly: false, light: true }) : null;
+  const opts = { now, kind: null, enter, wantHourly: false, light: true, alsoKinds: ['table', 'court'] };
+  const cur = await collect(ctx.db, clubs, { ...opts, fromDay: q.from, toDay: q.to });
+  const prev = q.compare ? await collect(ctx.db, clubs, { ...opts, fromDay: q.prevFrom, toDay: q.prevTo }) : null;
   await ctx.useClub(null);
   const prevBy = new Map((prev?.perClub ?? []).map((p) => [p.club.id, p]));
-  const rows = cur.perClub.map(({ club, agg, guests, today: clubToday }) => {
+  const rows = cur.perClub.map(({ club, agg, byKind, guests, today: clubToday }) => {
     const p = prevBy.get(club.id);
-    const numbersNow = numbers(agg, guests, q.days);
-    const numbersPrev = p ? numbers(p.agg, p.guests, q.days) : null;
+    const numbersNow = numbers({ agg, byKind }, guests);
+    const numbersPrev = p ? numbers(p, p.guests) : null;
     return { club, today: clubToday, numbers: numbersNow, prev: numbersPrev, ranked: isLiveClub(club.mode, club.mode_before_suspend) };
   });
   const ranking = { utilization: rank(rows, 'utilization'), revenue_per_table: rank(rows, 'revenue_per_table_day') };
   const placeOf = (list, id) => list.find((x) => x.club_id === id)?.place ?? null;
-  const totalNow = numbers(cur.agg, cur.guests, q.days);
-  const totalPrev = prev ? numbers(prev.agg, prev.guests, q.days) : null;
+  const totalNow = numbers(cur, cur.guests);
+  const totalPrev = prev ? numbers(prev, prev.guests) : null;
   return {
     network: { id: n.id, name: n.name },
     role: access,
@@ -135,10 +175,11 @@ export async function networkDashboard(ctx, networkId, query) {
       ranked: r.ranked,
       tables_avg: r.numbers.tables_avg,
       tiles: tiles(r.numbers, r.prev),
+      courts: r.numbers.courts,
       place_utilization: placeOf(ranking.utilization, r.club.id),
       place_revenue_per_table: placeOf(ranking.revenue_per_table, r.club.id),
     })),
-    totals: { tables_avg: totalNow.tables_avg, tiles: tiles(totalNow, totalPrev) },
+    totals: { tables_avg: totalNow.tables_avg, tiles: tiles(totalNow, totalPrev), courts: totalNow.courts },
     ranking,
     missing_days: cur.agg.missing_days,
     generated_at: now.toISOString(),

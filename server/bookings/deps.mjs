@@ -28,6 +28,8 @@ const OPTIONAL = {
   light: ['getResourceStatus', 'availabilityDuring'],
   payments: ['pendingPlayUntil'],
   tournaments: ['tournamentHolds'],
+  // M5.8 №204: корт бронируется блоками слота; без функции — как стол.
+  tariffs: ['resourceBilling'],
 };
 
 const NEED = {

@@ -25,9 +25,9 @@ Postgres из образа `supabase/postgres` (decisions №11). Клиенты
 | `users` | пользователь платформы (гость и персонал), не привязан к клубу: `phone` (E.164, необязателен до «Поделиться контактом», уникален при наличии), `telegram_user_id`, `max_user_id`, `notify_channel`, `phone_verified_at`, `merged_into` (учётка мессенджера влита в учётку с тем же телефоном); `name` (0105), `channels_order` (0700) — порядок каналов уведомлений |
 | `clubs` | `name`, `city`, `timezone` (IANA, проверяется), `settings jsonb` |
 | `club_members` | `club_id`, `user_id`, `role` (`owner`, `manager`, `reception`, `installer`, `bar` — с 0107, №97), `pin_hash` (`scrypt$N$r$p$соль$хеш`), `pin_failed_count`, `pin_locked_until`, `pin_set_at`, `active` |
-| `resources` | стол: `type` (`billiard_pyramid`, `billiard_pool`, `billiard_snooker`), `number`, `title`, план зала `plan_x`, `plan_y` (центр стола в сантиметрах от левого верхнего угла зала), `plan_rotation` (градусы) |
+| `resources` | ресурс (стол или корт): `type` (`billiard_pyramid`, `billiard_pool`, `billiard_snooker`, `billiard_mixed` — 1050, `padel_court` — 1300), `number` (уникален в клубе внутри семьи вида `bl.resource_family(type)`: столы и корты нумеруются отдельно, 1300), `title`, план зала `plan_x`, `plan_y` (центр стола в сантиметрах от левого верхнего угла зала), `plan_rotation` (градусы) |
 | `devices` | `id` = device_id = логин MQTT, `resource_id` (уникально), `device_key_enc` (AES-256-GCM в приложении), `last_seq`, `fw`, `caps`, `last_seen_at` |
-| `tariff_rules` | `resource_type` или `resource_id`, `days` (ISO 1–7), `start_local`–`end_local` (местное время клуба; конец ≤ начала — через полночь), `price_per_hour` (копейки, строго > 0 — 1054, №163), `step_minutes`, `min_minutes`, `priority` |
+| `tariff_rules` | `resource_type` или `resource_id`, `days` (ISO 1–7), `start_local`–`end_local` (местное время клуба; конец ≤ начала — через полночь), `price_per_hour` (копейки, строго > 0 — 1054, №163), `step_minutes`, `min_minutes`, `priority`; правило слота (1300, M5.8) — `slot_minutes` (60, 90, 120) и `price_per_slot` (> 0), шаг и минимум равны слоту; у `padel_court` — только правила слота |
 | `audit_log` | журнал, см. ниже |
 | `schema_migrations` | учёт миграций (у `app_api` прав нет) |
 | `consents` (0100) | согласие на обработку ПДн: `user_id`, `version`, `accepted_at` |
@@ -346,3 +346,14 @@ alter event trigger bl_audit_guard_drop enable always;
 - `main_db` — только чтение и откатываемые попытки на рабочей базе из `DATABASE_ADMIN_URL` (если она уже мигрирована): все миграции применены, журнал неизменяем, роли Supabase не читают `bl`, цепочки целы.
 - `core_rls` (M1 core) — RLS включена и принудительна на всех таблицах core; пользователь видит свою строку, персонал не видит гостей; свои членства — только в личном контексте; токены, согласия, ключи идемпотентности, подписки — только свои; nonce — только платформе; outbox, уведомления, тревоги — по клубу; `auth_resolve` не отдаёт истёкший и отозванный токен и токен отозванного терминала; слияние учёток и `BL409`; маска телефона; `DELETE` у `app_api` только у `outbox`, `bot_link_nonces`, `idempotency_keys`.
 - Тесты сервера с базой — `npm run test:db -w @billiardum/server` (`server/test/db`), та же схема временных баз.
+
+## M5.8: падел-корт (`1300_padel_court.sql`, сид `seed.d/1300_padel.sql`)
+
+- `bl.resource_family(type)` — `court` для `padel_court`, иначе `table` (IMMUTABLE, без SECURITY DEFINER; EXECUTE — `app_api`).
+  Уникальность номера — индекс `resources_club_family_number_key (club_id, bl.resource_family(type), number)` вместо `(club_id, number)`.
+- `tariff_rules.slot_minutes`, `price_per_slot` и ограничения: слот 60/90/120 с ценой > 0 и `step_minutes = min_minutes = slot_minutes`;
+  у `padel_court` — только правила слота; почасовой шаг — 1…60, как раньше.
+- `club_public.disciplines` — и `padel`.
+- Сид: корты 1 и 2 клуба сида (`e1…101`, `e1…102`, коды `TESTC00001`, `TESTC00002`), контроллеры `d1…101`, `d1…102` (`SIM-0101/0102`,
+  в `devices.json` симулятора — `table_number` 101 и 102), тариф слотов 90 минут. Столы 1–8 и их устройства не менялись.
+  Тесты сценариев столов, которые считают ресурсы сида, выводят корты из работы (`deactivateSeedCourts` в `tests/helpers.mjs`).

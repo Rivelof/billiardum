@@ -143,3 +143,18 @@
 - `club_suspended` (409) — котировка `start` и депозит на ресепшене в приостановленном клубе (№160).
 - Сид разработки (`provision-dev.mjs`): магазин эмулятора — в обе пары; проверка `GET /v3/me` при этом не делается.
 - Клиент ЮKassa: `getMe()` — `GET /v3/me` (`account_id`, `test`, `fiscalization_enabled`).
+
+## M5.8: корт по слотам (№204)
+
+- Тариф слота (миграция 1300, `tariffs/engine.mjs`): правило с `slot_minutes`/`price_per_slot` — цена за слот, минимум и шаг — слот.
+  Общий путь с почасовым: минута стоит `price / unit` (`unit` — 60 у часа, длина слота у слота), сумма — одно округление (№44) с общим
+  знаменателем (НОК единиц). Граница расписания внутри слота делит слот по минутам (16:30–18:00 при смене цены в 17:00 — 30 минут
+  дневной и 60 вечерней). Разбивка: у отрезка слота — `price_per_slot_kopecks`, `slot_minutes` и справочный `price_per_hour_kopecks`.
+  `resourceBilling(db, {resourceId})` → `{type, billing: 'hourly'|'slot', slot_minutes}`; `amountFor` отдаёт `slot_minutes`.
+- `GET /api/t/{code}`: `resource` — `{…, kind, family, billing, slot_minutes, max_players}`; у корта `options` — `[слот, 2 слота, 3 слота]`,
+  без `unlimited`; `price_now`/`price_next` — с ценой слота.
+- `POST /api/quotes` на корт: `minutes` — 1…4 слота (`MAX_SLOTS`), и для `start`, и для `extend` (шаг продления — слот); иначе, а также
+  `minutes: null` («Без лимита») и `use_balance` — `400 bad_request`; у корта нет правил слота — `409 no_tariff`. Ответ — плюс
+  `slot_minutes` и `slots`. Порядок проверок: форма → клуб и гость → вид ресурса → минуты.
+- Чек 54-ФЗ: «Игра, корт 1, 1 ч 30 мин» (`itemDescription({resourceNumber, minutes, resourceType})`), предоплата брони — «Предоплата
+  брони, корт 1»; заявка ресепшена — `resource_type`, `resource_family`.

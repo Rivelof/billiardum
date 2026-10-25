@@ -167,10 +167,23 @@ export function compileRules(rows, resource, calendar) {
     const start = parseLocalTime(r.start_local);
     const end = parseLocalTime(r.end_local);
     const len = (end - start + DAY_MIN) % DAY_MIN || DAY_MIN;
-    const price = Number(r.price_per_hour);
-    if (!Number.isSafeInteger(price) || price < 0) throw new TariffError('bad_tariff', `цена правила ${r.id} не целые копейки`);
-    const step = Number(r.step_minutes ?? 1);
-    const min = Number(r.min_minutes ?? 0);
+    const hourly = Number(r.price_per_hour);
+    if (!Number.isSafeInteger(hourly) || hourly < 0) throw new TariffError('bad_tariff', `цена правила ${r.id} не целые копейки`);
+    // Правило слота (M5.8 №204): цена за слот slot_minutes минут; минимум и шаг — слот. Минута
+    // слота стоит price_per_slot / slot_minutes (общий путь с почасовым: цена за единицу unit минут).
+    const slot = r.slot_minutes === null || r.slot_minutes === undefined ? null : Number(r.slot_minutes);
+    let price = hourly;
+    let unit = 60;
+    let step = Number(r.step_minutes ?? 1);
+    let min = Number(r.min_minutes ?? 0);
+    if (slot !== null) {
+      price = Number(r.price_per_slot);
+      if (!Number.isInteger(slot) || slot < 1 || slot > DAY_MIN) throw new TariffError('bad_tariff', `слот правила ${r.id}`);
+      if (!Number.isSafeInteger(price) || price < 0) throw new TariffError('bad_tariff', `цена слота правила ${r.id} не целые копейки`);
+      unit = slot;
+      step = slot;
+      min = slot;
+    }
     if (!Number.isInteger(step) || step < 1) throw new TariffError('bad_tariff', `шаг правила ${r.id}`);
     if (!Number.isInteger(min) || min < 0) throw new TariffError('bad_tariff', `минимум правила ${r.id}`);
     out.push({
@@ -181,6 +194,9 @@ export function compileRules(rows, resource, calendar) {
       startOffset: (start - calendar.dayStart + DAY_MIN) % DAY_MIN,
       len,
       price,
+      unit,
+      hourly,
+      slot,
       step,
       min,
       specific,
@@ -217,12 +233,43 @@ export function ruleAt(rules, calendar, ms) {
 
 // Минуты и округление ---------------------------------------------------------------
 
-/** Округление дроби numerator/60 копеек до кратного rounding «половина вверх». */
-export function roundAmount(numerator, rounding) {
-  // numerator = Σ цена часа по минутам; сумма в копейках = numerator / 60.
-  const unit = 60 * rounding;
-  return Math.floor((numerator + unit / 2) / unit) * rounding;
+/**
+ * Округление дроби numerator/denominator копеек до кратного rounding «половина вверх».
+ * Почасовой тариф: numerator = Σ цена часа по минутам, denominator = 60. С правилами слота
+ * denominator — общее кратное длин единиц (60, 90, 120 → 360), см. unitsDenominator.
+ */
+export function roundAmount(numerator, rounding, denominator = 60) {
+  const unit = denominator * rounding;
+  return Math.floor((numerator * 2 + unit) / (2 * unit)) * rounding;
 }
+
+const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+
+/** Общий знаменатель цен правил за минуту: НОК единиц (60 у часа, длина слота у слота). */
+export function unitsDenominator(rules) {
+  let d = 60;
+  for (const r of rules) {
+    const u = r?.unit ?? 60;
+    d = (d / gcd(d, u)) * u;
+  }
+  return d;
+}
+
+/** Вес минуты правила в numerator при знаменателе den: цена единицы × (den / unit). */
+const minuteWeight = (r, den) => r.price * (den / (r.unit ?? 60));
+
+/** Цена правила в ответе: за час всегда, за слот — у правила слота. */
+function priceFields(r) {
+  const out = { price_per_hour_kopecks: r.hourly ?? r.price };
+  if (r.slot) {
+    out.price_per_slot_kopecks = r.price;
+    out.slot_minutes = r.slot;
+  }
+  return out;
+}
+
+/** Две минуты одной цены (для отрезков разбивки и смены цены на экране стола). */
+const samePrice = (a, b) => (a === null || b === null ? a === b : a.price === b.price && (a.unit ?? 60) === (b.unit ?? 60));
 
 function checkRounding(rounding) {
   if (!Number.isSafeInteger(rounding) || rounding < 1 || rounding > 100_000) {
@@ -293,28 +340,29 @@ export function amountForMinutes({ rules, calendar, from, minutes, rounding = 10
   const fromMs = toMs(from);
   if (!Number.isInteger(minutes) || minutes < 0) throw new TariffError('bad_tariff', 'минуты — целое ≥ 0');
   const perMinute = rulesForMinutes(rules, calendar, fromMs, minutes, { fill });
+  const den = unitsDenominator(rules);
   const breakdown = [];
   let numerator = 0;
   let prevRounded = 0;
   let segStart = 0;
   for (let i = 0; i <= minutes; i += 1) {
     const r = perMinute[i];
-    const boundary = i === minutes || (i > segStart && r.price !== perMinute[segStart].price);
+    const boundary = i === minutes || (i > segStart && !samePrice(r, perMinute[segStart]));
     if (boundary && i > segStart) {
-      const rounded = roundAmount(numerator, rounding);
+      const rounded = roundAmount(numerator, rounding, den);
       breakdown.push({
         from: new Date(fromMs + segStart * MINUTE_MS).toISOString(),
         to: new Date(fromMs + i * MINUTE_MS).toISOString(),
-        price_per_hour_kopecks: perMinute[segStart].price,
+        ...priceFields(perMinute[segStart]),
         minutes: i - segStart,
         amount_kopecks: rounded - prevRounded,
       });
       prevRounded = rounded;
       segStart = i;
     }
-    if (i < minutes) numerator += r.price;
+    if (i < minutes) numerator += minuteWeight(r, den);
   }
-  return { amount_kopecks: roundAmount(numerator, rounding), exact_kopecks: numerator / 60, minutes, breakdown, firstRule: perMinute[0] ?? null };
+  return { amount_kopecks: roundAmount(numerator, rounding, den), exact_kopecks: numerator / den, minutes, breakdown, firstRule: perMinute[0] ?? null };
 }
 
 /**
@@ -323,13 +371,12 @@ export function amountForMinutes({ rules, calendar, from, minutes, rounding = 10
  */
 export function pricesAround({ rules, calendar, at, horizonMinutes = DAY_MIN }) {
   const atMs = Math.floor(toMs(at) / MINUTE_MS) * MINUTE_MS;
-  const price = (r) => (r ? r.price : null);
   const now = ruleAt(rules, calendar, atMs);
   let changeAt = null;
   let next = null;
   for (let i = 1; i <= horizonMinutes; i += 1) {
     const r = ruleAt(rules, calendar, atMs + i * MINUTE_MS);
-    if (price(r) !== price(now)) {
+    if (!samePrice(r, now)) {
       changeAt = atMs + i * MINUTE_MS;
       next = r;
       break;
@@ -337,11 +384,11 @@ export function pricesAround({ rules, calendar, at, horizonMinutes = DAY_MIN }) 
   }
   const localTime = (ms) => formatLocalTime(calendar.localAt(ms).minuteOfDay);
   let priceNext = null;
-  if (changeAt !== null && next) priceNext = { price_per_hour_kopecks: next.price, from_local: localTime(changeAt), from: new Date(changeAt).toISOString() };
+  if (changeAt !== null && next) priceNext = { ...priceFields(next), from_local: localTime(changeAt), from: new Date(changeAt).toISOString() };
   if (!now && changeAt === null) return { price_now: null, price_next: null };
   return {
     price_now: now
-      ? { price_per_hour_kopecks: now.price, until_local: changeAt === null ? null : localTime(changeAt), until: changeAt === null ? null : new Date(changeAt).toISOString() }
+      ? { ...priceFields(now), until_local: changeAt === null ? null : localTime(changeAt), until: changeAt === null ? null : new Date(changeAt).toISOString() }
       : null,
     price_next: priceNext,
   };

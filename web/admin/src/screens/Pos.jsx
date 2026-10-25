@@ -248,7 +248,11 @@ export function Pos({ ctx }) {
         {announce}
       </p>
       <div class="pos">
-        <section class="pos__catalog" aria-label="Товары">
+        <section class="pos__catalog" aria-labelledby="pos-catalog-title">
+          {/* Заголовок раздела для порядка заголовков: h1 → h2 «Товары» → h3 «Заявки гостей» (axe heading-order) */}
+          <h2 class="visually-hidden" id="pos-catalog-title">
+            Товары
+          </h2>
           <div class="pos__find">
             <label class="search">
               <Icon name="search" />

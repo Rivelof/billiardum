@@ -6,6 +6,13 @@
 //   amountFor(db, { resourceId, from, minutes })      → { amount_kopecks, breakdown, minutes, ... }
 //   amountForActual(db, { resourceId, from, to })     → { amount_kopecks, breakdown, minutes, actual_minutes, ... }
 //
+//   resourceBilling(db, { resourceId })                → { type, billing: 'hourly'|'slot', slot_minutes }
+//
+// Правило слота (M5.8 №204, миграция 1300): slot_minutes и price_per_slot — цена за слот, минимум
+// и шаг — слот; минута слота стоит price_per_slot / slot_minutes (граница расписания внутри слота
+// делит слот по минутам, как у почасового тарифа). В разбивке у такого отрезка — price_per_slot_kopecks
+// и slot_minutes вместе с price_per_hour_kopecks (справочно, столбец price_per_hour правила).
+//
 // Настройки клуба (clubs.settings): day_start_local ('06:00'), price_rounding_kopecks (100),
 // holiday_iso_day (7). Чистая логика — engine.mjs.
 
@@ -22,6 +29,7 @@ import {
   toMs,
   MINUTE_MS,
 } from './engine.mjs';
+import { isSlotType } from '../lib/resource-kinds.mjs';
 
 export { TariffError, formatDuration } from './engine.mjs';
 
@@ -52,7 +60,7 @@ export async function loadResourceTariff(db, resourceId) {
   const row = rows[0];
   const rules = await db.query(
     `select id, resource_type, resource_id, days, start_local::text as start_local, end_local::text as end_local,
-            price_per_hour, step_minutes, min_minutes, priority, active, created_at
+            price_per_hour, step_minutes, min_minutes, priority, active, created_at, slot_minutes, price_per_slot
        from bl.tariff_rules
       where club_id = $1 and active and (resource_id = $2 or resource_type = $3)`,
     [row.club_id, row.id, row.type],
@@ -93,6 +101,28 @@ export async function tariffContext(db, { resourceId, fromMs, toMs: endMs }) {
   return { ...loaded, settings, calendar, rules };
 }
 
+/**
+ * Как тарифицируется ресурс (M5.8 №204): { type, billing: 'hourly'|'slot', slot_minutes }.
+ * Слот — у вида ресурса со слотами (корт); длина — из действующих правил тарифа клуба (у всех правил
+ * вида она одна, это проверяет мастер тарифов). Правил ещё нет — slot_minutes null (котировка даст no_tariff).
+ * null — ресурса нет (или он другого клуба: RLS).
+ */
+export async function resourceBilling(db, { resourceId }) {
+  const { rows } = await db.query(
+    `select r.type,
+            (select t.slot_minutes from bl.tariff_rules t
+              where t.club_id = r.club_id and t.active and t.slot_minutes is not null and (t.resource_id = r.id or t.resource_type = r.type)
+              order by (t.resource_id is not null) desc, t.created_at desc limit 1) as slot_minutes
+       from bl.resources r where r.id = $1`,
+    [resourceId],
+  );
+  if (rows.length === 0) return null;
+  const type = rows[0].type;
+  return isSlotType(type)
+    ? { type, billing: 'slot', slot_minutes: rows[0].slot_minutes === null ? null : Number(rows[0].slot_minutes) }
+    : { type, billing: 'hourly', slot_minutes: null };
+}
+
 /** Цена сейчас и следующая для экрана стола. */
 export async function pricesAround(db, { resourceId, at }) {
   const atMs = toMs(at);
@@ -121,6 +151,7 @@ export async function amountFor(db, { resourceId, from, minutes, minimum = true,
     requested_minutes: minutes,
     step_minutes: first.step,
     min_minutes: first.min,
+    slot_minutes: first.slot ?? null,
     rounding_kopecks: t.settings.rounding,
     resource: t.resource,
     club: t.club,
@@ -152,6 +183,7 @@ export async function amountForActual(db, { resourceId, from, to, minimum = true
     actual_minutes: actual,
     step_minutes: first.step,
     min_minutes: first.min,
+    slot_minutes: first.slot ?? null,
     rounding_kopecks: t.settings.rounding,
     resource: t.resource,
     club: t.club,

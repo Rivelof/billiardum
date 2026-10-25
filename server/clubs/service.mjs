@@ -5,6 +5,7 @@
 // указано у функции. Режим клуба меняют только узкие функции базы (1000): bl.create_club,
 // bl.club_go_live, bl.club_suspend, bl.club_resume.
 
+import { familyOf } from '../lib/resource-kinds.mjs';
 import { HttpError } from '../http/errors.mjs';
 import { appendAudit } from '../lib/audit.mjs';
 import { setContext } from '../lib/store.mjs';
@@ -29,7 +30,7 @@ const isUuid = (v) => typeof v === 'string' && UUID.test(v);
 const iso = (v) => (v instanceof Date ? v.toISOString() : (v ?? null));
 const WEEKDAYS = ['', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
 const KIND_WORD = { pyramid: 'пирамида', pool: 'пул', snooker: 'снукер', mixed: 'смешанный' };
-const DISCIPLINE_OF_TYPE = { billiard_pyramid: 'pyramid', billiard_pool: 'pool', billiard_snooker: 'snooker' };
+const DISCIPLINE_OF_TYPE = { billiard_pyramid: 'pyramid', billiard_pool: 'pool', billiard_snooker: 'snooker', padel_court: 'padel' };
 
 function text(v, max) {
   if (typeof v !== 'string') return null;
@@ -153,7 +154,7 @@ async function devicesItem(db, clubId, now) {
     `select r.number, d.id as device_id, d.last_seen_at
        from bl.resources r left join bl.devices d on d.club_id = r.club_id and d.resource_id = r.id
       where r.club_id = $1 and r.active
-      order by r.number`,
+      order by bl.resource_family(r.type) desc, r.number`,
     [clubId],
   );
   if (rows.length === 0) return { id: 'devices', ok: false, detail: 'Нет столов в работе' };
@@ -430,7 +431,8 @@ export async function linkCatalogCard(db, deps, payload) {
   const club = await clubRow(db, clubId);
   if (!club || !isLiveClub(club.mode, club.mode_before_suspend)) return { result: 'skipped' };
   const { rows: res } = await db.query('select type, count(*)::int as n from bl.resources where club_id = $1 and active group by type', [clubId]);
-  const tables = res.reduce((a, r) => a + r.n, 0);
+  // Столы карточки — только бильярд; корты — дисциплина padel (M5.8 №205).
+  const tables = res.filter((r) => familyOf(r.type) === 'table').reduce((a, r) => a + r.n, 0);
   const disciplines = [...new Set(res.map((r) => DISCIPLINE_OF_TYPE[r.type]).filter(Boolean))];
   const now = deps.clock.now();
 

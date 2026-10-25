@@ -48,7 +48,7 @@ before(async () => {
   await seedClubB(t.admin);
   const start = L(addDays(today, -70), '12:00');
   await q(`update bl.clubs set created_at = $2, settings = settings || '{"open_hours": {"open": "10:00", "close": "02:00"}}'::jsonb where id = $1`, [CLUB, start]);
-  await q('update bl.resources set created_at = $2, active = (number <= 2) where club_id = $1', [CLUB, start]);
+  await q('update bl.resources set created_at = $2, active = (id = any($3::uuid[])) where club_id = $1', [CLUB, start, [T(1), T(2)]]);
   await q(`insert into bl.users (id, phone, name) values ($1, '+79990000001', 'Гость 1')`, [G1]);
   // Свой праздник клуба — среда в окне истории.
   holiday = addDays(today, -21);
@@ -314,6 +314,57 @@ describe('T44: обслуживание столов', () => {
     assert.equal(cb2.entries.filter((x) => x.maintenance_event_id).reduce((a, x) => a + x.signed_kopecks, 0), 0);
   });
 
+  it('Н-3: исправление без стоимости кассу не трогает; после ручного сторно расход не возвращается; явная стоимость сторнирует расход всей цепочки', async () => {
+    const linkedSum = async (ids) => {
+      const cb = (await req('GET', `/api/clubs/${CLUB}/cashbook?from=${addDays(today, -1)}&to=${today}`, 'owner')).json;
+      return cb.entries.filter((x) => ids.includes(x.maintenance_event_id)).reduce((a, x) => a + x.signed_kopecks, 0);
+    };
+    const a = (await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { resource_id: T(2), kind: 'cloth', cost_kopecks: 200_000 })).json;
+    assert.deepEqual(a.cashbook, { action: 'created', entry_id: a.cashbook_entry_id, storno_entry_ids: [], kept_entry_id: null });
+    const b = await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { corrects_id: a.event_id, reason: 'уточнил комментарий', comment: 'Сукно Simonis 860' });
+    assert.equal(b.status, 201, b.text);
+    assert.equal(b.json.cost_kopecks, 0, 'стоимость не переносится');
+    assert.equal(b.json.cashbook_entry_id, null);
+    assert.deepEqual(b.json.cashbook, { action: 'kept', entry_id: null, storno_entry_ids: [], kept_entry_id: a.cashbook_entry_id });
+    assert.equal(await linkedSum([a.event_id, b.json.event_id]), -200_000, 'расход со знаком минус');
+    // Расход сторнировали вручную в кассе — исправление комментария не вносит его заново.
+    assert.equal((await post(`/api/clubs/${CLUB}/cashbook/${a.cashbook_entry_id}/storno`, 'owner', { reason: 'ошибка' })).status, 201);
+    const c = (await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { corrects_id: b.json.event_id, reason: 'ещё комментарий', comment: 'Simonis' })).json;
+    assert.equal(c.cashbook.action, 'none');
+    assert.equal(await linkedSum([a.event_id, b.json.event_id, c.event_id]), 0);
+    // Цепочка: расход у корня, исправление без стоимости, затем с явной — сторно корня и новый расход.
+    const x = (await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { resource_id: T(2), kind: 'cushions', cost_kopecks: 300_000 })).json;
+    const y = (await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { corrects_id: x.event_id, reason: 'комментарий' })).json;
+    const z = (await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { corrects_id: y.event_id, reason: 'сумма по счёту', cost_kopecks: 250_000 })).json;
+    assert.equal(z.cashbook.action, 'replaced');
+    assert.equal(z.cashbook.storno_entry_ids.length, 1);
+    assert.equal(z.cost_kopecks, 250_000);
+    assert.equal(await linkedSum([x.event_id, y.event_id, z.event_id]), -250_000);
+  });
+
+  it('Н-2: не больше 5 уведомлений о пороге на клуб в сутки, сверх — свёрнутое «ещё у K столов»; смена порогов управляющим — владельцу', async () => {
+    const ownerNotes = async (kind) => (await t.admin.query('select text from bl.notifications where club_id = $1 and user_id = $2 and kind = $3 order by created_at', [CLUB, 'a1000000-0000-4000-8000-000000000001', kind])).rows;
+    const thrBefore = (await ownerNotes('maintenance.thresholds')).length;
+    assert.ok(thrBefore >= 1, 'смена порогов управляющим в прошлом тесте');
+    assert.match((await ownerNotes('maintenance.thresholds'))[0].text, /^Обслуживание: .+ изменил пороги — сукно 1\s500 ч → [\d\s]+ ч, резина бортов 5\s000 ч → без порога\.$/u);
+    // Владелец меняет сам — владельцу не сообщается.
+    assert.equal((await req('PUT', `/api/clubs/${CLUB}/maintenance/thresholds`, 'owner', { cloth: 1, balls: 1, cushions: 1, leveling: 1, other: 1 })).status, 200);
+    assert.equal((await ownerNotes('maintenance.thresholds')).length, thrBefore);
+    const before = (await ownerNotes('maintenance.due')).length;
+    const r = await maintenanceTick({ pool: t.pool, clock: { now: () => new Date() } });
+    const fresh = r.notified.filter((n) => n.club_id === CLUB).length;
+    const due = await ownerNotes('maintenance.due');
+    assert.equal(due.length, 5, `уведомлений за сутки: было ${before}, новых отметок ${fresh}`);
+    assert.equal(due.filter((n) => /^Обслуживание: порог достигнут ещё у \d+ стол(а|ов) — Стол \d/.test(n.text)).length, 1, 'одно свёрнутое');
+    // Лимит исчерпан: новые пороги — отметкой без уведомления, видны в счётчиках.
+    assert.equal((await req('PUT', `/api/clubs/${CLUB}/maintenance/thresholds`, 'manager', { cloth: 2, balls: 2 })).status, 200);
+    assert.equal((await ownerNotes('maintenance.thresholds')).length, thrBefore + 1);
+    const r2 = await maintenanceTick({ pool: t.pool, clock: { now: () => new Date() } });
+    assert.equal(r2.notified.filter((n) => n.club_id === CLUB).length, 0);
+    assert.equal((await ownerNotes('maintenance.due')).length, 5);
+    assert.ok((await t.admin.query('select count(*)::int as n from bl.maintenance_alerts where club_id = $1 and not notified', [CLUB])).rows[0].n >= 2);
+  });
+
   it('только добавление: правка и удаление событий и отметок запрещены всем ролям', async () => {
     await assert.rejects(t.admin.query('update bl.maintenance_events set cost_kopecks = 0'), /append-only/);
     await assert.rejects(t.admin.query('delete from bl.maintenance_events'), /append-only/);
@@ -329,5 +380,29 @@ describe('T44: обслуживание столов', () => {
     const x = await post(`/api/clubs/${CLUB_B}/maintenance`, 'ownerB', { corrects_id: ev.event_id, reason: 'чужое' });
     assert.equal(x.status, 404);
     assert.equal((await req('GET', `/api/clubs/${CLUB_B}/maintenance`, 'owner')).status, 403);
+  });
+
+  it('корты (M5.8): без счётчиков износа, уведомлений и cloth_* на дашборде; событие на корте — 400', async () => {
+    const COURT = 'e1000000-0000-4000-8000-000000000101';
+    assert.equal((await t.admin.query("select type from bl.resources where id = $1", [COURT])).rows[0].type, 'padel_court');
+    await t.admin.query('update bl.resources set active = true where id = $1', [COURT]);
+    await session(COURT, plus(now, -120), plus(now, -60));
+    const view = (await req('GET', `/api/clubs/${CLUB}/maintenance`, 'owner')).json;
+    assert.ok(view.counters.length > 0);
+    assert.ok(view.counters.every((c) => c.type !== 'padel_court'), 'только столы');
+    const r = await post(`/api/clubs/${CLUB}/maintenance`, 'owner', { resource_id: COURT, kind: 'cloth' });
+    assert.deepEqual([r.status, r.json], [400, { error: 'bad_request' }]);
+    assert.equal((await t.admin.query('select count(*)::int as n from bl.maintenance_events where resource_id = $1', [COURT])).rows[0].n, 0);
+    // Пороги 1 ч у всех видов (прошлый тест) — корт не уведомляет и не получает отметок.
+    await maintenanceTick({ pool: t.pool, clock: { now: () => new Date() } });
+    assert.equal((await t.admin.query('select count(*)::int as n from bl.maintenance_alerts where resource_id = $1', [COURT])).rows[0].n, 0);
+    const hall = (await req('GET', `/api/clubs/${CLUB}/dashboard?tab=hall&compare=0`, 'owner')).json;
+    const court = hall.tables.by_resource.find((x) => x.resource_id === COURT);
+    assert.ok(court, 'корт в таблице «Столы» дашборда');
+    assert.equal(court.cloth_hours, null);
+    assert.equal(court.cloth_since, null);
+    assert.equal(court.cloth_threshold_hours, null);
+    assert.equal(court.cloth_due, false);
+    assert.notEqual(hall.tables.by_resource.find((x) => x.resource_id === T(1)).cloth_hours, null);
   });
 });

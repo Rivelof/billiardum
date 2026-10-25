@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
 import { afterCommit } from '../lib/store.mjs';
+import { familyOf, isSlotType, maxPlayers, resourceName } from '../lib/resource-kinds.mjs';
 import { normalizeCode } from './codes.mjs';
 import { fail, LightError } from './errors.mjs';
 import { createKit, minutesText, phaseOf, playEnd, premarkNotified, UNPLAYED_THRESHOLD_MS, unplayedMs } from './kit.mjs';
@@ -575,7 +576,7 @@ export function createLightService(opts) {
     try {
       await deps.notify.send(db, p.user_id, {
         kind: 'session.booking_cut',
-        text: `Стол ${r?.number ?? ''}: ${why}, вернули ${formatMoney(refund)} за ${minutesText(cutMin)}`,
+        text: `${resourceName(r?.type, r?.number)}: ${why}, вернули ${formatMoney(refund)} за ${minutesText(cutMin)}`,
         data: { session_id: sessionId, refund_kopecks: refund, booking_start: new Date(cap.getTime() + BOOKING_GAP_MS).toISOString() },
       });
     } catch (err) {
@@ -1060,6 +1061,8 @@ export function createLightService(opts) {
     const t = now();
     const res = await lockResource(db, resourceId);
     if (!res || !res.active) fail('not_found', 'resource');
+    // Корт — только слотами (M5.8 №204): «Без лимита» по депозиту не для него.
+    if (isSlotType(res.type)) fail('bad_request', 'kind: slot');
     const h = await assertFreeFor(db, resourceId, userId, t);
     if (!deviceOnline(await deviceOfResource(db, resourceId))) fail('table_offline');
     let minutes = await minutesFor(db, resourceId, t, depositKopecks);
@@ -1303,7 +1306,8 @@ export function createLightService(opts) {
     if (!isOpen(s)) fail('session_not_active');
     const list = await participants(db, s.id);
     if (list.some((p) => p.user_id === userId)) return { ok: true };
-    if (list.length >= MAX_PARTICIPANTS) fail('limit_exceeded', 'participants');
+    // Предел игроков — по виду ресурса: корт — 4 (M5.8 №205), стол — MAX_PARTICIPANTS.
+    if (list.length >= Math.min(MAX_PARTICIPANTS, maxPlayers(s.resource_type))) fail('limit_exceeded', 'participants');
     await addParticipant(db, { session: s, userId, role: 'player', now: now() });
     await changed(db, s);
     return { ok: true };
@@ -1354,8 +1358,8 @@ export function createLightService(opts) {
         {
           kind: 'session.refunded',
           text: refundTotal > 0
-            ? `Стол ${s.resource_number}: вернули ${formatMoney(refundTotal)} за неотыгранное время`
-            : `Стол ${s.resource_number}: игра закрыта, неотыгранное время пересчитано`,
+            ? `${resourceName(s.resource_type, s.resource_number)}: вернули ${formatMoney(refundTotal)} за неотыгранное время`
+            : `${resourceName(s.resource_type, s.resource_number)}: игра закрыта, неотыгранное время пересчитано`,
           data: { action: 'receipt', refund_kopecks: refundTotal },
         },
         { payerOnly: true },
@@ -1495,7 +1499,7 @@ export function createLightService(opts) {
       [s.id],
     );
     const lines = rows.map((r) => ({
-      title: r.unlimited ? `Стол ${s.resource_number}, без лимита` : `Стол ${s.resource_number}, ${minutesText(r.minutes)}`,
+      title: r.unlimited ? `${resourceName(s.resource_type, s.resource_number)}, без лимита` : `${resourceName(s.resource_type, s.resource_number)}, ${minutesText(r.minutes)}`,
       kind: r.kind,
       minutes: r.minutes,
       amount_kopecks: Number(r.amount_kopecks),
@@ -1557,7 +1561,7 @@ export function createLightService(opts) {
       type: 'manual_action',
       resourceId: s.resource_id,
       data: { action: 'manual.extend_free', session_id: s.id, minutes, actor_id: userId },
-      text: `Стол ${s.resource_number}: продление без оплаты на ${minutesText(minutes)}`,
+      text: `${resourceName(s.resource_type, s.resource_number)}: продление без оплаты на ${minutesText(minutes)}`,
     });
     await emit(db, 'session.extended', sessionEvent({ ...s, paid_until: paidUntil }, { free: true }));
     await command(db, s, { type: 'session.extend', body: { session_id: s.id }, cause: 'staff' });
@@ -1605,7 +1609,7 @@ export function createLightService(opts) {
       type: 'service_light',
       resourceId,
       data: { action: 'service.start', minutes, reason_code: reasonCode, actor_id: userId },
-      text: `Стол ${res.number}: включён сервисный свет на ${minutesText(minutes)}`,
+      text: `${resourceName(res.type, res.number)}: включён сервисный свет на ${minutesText(minutes)}`,
     });
     await queueCommand(db, { clubId, deviceId: device.id, type: 'service.start', body: { reason_code: reasonCode }, cause: 'staff', now: t });
     await notifyLight(db, { k: 'hall', c: clubId, r: resourceId });
@@ -1682,7 +1686,7 @@ export function createLightService(opts) {
     else if (h) status = h.kind;
     else if (info?.mode === 'fault') status = 'fault';
     return {
-      resource: { id: r.id, number: r.number, type: r.type, title: r.title, code: r.code, plan_x: r.plan_x, plan_y: r.plan_y, plan_rotation: r.plan_rotation },
+      resource: { id: r.id, number: r.number, type: r.type, family: familyOf(r.type), title: r.title, code: r.code, plan_x: r.plan_x, plan_y: r.plan_y, plan_rotation: r.plan_rotation },
       status,
       session: s && withSession ? sessionSummary(s, t) : null,
       busy_until: s ? iso(s.paid_until) : null,
@@ -1701,7 +1705,7 @@ export function createLightService(opts) {
     const roles = await requireRole(db, clubId, userId, ROLES.staff);
     const withSession = roles.some((r) => ROLES.reception.includes(r));
     const { rows } = await db.query(
-      'select id, number, type, title, code, plan_x, plan_y, plan_rotation from bl.resources where active order by number',
+      'select id, number, type, title, code, plan_x, plan_y, plan_rotation from bl.resources where active order by bl.resource_family(type) desc, number',
     );
     const out = [];
     for (const r of rows) out.push(await hallItem(db, r, { withSession }));
@@ -1742,7 +1746,7 @@ export function createLightService(opts) {
       notified.t10 = key;
       if (P - T > MINUTE) {
         const left = Math.ceil((P - T) / MINUTE);
-        sends.push({ kind: 'session.t10', text: `Стол ${s.resource_number}: осталось ${minutesText(left)}`, data: { action: 'extend', remaining_ms: P - T } });
+        sends.push({ kind: 'session.t10', text: `${resourceName(s.resource_type, s.resource_number)}: осталось ${minutesText(left)}`, data: { action: 'extend', remaining_ms: P - T } });
       }
     }
     // «Без лимита» (decisions №69): за 5 минут до extend_limit_until (= paid_until) — подтвердить
@@ -1754,7 +1758,7 @@ export function createLightService(opts) {
         const until = formatTime(s.paid_until, safeZone(s.club_timezone));
         sends.push({
           kind: 'session.unlimited_confirm',
-          text: `Стол ${s.resource_number}: заморозка заканчивается в ${until}. Подтвердите продолжение игры`,
+          text: `${resourceName(s.resource_type, s.resource_number)}: заморозка заканчивается в ${until}. Подтвердите продолжение игры`,
           data: { action: 'extend', kind: 'extend', minutes: null, unlimited: true, extend_limit_until: key },
         });
         await afterCommit(db, () => deps.sse.publish(`session:${s.id}`, 'unlimited_confirm', { session_id: s.id, extend_limit_until: key, action: 'extend', minutes: null }));
@@ -1762,12 +1766,12 @@ export function createLightService(opts) {
     }
     if (T >= P - MINUTE && notified.t1 !== key) {
       notified.t1 = key;
-      if (T < P) sends.push({ kind: 'session.t1', text: `Стол ${s.resource_number}: осталась минута`, data: { action: 'extend', remaining_ms: P - T } });
+      if (T < P) sends.push({ kind: 'session.t1', text: `${resourceName(s.resource_type, s.resource_number)}: осталась минута`, data: { action: 'extend', remaining_ms: P - T } });
     }
     if (T >= P && notified.t0 !== key) {
       notified.t0 = key;
       const g = Math.max(1, Math.round(G / MINUTE));
-      sends.push({ kind: 'session.t0', text: `Стол ${s.resource_number}: время вышло, ${minutesText(g)} на продление`, data: { action: 'extend', grace_ms: P + G - T } });
+      sends.push({ kind: 'session.t0', text: `${resourceName(s.resource_type, s.resource_number)}: время вышло, ${minutesText(g)} на продление`, data: { action: 'extend', grace_ms: P + G - T } });
     }
     const status = phaseOf(s.paid_until, t, s.warn_ms);
     if (status !== s.status || JSON.stringify(notified) !== JSON.stringify(s.notified)) {
@@ -1790,7 +1794,7 @@ export function createLightService(opts) {
     await db.query("update bl.sessions set status = 'closed', ended_at = $2, close_reason = 'expired', updated_at = $2 where id = $1", [s.id, t]);
     await audit(db, { action: 'session.close', objectType: 'session', objectId: s.id, data: { session_id: s.id, paid_until: iso(s.paid_until), ended_at: iso(t) } });
     await emit(db, 'session.closed', await closedEvent(db, s, { endedAt: t, reason: 'expired' }));
-    await notifyParticipants(db, s, { kind: 'session.closed', text: `Стол ${s.resource_number}: игра завершена`, data: { action: 'receipt' } });
+    await notifyParticipants(db, s, { kind: 'session.closed', text: `${resourceName(s.resource_type, s.resource_number)}: игра завершена`, data: { action: 'receipt' } });
     await showReservedIfAny(db, s, t);
     await changed(db, s);
     log.info('session_closed', { session_id: s.id, reason: 'expired' });

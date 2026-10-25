@@ -39,6 +39,8 @@ export async function seedDataset(admin, now) {
   const { today, D1, D2, D3 } = daysOf(now);
   const q = (sql, params) => admin.query(sql, params);
   const ids = {};
+  // Набор данных M5.2 — на 8 столах сида; корты сида (M5.8) вне работы (ёмкость, разрезы).
+  await q("update bl.resources set active = false where club_id = $1 and type = 'padel_court'", [CLUB]);
   // История клуба — с D1 − 5 (догоняющий пересчёт), часы работы 10:00–02:00.
   await q(`update bl.clubs set created_at = $2, settings = settings || '{"open_hours": {"open": "10:00", "close": "02:00"}}'::jsonb where id = $1`, [CLUB, L(addDays(D1, -5), '12:00')]);
   await q('update bl.resources set created_at = $2 where club_id = $1', [CLUB, L(addDays(D1, -5), '12:00')]);

@@ -89,3 +89,13 @@
 DATABASE_ADMIN_URL=… node --test --test-concurrency=1 "server/directory/test/db/*.test.mjs"
 ```
 `test/db/harness.mjs`: временная база, настоящий `createApp` (роутер с публичным кэшем и ролями платформы), настоящий сервис light без MQTT (статус стола), поддельные часы.
+
+## M5.8: падел (№205, T48)
+
+- Дисциплина `padel` (клубы с кортами): `?disciplines=padel` — только клубы с кортами (у клуба в программе — по кортам в работе, у
+  карточки — по `disciplines`, миграция 1300 разрешает `padel`).
+- `ClubSummary`: `tables_count` — столы бильярда, `courts_count`, `free_now` — свободные столы, `courts_free_now`, `price_from_kopecks` —
+  «от» за час стола, `court_price_from_kopecks` и `slot_minutes` — «от» за слот корта. `?free_now=1` с фильтром только `padel` —
+  по свободным кортам. `free_now` города — столы, как раньше.
+- Страница клуба: `live.total`/`free_now` — столы, `live.courts_total`/`courts_free_now`; у ресурса плана — `kind`, `family`,
+  `discipline: 'padel'`; `prices` корта — с `slot_minutes`, `price_per_slot_kopecks`.

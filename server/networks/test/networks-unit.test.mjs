@@ -5,7 +5,8 @@ import { describe, it } from 'node:test';
 import { createRouter } from '../../../api/router.mjs';
 import { MENU_TEMPLATE_FIELDS } from '../lock.mjs';
 import { networkDbError, networkInviteMessage } from '../service.mjs';
-import { MAX_TEMPLATE_PRODUCTS, normalizeProducts } from '../templates.mjs';
+import { MAX_TEMPLATE_PRODUCTS, normalizeProducts, storedRule } from '../templates.mjs';
+import { applyTemplate, normalizeRules } from '../../setup/tariffs.mjs';
 
 describe('шаблон меню сети: разбор', () => {
   it('значения по умолчанию: шт, алкоголь — подакцизный предмет расчёта, активен', () => {
@@ -41,6 +42,21 @@ describe('шаблон меню сети: разбор', () => {
   it('шаблон задаёт состав и цену, но не стоп-лист, склад и фото клуба', () => {
     for (const f of ['price_kopecks', 'name', 'is_alcohol', 'active']) assert.ok(MENU_TEMPLATE_FIELDS.includes(f), f);
     for (const f of ['stop_list', 'track_stock', 'photo', 'sort']) assert.ok(!MENU_TEMPLATE_FIELDS.includes(f), f);
+  });
+});
+
+describe('шаблон тарифов сети: хранение правил (M5.8)', () => {
+  it('сохранённое правило разбирается мастером в то же правило — и у столов, и у корта (слот)', () => {
+    const input = [
+      ...applyTemplate('day_evening', { day: 50000, evening: 70000 }),
+      ...applyTemplate('single', { price: 300000 }, { kind: 'padel_court', slot_minutes: 90 }),
+    ];
+    const rules = normalizeRules(input);
+    const stored = rules.map(storedRule);
+    assert.deepEqual(normalizeRules(JSON.parse(JSON.stringify(stored))), rules);
+    const court = stored.find((r) => r.kind === 'padel_court');
+    assert.deepEqual(court, { kind: 'padel_court', days: [1, 2, 3, 4, 5, 6, 7], from: '06:00', to: '06:00', slot_minutes: 90, price_per_slot_kopecks: 300000 });
+    assert.equal(stored.find((r) => r.kind === null).price_per_slot_kopecks, undefined);
   });
 });
 

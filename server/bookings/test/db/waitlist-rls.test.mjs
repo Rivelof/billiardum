@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { asRole, tryQuery } from '../../../../supabase/tests/helpers.mjs';
 import { CLUB_A, CLUB_B, MIN, PHONES, setup, T0, TABLE_B, table, waitFor } from './harness.mjs';
+import { deactivateSeedCourts } from '../../../../supabase/tests/helpers.mjs';
 
 const skip = !process.env.DATABASE_ADMIN_URL;
 
@@ -17,6 +18,8 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
 
   before(async () => {
     h = await setup({ settings: { booking_prepayment: 'full' } });
+    // Доступность 8 столов сида; корты (M5.8) — в bookings/test/db/padel.test.mjs.
+    await deactivateSeedCourts(h.admin);
     a = await h.login('+79990000011');
     b = await h.login('+79990000012');
     c = await h.login('+79990000013');

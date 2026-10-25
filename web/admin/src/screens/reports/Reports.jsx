@@ -8,6 +8,7 @@ import { ShiftsScreen } from './Shifts.jsx';
 import { CashbookScreen } from './Cashbook.jsx';
 import { PlayersScreen } from './Players.jsx';
 import { AuditSheet } from './AuditSheet.jsx';
+import { Lazy } from '../../components/Lazy.jsx';
 import '../../styles/dashboard.css';
 import '../../styles/reports.css';
 
@@ -37,6 +38,19 @@ export function Reports({ ctx }) {
         {key === 'cashbook' ? <CashbookScreen key="cashbook" {...sub} /> : null}
         {key === 'players' ? <PlayersScreen key="players" {...sub} /> : null}
         {key === 'audit-sheet' ? <AuditSheet key="sheet" {...sub} /> : null}
+        {key === 'maintenance' ? (
+          <Lazy
+            key="maintenance"
+            chunk="maintenance"
+            label="Открываем обслуживание столов…"
+            fallback={
+              <p class="muted loading" role="status">
+                Открываем обслуживание столов…
+              </p>
+            }
+            render={(m) => <m.MaintenanceScreen {...sub} />}
+          />
+        ) : null}
       </div>
     </Shell>
   );

@@ -3,6 +3,7 @@
 // короткий код стола и подсказка. Шрифт — JetBrains Mono Bold (OFL, fonts/OFL.txt),
 // DESIGN §3: номера и коды — JetBrains Mono.
 
+import { familyOf, noun } from '../lib/resource-kinds.mjs';
 import { readFileSync } from 'node:fs';
 import { encode } from 'uqr';
 import { createPdf, num } from './pdf.mjs';
@@ -75,7 +76,8 @@ function wrap(font, text, size, maxWidth) {
 
 /**
  * PDF с наклейками.
- * @param {{ clubName: string, publicHost: string, resources: { number: number, code: string }[] }} input
+ * @param {{ clubName: string, publicHost: string, resources: { number: number, code: string, type?: string }[] }} input
+ *   type — вид ресурса (M5.8): на наклейке корта — «КОРТ», стола — «СТОЛ»; сначала столы, затем корты.
  * @returns {Buffer}
  */
 export function stickersPdf({ clubName, publicHost, resources }) {
@@ -84,7 +86,7 @@ export function stickersPdf({ clubName, publicHost, resources }) {
   const font = pdf.addFont(fontBuffer(), 'JetBrainsMono-Bold');
   const cellW = PAGE.width / 2;
   const cellH = PAGE.height / 2;
-  const items = [...resources].sort((a, b) => a.number - b.number);
+  const items = [...resources].sort((a, b) => Number(familyOf(a.type) === 'court') - Number(familyOf(b.type) === 'court') || a.number - b.number);
 
   function text(str, size, cx, y, color = INK) {
     const w = font.width(str, size);
@@ -108,7 +110,7 @@ export function stickersPdf({ clubName, publicHost, resources }) {
       y -= 10;
       ops += text(club, 10, cx, y, MUTED);
       y -= 30;
-      ops += text('СТОЛ', 14, cx, y);
+      ops += text(noun(r.type).toUpperCase(), 14, cx, y);
       y -= 62;
       ops += text(String(r.number), 64, cx, y);
       const qrSize = 156;

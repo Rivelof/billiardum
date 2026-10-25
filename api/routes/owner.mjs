@@ -46,7 +46,7 @@ export async function workingDayStart(db, clubId, now) {
 async function hall(ctx) {
   const service = ctx.modules?.light?.light?.()?.service;
   if (typeof service?.hall === 'function') return service.hall(ctx.db, { clubId: ctx.club, userId: ctx.user.id });
-  const { rows } = await ctx.db.query('select id, number, type, title from bl.resources where active order by number');
+  const { rows } = await ctx.db.query('select id, number, type, title from bl.resources where active order by bl.resource_family(type) desc, number');
   return rows.map((r) => ({ resource: { id: r.id, number: r.number, type: r.type, title: r.title }, status: 'unknown', session: null }));
 }
 
@@ -65,7 +65,7 @@ async function now(ctx) {
     for (const r of rows) if (r.method in revenue) revenue[r.method] = Number(r.total);
   }
   const alarms = await ctx.db.query(
-    `select a.*, r.number as resource_number from bl.alarms a left join bl.resources r on r.id = a.resource_id
+    `select a.*, r.number as resource_number, r.type as resource_type from bl.alarms a left join bl.resources r on r.id = a.resource_id
       where a.state = 'open' order by case a.level when 'critical' then 0 when 'important' then 1 else 2 end, a.last_raised_at desc limit 50`,
   );
   return {
@@ -175,7 +175,7 @@ async function alarmsList(ctx, req) {
   const state = req.query.state ?? 'open';
   if (!['open', 'acked', 'all'].includes(state)) throw new HttpError(400, 'bad_request');
   const { rows } = await ctx.db.query(
-    `select a.*, r.number as resource_number from bl.alarms a left join bl.resources r on r.id = a.resource_id
+    `select a.*, r.number as resource_number, r.type as resource_type from bl.alarms a left join bl.resources r on r.id = a.resource_id
       where ($1::text = 'all' or a.state = $1)
       order by a.last_raised_at desc limit 200`,
     [state],

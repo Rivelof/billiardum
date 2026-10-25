@@ -139,6 +139,8 @@ export const can = {
   // план, счета, карта и автоплатёж — только владелец. Ресепшн и бар подписку не видят
   subscription: (role) => ['owner', 'manager'].includes(role),
   subscriptionManage: (role) => role === 'owner',
+  // M5.7 (№199–201): «API и вебхуки» — только владелец; выпуск ключа и адреса — ещё и только личным входом (не PIN)
+  clubApi: (role) => role === 'owner',
 };
 
 /**

@@ -112,7 +112,7 @@ export async function loadHistory(db, club, { now, kind = null }) {
   const hourly = await db.query(
     `select h.day::text as day, h.hour, sum(h.play_minutes)::int as play, sum(h.capacity_minutes)::int as cap
        from bl.stats_hourly h join bl.resources r on r.id = h.resource_id and r.club_id = h.club_id
-      where h.club_id = $1 and h.day between $2 and $3 and ($4::text is null or r.type = $4)
+      where h.club_id = $1 and h.day between $2 and $3 and ($4::text is null or r.type = $4 or bl.resource_family(r.type) = $4)
       group by h.day, h.hour`,
     [club.id, window.from, window.to, kind],
   );
@@ -125,7 +125,7 @@ export async function loadHistory(db, club, { now, kind = null }) {
   // Очередь: гости, вставшие в лист ожидания (час постановки по местному времени).
   const wl = await db.query(
     `select w.created_at from bl.waitlist w join bl.resources r on r.id = w.resource_id and r.club_id = w.club_id
-      where w.club_id = $1 and w.created_at >= $2 and w.created_at < $3 and ($4::text is null or r.type = $4)`,
+      where w.club_id = $1 and w.created_at >= $2 and w.created_at < $3 and ($4::text is null or r.type = $4 or bl.resource_family(r.type) = $4)`,
     [club.id, new Date(now.getTime() - (daysBetween(window.from, window.today) + 2) * 86_400_000), now, kind],
   );
   const fmt = new Intl.DateTimeFormat('en-GB', { timeZone: club.timezone, hour: '2-digit', hourCycle: 'h23' });

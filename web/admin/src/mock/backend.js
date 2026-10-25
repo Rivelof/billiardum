@@ -6,6 +6,9 @@
  * M5.1 (mock/m5.js): onboarding — новый пользователь без клуба; testmode, testmode-owner — клуб в тестовом режиме
  * M5.3 (mock/billing.js): billing, billing-active, billing-due, billing-overdue, billing-manager, billing-off — подписка клуба;
  * platform-billing, platform-billing-operator — «Клубы и подписки» платформы
+ * M5.6 (mock/dashboard.js, mock/maintenance.js): forecast — прогноз и подсказки по цене (90 дней истории), forecast-empty —
+ * клубу 10 дней («Мало данных для прогноза»), maintenance — обслуживание столов (владелец), maintenance-manager — управляющий
+ * M5.7 (mock/clubapi.js): api — «API и вебхуки» владельца, api-pin — тот же владелец вошёл по PIN на терминале
  */
 
 import { m2Routes, m2State, m2Tick } from './m2.js';
@@ -15,6 +18,11 @@ import { m5Routes, m5State, NEWCOMER } from './m5.js';
 import { createDashboardMock, DASHBOARD_CLUBS } from './dashboard.js';
 import { reportsRoutes, patchDashboardShifts } from './reports.js';
 import { billingRoutes, billingState } from './billing.js';
+import { maintenanceRoutes } from './maintenance.js';
+import { clubapiRoutes } from './clubapi.js';
+
+/** M5.6: сценарии прогноза и обслуживания живут на данных дашборда (второй клуб, смены с расхождением). */
+const isDashScenario = (sc) => /^(dashboard|forecast|maintenance)/.test(String(sc ?? ''));
 
 const MIN = 60_000;
 const CLUB_ID = '0b6b8c1e-5a7d-4f0e-9c3a-2d1e4f5a6b7c';
@@ -59,7 +67,7 @@ function freshState(scenario, t) {
   const empty = scenario === 'empty' || scenario === 'dashboard-empty';
   const fresh = scenario === 'onboarding';
   // M5.2: dashboard, dashboard-empty, dashboard-year — владелец; dashboard-manager — управляющий
-  const dash = String(scenario ?? '').startsWith('dashboard');
+  const dash = isDashScenario(scenario);
   const hall = fresh ? [] : [
     table(1, 'pyramid', 'busy', { session: session(1, 80, 40) }),
     // ?mock=waitlist (№122): стол 2 предложен гостю из очереди — удержание до конца предложения
@@ -97,9 +105,11 @@ function freshState(scenario, t) {
   const asRole = scenario?.split('-')[1];
   // M5.3: сценарии подписки — владелец (billing-manager — управляющий), platform-billing — владелец и администратор платформы
   const bill = String(scenario ?? '').startsWith('billing') || scenario === 'platform-billing';
-  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash || bill ? 'owner' : 'reception';
+  const role = ['owner', 'manager', 'bar'].includes(scenario) ? scenario : ['owner', 'manager'].includes(asRole) ? asRole : dash || bill || String(scenario).startsWith('api') ? 'owner' : 'reception';
   return {
     scenario,
+    // M5.7: вид входа (GET /api/me → session.kind): api-pin — по PIN на терминале
+    sessionKind: scenario === 'api-pin' ? 'pin' : 'session',
     // nologin — боты не настроены (U1), tgonly — только Telegram: оба без входа
     user: ['anon', 'nologin', 'tgonly'].includes(scenario) ? null : scenario === 'operator' || scenario === 'platform-billing-operator' ? { ...STAFF.operator } : scenario === 'platform' || scenario === 'platform-billing' ? { ...STAFF.owner, platform_role: 'platform_admin' } : fresh ? { ...NEWCOMER } : { ...STAFF[role] },
     hall,
@@ -118,7 +128,7 @@ function freshState(scenario, t) {
 
 /** M5.2: в сценариях дашборда расхождение кассы — 100 ₽ три дня назад (смена 211), остальные смены сошлись. */
 function withDashboard(state) {
-  if (String(state.scenario ?? '').startsWith('dashboard')) patchDashboardShifts(state.m2, state.scenario === 'dashboard-empty');
+  if (isDashScenario(state.scenario)) patchDashboardShifts(state.m2, state.scenario === 'dashboard-empty');
   return state;
 }
 
@@ -205,7 +215,7 @@ export function createBackend(storage, now = () => Date.now()) {
     // M4: user.platform_role — роль платформы (оператор без клуба видит только экран оператора)
     // M5.1: клубы, созданные в заглушке, или клуб разработки; mode — режим клуба (test | live)
     // M5.2: у владельца в сценариях дашборда (кроме пустого) — второй клуб, чтобы была сводка «Все мои клубы»
-    ['GET', /^\/api\/me$/, () => (me() ? ok({ user: me(), clubs: m5.clubsFor(me()) ?? (me().role ? [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ, mode: state.m5.devMode }, ...(secondClub() ? [{ club_id: DASHBOARD_CLUBS[1].id, role: me().role, name: DASHBOARD_CLUBS[1].name, timezone: TZ, mode: 'live' }] : [])] : []) }) : err(401, 'unauthorized'))],
+    ['GET', /^\/api\/me$/, () => (me() ? ok({ session: { kind: state.sessionKind ?? 'session', terminal_id: null }, user: me(), clubs: m5.clubsFor(me()) ?? (me().role ? [{ club_id: CLUB_ID, role: me().role, name: 'Клуб для разработки', timezone: TZ, mode: state.m5.devMode }, ...(secondClub() ? [{ club_id: DASHBOARD_CLUBS[1].id, role: me().role, name: DASHBOARD_CLUBS[1].name, timezone: TZ, mode: 'live' }] : [])] : []) }) : err(401, 'unauthorized'))],
     ['POST', /^\/api\/auth\/dev$/, (_m, b) => {
       if (!/^\+7\d{10}$/.test(b?.phone ?? '')) return err(400, 'bad_request');
       const role = b.phone.endsWith('01') ? 'owner' : b.phone.endsWith('02') ? 'manager' : b.phone.endsWith('05') ? 'bar' : 'reception';
@@ -386,7 +396,7 @@ export function createBackend(storage, now = () => Date.now()) {
 
   // ---------- M5.2: дашборд владельца и отчёты (mock/dashboard.js, mock/reports.js) ----------
   // Второй клуб: у владельца в dashboard, dashboard-year; у управляющего — в dashboard-manager (он управляющий в двух клубах)
-  const secondClub = () => String(state.scenario ?? '').startsWith('dashboard') && state.scenario !== 'dashboard-empty' && ['owner', 'manager'].includes(me()?.role);
+  const secondClub = () => isDashScenario(state.scenario) && !['dashboard-empty', 'forecast-empty'].includes(state.scenario) && ['owner', 'manager'].includes(me()?.role);
   let dash = null;
   const dashFor = () => {
     if (!dash || dash.scenario !== state.scenario) {
@@ -397,11 +407,24 @@ export function createBackend(storage, now = () => Date.now()) {
   };
   const manageOnly = (fn) => (m, b, q) => (!me() ? err(401, 'unauthorized') : ['owner', 'manager'].includes(me().role) ? fn(m, b, q) : err(403, 'forbidden'));
   routes.unshift(
-    ['GET', /^\/api\/clubs\/([^/]+)\/dashboard$/, manageOnly((mm, _b, q) => dashFor().response(mm[1], q, me()))],
+    ['GET', /^\/api\/clubs\/([^/]+)\/dashboard$/, manageOnly((mm, _b, q) => withCloth(dashFor().response(mm[1], q, me()), mm[1]))],
+    ['GET', /^\/api\/clubs\/([^/]+)\/forecast$/, manageOnly((mm, _b, q) => dashFor().forecastDayResponse(mm[1], q, me()))],
     ['GET', /^\/api\/clubs\/([^/]+)\/dashboard\/now$/, manageOnly((mm) => dashFor().nowResponse(mm[1], state.hall, me()))],
     ['GET', /^\/api\/clubs\/([^/]+)\/dashboard\/export\.csv$/, manageOnly((mm, _b, q) => dashFor().exportCsv(mm[1], q, me()))],
     ...reportsRoutes({ state: () => state, now, me, err, ok, audit, emit, dash: dashFor, manageOnly, staff: STAFF }),
   );
+
+  // M5.6: обслуживание столов (клуб разработки) и часы с замены сукна в таблице «По столам»
+  const maint = maintenanceRoutes({ state: () => state, me, err, ok, audit, dash: dashFor, today: () => dashFor().today(), hall: () => state.hall });
+  function withCloth(res, clubId) {
+    const list = res?.body?.tables?.by_resource;
+    if (clubId !== CLUB_ID || !Array.isArray(list)) return res;
+    for (const r of list) Object.assign(r, maint.cloth(r.resource_id) ?? {});
+    return res;
+  }
+  routes.unshift(...maint.routes);
+  // M5.7: «API и вебхуки» владельца
+  routes.unshift(...clubapiRoutes({ state: () => state, me, err, ok, audit, now }).routes);
 
   async function handle(method, url) {
     tick();

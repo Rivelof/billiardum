@@ -325,6 +325,30 @@ export const api = {
   /** Только владелец: { kind, name, sort? }. */
   addCashbookCategory: (club, body, idempotencyKey) => client.post(`/clubs/${e(club)}/cashbook/categories`, body, { idempotencyKey }),
   updateCashbookCategory: (club, id, body) => client.request('PATCH', `/clubs/${e(club)}/cashbook/categories/${e(id)}`, { body }),
+  // ---------- M5.6: прогноз, подсказки по цене, обслуживание столов (№196–198, server/maintenance/README.md) ----------
+  // Прогноз недели и подсказки — в ответе dashboard tab=hall (series.forecast, hints); здесь — прогноз на одни сутки
+  /** query: { date?, kind? } → { date, iso_dow, basis_dow, holiday, status, enough, hours: [{hour, pct, samples}], … }. */
+  forecastDay: (club, query) => client.get(`/clubs/${e(club)}/forecast`, { query }),
+  /** query: { resource_id?, kind?, limit? } → { thresholds, defaults, kinds, counters, events }. */
+  maintenance: (club, query) => client.get(`/clubs/${e(club)}/maintenance`, { query }),
+  /** Событие { resource_id, kind, date, comment?, cost_kopecks } или исправление { corrects_id, reason, …, void? } → 201. */
+  addMaintenanceEvent: (club, body, idempotencyKey) => client.post(`/clubs/${e(club)}/maintenance`, body, { idempotencyKey }),
+  maintenanceThresholdsGet: (club) => client.get(`/clubs/${e(club)}/maintenance/thresholds`),
+  /** Только переданные виды: { cloth?, balls?, cushions?, leveling?, other? } — часы 1–100 000 или null → { thresholds, defaults }. */
+  maintenanceThresholds: (club, body) => client.request('PUT', `/clubs/${e(club)}/maintenance/thresholds`, { body }),
+
+  // ---------- M5.7: API и вебхуки для владельца (server/clubapi/README.md, «Маршруты владельца») ----------
+  apiKeys: (club) => client.get(`/clubs/${e(club)}/api-keys`),
+  /** { name, scopes } → 201 ключ + key (один раз). Без Idempotency-Key: повтор ответа хранил бы ключ (README). */
+  createApiKey: (club, body) => client.post(`/clubs/${e(club)}/api-keys`, body),
+  revokeApiKey: (club, id) => client.post(`/clubs/${e(club)}/api-keys/${e(id)}/revoke`, {}),
+  webhooks: (club) => client.get(`/clubs/${e(club)}/webhooks`),
+  /** { url, events, description? } → 201 адрес + secret (один раз). */
+  createWebhook: (club, body) => client.post(`/clubs/${e(club)}/webhooks`, body),
+  disableWebhook: (club, id) => client.post(`/clubs/${e(club)}/webhooks/${e(id)}/disable`, {}),
+  /** query: { status?, limit?, cursor? } → { webhook_id, items, next_cursor }. */
+  webhookDeliveries: (club, id, query) => client.get(`/clubs/${e(club)}/webhooks/${e(id)}/deliveries`, { query }),
+  testWebhook: (club, id) => client.post(`/clubs/${e(club)}/webhooks/${e(id)}/test`, {}),
   /** «Кто играл за столом» (№179): { resource, items: [{ session_id, started_at, ended_at, amount_kopecks, methods, guest: { nick, phone_masked }, staff_name }] }. */
   tableGames: (club, resourceId, query) => client.get(`/clubs/${e(club)}/resources/${e(resourceId)}/sessions`, { query }),
   /** Полный телефон гостя — только владельцу, с причиной; журнал guest.lookup и уведомление владельцу. */

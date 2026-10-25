@@ -6,6 +6,9 @@
 // меняется, а время правил — местное, поэтому в каждом клубе правило действует по его поясу и
 // рабочим суткам. Перед записью шаблон проверяется по неделе каждого клуба (его day_start_local и
 // типы столов в работе): дыра или пересечение — 400 tariff_gap | tariff_overlap {club_id, …}.
+// M5.8: правила корта (вид со слотом) — как в мастере: длина и цена слота. Шаблон заменяет все
+// правила клуба, поэтому клубу с кортами в работе шаблон без правил корта не подходит —
+// 400 tariff_gap {kind: 'padel_court', club_id} (корты не остаются без цены и не берут чужую).
 //   * «жёсткий» (hard): шаблон применяется ко всем клубам, клуб тарифы не меняет (409 network_locked);
 //   * «мягкий» (soft): клуб может сохранить свои тарифы — он «переопределил» шаблон, и изменения
 //     шаблона его больше не меняют; POST /api/clubs/{club}/network/reset возвращает клуб к шаблону.
@@ -41,11 +44,19 @@ const iso = (v) => (v instanceof Date ? v.toISOString() : v ?? null);
 const dayStartOf = (settings) => (typeof settings?.day_start_local === 'string' && /^\d{2}:\d{2}$/.test(settings.day_start_local) ? settings.day_start_local : '06:00');
 const ruleWord = (n) => `${n} ${plural(n, ['правило', 'правила', 'правил'])}`;
 
-/** Правило мастера для хранения: нормализованное правило без служебных минут. */
-function storedRule(r) {
-  const { startMin: _s, len: _l, ...rest } = r;
-  return rest;
+/**
+ * Правило для хранения — в том виде, в каком его принимает мастер (normalizeRules): у вида со слотом
+ * (корт, M5.8 №204) — длина и цена слота, у столов — цена часа, минимум и шаг. Повторный разбор
+ * сохранённого правила даёт то же правило.
+ */
+export function storedRule(r) {
+  const head = { kind: r.kind, days: r.days, from: r.from, to: r.to };
+  if (r.slot_minutes) return { ...head, slot_minutes: r.slot_minutes, price_per_slot_kopecks: r.price_per_slot_kopecks };
+  return { ...head, price_per_hour_kopecks: r.price_per_hour_kopecks, min_minutes: r.min_minutes, step_minutes: r.step_minutes };
 }
+
+/** Цена правила для столбца базы: слота — у вида со слотом, иначе часа. */
+const rulePrice = (r) => (r.slot_minutes ? r.price_per_slot_kopecks : r.price_per_hour_kopecks);
 
 /** Сериализованный блокировщик шаблона сети (один запрос за раз). */
 async function lockTemplate(db, networkId, kind) {
@@ -162,7 +173,7 @@ export async function putTariffTemplate(ctx, networkId, body) {
   for (const [i, r] of rules.entries()) {
     await ctx.db.query(
       'insert into bl.network_tariff_rules (network_id, version, ord, rule, price_per_hour, created_by) values ($1, $2, $3, $4::jsonb, $5, $6)',
-      [networkId, version, i, JSON.stringify(storedRule(r)), r.price_per_hour_kopecks, ctx.user.id],
+      [networkId, version, i, JSON.stringify(storedRule(r)), rulePrice(r), ctx.user.id],
     );
   }
   await ctx.db.query('update bl.networks set tariffs_template = true, tariffs_version = $2, updated_at = $3 where id = $1', [networkId, version, ctx.clock.now()]);

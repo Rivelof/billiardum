@@ -153,7 +153,7 @@ export const SAFE_REASONS = new Set(['tournament', 'booking', 'service', 'pendin
 /** Допустимые значения status в ошибке: статус закрытой заявки гостя в клуб (T25). */
 export const SAFE_STATUSES = new Set(['accepted', 'declined', 'operator', 'closed']);
 /** Допустимые значения kind в ошибке: тип стола (M5.1, tariff_gap). */
-export const SAFE_KINDS = new Set(['pyramid', 'pool', 'snooker', 'mixed']);
+export const SAFE_KINDS = new Set(['pyramid', 'pool', 'snooker', 'mixed', 'padel_court']);
 /** Пункты чек-листа запуска (№160) в поле failed ошибки checklist_incomplete. */
 export const SAFE_CHECKLIST = new Set(['tables', 'devices', 'tariffs', 'shop_live', 'kkt', 'stickers', 'offer']);
 /** Местное время 'HH:MM' (00:00–24:00) в полях from и to ошибки тарифа. */

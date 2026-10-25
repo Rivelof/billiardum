@@ -6,6 +6,7 @@
 // Пересечения броней стола запрещает база (exclude using gist), гонки — блокировка строки
 // стола (SELECT … FOR UPDATE) до проверки и вставки.
 
+import { noun, resourceName } from '../lib/resource-kinds.mjs';
 import { formatDate, formatMoney, formatTime, plural } from '@billiardum/shared/format';
 import { afterCommit } from '../lib/store.mjs';
 import { BookingError, fail, isConflict } from './errors.mjs';
@@ -295,8 +296,29 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     }
   }
 
-  async function validateSlot(db, club, settings, startsAt, minutes, t, { guest }) {
-    if (!Number.isInteger(minutes) || minutes < settings.minMinutes || minutes > settings.maxMinutes || minutes % settings.stepMinutes !== 0) {
+  /**
+   * Длина слота ресурса (корт, M5.8 №204) или null (стол — почасово). Корт без тарифа слотов — no_tariff.
+   * Вызывается в контексте клуба ресурса.
+   */
+  async function slotOf(db, resourceId) {
+    if (typeof deps.tariffs.resourceBilling !== 'function') return null;
+    const b = await deps.tariffs.resourceBilling(db, { resourceId });
+    if (b?.billing !== 'slot') return null;
+    if (!b.slot_minutes) fail('no_tariff', 'у корта нет тарифа слотов');
+    return b.slot_minutes;
+  }
+
+  /** Длительность брони корта: 1…N слотов, не длиннее booking_max_minutes (но хотя бы слот). */
+  function slotMinutesOk(settings, slot, minutes) {
+    const max = Math.max(slot, Math.floor(settings.maxMinutes / slot) * slot);
+    return Number.isInteger(minutes) && minutes >= slot && minutes <= max && minutes % slot === 0;
+  }
+
+  async function validateSlot(db, club, settings, startsAt, minutes, t, { guest, slot = null }) {
+    if (slot !== null) {
+      // Корт: бронь блоками слота (M5.8 №204); начало — по сетке брони клуба (booking_step_minutes).
+      if (!slotMinutesOk(settings, slot, minutes)) fail('bad_request', 'minutes: slot');
+    } else if (!Number.isInteger(minutes) || minutes < settings.minMinutes || minutes > settings.maxMinutes || minutes % settings.stepMinutes !== 0) {
       fail('bad_request', 'minutes');
     }
     if (startsAt.getUTCSeconds() !== 0 || startsAt.getUTCMilliseconds() !== 0) fail('bad_request', 'starts_at: целые минуты');
@@ -356,7 +378,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     // M5.1 №160: приостановленный платформой клуб новых игр (и броней) не принимает.
     if ((await db.query('select bl.club_mode($1) as m', [clubId])).rows[0].m === 'suspended') fail('club_suspended');
     const settings = bookingSettings(club.settings);
-    await validateSlot(db, club, settings, startsAt, minutes, t, { guest: true });
+    await validateSlot(db, club, settings, startsAt, minutes, t, { guest: true, slot: await slotOf(db, resourceId) });
     const res = await lockResource(db, resourceId);
     if (!res || !res.active) fail('not_found', 'resource');
     // Лимит живых броней гостя: параллельные брони одного гостя на разные столы — по очереди.
@@ -386,7 +408,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     await emit(db, 'booking.created', b);
     if (status === 'confirmed') {
       await emit(db, 'booking.confirmed', b);
-      await notifyGuest(db, b, { kind: 'booking.confirmed', text: `Бронь подтверждена: стол ${b.resource_number}, ${when(b)}.`, actions: [{ id: 'open', title: 'Моя бронь', url: bookingUrl(b) }] });
+      await notifyGuest(db, b, { kind: 'booking.confirmed', text: `Бронь подтверждена: ${resourceName(b.resource_type, b.resource_number, { capital: false })}, ${when(b)}.`, actions: [{ id: 'open', title: 'Моя бронь', url: bookingUrl(b) }] });
     }
     log.info('booking_created', { booking_id: id, club_id: clubId, resource_id: resourceId, status, source: src });
     return view(db, b, { t });
@@ -411,7 +433,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
     if (!club) fail('not_found', 'club');
     if ((await db.query('select bl.club_mode($1) as m', [clubId])).rows[0].m === 'suspended') fail('club_suspended');
     const settings = bookingSettings(club.settings);
-    await validateSlot(db, club, settings, startsAt, body.minutes, t, { guest: false });
+    await validateSlot(db, club, settings, startsAt, body.minutes, t, { guest: false, slot: await slotOf(db, resourceId) });
     const res = await lockResource(db, resourceId);
     if (!res || !res.active || res.club_id !== clubId) fail('not_found', 'resource');
     const endsAt = new Date(ms(startsAt) + body.minutes * MIN);
@@ -524,7 +546,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       method,
       requestKey: requestKey ?? null,
       ...(host ? { returnUrl: `${host}${path}` } : {}),
-      description: `Предоплата брони, стол ${b.resource_number}`,
+      description: `Предоплата брони, ${resourceName(b.resource_type, b.resource_number, { capital: false })}`,
     });
     const paymentId = result?.payment?.id;
     if (!isUuid(paymentId)) throw new Error('createPrepayment: нет payment.id');
@@ -570,7 +592,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         await emit(db, 'booking.confirmed', nb, { payment_id: p.payment_id });
         await notifyGuest(db, nb, {
           kind: 'booking.confirmed',
-          text: `Бронь подтверждена: стол ${nb.resource_number}, ${when(nb)}. Предоплата ${formatMoney(paid)}.`,
+          text: `Бронь подтверждена: ${resourceName(nb.resource_type, nb.resource_number, { capital: false })}, ${when(nb)}. Предоплата ${formatMoney(paid)}.`,
           actions: [{ id: 'open', title: 'Моя бронь', url: bookingUrl(nb) }],
         });
         return { result: 'confirmed', booking_id: b.id };
@@ -581,7 +603,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       // Бронь уже не ждёт этот платёж (вторая оплаченная попытка, сгорела, отменена): вернуть целиком.
       await deps.payments.forfeitPrepayment(db, { paymentId: p.payment_id, percent: 0, reason: 'Бронь уже не действует: предоплата пришла поздно' });
       await audit(db, { action: 'booking.late_payment', objectType: 'booking', objectId: b.id, actorType: 'system', data: { booking_id: b.id, payment_id: p.payment_id, status: b.status, amount_kopecks: amount } });
-      await notifyGuest(db, b, { kind: 'booking.refund', text: `Оплата брони стола ${b.resource_number} пришла, когда бронь уже не действовала. Деньги вернутся.` });
+      await notifyGuest(db, b, { kind: 'booking.refund', text: `Оплата брони ${resourceName(b.resource_type, b.resource_number, { case: 'gen', capital: false })} пришла, когда бронь уже не действовала. Деньги вернутся.` });
       log.warn('booking_late_payment', { booking_id: b.id, payment_id: p.payment_id, status: b.status });
       return { result: 'refunded', booking_id: b.id };
     }
@@ -594,7 +616,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         await deps.payments.refund(db, { paymentId: p.payment_id, amountKopecks: amount, reason: 'Игра по брони уже идёт: лишняя доплата' });
       }
       await audit(db, { action: 'booking.extra_refund', objectType: 'booking', objectId: b.id, actorType: 'system', data: { booking_id: b.id, payment_id: p.payment_id, amount_kopecks: amount } });
-      await notifyGuest(db, b, { kind: 'booking.refund', text: `Игра по брони на столе ${b.resource_number} уже идёт — лишняя оплата ${formatMoney(amount)} вернётся.` });
+      await notifyGuest(db, b, { kind: 'booking.refund', text: `Игра по брони на ${resourceName(b.resource_type, b.resource_number, { case: 'pre', capital: false })} уже идёт — лишняя оплата ${formatMoney(amount)} вернётся.` });
       log.warn('booking_extra_payment', { booking_id: b.id, payment_id: p.payment_id });
       return { result: 'refunded', booking_id: b.id };
     }
@@ -622,7 +644,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       await deps.payments.refund(db, { paymentId: extraPaymentId, amountKopecks: extraAmount, reason: 'Игра по брони не началась: стол недоступен' });
       await audit(db, { action: 'booking.extra_refund', objectType: 'booking', objectId: b.id, actorType: 'system', data: { booking_id: b.id, payment_id: extraPaymentId, amount_kopecks: extraAmount, status: b.status } });
     }
-    await notifyGuest(db, b, { kind: 'booking.start_failed', text: `Не удалось начать игру по брони на столе ${b.resource_number}. Деньги за доплату вернутся.`, level: 'important' });
+    await notifyGuest(db, b, { kind: 'booking.start_failed', text: `Не удалось начать игру по брони на ${resourceName(b.resource_type, b.resource_number, { case: 'pre', capital: false })}. Деньги за доплату вернутся.`, level: 'important' });
     return { result: 'refunded', booking_id: b.id };
   }
 
@@ -829,12 +851,12 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         manual: true,
         resourceId: b.resource_id,
         data: { action: 'booking_cancel', booking_id: b.id },
-        text: `Отмена брони стола ${b.resource_number} на ${when(b)}: ${why}`,
+        text: `Отмена брони ${resourceName(b.resource_type, b.resource_number, { case: 'gen', capital: false })} на ${when(b)}: ${why}`,
       });
       await notifyGuest(db, nb, {
         kind: 'booking.canceled',
         level: 'important',
-        text: `Клуб отменил бронь стола ${b.resource_number} на ${when(b)}.${b.prepaid_kopecks > 0 ? ` Предоплата ${formatMoney(b.prepaid_kopecks)} вернётся.` : ''}`,
+        text: `Клуб отменил бронь ${resourceName(b.resource_type, b.resource_number, { case: 'gen', capital: false })} на ${when(b)}.${b.prepaid_kopecks > 0 ? ` Предоплата ${formatMoney(b.prepaid_kopecks)} вернётся.` : ''}`,
       });
     } else {
       await audit(db, { action: 'booking.cancel', objectType: 'booking', objectId: b.id, data });
@@ -894,7 +916,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       if (ms(b.created_at) <= startMs - REMIND_BEFORE_MS && ms(t) < startMs - RESERVE_BEFORE_MS) {
         await notifyGuest(db, b, {
           kind: 'booking.reminder',
-          text: `Через час бронь: стол ${b.resource_number}, ${at(b)}.`,
+          text: `Через час бронь: ${resourceName(b.resource_type, b.resource_number, { capital: false })}, ${at(b)}.`,
           actions: [{ id: 'open', title: 'Моя бронь', url: bookingUrl(b) }],
         });
       }
@@ -906,7 +928,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         if (ms(b.created_at) <= startMs - RESERVE_BEFORE_MS) {
           await notifyGuest(db, b, {
             kind: 'booking.soon',
-            text: `Бронь через 15 минут: стол ${b.resource_number}, ${at(b)}. Отсканируйте QR на столе — игра начнётся.`,
+            text: `Бронь через 15 минут: ${resourceName(b.resource_type, b.resource_number, { capital: false })}, ${at(b)}. Отсканируйте QR на ${noun(b.resource_type, 'pre')} — игра начнётся.`,
             actions: [{ id: 'open', title: 'Моя бронь', url: bookingUrl(b) }],
           });
         }
@@ -1026,7 +1048,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         data: { booking_id: b.id, why: String(b.notified?.unavailable ?? 'history').slice(0, 32) },
         // Объект тревоги — бронь: вторая бронь того же стола — новая тревога и уведомление владельцу.
         dedupeKey: `booking:${b.id}`,
-        text: `Бронь стола ${b.resource_number} на ${at(b)}: стол был недоступен гостю, предоплата возвращена`,
+        text: `Бронь ${resourceName(b.resource_type, b.resource_number, { case: 'gen', capital: false })} на ${at(b)}: ${noun(b.resource_type)} был недоступен гостю, предоплата возвращена`,
       });
     }
     await updateBooking(db, b.id, { status: 'expired', expired_at: t, expire_reason: reason, forfeit_percent: percent, updated_at: t });
@@ -1043,7 +1065,7 @@ export function createBookingService({ deps, log, clock, config = {} }) {
       await notifyGuest(db, nb, {
         kind: 'booking.expired',
         level: 'important',
-        text: `Бронь стола ${b.resource_number} на ${at(b)} закрыта: стол был недоступен.${b.prepaid_kopecks > 0 ? ` Предоплата ${formatMoney(b.prepaid_kopecks)} вернётся.` : ''}`,
+        text: `Бронь ${resourceName(b.resource_type, b.resource_number, { case: 'gen', capital: false })} на ${at(b)} закрыта: ${noun(b.resource_type)} был недоступен.${b.prepaid_kopecks > 0 ? ` Предоплата ${formatMoney(b.prepaid_kopecks)} вернётся.` : ''}`,
       });
     }
     if (reason === 'no_show') {
@@ -1053,8 +1075,8 @@ export function createBookingService({ deps, log, clock, config = {} }) {
         level: 'important',
         text:
           b.prepaid_kopecks > 0
-            ? `Бронь стола ${b.resource_number} на ${at(b)} сгорела: вы не пришли за ${holdText(b)}.${refund > 0 ? ` Вернём ${formatMoney(refund)}.` : ' Предоплата по правилам клуба не возвращается.'}`
-            : `Бронь стола ${b.resource_number} на ${at(b)} сгорела: вы не пришли за ${holdText(b)}.`,
+            ? `Бронь ${resourceName(b.resource_type, b.resource_number, { case: 'gen', capital: false })} на ${at(b)} сгорела: вы не пришли за ${holdText(b)}.${refund > 0 ? ` Вернём ${formatMoney(refund)}.` : ' Предоплата по правилам клуба не возвращается.'}`
+            : `Бронь ${resourceName(b.resource_type, b.resource_number, { case: 'gen', capital: false })} на ${at(b)} сгорела: вы не пришли за ${holdText(b)}.`,
       });
     }
     log.info('booking_expired', { booking_id: b.id, reason });

@@ -2,6 +2,7 @@
 // участники — { user_id, nick, label }: id нужен для выбора соперника в партии (Бильярдум+), nick —
 // ник Бильярдум+ или null, label — «Игрок N». Видят только участники сессии и персонал клуба.
 
+import { familyOf, maxPlayers, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
 import { OPEN_STATUSES } from './queries.mjs';
 
 const iso = (d) => (d ? new Date(d).toISOString() : null);
@@ -23,7 +24,11 @@ export function sessionView(s, { now, userId = null, participants = [], bookingL
   return {
     id: s.id,
     club: { id: s.club_id, timezone: s.club_timezone ?? null },
-    resource: { id: s.resource_id, number: s.resource_number, type: s.resource_type ?? null, title: s.resource_title ?? null },
+    resource: {
+      id: s.resource_id, number: s.resource_number, type: s.resource_type ?? null, title: s.resource_title ?? null,
+      // Вид ресурса (M5.8): слово «стол»/«корт» — по family, предел «Я играю» — max_players.
+      kind: TYPE_TO_KIND[s.resource_type] ?? null, family: familyOf(s.resource_type), max_players: maxPlayers(s.resource_type),
+    },
     status: s.status,
     started_at: iso(s.started_at),
     paid_until: iso(s.paid_until),

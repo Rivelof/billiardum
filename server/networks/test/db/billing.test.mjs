@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { tryQuery } from '../../../../supabase/tests/helpers.mjs';
+import { deactivateSeedCourts, tryQuery } from '../../../../supabase/tests/helpers.mjs';
 import { CLUB_A, PHONES, PLAN_CLUB, setup } from '../../../billing/test/db/harness.mjs';
 
 const SKIP = !process.env.DATABASE_ADMIN_URL;
@@ -20,6 +20,8 @@ let net;
 before(async () => {
   if (SKIP) return;
   h = await setup();
+  // Корты сида (M5.8) — вне работы: счёт считаем по 8 столам клуба A (как в тестах M5.3).
+  await deactivateSeedCourts(h.admin);
   ownerA = await h.login(PHONES.ownerA);
   andrey = await h.login(PHONES.andrey);
   await h.admin.query(`

@@ -9,8 +9,11 @@
 // * minutes null — «Без лимита»: сумма заморозки за unlimited_hold_minutes (карта) и
 //   первый блок sbp_block_minutes (СБП, decisions №26).
 // * DEV_ALLOW_ANY_MINUTES=1 (не в проде, №54) — любые минуты от 1, без шага и минимума.
+// * Корт (вид со слотами, M5.8 №204): minutes — 1…4 слота (slot_minutes из тарифа клуба), и для
+//   старта, и для продления (шаг продления — слот); «Без лимита» и баланс пакетов — 400 bad_request.
 
-import { amountFor, pricesAround, TariffError } from '../tariffs/index.mjs';
+import { amountFor, pricesAround, resourceBilling, TariffError } from '../tariffs/index.mjs';
+import { familyOf, maxPlayers, TYPE_TO_KIND } from '../lib/resource-kinds.mjs';
 import { enterClub, isUuid, requireGuestReady } from './context.mjs';
 import { MoneyError, checkNeighborResult, fromNeighbor } from './errors.mjs';
 import { loadPaymentSettings } from './settings.mjs';
@@ -18,6 +21,11 @@ import { balanceOf } from '../packages/balance.mjs';
 
 export const QUOTE_TTL_MS = 3 * 60_000;
 export const FIXED_MINUTES = Object.freeze([30, 60, 120, 180]);
+/** Корт: сколько слотов можно взять за раз (старт и продление). */
+export const MAX_SLOTS = 4;
+
+/** Минуты корта: 1…MAX_SLOTS слотов. */
+export const slotMinutesOptions = (slot) => (Number.isInteger(slot) && slot > 0 ? Array.from({ length: MAX_SLOTS }, (_, i) => slot * (i + 1)) : []);
 export const OPEN_SESSION = Object.freeze(['active', 'ending', 'grace']);
 
 function tariffFail(err) {
@@ -72,13 +80,25 @@ export async function tableByCode(db, deps, { code, userId = null }) {
       mySession = null;
     }
   }
-  const options = [60, 120, 180];
-  if (settings.card || settings.sbp) options.push('unlimited');
+  // Корт (M5.8): только слоты, без «Без лимита».
+  const billing = await resourceBilling(db, { resourceId: t.id });
+  let options;
+  if (billing?.billing === 'slot') {
+    options = slotMinutesOptions(billing.slot_minutes).slice(0, 3);
+  } else {
+    options = [60, 120, 180];
+    if (settings.card || settings.sbp) options.push('unlimited');
+  }
   return {
     // mode (M5.1 №153): test — гость видит плашку «Тестовый режим клуба — деньги не списываются»;
     // suspended — клуб приостановлен, новую игру не начать (409 club_suspended).
     club: { id: t.club_id, name: t.club_name, timezone: t.timezone, mode: t.club_mode },
-    resource: { id: t.id, number: t.number, type: t.type, title: t.title },
+    resource: {
+      id: t.id, number: t.number, type: t.type, title: t.title,
+      // Вид ресурса (M5.8 №203): kind, семья (слово «стол»/«корт»), тариф по слотам и предел игроков.
+      kind: TYPE_TO_KIND[t.type] ?? null, family: familyOf(t.type), billing: billing?.billing ?? 'hourly',
+      slot_minutes: billing?.slot_minutes ?? null, max_players: maxPlayers(t.type),
+    },
     status: status?.status ?? 'offline',
     busy_until: status?.busy_until ?? null,
     // Аноним id игры не получает (ревью light: присоединение к чужой игре); вошедшему гостю, который
@@ -91,27 +111,35 @@ export async function tableByCode(db, deps, { code, userId = null }) {
   };
 }
 
-/** Проверка тела POST /api/quotes. */
-export function parseQuoteRequest(body, { devAllowAnyMinutes = false } = {}) {
+/**
+ * Проверка тела POST /api/quotes. slotMinutes — длина слота корта (M5.8): минуты — 1…MAX_SLOTS слотов,
+ * без «Без лимита» и баланса; null — стол (FIXED_MINUTES). anyMinutes — только форма (минуты целые
+ * 1…1440 или null), сами минуты проверит второй вызов, когда известен вид ресурса.
+ */
+export function parseQuoteRequest(body, { devAllowAnyMinutes = false, slotMinutes = null, anyMinutes = false } = {}) {
   if (!body || typeof body !== 'object') throw new MoneyError('bad_request', 'тело');
   const { resource_id: resourceId, kind, minutes, session_id: sessionId } = body;
   if (!isUuid(resourceId)) throw new MoneyError('bad_request', 'resource_id');
   if (kind !== 'start' && kind !== 'extend') throw new MoneyError('bad_request', 'kind');
   if (kind === 'extend' && !isUuid(sessionId)) throw new MoneyError('bad_request', 'session_id');
+  const allowed = slotMinutes === null ? FIXED_MINUTES : slotMinutesOptions(slotMinutes);
   if (minutes !== null) {
     if (!Number.isInteger(minutes)) throw new MoneyError('bad_request', 'minutes');
-    const ok = devAllowAnyMinutes ? minutes >= 1 && minutes <= 1440 : FIXED_MINUTES.includes(minutes);
+    const ok = anyMinutes || devAllowAnyMinutes ? minutes >= 1 && minutes <= 1440 : allowed.includes(minutes);
     if (!ok) throw new MoneyError('bad_request', 'minutes');
+  } else if (slotMinutes !== null && !anyMinutes) {
+    throw new MoneyError('bad_request', 'minutes: корт — только слоты');
   }
   const useBalance = body.use_balance === true;
   if (body.use_balance !== undefined && typeof body.use_balance !== 'boolean') throw new MoneyError('bad_request', 'use_balance');
   if (useBalance && minutes === null) throw new MoneyError('bad_request', 'балансом — только фиксированное время');
+  if (useBalance && slotMinutes !== null && !anyMinutes) throw new MoneyError('bad_request', 'use_balance: корт');
   return {
     resourceId,
     kind,
     minutes,
     sessionId: kind === 'extend' ? sessionId : null,
-    exact: devAllowAnyMinutes && minutes !== null && !FIXED_MINUTES.includes(minutes),
+    exact: !anyMinutes && devAllowAnyMinutes && minutes !== null && !allowed.includes(minutes),
     useBalance,
   };
 }
@@ -181,14 +209,18 @@ export async function bookingLimit(db, deps, { resourceId, from, now = from }) {
  * @returns ответ контракта {quote_id, amount_kopecks, minutes, valid_until, breakdown} и поля «Без лимита»
  */
 export async function createQuote(db, deps, info, config) {
-  const req = parseQuoteRequest(info.body, { devAllowAnyMinutes: config.devAllowAnyMinutes });
-  const { rows } = await db.query('select bl.resource_club($1) as club_id', [req.resourceId]);
+  const shape = parseQuoteRequest(info.body, { devAllowAnyMinutes: config.devAllowAnyMinutes, anyMinutes: true });
+  const { rows } = await db.query('select bl.resource_club($1) as club_id', [shape.resourceId]);
   const clubId = rows[0].club_id;
   if (!clubId) throw new MoneyError('not_found', 'стол');
   await enterClub(db, clubId);
   const { userId } = await requireGuestReady(db, info);
-  const table = await loadTable(db, req.resourceId);
+  const table = await loadTable(db, shape.resourceId);
   if (!table || !table.active) throw new MoneyError('not_found', 'стол');
+  // Минуты — по виду ресурса: у корта слоты из тарифа клуба (M5.8 №204), у стола — FIXED_MINUTES.
+  const billing = await resourceBilling(db, { resourceId: table.id });
+  if (billing?.billing === 'slot' && billing.slot_minutes === null) throw new MoneyError('no_tariff', 'у корта нет тарифа слотов');
+  const req = parseQuoteRequest(info.body, { devAllowAnyMinutes: config.devAllowAnyMinutes, slotMinutes: billing?.billing === 'slot' ? billing.slot_minutes : null });
   // M5.1 №160: приостановленный клуб — новую игру не начать; продление идущей оплаченной игры можно.
   if (req.kind === 'start' && table.club_mode === 'suspended') throw new MoneyError('club_suspended');
   const now = deps.clock.now();
@@ -298,8 +330,15 @@ export async function createQuote(db, deps, info, config) {
     amount_kopecks: priced.amount_kopecks,
     minutes: unlimited ? null : priced.minutes,
     valid_until: validUntil.toISOString(),
-    breakdown: priced.breakdown.map(({ from: f, to, price_per_hour_kopecks: p, amount_kopecks: a }) => ({ from: f, to, price_per_hour_kopecks: p, amount_kopecks: a })),
+    breakdown: priced.breakdown.map(({ from: f, to, price_per_hour_kopecks: p, price_per_slot_kopecks: ps, slot_minutes: sm, amount_kopecks: a }) => ({
+      from: f, to, price_per_hour_kopecks: p, ...(sm ? { price_per_slot_kopecks: ps, slot_minutes: sm } : {}), amount_kopecks: a,
+    })),
   };
+  // Корт: длина слота и сколько слотов в котировке (M5.8 №204).
+  if (billing?.billing === 'slot') {
+    out.slot_minutes = billing.slot_minutes;
+    out.slots = priced.minutes / billing.slot_minutes;
+  }
   // До какого момента можно играть перед ближайшей бронью или турниром (null — впереди ничего нет).
   out.extend_limit_until = limitUntil ? limitUntil.toISOString() : null;
   if (req.useBalance) {
