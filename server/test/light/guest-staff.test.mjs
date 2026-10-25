@@ -95,7 +95,7 @@ describe('гость и персонал', { skip: SKIP }, () => {
     receipt = await h.asUser(GUEST(3), (db) => svc.receipt(db, { sessionId: sid, userId: GUEST(3) }));
     assert.equal(receipt.receipt_status, 'succeeded');
     assert.deepEqual(list[0].club, { id: CLUB, timezone: 'Asia/Yekaterinburg' });
-    assert.deepEqual(list[0].resource, { id: RES(3), number: 3, type: 'billiard_pyramid', title: 'Стол 3', kind: 'pyramid', family: 'table', max_players: 20 });
+    assert.deepEqual(list[0].resource, { id: RES(3), number: 3, type: 'billiard_pyramid', title: 'Стол 3', kind: 'pyramid', family: 'table', max_players: 20, billing: 'hourly', slot_minutes: null });
     await h.asUser(GUEST(3), (db) => svc.stop(db, { sessionId: sid, userId: GUEST(3) }));
   });
 

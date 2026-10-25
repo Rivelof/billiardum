@@ -82,6 +82,12 @@ describe('падел-корт: свет по слотам, продление с
     // Представление сессии: вид ресурса и предел игроков.
     const v = await h.asUser(GUEST(1), (db) => svc.getSession(db, { sessionId: sid, userId: GUEST(1) }));
     assert.deepEqual([v.resource.kind, v.resource.family, v.resource.max_players, v.resource.title], ['padel_court', 'court', 4, 'Корт 1']);
+    // Шаг продления — слот из тарифа клуба (сид: 90 минут); у стола — почасово.
+    assert.deepEqual([v.resource.billing, v.resource.slot_minutes], ['slot', 90]);
+    // SSE session — те же поля.
+    await h.until(() => h.sse.events.some((e) => e.channel === `session:${sid}` && e.event === 'session'), 'SSE session');
+    const ev = h.sse.events.filter((e) => e.channel === `session:${sid}` && e.event === 'session').at(-1);
+    assert.deepEqual([ev.data.resource.billing, ev.data.resource.slot_minutes], ['slot', 90]);
   });
 
   it('«Я играю на этом корте»: до 4 игроков вместе с плательщиком, пятый — limit_exceeded', async () => {

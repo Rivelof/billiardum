@@ -102,4 +102,5 @@ DATABASE_ADMIN_URL=postgres://supabase_admin:…@127.0.0.1:PORT/postgres \
   (`booking_step_minutes`). Цена — по тарифу слотов (граница расписания внутри брони — по минутам). Корт без правил слота — `409 no_tariff`.
 - Доступность: у ресурса — `kind`, `family`, `slot_minutes` (у стола `null`); в `rates` корта — `per_slot_kopecks` и `slot_minutes`
   (точная цена — по цене слота, `per_hour_kopecks` у корта справочная). Ресурсы — столы, затем корты.
-- Тексты уведомлений — «корт 1», «на корте 1»; очередь — «Занять корт».
+- Тексты уведомлений — «корт 1», «на корте 1»; очередь — «Корт 2 свободен…», «Занять корт».
+- Очередь: `resource` в `GET /api/me/waitlist`, ответе `POST /api/waitlist` и SSE `waitlist.offered`/`waitlist.accepted` — `{id, number, title, type, family}`.

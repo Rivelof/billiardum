@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { formatMoney, formatTime } from '@billiardum/shared/format';
 import { afterCommit } from '../lib/store.mjs';
 import { familyOf, isSlotType, maxPlayers, resourceName } from '../lib/resource-kinds.mjs';
+import { resourceBilling } from '../tariffs/index.mjs';
 import { normalizeCode } from './codes.mjs';
 import { fail, LightError } from './errors.mjs';
 import { createKit, minutesText, phaseOf, playEnd, premarkNotified, UNPLAYED_THRESHOLD_MS, unplayedMs } from './kit.mjs';
@@ -138,9 +139,19 @@ export function createLightService(opts) {
     }
   }
 
+  /**
+   * Тарификация ресурса сессии (M5.8): { billing: 'hourly'|'slot', slot_minutes } — гость продлевает корт
+   * слотами этой длины. У стола запроса к тарифу нет.
+   */
+  async function billingOf(db, s) {
+    if (!isSlotType(s.resource_type)) return { billing: 'hourly', slot_minutes: null };
+    const b = await resourceBilling(db, { resourceId: s.resource_id });
+    return { billing: 'slot', slot_minutes: b?.slot_minutes ?? null };
+  }
+
   async function view(db, s, userId) {
     const list = await participants(db, s.id);
-    return sessionView(s, { now: now(), userId, participants: list, nicks: await nicksFor(db, list), bookingLimit: await bookingLimit(db, s) });
+    return sessionView(s, { now: now(), userId, participants: list, nicks: await nicksFor(db, list), bookingLimit: await bookingLimit(db, s), billing: await billingOf(db, s) });
   }
 
   /**
@@ -1461,7 +1472,7 @@ export function createLightService(opts) {
       const roles = await rolesIn(db, s.club_id, userId);
       if (!roles.some((r) => ROLES.reception.includes(r))) fail('not_found', 'session');
     }
-    return sessionView(s, { now: now(), userId, participants: list, nicks: await nicksFor(db, list), bookingLimit: await bookingLimit(db, s) });
+    return sessionView(s, { now: now(), userId, participants: list, nicks: await nicksFor(db, list), bookingLimit: await bookingLimit(db, s), billing: await billingOf(db, s) });
   }
 
   /** Сессии гостя во всех клубах (идущие и ждущие выбора после interrupted). */
@@ -1803,6 +1814,7 @@ export function createLightService(opts) {
   return {
     kit,
     bookingLimit,
+    billingOf,
     nicksFor,
     startFromBooking,
     setReserved,

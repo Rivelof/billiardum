@@ -107,6 +107,7 @@ export async function init(ctx) {
         participants: rows,
         nicks: await service.nicksFor(db, rows),
         bookingLimit: await service.bookingLimit(db, s),
+        billing: await service.billingOf(db, s),
       });
       return common;
     });

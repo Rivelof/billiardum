@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { CLUB_A, MIN, setup, T0 } from './harness.mjs';
+import { CLUB_A, MIN, setup, T0, waitFor } from './harness.mjs';
 
 const skip = !process.env.DATABASE_ADMIN_URL;
 const COURT_1 = 'e1000000-0000-4000-8000-000000000101';
@@ -82,5 +82,25 @@ describe('бронь корта по слотам', { skip }, () => {
     const [s] = await h.q('select * from bl.sessions where id = $1', [ok.json.session_id]);
     assert.equal(s.resource_id, COURT_1);
     assert.equal(new Date(s.paid_until).getTime(), start + 90 * MIN);
+  });
+
+  it('очередь на корт: GET /api/me/waitlist и предложение — resource с type padel_court и family court, текст «Корт 2»', async () => {
+    const t = T0 + 9 * 60 * MIN;
+    h.clock.set(t);
+    const payer = await h.login('+79996000002');
+    const waiter = await h.login('+79996000003');
+    const sid = await h.session({ resourceId: COURT_2, payer: payer.id, startedMs: t, paidUntilMs: t + 30 * MIN });
+    const j = await h.request('POST', '/api/waitlist', { token: waiter.token, body: { resource_id: COURT_2 } });
+    assert.equal(j.status, 201, j.text);
+    const mine = await h.request('GET', '/api/me/waitlist', { token: waiter.token });
+    assert.equal(mine.status, 200, mine.text);
+    assert.deepEqual(mine.json[0].resource, { id: COURT_2, number: 2, title: 'Корт 2', type: 'padel_court', family: 'court' });
+    h.clock.set(t + 32 * MIN);
+    await h.closeSession(sid);
+    await waitFor(async () => (await h.q('select status from bl.waitlist where id = $1', [j.json.id]))[0].status === 'offered');
+    const note = (await h.notifications(waiter.id, 'waitlist.offer')).at(-1);
+    assert.match(note.text, /^Корт 2 свободен — он ваш на 5 минут\. Нажмите «Занять корт»\.$/);
+    const offered = h.sseEvents.find((e) => e.channel === `user:${waiter.id}` && e.event === 'waitlist' && e.data.type === 'waitlist.offered');
+    assert.deepEqual([offered.data.resource.type, offered.data.resource.family], ['padel_court', 'court']);
   });
 });

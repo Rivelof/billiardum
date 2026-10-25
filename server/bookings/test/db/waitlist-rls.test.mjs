@@ -55,7 +55,7 @@ describe('лист ожидания, доступность, RLS', { skip }, () 
     // SSE гостю (№120): waitlist.offered без кода стола.
     const offered = h.sseEvents.find((e) => e.channel === `user:${a.id}` && e.event === 'waitlist' && e.data.type === 'waitlist.offered');
     assert.deepEqual(offered.data, {
-      type: 'waitlist.offered', offer_id: ja.json.id, resource: { id: table(1), number: 1, title: 'Стол 1' }, expires_at: new Date(T0 + 37 * MIN).toISOString(),
+      type: 'waitlist.offered', offer_id: ja.json.id, resource: { id: table(1), number: 1, title: 'Стол 1', type: 'billiard_pyramid', family: 'table' }, expires_at: new Date(T0 + 37 * MIN).toISOString(),
     });
     const mineA = await h.request('GET', '/api/me/waitlist', { token: a.token });
     assert.equal(mineA.json[0].status, 'offered');

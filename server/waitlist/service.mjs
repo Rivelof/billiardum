@@ -11,7 +11,7 @@
 // Ресепшн может снять удержание с причиной: POST /api/waitlist/offers/{id}/release (ручное действие).
 // Стол не предлагается, если до ближайшей брони меньше 30 минут.
 
-import { noun, resourceName } from '../lib/resource-kinds.mjs';
+import { familyOf, noun, resourceName } from '../lib/resource-kinds.mjs';
 import { afterCommit } from '../lib/store.mjs';
 import { fail } from '../bookings/errors.mjs';
 import { isUuid, loadClub, lockResource, resourceClub, safely, tableFree, useClub } from '../bookings/queries.mjs';
@@ -52,7 +52,8 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
     return {
       id: w.id,
       club_id: w.club_id,
-      resource: { id: w.resource_id, number: w.resource_number, title: w.resource_title },
+      // Вид ресурса (M5.8): экран предложения пишет «корт» или «стол» по family.
+      resource: { id: w.resource_id, number: w.resource_number, title: w.resource_title, type: w.resource_type, family: familyOf(w.resource_type) },
       status: w.status,
       position: await position(db, w),
       offer_until: w.status === 'offered' ? iso(w.offer_until) : null,
@@ -70,7 +71,7 @@ export function createWaitlistService({ deps, log, clock, nextBookingStart }) {
    */
   async function publish(db, w, type = 'waitlist.updated') {
     const v = await view(db, w);
-    const resource = { id: w.resource_id, number: w.resource_number, title: w.resource_title };
+    const resource = { id: w.resource_id, number: w.resource_number, title: w.resource_title, type: w.resource_type, family: familyOf(w.resource_type) };
     let data;
     if (type === 'waitlist.offered') data = { type, offer_id: w.id, resource, expires_at: iso(w.offer_until) };
     else if (type === 'waitlist.accepted') data = { type, offer_id: w.id, resource, hold_until: iso(w.hold_until) };
