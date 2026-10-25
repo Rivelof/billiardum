@@ -37,6 +37,7 @@ import { formatLocalTime, parseLocalTime } from '../tariffs/engine.mjs';
 import { KIND_OF_TYPE, KINDS } from './hall.mjs';
 import { isSlotType, SLOT_MINUTES, TABLE_KINDS } from '../lib/resource-kinds.mjs';
 import { cleanReason, clubLive, manualAction } from './mode.mjs';
+import { clubNetwork, markTariffsOverride } from '../networks/lock.mjs';
 
 const DAY = 1440;
 const WEEK = 7 * DAY;
@@ -392,12 +393,19 @@ export async function getTariffs(db, { clubId }) {
   return { timezone: club.timezone, day_start_local: dayStart, rules, resource_rules: resourceRules, slots: slotsOf(raw), coverage };
 }
 
+/** Правила в журнале: коротко (до и после). */
+export const compactRules = (list) =>
+  list.map((r) => ({
+    kind: r.kind, days: r.days, from: r.from, to: r.to, price: r.price_per_hour_kopecks, min: r.min_minutes, step: r.step_minutes,
+    ...(r.slot_minutes ? { slot: r.slot_minutes, slot_price: r.price_per_slot_kopecks } : {}),
+  }));
+
 /**
- * PUT …/tariffs {rules, reason?}.
- * @param {{ clubId: string, userId: string, body: object, now: Date, ctx?: object, log?: object }} p
+ * Проверка нормализованных правил для клуба из контекста (его рабочие сутки и типы столов в работе).
+ * Ошибка — 400 tariff_gap | tariff_overlap {kind?, weekday, from, to, ...extra}. Блокирует правила клуба
+ * до конца транзакции (один запрос за раз).
  */
-export async function saveTariffs(db, { clubId, userId, body, now, ctx = null, log }) {
-  const rules = normalizeRules(body?.rules);
+export async function checkClubRules(db, clubId, rules, extra = {}) {
   const club = await clubRow(db, clubId);
   const { dayStart } = clubTariffSettings(club.settings);
   // Правила клуба меняет один запрос за раз.
@@ -406,10 +414,16 @@ export async function saveTariffs(db, { clubId, userId, body, now, ctx = null, l
   if (problem) {
     const { type, ...data } = problem;
     if (data.kind === null) delete data.kind;
-    throw new HttpError(400, type === 'overlap' ? 'tariff_overlap' : 'tariff_gap', { detail: JSON.stringify(problem), data });
+    throw new HttpError(400, type === 'overlap' ? 'tariff_overlap' : 'tariff_gap', { detail: JSON.stringify({ ...problem, ...extra }), data: { ...data, ...extra } });
   }
-  const { mode, live } = await clubLive(db, clubId, ctx);
-  const reason = live ? cleanReason(body?.reason) : null;
+}
+
+/**
+ * Заменить все правила клуба из контекста нормализованными правилами (прежние гаснут, история остаётся).
+ * Вызывающий уже проверил неделю (checkClubRules). Возвращает прежние правила (loadRules).
+ * M5.5: тем же путём шаблон тарифов сети записывается в каждый клуб (server/networks/templates.mjs).
+ */
+export async function replaceClubRules(db, clubId, rules, now) {
   const before = await loadRules(db, clubId);
   await db.query('update bl.tariff_rules set active = false where club_id = $1 and active', [clubId]);
   for (const r of rules) {
@@ -422,12 +436,30 @@ export async function saveTariffs(db, { clubId, userId, body, now, ctx = null, l
       );
     }
   }
-  const compact = (list) =>
-    list.map((r) => ({
-      kind: r.kind, days: r.days, from: r.from, to: r.to, price: r.price_per_hour_kopecks, min: r.min_minutes, step: r.step_minutes,
-      ...(r.slot_minutes ? { slot: r.slot_minutes, slot_price: r.price_per_slot_kopecks } : {}),
-    }));
+  return before;
+}
+
+/**
+ * PUT …/tariffs {rules, reason?}.
+ * M5.5 №191: клуб сети с шаблоном тарифов — «жёсткий» шаблон: 409 network_locked; «мягкий» —
+ * сохраняется как обычно и отмечается переопределением (шаблон сети клуб больше не меняет).
+ * @param {{ clubId: string, userId: string, body: object, now: Date, ctx?: object, log?: object }} p
+ */
+export async function saveTariffs(db, { clubId, userId, body, now, ctx = null, log }) {
+  const rules = normalizeRules(body?.rules);
+  const net = await clubNetwork(db, clubId);
+  if (net?.tariffs_template && net.tariffs_mode === 'hard') throw new HttpError(409, 'network_locked', { detail: 'tariffs', data: { network_id: net.network_id } });
+  await checkClubRules(db, clubId, rules);
+  const { mode, live } = await clubLive(db, clubId, ctx);
+  const reason = live ? cleanReason(body?.reason) : null;
+  const before = await replaceClubRules(db, clubId, rules, now);
+  const compact = compactRules;
   const data = { mode, before: compact(before.rules), before_resource_rules: before.resourceRules.length, after: compact(rules) };
+  if (net?.tariffs_template) {
+    await markTariffsOverride(db, clubId, true, now);
+    data.network_id = net.network_id;
+    data.network_override = true;
+  }
   if (live) {
     await manualAction(db, {
       clubId,

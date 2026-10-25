@@ -25,7 +25,7 @@ function inviteJson(r) {
 /** Сотрудники и открытые приглашения клуба из контекста. */
 export async function listStaff(db, { now }) {
   const staff = await db.query(
-    `select m.user_id, m.role, m.active, m.pin_hash is not null as pin_set, u.name, u.phone
+    `select m.user_id, m.role, m.active, m.pin_hash is not null as pin_set, m.network_id, u.name, u.phone
        from bl.club_members m join bl.users u on u.id = m.user_id
       order by m.active desc, m.role, u.name nulls last, m.user_id`,
   );
@@ -36,7 +36,8 @@ export async function listStaff(db, { now }) {
     [now],
   );
   return {
-    staff: staff.rows.map((r) => ({ user_id: r.user_id, name: r.name, phone_masked: maskPhone(r.phone), role: r.role, active: r.active, pin_set: r.pin_set })),
+    // network_id (M5.5 №192) — управляющий сети: доступ выдан сетью, роль и отзыв — в настройках сети.
+    staff: staff.rows.map((r) => ({ user_id: r.user_id, name: r.name, phone_masked: maskPhone(r.phone), role: r.role, active: r.active, pin_set: r.pin_set, network_id: r.network_id ?? null })),
     invites: invites.rows.map(inviteJson),
   };
 }
@@ -122,10 +123,12 @@ export async function revokeInvite(db, { inviteId, byUserId, now }) {
 
 async function memberForChange(db, { userId, byUserId }) {
   if (userId === byUserId) throw new HttpError(403, 'forbidden', { detail: 'self' });
-  const { rows } = await db.query('select role, active from bl.club_members where user_id = $1 for update', [userId]);
+  const { rows } = await db.query('select role, active, network_id from bl.club_members where user_id = $1 for update', [userId]);
   const m = rows[0];
   if (!m || !m.active) throw new HttpError(404, 'not_found');
   if (m.role === 'owner') throw new HttpError(403, 'forbidden', { detail: 'owner' });
+  // Управляющий сети (M5.5 №192): доступ выдаёт и снимает сеть (владелец сети), не клуб.
+  if (m.network_id) throw new HttpError(409, 'network_locked', { detail: 'network manager', data: { network_id: m.network_id } });
   return m;
 }
 

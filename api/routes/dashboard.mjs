@@ -50,7 +50,8 @@ function todayOf(club, now) {
 
 function dashboardHandler(all) {
   return async (ctx, req) => {
-    const s = await scope(ctx, req, { all, roles: VIEW_ROLES });
+    // «Деньги» — способы оплаты: управляющему сети нет (M5.5 №192, как экспорт №166).
+    const s = await scope(ctx, req, { all, roles: VIEW_ROLES, allowNetwork: req.query.tab !== 'money' });
     const now = ctx.clock.now();
     const q = parseQuery(req.query, { today: todayOf(s.clubs[0], now) });
     const key = `${s.key}|${q.from}|${q.to}|${q.tab}|${q.kind ?? ''}|${q.compare ? 1 : 0}`;
@@ -73,7 +74,10 @@ function nowHandler(all) {
     const clubs = [];
     for (const c of s.clubs) {
       await s.enter(c);
-      clubs.push({ name: c.name, ...(await clubNow(ctx, ctx.db, c, now)) });
+      const one = await clubNow(ctx, ctx.db, c, now);
+      // Управляющему сети — выручка без разбивки по способам оплаты (M5.5 №192).
+      if (c.viaNetwork && one.revenue_today) one.revenue_today = { ...one.revenue_today, by_method: null };
+      clubs.push({ name: c.name, ...one });
     }
     const json = all ? { at: now.toISOString(), clubs, totals: sumTotals(clubs) } : { at: now.toISOString(), ...clubs[0], name: undefined };
     cachePut(key, json, CACHE_LIVE_TTL_MS, now.getTime());

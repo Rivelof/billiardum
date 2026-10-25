@@ -81,6 +81,8 @@ export const routes = [
     method: 'GET',
     path: '/api/clubs/{club}/cashbook/export.csv',
     auth: 'staff',
+    // Экспорт — не управляющему сети (M5.5 №192).
+    networkManager: false,
     roles: MANAGER,
     handler: async (ctx, req) => {
       const c = await club(ctx);

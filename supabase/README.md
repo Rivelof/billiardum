@@ -305,6 +305,32 @@ alter event trigger bl_audit_guard_drop enable always;
 
 Узкие функции читают контекст через `bl.billing_ctx()` (без SECURITY DEFINER, владелец `bl_definer`): у `bl_definer` нет права на `bl.ctx_*`.
 
+## Сети клубов (M5.5, 1350–1351)
+
+Подробно — `server/networks/README.md`, решения №190–194. Все таблицы — ENABLE и FORCE RLS, владелец `bl_owner`; кто видит — через `bl.network_access(network)`: `owner` / `manager` в личном контексте (`app.club_id` пуст), `club` — в контексте клуба этой сети, иначе `NULL` (без контекста — ничего).
+
+| Таблица | Суть | `app_api` |
+|---|---|---|
+| `networks` | сеть владельца: название, режим шаблонов `tariffs_mode`/`menu_mode` (`hard`/`soft`), версии шаблонов, архив | чтение — владелец, управляющие, клубы сети; изменение названия, режимов и версий — владелец; создание и архив — узкие функции |
+| `network_clubs` | клубы сети (история; активная строка — клуб в сети, уникальна по клубу — не больше одной сети), переопределение тарифов, применённые версии | чтение — своя строка клуба (контекст клуба), клубы сети — владелец и управляющие; клуб отмечает переопределение и версии; состав — только узкие функции |
+| `network_members` | управляющие сети: телефон, привязка при входе, отзыв | чтение — владелец сети, пользователь — свои строки; клубу не видно; запись — только узкие функции |
+| `network_tariff_rules` | шаблон тарифов: правило мастера (`rule jsonb`; у корта — слот, 1351), `price_per_hour` — цена правила (часа или слота), > 0 (№163) | чтение — сеть видна; запись — владелец в личном контексте |
+| `network_products` | шаблон меню: товар, цена в копейках (≥ 1), алкоголь, НДС, предмет расчёта | так же |
+
+Столбцы в старых таблицах: `club_members.network_id` — членство выдано сетью (управляющий сети, `role = 'manager'`); `app_api` не вставляет и не меняет такие строки и сам `network_id` (триггер `club_members_network_guard`, код `BLN10`). `products.network_product_id`, `products.network_override` — товар шаблона меню и «переопределён клубом». План `billing_plans.code = 'network'` («Сеть», 119 000 коп., меняет `platform_admin`); триггер `club_subscriptions_network_plan` даёт его новой подписке клуба сети.
+
+| Функция | Кто | Что |
+|---|---|---|
+| `bl.network_access(network) → text` | политики, сервер | `owner` · `manager` · `club` · `NULL` |
+| `bl.network_create(name) → uuid` | вошедший в личном контексте | сеть, не больше 5 (`BLN05`) |
+| `bl.network_add_club(network, club) → uuid` | владелец сети | только клуб, где он — активный владелец напрямую (`BLN01`); клуб в другой сети — `BLN02`; нет сети или не его — `BLN03`; 100 клубов — `BLN04`; затем доступ управляющих и план |
+| `bl.network_remove_club(network, club) → boolean` | владелец сети | клуб выходит: доступ управляющих сети к нему снимается, план — «Клуб» |
+| `bl.network_invite(network, phone, expires) → uuid`, `bl.network_revoke_member(network, member) → uuid` | владелец сети | приглашение управляющего (уже управляющий — `BLN06`), отзыв (нет — `BLN07`) |
+| `bl.network_accept_invites()` | пользователь из контекста (при входе) | привязать приглашения на его номер и выдать доступ |
+| `bl.network_members_list(network)` | владелец сети | управляющие и приглашения: телефон (сервер маскирует), имя |
+| `bl.network_archive(network) → integer` | владелец сети | архив: клубы выходят, управляющие отзываются |
+| `bl.network_sync_access(network)`, `bl.network_sync_billing(network)`, `bl.network_plan_for(club)`, `bl.network_me()`, `bl.network_owned(network)` | только узкие функции (у `app_api` нет `EXECUTE`) | строки `club_members` управляющих сети; план «Сеть» клубам сети из 2+ клубов; проверки контекста и владения |
+
 ## Деньги
 
 Таблицы `0200_money.sql`, `0201_holidays.sql` (платежи, котировки, заявки ресепшена, чеки, возвраты, настройки ЮKassa клуба, праздники), их RLS и узкие функции — `server/payments/README.md`. Тесты — `tests/money_rls.test.mjs`, `tests/money_flow.test.mjs`.

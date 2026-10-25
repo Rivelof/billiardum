@@ -29,6 +29,8 @@
 //   rawBody   — { types: ['application/…', 'multipart/form-data'], maxBytes } (M5.1 №157): тело с таким
 //               Content-Type читается как есть (Buffer до maxBytes) в req.rawBody = { mime, contentType, buffer },
 //               req.body = {}; иначе — JSON как у всех;
+//   networkManager: false — (M5.5 №192) управляющему сети (членство в клубе через сеть, club_members.network_id)
+//               — 403: экспорт и деньги по способам оплаты (как №166); ctx.networkManager — id сети или null;
 //   db: false — auth 'none' или 'terminal': обработчик без транзакции запроса (ctx.db = null).
 //               Сам открывает короткие транзакции ctx.withContext(ctx.pool, …) ПО ОЧЕРЕДИ:
 //               обработчик не держит два соединения пула сразу (иначе параллельные запросы
@@ -141,6 +143,7 @@ function validateRoute(r, file) {
   }
   if (r.requires && !r.requires.every((x) => x === 'phone' || x === 'consent')) throw new Error(`${where}: requires`);
   if (r.actor && r.actor !== 'system' && r.actor !== 'user') throw new Error(`${where}: actor`);
+  if (r.networkManager !== undefined && (r.networkManager !== false || r.auth !== 'staff')) throw new Error(`${where}: networkManager — только false у 'staff'`);
   if (r.db === false && ((r.auth !== 'none' && r.auth !== 'terminal') || r.idempotent)) throw new Error(`${where}: db: false только для auth 'none' и 'terminal'`);
   if (
     r.rawBody !== undefined &&
@@ -257,10 +260,15 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
     res.end(text);
   }
 
-  async function rolesIn(db, clubId, userId) {
-    if (!clubId || !userId) return [];
-    const { rows } = await db.query('select role from bl.club_members where club_id = $1 and user_id = $2 and active', [clubId, userId]);
-    return rows.map((r) => r.role);
+  /**
+   * Роли пользователя в клубе и сеть, через которую выдано членство (M5.5 №192: управляющий сети —
+   * строка club_members с network_id; роль manager, без экспорта и денег по способам оплаты).
+   * @returns {Promise<{ roles: string[], networkId: string|null }>}
+   */
+  async function membershipIn(db, clubId, userId) {
+    if (!clubId || !userId) return { roles: [], networkId: null };
+    const { rows } = await db.query('select role, network_id from bl.club_members where club_id = $1 and user_id = $2 and active', [clubId, userId]);
+    return { roles: rows.map((r) => r.role), networkId: rows.find((r) => r.network_id)?.network_id ?? null };
   }
 
   /**
@@ -450,6 +458,7 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
             club,
             clubMode: null,
             roles: [],
+            networkManager: null,
             idempotencyKey,
             setCookie: (header) => cookies.push(header),
             afterCommit: (fn) => afterCommit(db, fn),
@@ -461,7 +470,9 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
               if (bound && clubId !== bound) throw new HttpError(403, 'forbidden', { detail: 'token club' });
               await setContext(db, { clubId });
               // Токен PIN даёт роли только в клубе своего терминала.
-              const roles = principal?.clubId && principal.clubId !== clubId ? [] : await rolesIn(db, clubId, userId);
+              const m = principal?.clubId && principal.clubId !== clubId ? { roles: [], networkId: null } : await membershipIn(db, clubId, userId);
+              const roles = m.roles;
+              ctx.networkManager = m.networkId;
               ctx.club = clubId;
               ctx.clubMode = clubId ? await contextClubMode(db) : null;
               ctx.roles = roles;
@@ -481,10 +492,12 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
             ctx.platformRole = role;
             ctx.roles = effective;
           } else if (club) {
-            ctx.roles = principal?.clubId && principal.clubId !== club ? [] : await rolesIn(db, club, userId);
+            const m = principal?.clubId && principal.clubId !== club ? { roles: [], networkId: null } : await membershipIn(db, club, userId);
+            ctx.roles = m.roles;
+            ctx.networkManager = m.networkId;
           } else if (route.auth === 'staff') {
             // Клуб не указан: единственный клуб пользователя с подходящей ролью.
-            const { rows } = await db.query('select club_id, role from bl.club_members where user_id = $1 and active', [userId]);
+            const { rows } = await db.query('select club_id, role, network_id from bl.club_members where user_id = $1 and active', [userId]);
             const eligible = rows.filter((r) => route.roles.includes(r.role));
             if (eligible.length === 0) throw new HttpError(403, 'forbidden');
             let chosen = eligible.length === 1 ? eligible[0] : null;
@@ -503,11 +516,14 @@ export function createRouter(app, { routes, rateLimiter = createRateLimiter(), r
             await setContext(db, { clubId: chosen.club_id });
             ctx.club = chosen.club_id;
             ctx.roles = [chosen.role];
+            ctx.networkManager = chosen.network_id ?? null;
           }
           reqInfo.club = ctx.club;
           reqInfo.roles = ctx.roles;
           ctx.clubMode = ctx.club ? await contextClubMode(db) : null;
           if (route.auth === 'staff' && !ctx.roles.some((r) => route.roles.includes(r))) throw new HttpError(403, 'forbidden');
+          reqInfo.networkManager = ctx.networkManager;
+          if (route.networkManager === false && ctx.networkManager) throw new HttpError(403, 'forbidden', { detail: 'network manager' });
 
           // Идемпотентность: строка ключа вставляется первой; параллельный повтор ждёт коммита первого.
           let idem = null;

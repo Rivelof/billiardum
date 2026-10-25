@@ -12,6 +12,7 @@ import { looksLikeZip, XLSX_MAX_FILE_BYTES, XLSX_MIME, XlsxError, xlsxToProducts
 import { parseMultipart } from '../http/multipart.mjs';
 import { isUuid } from './api.mjs';
 import { balances, milliToNumber } from '../stock/api.mjs';
+import { clubNetwork, MENU_TEMPLATE_FIELDS } from '../networks/lock.mjs';
 
 const UNITS = ['шт', 'порц', 'л', 'мл', 'кг', 'г'];
 const SUBJECTS = ['commodity', 'excise', 'service', 'job', 'composite', 'another'];
@@ -78,7 +79,29 @@ export function productView(p) {
     photo: p.photo,
     sort: p.sort,
     active: p.active,
+    // M5.5 №191: товар из шаблона меню сети и «переопределён клубом» (мягкий шаблон).
+    network_product_id: p.network_product_id ?? null,
+    network_override: p.network_override ?? false,
   };
+}
+
+/**
+ * Шаблон меню сети и товар клуба (M5.5 №191): поля шаблона (MENU_TEMPLATE_FIELDS) у товара сети —
+ * «жёсткий» шаблон: 409 network_locked; «мягкий»: можно, товар становится переопределённым.
+ * Алкоголь шаблона (is_alcohol) клуб не снимает ни в каком режиме: QR-меню гостя без алкоголя (№76).
+ * @returns {Promise<{ override: boolean }>} override — отметить товар переопределённым
+ */
+async function networkProductCheck(db, cur, changes) {
+  if (!cur.network_product_id) return { override: false };
+  const touched = MENU_TEMPLATE_FIELDS.filter((f) => f in changes);
+  if (touched.length === 0) return { override: false };
+  const net = await clubNetwork(db, cur.club_id);
+  if (!net?.menu_template) return { override: false };
+  const tpl = (await db.query('select is_alcohol from bl.network_products where id = $1 and network_id = $2', [cur.network_product_id, net.network_id])).rows[0];
+  if (!tpl) return { override: false };
+  if (net.menu_mode === 'hard') throw new PosError('network_locked', `menu ${touched.join(',')}`, 409);
+  if (tpl.is_alcohol && changes.is_alcohol && changes.is_alcohol[1] === false) throw new PosError('network_locked', 'is_alcohol', 409);
+  return { override: !cur.network_override };
 }
 
 export function groupView(g) {
@@ -277,8 +300,14 @@ export async function updateProduct(db, deps, info) {
   if (!cur) throw new PosError('not_found', 'product');
   const next = { ...cur, ...f };
   const changes = diff(cur, next, PRODUCT_FIELDS);
+  const net = await networkProductCheck(db, cur, changes);
+  if (net.override) {
+    await db.query('update bl.products set network_override = true where id = $1', [id]);
+    cur.network_override = true;
+    changes.network_override = [false, true];
+  }
   let row = cur;
-  if (Object.keys(changes).length > 0) {
+  if (Object.keys(changes).some((k) => k !== 'network_override')) {
     try {
       row = (await db.query(
         `update bl.products set category_id = $2, name = $3, description = $4, sku = $5, price_kopecks = $6, unit = $7, is_alcohol = $8,
@@ -561,6 +590,24 @@ async function applyImport(db, deps, info, { items, errors, dryRun, source }) {
     const existing = it.sku ? bySku.get(it.sku) : catId && catId.startsWith('new:') ? null : byKey.get(`${catId ?? ''}|${it.name.toLowerCase()}`);
     plan.push({ it, catKey, existing });
   }
+  // M5.5 №191: товары шаблона меню сети — «жёсткий» шаблон импорт не меняет (ошибка строки
+  // network_template, видна и в предпросмотре), «мягкий» — меняет и отмечает переопределёнными.
+  // Алкоголь шаблона импорт не снимает ни в каком режиме (№76).
+  const net = await clubNetwork(db, clubId);
+  if (net?.menu_template) {
+    for (const p of plan) {
+      if (!p.existing?.network_product_id) continue;
+      const catId = p.catKey ? catByName.get(p.catKey) ?? `new:${p.catKey}` : null;
+      const fields = { category_id: catId, name: p.it.name, description: p.it.description, sku: p.it.sku, price_kopecks: p.it.price_kopecks, unit: p.it.unit,
+        is_alcohol: p.it.is_alcohol, vat_code: p.it.vat_code, payment_subject: p.it.payment_subject, active: true };
+      const changes = diff(p.existing, { ...p.existing, ...fields }, MENU_TEMPLATE_FIELDS);
+      if (Object.keys(changes).length === 0) continue;
+      const tpl = (await db.query('select is_alcohol from bl.network_products where id = $1 and network_id = $2', [p.existing.network_product_id, net.network_id])).rows[0];
+      if (!tpl) continue;
+      if (net.menu_mode === 'hard' || (tpl.is_alcohol && changes.is_alcohol)) errors.push({ line: p.it.line, field: 'name', code: 'network_template' });
+      else p.override = true;
+    }
+  }
   errors.sort((a, b) => a.line - b.line);
   const created = plan.filter((p) => !p.existing).length;
   const rows = plan.map(({ it, existing }) => ({
@@ -589,7 +636,7 @@ async function applyImport(db, deps, info, { items, errors, dryRun, source }) {
   let updated = 0;
   let unchanged = 0;
   let priceChanges = 0;
-  for (const { it, catKey, existing } of plan) {
+  for (const { it, catKey, existing, override } of plan) {
     const catId = catKey ? catByName.get(catKey) : null;
     const fields = {
       category_id: catId, name: it.name, description: it.description, sku: it.sku, price_kopecks: it.price_kopecks, unit: it.unit,
@@ -611,6 +658,7 @@ async function applyImport(db, deps, info, { items, errors, dryRun, source }) {
           [existing.id, fields.category_id, fields.name, fields.description, fields.sku, fields.price_kopecks, fields.unit, fields.is_alcohol,
             fields.vat_code, fields.payment_subject, fields.stop_list, fields.track_stock, fields.photo, t],
         );
+        if (override) await db.query('update bl.products set network_override = true where id = $1', [existing.id]);
         updated += 1;
       } else {
         await db.query(

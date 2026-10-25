@@ -25,7 +25,8 @@ function listHandler(all) {
 
 function exportHandler(all) {
   return async (ctx, req) => {
-    const s = await clubScope(ctx, req, { all, roles: ROLES_VIEW });
+    // Экспорт — не управляющему сети (M5.5 №192).
+    const s = await clubScope(ctx, req, { all, roles: ROLES_VIEW, allowNetwork: false });
     const p = parseHistoryQuery(req.params.kind, { ...req.query, cursor: undefined, limit: undefined }, { today: clubToday(s.clubs[0], ctx.clock.now()) });
     const page = await historyAll(ctx.db, { clubs: s.clubs, enter: s.enter, p, all: s.all });
     const out = historyCsv(p.kind, page, { clubs: s.clubs, all: s.all, from: p.from, to: p.to });
@@ -45,7 +46,7 @@ function exportHandler(all) {
 export const routes = [
   { method: 'GET', path: '/api/clubs/{club}/history/{kind}', auth: 'staff', roles: [...ROLES.MANAGER_UP], rateLimit: RATE, handler: listHandler(false) },
   { method: 'GET', path: '/api/clubs/all/history/{kind}', auth: 'guest', rateLimit: RATE, handler: listHandler(true) },
-  { method: 'GET', path: '/api/clubs/{club}/history/{kind}/export.csv', auth: 'staff', roles: [...ROLES.MANAGER_UP], rateLimit: RATE, handler: exportHandler(false) },
+  { method: 'GET', path: '/api/clubs/{club}/history/{kind}/export.csv', auth: 'staff', roles: [...ROLES.MANAGER_UP], networkManager: false, rateLimit: RATE, handler: exportHandler(false) },
   { method: 'GET', path: '/api/clubs/all/history/{kind}/export.csv', auth: 'guest', rateLimit: RATE, handler: exportHandler(true) },
   {
     method: 'GET',

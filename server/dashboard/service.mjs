@@ -443,18 +443,25 @@ export function dailyRows(a, { kind, today }) {
  * Свёртка периода по клубам: { agg, hourlyRows, guests, perClub }.
  * clubs — [{ club (loadClub), db-контекст уже выставлен вызывающим через enter(club) }].
  */
-export async function collect(db, clubs, { fromDay, toDay, now, kind, enter, wantHourly, light = false }) {
+export async function collect(db, clubs, { fromDay, toDay, now, kind, enter, wantHourly, light = false, alsoKinds = [] }) {
   const agg = emptyAgg();
   const hourlyRows = [];
   const guests = { total: 0, new: 0, repeat: 0, lost: 0 };
   const perClub = [];
+  // M5.5 × M5.8: те же сутки ещё и с фильтром вида или семьи (вкладка «Сеть»: столы и корты отдельно).
+  const byKind = Object.fromEntries(alsoKinds.map((k) => [k, emptyAgg()]));
   for (const club of clubs) {
     await enter(club);
     const loaded = await loadDays(db, club, { fromDay, toDay, now, light });
     const one = emptyAgg();
+    const oneByKind = Object.fromEntries(alsoKinds.map((k) => [k, emptyAgg()]));
     for (const d of loaded.days) {
       addDay(agg, d, { clubId: club.id, kind });
       addDay(one, d, { clubId: club.id, kind });
+      for (const k of alsoKinds) {
+        addDay(byKind[k], d, { clubId: club.id, kind: k });
+        addDay(oneByKind[k], d, { clubId: club.id, kind: k });
+      }
     }
     agg.missing_days.push(...loaded.missingDays.map((day) => ({ club_id: club.id, day })));
     if (wantHourly) {
@@ -469,10 +476,10 @@ export async function collect(db, clubs, { fromDay, toDay, now, kind, enter, wan
     agg.cashbook.expenses_kopecks += cb.expenses_kopecks;
     agg.cashbook.income_kopecks += cb.income_kopecks;
     agg.cashbook.collections_kopecks += cb.collections_kopecks;
-    perClub.push({ club, agg: one, guests: g, today: loaded.today });
+    perClub.push({ club, agg: one, byKind: oneByKind, guests: g, today: loaded.today });
   }
   agg.cashbook ??= { expenses_kopecks: 0, income_kopecks: 0, collections_kopecks: 0 };
-  return { agg, hourlyRows, guests, perClub };
+  return { agg, byKind, hourlyRows, guests, perClub };
 }
 
 /**
