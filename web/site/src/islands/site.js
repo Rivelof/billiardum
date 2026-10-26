@@ -57,3 +57,17 @@ for (const form of document.querySelectorAll('form[data-autosubmit]')) {
     }
   });
 }
+
+// ---------- плавная прокрутка колесом на всех страницах (Lenis, DESIGN §6, решение №228) ----------
+// Грузится отдельным чанком после загрузки страницы, когда браузер свободен; не нужна при reduce-motion и там,
+// где нет мыши или тачпада (телефон: нативная прокрутка остаётся как есть) — тогда чанк даже не скачивается.
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches && matchMedia('(any-pointer: fine)').matches) {
+  const later = () => {
+    const idle = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 200));
+    idle(() => {
+      import('@billiardum/shared/smooth-scroll').then((m) => m.startSmoothScroll({ load: () => import('lenis') })).catch(() => {});
+    });
+  };
+  if (document.readyState === 'complete') later();
+  else addEventListener('load', later, { once: true });
+}

@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@billiardum/shared": "0.1.0",
+    "lenis": "1.3.26",
     "preact": "10.29.8"
   }
 }

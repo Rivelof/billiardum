@@ -13,6 +13,8 @@
     "./errors": "./errors.mjs",
     "./hall": "./hall.mjs",
     "./break": "./break.mjs",
+    "./raf": "./raf.mjs",
+    "./smooth-scroll": "./smooth-scroll.mjs",
     "./illustrations": "./illustrations.mjs",
     "./icons": "./icons.mjs",
     "./reasons": "./reasons.mjs",

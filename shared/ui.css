@@ -10,6 +10,12 @@ html {
   text-size-adjust: 100%;
 }
 
+/* Плавная прокрутка колесом (Lenis, shared/smooth-scroll.mjs, DESIGN §6): правила из lenis.css, нужные нам.
+   Класс .lenis ставит сама библиотека на <html> только там, где прокрутка включена. */
+html.lenis, html.lenis body { height: auto; }
+.lenis.lenis-smooth { scroll-behavior: auto !important; }
+.lenis [data-lenis-prevent] { overscroll-behavior: contain; }
+
 body {
   margin: 0;
   min-height: 100vh;

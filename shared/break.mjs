@@ -1,17 +1,21 @@
 /**
- * Бильярдум — «разбой при прокрутке» без фреймворка (DESIGN §6, решение №127): главная сайта (остров) и,
- * при желании, главная гостя. Перенесено из web/guest/src/lib/break-sim.js и components/BreakTable.jsx
- * без изменения физики: одна детерминированная симуляция при загрузке, дальше кадры берутся по прогрессу
- * прокрутки (назад — шары собираются обратно).
+ * Бильярдум — «разбой при прокрутке» без фреймворка (DESIGN §6, решения №127 и №229): общий код главной сайта
+ * (остров `web/site/src/islands/break.js`) и главной гостя (`BreakTable.jsx`) — рисунок и поведение одинаковые.
+ * Одна детерминированная симуляция при загрузке; кадр берётся по прогрессу прокрутки, но не напрямую, а через
+ * сглаживание: прогресс догоняет цель с затуханием, не зависящим от частоты кадров, и не быстрее заданной
+ * скорости (шары не «перематываются» при резкой прокрутке). Назад — шары собираются обратно.
  *
  *   simulateBreak()           → { frames: Float32Array, count, balls, r, pockets }
  *   breakSvg()                → '<svg …>' собранная пирамида на столе: серверный рендер и prefers-reduced-motion
  *   mountBreak(canvas, opts?) → () => void  рисует разбой на canvas, возвращает отписку
+ *   smoothProgress, sampleFrame, breakRange — чистые функции (тесты `node --test`)
  *
  * Единицы — длина игрового поля: поле 1 × 0,5 (пирамида 12 футов, 3550 × 1775 мм), центр в (0,5; 0,25).
- * frames[(f * balls + i) * 3 + k]: k = 0 — x, 1 — y, 2 — видимость (1 на сукне, 0 — в лузе).
+ * frames[(f * balls + i) * 3 + k]: k = 0 — x, 1 — y, 2 — видимость (1 на сукне, 0 — в лузе, между — закатывается).
  * Шар 0 — биток, 1–15 — пирамида с номерами.
  */
+
+import { cancel, wake } from './raf.mjs';
 
 export const FIELD = Object.freeze({ w: 1, h: 0.5 });
 export const BALL_R = 0.021;
@@ -26,8 +30,40 @@ export const POCKETS = Object.freeze([
 
 const DT = 1 / 240;
 const PER_FRAME = 4; // 240 / 4 = 60 кадров в секунду
+const FPS = 60;
 const MAX_FRAMES = 480; // 8 с — предел; обычно сукно чистое раньше
-const SINK_FRAMES = 9; // столько кадров шар «закатывается» в лузу
+const SINK_FRAMES = 14; // столько кадров шар «закатывается» в лузу (≈ 0,23 с)
+
+/**
+ * Физика (решение №229: мягче прежней — биток 2,9 → 2,0 поля/с, трение сильнее и вязкое, чтобы шары заметно
+ * замедлялись, а не «взрывались» за 5–6 кадров). Всё детерминировано, случайности нет.
+ */
+export const PHYSICS = Object.freeze({
+  cueSpeed: 2.0, // скорость битка, поля в секунду
+  cueSlope: -0.012, // боковая составляющая битка: разбой чуть несимметричный
+  friction: 0.35, // сухое трение сукна, поля/с² (не зависит от скорости)
+  viscous: 0.8, // вязкое затухание, 1/с: быстрый шар тормозит сильнее — видно «затухание»
+  restitution: 0.96, // шар о шар
+  cushion: 0.78, // шар о борт
+  pullFrom: 0.9, // с какой секунды шары начинают «искать» ближайшую лузу, чтобы сукно к концу было чистым
+  pullStart: 0.4, // сила притяжения в начале, поля/с²
+  pullRamp: 0.7, // и как быстро она растёт, поля/с² за секунду
+  pullMax: 3.2,
+  rollAfter: 6.5, // запасной путь: что ещё на сукне — катится в лузу прямо
+});
+
+/**
+ * Прокрутка и сглаживание (решение №229). Одинаковы на сайте и в приложении гостя.
+ */
+export const SCROLL = Object.freeze({
+  tauMs: 150, // постоянная времени догоняющего прогресса
+  maxRate: 2.5, // быстрее 2,5 с симуляции в секунду кадры не листаем (при резкой прокрутке разбой «доезжает»)
+  autoStretch: 1.5, // без прокрутки (короткая страница) разбой идёт в 1,5 раза дольше физики
+  autoDelayMs: 700,
+  spanScreens: 1.45, // потолок хода прокрутки на весь разбой, в высотах экрана
+  keepTable: 0.4, // к концу разбоя на экране остаётся нижняя доля стола с лузами (прежде 0,55)
+  minRange: 120, // px
+});
 
 /** Пирамида: вершина к битку, 5 рядов, шары касаются друг друга. */
 export function rack(r = BALL_R) {
@@ -47,7 +83,7 @@ export function rack(r = BALL_R) {
 export function simulateBreak() {
   const r = BALL_R;
   // Биток чуть ниже оси: разбой несимметричный, как живой
-  const balls = [{ n: 0, x: 0.22, y: FIELD.h / 2 + 0.006, vx: 2.9, vy: -0.035, in: 1, sink: -1, px: 0, py: 0 }];
+  const balls = [{ n: 0, x: 0.22, y: FIELD.h / 2 + 0.006, vx: PHYSICS.cueSpeed, vy: PHYSICS.cueSpeed * PHYSICS.cueSlope, in: 1, sink: -1, px: 0, py: 0 }];
   for (const b of rack(r)) balls.push({ ...b, vx: 0, vy: 0, in: 1, sink: -1, px: 0, py: 0 });
   const N = balls.length;
   const frames = new Float32Array(MAX_FRAMES * N * 3);
@@ -91,16 +127,16 @@ export function simulateBreak() {
         if (b.sink >= 0) continue;
         // Трение сукна; после разбоя шары мягко «ищут» ближайшую лузу, чтобы к концу сукно было чистым
         const sp = Math.hypot(b.vx, b.vy);
-        if (t > 0.9) {
+        if (t > PHYSICS.pullFrom) {
           const [px, py] = nearest(b);
           const dx = px - b.x;
           const dy = py - b.y;
           const d = Math.hypot(dx, dy) || 1;
-          const pull = t > 2.2 ? 3.2 : 1.1;
+          const pull = Math.min(PHYSICS.pullMax, PHYSICS.pullStart + PHYSICS.pullRamp * (t - PHYSICS.pullFrom));
           b.vx += (dx / d) * pull * DT;
           b.vy += (dy / d) * pull * DT;
         }
-        const drag = sp > 0 ? Math.max(0, 1 - (0.55 * DT) / Math.max(sp, 0.05)) : 1;
+        const drag = sp > 0 ? Math.max(0, 1 - (PHYSICS.friction * DT) / Math.max(sp, 0.05)) * Math.exp(-PHYSICS.viscous * DT) : 1;
         b.vx *= drag;
         b.vy *= drag;
         b.x += b.vx * DT;
@@ -114,17 +150,17 @@ export function simulateBreak() {
         // Борта: отскок с потерей скорости
         if (b.x < r) {
           b.x = r;
-          b.vx = Math.abs(b.vx) * 0.78;
+          b.vx = Math.abs(b.vx) * PHYSICS.cushion;
         } else if (b.x > FIELD.w - r) {
           b.x = FIELD.w - r;
-          b.vx = -Math.abs(b.vx) * 0.78;
+          b.vx = -Math.abs(b.vx) * PHYSICS.cushion;
         }
         if (b.y < r) {
           b.y = r;
-          b.vy = Math.abs(b.vy) * 0.78;
+          b.vy = Math.abs(b.vy) * PHYSICS.cushion;
         } else if (b.y > FIELD.h - r) {
           b.y = FIELD.h - r;
-          b.vy = -Math.abs(b.vy) * 0.78;
+          b.vy = -Math.abs(b.vy) * PHYSICS.cushion;
         }
       }
       // Соударения шаров: упругие, массы равные
@@ -148,7 +184,7 @@ export function simulateBreak() {
           b.y += (ny * overlap) / 2;
           const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
           if (rel <= 0) continue;
-          const imp = rel * 0.96;
+          const imp = rel * PHYSICS.restitution;
           a.vx -= imp * nx;
           a.vy -= imp * ny;
           b.vx += imp * nx;
@@ -167,12 +203,12 @@ export function simulateBreak() {
       if (b.sink < 0 || b.in <= 0) continue;
       b.sink += 1;
       const k = b.sink / SINK_FRAMES;
-      b.x += (b.px - b.x) * 0.45;
-      b.y += (b.py - b.y) * 0.45;
+      b.x += (b.px - b.x) * 0.3;
+      b.y += (b.py - b.y) * 0.3;
       b.in = Math.max(0, 1 - k);
     }
-    // Запасной путь: всё, что ещё на сукне к концу 5-й секунды, катится прямо в ближайшую лузу
-    if (t > 5) {
+    // Запасной путь: всё, что ещё на сукне позже rollAfter секунд, катится прямо в ближайшую лузу
+    if (t > PHYSICS.rollAfter) {
       for (const b of balls) {
         if (b.sink >= 0) continue;
         const [px, py] = nearest(b);
@@ -250,10 +286,71 @@ function rgb(hex) {
 const alpha = (hex, a) => `rgb(${rgb(hex).join(' ')} / ${a})`;
 const shade = (hex, k) => `rgb(${rgb(hex).map((c) => Math.round(k > 0 ? c + (255 - c) * k : c * (1 + k))).join(' ')})`;
 
+// ---------- чистые функции: сглаживание, кадр между кадрами, ход прокрутки (тесты node --test) ----------
+
+const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
 /**
- * Разбой на canvas по прогрессу прокрутки первого экрана (как BreakTable гостя). Короткая страница без
- * прокрутки — разбой проигрывается один раз сам. prefers-reduced-motion — стоит собранная пирамида.
- * Рисуется только при смене кадра.
+ * Шаг догоняющего прогресса. Экспоненциальное затухание — разность до цели уменьшается в e раз за tauMs,
+ * поэтому результат не зависит от частоты кадров: два шага по 8 мс = один шаг в 16 мс. Скорость ограничена
+ * maxRate секундами симуляции в секунду (seconds — длина всей симуляции), чтобы при резкой прокрутке шары
+ * не перескакивали на десятки кадров. Цель не перескакивается; ближе eps — прогресс равен цели.
+ * @param {number} current текущий прогресс 0…1
+ * @param {number} target целевой прогресс 0…1
+ * @param {number} dtMs время с прошлого кадра, мс
+ * @param {{ tauMs?: number, maxRate?: number, seconds?: number, eps?: number }} [o]
+ * @returns {number}
+ */
+export function smoothProgress(current, target, dtMs, o = {}) {
+  const { tauMs = SCROLL.tauMs, maxRate = SCROLL.maxRate, seconds = 1, eps = 0.0002 } = o;
+  const diff = target - current;
+  if (!(dtMs > 0)) return current;
+  if (Math.abs(diff) <= eps) return target;
+  let step = diff * (1 - Math.exp(-dtMs / tauMs));
+  const cap = (maxRate * dtMs) / 1000 / seconds;
+  if (Math.abs(step) > cap) step = Math.sign(step) * cap;
+  const next = current + step;
+  // не дальше цели и без дрожи у самой цели
+  if ((diff > 0 && next >= target) || (diff < 0 && next <= target) || Math.abs(target - next) <= eps) return target;
+  return next;
+}
+
+/**
+ * Положение шаров между двумя соседними кадрами предрасчёта: линейно по x, y и видимости.
+ * @param {Float32Array} frames
+ * @param {number} balls число шаров
+ * @param {number} count число кадров
+ * @param {number} progress 0…1
+ * @param {Float32Array | number[]} [out] куда писать (balls × 3), иначе новый массив
+ * @returns {Float32Array | number[]} x, y, видимость каждого шара
+ */
+export function sampleFrame(frames, balls, count, progress, out = new Float32Array(balls * 3)) {
+  const f = clamp01(progress) * (count - 1);
+  const a = Math.min(count - 1, Math.floor(f));
+  const b = Math.min(count - 1, a + 1);
+  const k = f - a;
+  const oa = a * balls * 3;
+  const ob = b * balls * 3;
+  for (let i = 0; i < balls * 3; i += 1) out[i] = frames[oa + i] + (frames[ob + i] - frames[oa + i]) * k;
+  return out;
+}
+
+/**
+ * Ход прокрутки на весь разбой, px. Разбой кончается, пока стол ещё на экране: верх стола ушёл за край, видна
+ * нижняя доля keepTable с лузами. Не длиннее spanScreens высот экрана и не длиннее самой страницы.
+ * @param {{ tableTop: number, tableHeight: number, viewport: number, scrollable: number }} g
+ *   tableTop — верх стола от начала страницы; scrollable — на сколько страница вообще прокручивается
+ */
+export function breakRange({ tableTop, tableHeight, viewport, scrollable }) {
+  const reach = tableTop + tableHeight * (1 - SCROLL.keepTable);
+  return Math.max(1, Math.min(Math.max(SCROLL.minRange, reach), viewport * SCROLL.spanScreens, scrollable));
+}
+
+/**
+ * Разбой на canvas по прогрессу прокрутки. Прогресс не равен scrollY / ход напрямую: он догоняет цель
+ * (smoothProgress), между кадрами предрасчёта положения интерполируются (sampleFrame). Кадры просит единый
+ * цикл raf.mjs и только пока прогресс не дошёл до цели. Короткая страница без прокрутки — разбой проигрывается
+ * один раз сам, в 1,5 раза медленнее физики. prefers-reduced-motion — стоит собранная пирамида.
  * @param {HTMLCanvasElement} canvas
  * @param {{ onReady?: () => void }} [options] onReady — первый кадр нарисован (можно спрятать картинку-заглушку)
  * @returns {() => void}
@@ -284,10 +381,11 @@ export function mountBreak(canvas, options = {}) {
   let rail = 0;
   let unit = 0;
   let table = null;
-  let shown = -1;
-  let raf = 0;
-  let auto = 0;
   let ready = false;
+  let onScreen = true;
+  let shownAt = -1;
+  const pos = new Float32Array(N * 3);
+  const seconds = (sim.count - 1) / FPS;
 
   const toX = (x) => rail + x * unit;
   const toY = (y) => rail + y * unit;
@@ -394,18 +492,18 @@ export function mountBreak(canvas, options = {}) {
     ctx.globalAlpha = 1;
   }
 
-  function draw(f) {
-    if (f === shown || !table) return;
-    shown = f;
+  /** Рисует кадр для прогресса p (0…1): положения между соседними кадрами предрасчёта — линейно. */
+  function draw(p) {
+    if (!table) return;
+    shownAt = p;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     ctx.drawImage(table, 0, 0, W, H);
-    const base = f * N * 3;
+    sampleFrame(sim.frames, N, sim.count, p, pos);
     for (let i = N - 1; i >= 0; i -= 1) {
-      const o = base + i * 3;
-      const k = sim.frames[o + 2];
-      if (k <= 0) continue;
-      ball(i, toX(sim.frames[o]), toY(sim.frames[o + 1]), k);
+      const k = pos[i * 3 + 2];
+      if (k <= 0.001) continue;
+      ball(i, toX(pos[i * 3]), toY(pos[i * 3 + 1]), k);
     }
     if (!ready) {
       ready = true;
@@ -413,16 +511,41 @@ export function mountBreak(canvas, options = {}) {
     }
   }
 
-  let reach = 0;
-  const range = () => Math.max(1, Math.min(Math.max(100, reach), innerHeight * 0.85, document.documentElement.scrollHeight - innerHeight));
-  const frameFor = (p) => Math.round(Math.min(1, Math.max(0, p)) * (sim.count - 1));
-  const onScroll = () => {
-    if (raf) return;
-    raf = requestAnimationFrame(() => {
-      raf = 0;
-      draw(frameFor(scrollY / range()));
+  // Ход прокрутки считается заново на каждом кадре движения: страница могла подрасти (шрифты, картинки)
+  let tableTop = 0;
+  const range = () =>
+    breakRange({
+      tableTop,
+      tableHeight: H,
+      viewport: innerHeight,
+      scrollable: document.documentElement.scrollHeight - innerHeight,
     });
-  };
+  const targetNow = () => clamp01(scrollY / range());
+
+  let cur = 0;
+  let laidOut = false;
+  let last = 0;
+  let auto = false;
+  let autoStart = 0;
+
+  /** Кадр цикла: цель по прокрутке (или по часам), шаг прогресса, рисунок. true — нужен ещё кадр. */
+  function tick(now) {
+    let again;
+    if (auto) {
+      cur = clamp01((now - autoStart) / (seconds * 1000 * SCROLL.autoStretch));
+      again = cur < 1;
+    } else {
+      const target = targetNow();
+      const dt = last ? Math.min(100, now - last) : 1000 / FPS;
+      last = now;
+      cur = smoothProgress(cur, target, dt, { seconds });
+      again = cur !== target;
+    }
+    if (onScreen && cur !== shownAt) draw(cur);
+    if (!again) last = 0;
+    return again;
+  }
+  const poke = () => wake(tick, 10);
 
   function layout() {
     const box = canvas.getBoundingClientRect();
@@ -434,30 +557,44 @@ export function mountBreak(canvas, options = {}) {
     canvas.height = Math.round(H * dpr);
     rail = W * RAIL;
     unit = W - 2 * rail;
-    reach = box.top + scrollY + H * 0.45;
+    tableTop = box.top + scrollY;
     table = paintTable();
-    shown = -1;
-    draw(reduce ? 0 : frameFor(scrollY / range()));
+    shownAt = -1;
+    // Начальный прогресс — по текущей прокрутке без анимации (страницу открыли уже прокрученной);
+    // дальнейшие раскладки (поворот экрана, шрифты) прогресс не трогают: его догонит обычное сглаживание
+    if (reduce) cur = 0;
+    else if (!auto && !laidOut) cur = targetNow();
+    laidOut = true;
+    draw(cur);
+    if (!reduce && !auto && cur !== targetNow()) poke();
   }
 
   layout();
   const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => layout()) : null;
   ro?.observe(canvas);
+  // Вне экрана кадры не рисуем (физика не нужна, прогресс всё равно считается), на экран вернулись — дорисовать
+  const io =
+    typeof IntersectionObserver !== 'undefined'
+      ? new IntersectionObserver(([e]) => {
+          onScreen = e.isIntersecting;
+          if (onScreen && cur !== shownAt) draw(cur);
+        })
+      : null;
+  io?.observe(canvas);
   if (!reduce) {
     if (document.documentElement.scrollHeight - innerHeight < 40) {
-      const t0 = performance.now() + 700;
-      const step = (now) => {
-        const p = (now - t0) / ((sim.count / 60) * 1000);
-        draw(frameFor(p));
-        if (p < 1) auto = requestAnimationFrame(step);
-      };
-      auto = requestAnimationFrame(step);
-    } else addEventListener('scroll', onScroll, { passive: true });
+      auto = true;
+      autoStart = performance.now() + SCROLL.autoDelayMs;
+      cur = 0;
+      poke();
+    } else {
+      addEventListener('scroll', poke, { passive: true });
+    }
   }
   return () => {
     ro?.disconnect();
-    removeEventListener('scroll', onScroll);
-    cancelAnimationFrame(raf);
-    cancelAnimationFrame(auto);
+    io?.disconnect();
+    removeEventListener('scroll', poke);
+    cancel(tick);
   };
 }

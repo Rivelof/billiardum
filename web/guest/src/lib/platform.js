@@ -16,6 +16,28 @@ export function telegramInitData(hash) {
   return data && /(?:^|&)hash=/.test(data) ? data : null;
 }
 
+/**
+ * Приложение открыто как мини-приложение MAX или Telegram: в адресе после # лежат параметры запуска
+ * (tgWebAppData, tgWebAppPlatform, tgWebAppVersion; у MAX — WebAppData и т. п.). В мини-приложении остаётся
+ * нативная прокрутка (плавную колесом включаем только в обычном браузере и PWA, shared/smooth-scroll.mjs).
+ * @param {string} hash location.hash
+ */
+export function isMiniAppHash(hash) {
+  return /(?:^|[#&?])(?:tg)?WebApp(?:Data|Platform|Version)=/i.test(hash ?? '');
+}
+
+/**
+ * Запуск как мини-приложение запоминаем при загрузке модуля: после первого перехода между экранами
+ * адрес уже без #-параметров. Встроенные окна (iframe) shared/smooth-scroll.mjs отсекает сам.
+ */
+export const LAUNCHED_AS_MINIAPP = (() => {
+  try {
+    return isMiniAppHash(globalThis.location?.hash) || Boolean(globalThis.TelegramWebviewProxy);
+  } catch {
+    return false;
+  }
+})();
+
 /** iPhone и iPad (iPadOS представляется Mac с сенсорным экраном). */
 export function isIos(ua = globalThis.navigator?.userAgent ?? '', touchPoints = globalThis.navigator?.maxTouchPoints ?? 0) {
   return /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && touchPoints > 1);

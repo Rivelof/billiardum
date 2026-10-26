@@ -1,7 +1,8 @@
 /**
  * Сборка островов сайта (esbuild): src/islands/*.js → dist/assets/[имя]-[хеш].js, общий код — отдельными
  * чанками, рядом .br и .gz. dist/manifest.json — имя острова → адрес. Бюджет: ≤ 50 КБ gzip JS на страницу
- * (контракт M4 §1 п.1) — проверяется здесь (--size печатает таблицу) и в тестах.
+ * (контракт M4 §1 п.1) — проверяется здесь (--size печатает таблицу) и в тестах; в вес входят и отложенные
+ * чанки (плавная прокрутка Lenis грузится по import() после загрузки страницы).
  *
  *   node scripts/build.mjs           сборка
  *   node scripts/build.mjs --watch   пересборка при изменениях (npm run dev)
@@ -57,6 +58,7 @@ function finish(result, outDir) {
   const manifest = {};
   const gz = {};
   const deps = {};
+  const lazy = {};
   for (const [file, info] of Object.entries(result.metafile.outputs)) {
     if (!file.endsWith('.js')) continue;
     const abs = join(ROOT, file).startsWith(assets) ? join(ROOT, file) : file;
@@ -67,22 +69,26 @@ function finish(result, outDir) {
     writeFileSync(`${abs}.br`, brotliCompressSync(buf, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }));
     gz[name] = g.length;
     deps[name] = info.imports.filter((i) => i.kind === 'import-statement').map((i) => basename(i.path));
+    // чанки по import() (плавная прокрутка, Lenis) тоже грузятся на странице, но уже после загрузки: считаем отдельно
+    lazy[name] = info.imports.filter((i) => i.kind === 'dynamic-import').map((i) => basename(i.path));
     if (info.entryPoint) manifest[basename(info.entryPoint, '.js')] = `/assets/${name}`;
   }
-  const closure = (name, seen = new Set()) => {
+  const closure = (name, seen = new Set(), withLazy = false) => {
     if (seen.has(name)) return seen;
     seen.add(name);
-    for (const d of deps[name] ?? []) closure(d, seen);
+    for (const d of [...(deps[name] ?? []), ...(withLazy ? lazy[name] ?? [] : [])]) closure(d, seen, withLazy);
     return seen;
   };
-  const pageSize = (islands) => {
+  const pageSize = (islands, withLazy) => {
     const files = new Set();
-    for (const i of islands) if (manifest[i]) for (const f of closure(basename(manifest[i]))) files.add(f);
+    for (const i of islands) if (manifest[i]) for (const f of closure(basename(manifest[i]), new Set(), withLazy)) files.add(f);
     return [...files].reduce((s, f) => s + gz[f], 0);
   };
-  const sizes = Object.fromEntries(Object.entries(PAGES).map(([p, islands]) => [p, pageSize(islands)]));
+  // sizes — всё, что страница может загрузить (с отложенным Lenis); staticSizes — только то, что нужно для первой отрисовки
+  const sizes = Object.fromEntries(Object.entries(PAGES).map(([p, islands]) => [p, pageSize(islands, true)]));
+  const staticSizes = Object.fromEntries(Object.entries(PAGES).map(([p, islands]) => [p, pageSize(islands, false)]));
   writeFileSync(join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  return { manifest, sizes, files: gz };
+  return { manifest, sizes, staticSizes, files: gz };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
@@ -105,14 +111,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     });
     await ctx.watch();
   } else {
-    const { sizes, files } = await build();
+    const { sizes, staticSizes, files } = await build();
     const kb = (n) => `${(n / 1024).toFixed(1)} КБ`;
     if (process.argv.includes('--size')) {
       for (const [f, n] of Object.entries(files)) console.log(`  ${f.padEnd(28)} ${kb(n)} gzip`);
     }
     let over = false;
     for (const [p, n] of Object.entries(sizes)) {
-      console.log(`[site] ${p}: ${kb(n)} JS gzip`);
+      console.log(`[site] ${p}: ${kb(n)} JS gzip (до первой отрисовки ${kb(staticSizes[p])}, остальное — после загрузки: Lenis)`);
       if (n > BUDGET_GZIP) over = true;
     }
     console.log(`[site] сборка: ${relative(process.cwd(), OUT) || OUT}`);

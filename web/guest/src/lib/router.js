@@ -40,7 +40,8 @@ export function matchRoute(pathname, routes, base) {
   return { name: 'notfound', params: {} };
 }
 
-const EVENT = 'bl:navigate';
+export const NAVIGATE_EVENT = 'bl:navigate';
+const EVENT = NAVIGATE_EVENT;
 
 /**
  * Переход внутри приложения без перезагрузки.

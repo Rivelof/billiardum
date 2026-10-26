@@ -10,7 +10,8 @@ import { auth } from '../lib/auth.js';
 import { SignedInAs } from '../components/SignedInAs.jsx';
 import { useStore } from '../lib/store.js';
 import { BASE } from '../lib/env.js';
-import { linkHandler } from '../lib/router.js';
+import { LAUNCHED_AS_MINIAPP } from '../lib/platform.js';
+import { linkHandler, NAVIGATE_EVENT } from '../lib/router.js';
 import { gameView } from '../lib/game.js';
 import { tableName } from '../lib/words.js';
 
@@ -30,6 +31,29 @@ export function Home() {
       .then((list) => setSessions(Array.isArray(list) ? list : []))
       .catch(setError);
   }, [status]);
+
+  // Плавная прокрутка колесом (Lenis, DESIGN §6) — только на этом экране и только в обычном браузере и PWA:
+  // в мини-приложениях MAX и Telegram и на сенсорных устройствах без мыши остаётся нативная. Чанк грузится
+  // после первой отрисовки, при уходе с экрана экземпляр уничтожается.
+  useEffect(() => {
+    if (LAUNCHED_AS_MINIAPP || matchMedia('(prefers-reduced-motion: reduce)').matches || !matchMedia('(any-pointer: fine)').matches) return undefined;
+    let stop = () => {};
+    let gone = false;
+    const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, 200));
+    const cancelIdle = globalThis.cancelIdleCallback ?? clearTimeout;
+    const handle = idle(() => {
+      import('@billiardum/shared/smooth-scroll')
+        .then((m) => {
+          if (!gone) stop = m.startSmoothScroll({ load: () => import('lenis'), resetOn: [NAVIGATE_EVENT, 'popstate'] });
+        })
+        .catch(() => {});
+    });
+    return () => {
+      gone = true;
+      cancelIdle(handle);
+      stop();
+    };
+  }, []);
 
   const active = (sessions ?? []).filter((s) => !['closed', 'cancelled'].includes(s.status));
   // «Разбой при прокрутке» (DESIGN §6) — отдельным чанком; пока грузится, стоит обычный стол
